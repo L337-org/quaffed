@@ -1,0 +1,22 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+# The one place the version is declared (NP.7.1).  Every member inherits it with
+# `version.workspace = true`, so there is nothing to keep in agreement.
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.98"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/L337-org/quaffed"
+authors = ["Gavin Lucas"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+# Pedantic from the first line rather than retrofitted, when turning it on would mean
+# revisiting every file.  Individual lints are relaxed here, with a reason, not in the code.
+pedantic = { level = "warn", priority = -1 }

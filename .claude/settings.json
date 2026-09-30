@@ -1,0 +1,23 @@
+{
+  "attribution": {
+    "sessionUrl": false,
+    "commit": "",
+    "pr": ""
+  },
+  "env": {
+    "CLAUDE_CODE_SUPPRESS_SESSION_ATTRIBUTION": "1"
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c \"import json,sys,os; d=json.load(sys.stdin); fp=(d.get('tool_input') or {}).get('file_path',''); root=os.environ.get('CLAUDE_PROJECT_DIR') or os.getcwd(); rel=os.path.relpath(os.path.normpath(os.path.join(root,fp)),root) if fp else ''; rel=rel.replace(os.sep,'/'); members={'CLAUDE.md':'pointer','.github/copilot-instructions.md':'pointer','AGENTS.md':'brief','CONTRIBUTING.md':'detail'}; which=members.get(rel) or ('detail' if rel.startswith('architecture/') else None); tail=' First check the rule belongs in an always-loaded file at all: if a CI test already enforces it, nothing needs to carry it in prose.'; msgs={'pointer':'You edited '+rel+' - it is a generated pointer to AGENTS.md and carries no rules of its own. A hand edit here is overwritten the next time it is generated, so make the change in AGENTS.md, or in the architecture/ note that owns the detail.','brief':'You edited AGENTS.md - it is always loaded, so it carries what every session needs and nothing more. If this is detail rather than a rule, it belongs in the architecture/ note that owns the area, with AGENTS.md pointing at it.','detail':'You edited '+rel+' (the detail layer) - this is the correct home for detail, and a detail-only edit rightly touches nothing else, so there is usually nothing more to do. Only if you have written a RULE does it need promoting into AGENTS.md.'}; msg=(msgs[which]+tail) if which else ''; print(json.dumps({'hookSpecificOutput':{'hookEventName':'PostToolUse','additionalContext':msg}})) if which else None\""
+          }
+        ]
+      }
+    ]
+  }
+}
