@@ -39,6 +39,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, conventions and how to submit 
 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for the standards expected of everyone taking part.
 Security issues are reported privately; see [SECURITY.md](SECURITY.md).
 
+## Privacy
+
+quaffed makes no network connections and collects nothing; see [PRIVACY.md](PRIVACY.md).
+
 ## Licence
 
 GPL-3.0-or-later; see [LICENSE](LICENSE).  Running `quaff` over a project's files does not make
