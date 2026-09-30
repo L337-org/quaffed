@@ -1,0 +1,6 @@
+# The toolchain CI and rustup users build with (DS.2.1).  CI reads it through
+# `rustup toolchain install`; nothing in the workflows names a Rust version.
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

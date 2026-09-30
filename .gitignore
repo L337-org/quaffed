@@ -1,0 +1,25 @@
+# Hidden files are ignored unless listed here, so a tool's local state never lands in a
+# commit by accident.
+/.*
+!/.agents/
+!/.gitignore
+!/.github/
+!/.cursor/
+!/.vscode/
+!/.claude/
+/.claude/settings.local.json
+
+# Rust.  Cargo.lock is committed deliberately: this is a binary, and CI builds --locked.
+/target/
+**/*.rs.bk
+
+# JetBrains
+/.idea/
+
+# OS
+.DS_Store
+ehthumbs.db
+Icon?
+Thumbs.db
+*~
+*.bak
