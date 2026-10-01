@@ -34,7 +34,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-    uses: L337-org/github-workflows/.github/workflows/claude-review.yaml@44649cd164713a9779b56c94ac7b7a7dab9e727a
+    uses: L337-org/github-workflows/.github/workflows/claude-review.yaml@0311809f57fc8ab2a058b6aae2180cb57b99f259
     with:
       pr-number: ${{ github.event.pull_request.number || github.event.issue.number }}
       depth: ${{ (github.event_name == 'issue_comment' && startsWith(format('{0} ', github.event.comment.body), '/claude-review full ')) && 'full' || 'auto' }}
