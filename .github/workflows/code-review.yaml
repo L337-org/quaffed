@@ -2,15 +2,16 @@ name: 'Code review'
 permissions:
   contents: read
 
-# Triggers.  A review runs once by itself, when a pull request is opened or marked ready, and
-# otherwise only when asked: a push does not start one.  Reviewing every push is what lets a
-# reviewing agent and a coding agent trade rounds without anyone deciding the next one is worth
-# its cost.
+# Triggers.  A review runs once by itself, when a pull request is opened, reopened or marked
+# ready, and otherwise only when asked: a push does not start one.  Reviewing every push is what
+# lets a reviewing agent and a coding agent trade rounds without anyone deciding the next one is
+# worth its cost.
 #
-# Ask by starting a top-level PR comment with `/claude-review` (a delta review of what changed
-# since the last one) or `/claude-review full`, followed by a space or nothing.  Appending a
-# space before matching is what keeps `/claude-reviewer` or `/claude-review fullness` out.  GitHub runs comment-triggered
-# workflows from the default branch, so the command works only once this file is on `main`.
+# Ask by starting a top-level PR comment with `/claude-review`, which leaves the depth to the
+# shared workflow, or `/claude-review full`, each followed by a space or nothing.  A space is
+# appended before matching so that `/claude-reviewer` or `/claude-review fullness` do not count.
+# GitHub runs comment-triggered workflows from the default branch, so the command works only
+# once this file is on `main`.
 on:
   pull_request:
     types: [opened, reopened, ready_for_review]

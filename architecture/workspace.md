@@ -87,8 +87,8 @@ files at all, so a broken walk cannot pass by checking nothing.
 
 | job | checks |
 |---|---|
-| Repository hygiene | the organisation-wide conventions, by the shared `repo-hygiene` action |
-| Action pins are immutable | every `uses:` names a full 40-hex commit SHA, by the shared `action-pins` action |
+| Repository hygiene | the organisation-wide conventions (shared) |
+| Action pins are immutable | every `uses:` names a full 40-hex commit SHA (shared) |
 | rustfmt | `cargo fmt --all -- --check` |
 | clippy | `cargo clippy --all-targets --locked -- -D warnings` |
 | Test | `cargo test --workspace --locked`, on Linux and macOS |
@@ -97,40 +97,16 @@ files at all, so a broken walk cannot pass by checking nothing.
 means updating the branch ruleset in the same change, or the branch waits on a check that never
 reports, or a new job gates nothing.
 
-### Automated review
-
-`.github/workflows/code-review.yaml` decides when a pull request gets a review from Claude and
-who may ask for one.  How the review runs - depth, model, tools, queuing, its timeout - belongs
-to the shared `claude-review.yaml` workflow and is described in that repository's README, at
-the commit pinned here.
-
-- **When.**  Once by itself, when a pull request is opened, reopened or marked ready for review.
-  A push never starts one.  Otherwise a top-level comment that starts with `/claude-review`,
-  followed by a space or nothing, asks for one, and `/claude-review full` forces a full review.
-  Comment commands only work from `main`, because GitHub runs comment-triggered workflows from
-  the default branch.
-- **Who.**  Comment requests are honoured only from an owner, a member or a collaborator, since
-  each one spends the token owner's allowance.  Drafts are not reviewed automatically.
-- **The verdict is advisory.**  The review is not a required check and does not approve the pull
-  request.  This is a deliberate exception to every job here being a required status check.
-- **Secret.**  `CLAUDE_CODE_OAUTH_TOKEN`, a subscription token from `claude setup-token`.  Every
-  review draws on the allowance of whoever generated it, whoever asked for the review.
-- **No timeout here.**  GitHub does not allow `timeout-minutes` on a job that calls a reusable
-  workflow; the shared workflow's job carries the bound.
-
 ### Shared CI
 
-The hygiene check, the action-pins check and the review come from the organisation's public
-`github-workflows` repository, each pinned to a full commit SHA.  A change to any of them is
-made there and reaches this repository when the pin here moves.  To run the hygiene check
-locally from the repository root, with `<sha>` the commit pinned in `premerge.yaml`:
+The `Repository hygiene` and `Action pins are immutable` jobs, and the Claude review in
+`code-review.yaml`, run code from the organisation's public `github-workflows` repository,
+pinned to a commit.  What that code does, and how to run the hygiene check locally, is in that
+repository's README at the pinned commit; it is not restated here, because it changes there.
+When and for whom this repository asks for a review is in the header of `code-review.yaml`.
 
-```bash
-gh api -H 'Accept: application/vnd.github.raw' \
-  'repos/L337-org/github-workflows/contents/actions/repo-hygiene/check-repo-hygiene.py?ref=<sha>' \
-  > /tmp/check-repo-hygiene.py
-uv run --script /tmp/check-repo-hygiene.py .
-```
+**The review is advisory.**  It is not a required check and does not approve the pull request,
+which is a deliberate exception to every job here being a required status check.
 
 ## Checklist: adding a workspace member
 
