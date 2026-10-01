@@ -25,8 +25,8 @@ and has not yet been written into this repository as a specification.
 It is private today and will be made public before the first release, so everything
 committed now becomes public history.  **Treat it as public already:** no tracker issue key
 and no link into the internal wiki or tracker in code, documentation, a commit message or a
-pull request description.  Describe the work instead.  `scripts/check-repo-hygiene.py` fails CI
-on either.
+pull request description.  Describe the work instead.  The shared hygiene check that CI runs
+fails on either.
 
 ## Read these before changing the matching area
 

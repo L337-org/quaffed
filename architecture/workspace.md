@@ -17,8 +17,7 @@ because the design it would describe is not settled.
 │   └── quaffed/          # the only member so far; builds the `quaff` binary
 │       ├── src/main.rs
 │       └── tests/        # integration tests, one file per concern
-├── architecture/         # detail notes, each routed from AGENTS.md
-└── scripts/              # the organisation-wide hygiene check (vendored, do not edit)
+└── architecture/         # detail notes, each routed from AGENTS.md
 ```
 
 **One crate, deliberately.**  The package is `quaffed` and the binary is `quaff`, matching
@@ -88,8 +87,8 @@ files at all, so a broken walk cannot pass by checking nothing.
 
 | job | checks |
 |---|---|
-| Repository hygiene | the organisation-wide conventions in `scripts/check-repo-hygiene.py` |
-| Action pins are immutable | every `uses:` names a full 40-hex commit SHA |
+| Repository hygiene | the organisation-wide conventions, by the shared `repo-hygiene` action |
+| Action pins are immutable | every `uses:` names a full 40-hex commit SHA, by the shared `action-pins` action |
 | rustfmt | `cargo fmt --all -- --check` |
 | clippy | `cargo clippy --all-targets --locked -- -D warnings` |
 | Test | `cargo test --workspace --locked`, on Linux and macOS |
@@ -98,9 +97,36 @@ files at all, so a broken walk cannot pass by checking nothing.
 means updating the branch ruleset in the same change, or the branch waits on a check that never
 reports, or a new job gates nothing.
 
-`scripts/check-repo-hygiene.py` is byte-identical in every repository in the organisation and
-checks itself against `scripts/check-repo-hygiene.sha256`.  Never edit this copy: change it
-everywhere and regenerate the digest, as its own docstring describes.
+### Automated review
+
+`.github/workflows/code-review.yaml` decides when a pull request gets a review from Claude.  The
+review itself is the shared `claude-review.yaml` reusable workflow, called by commit SHA.
+
+- **When.**  Once by itself, when a pull request is opened, reopened or marked ready for review.
+  A push never starts one.  Otherwise a top-level comment starting `/claude-review` asks for one,
+  and `/claude-review full` forces a full review.  Comment commands only work from `main`,
+  because GitHub runs comment-triggered workflows from the default branch.
+- **Depth.**  The first review covers the whole pull request at high effort with no turn cap.
+  Later ones cover the commits since the last reviewed commit at lower effort.  The reviewed
+  commit is recorded in a marker at the end of each review comment.  A force-push that drops it
+  from the branch falls back to a full review.
+- **What Claude can do.**  It reads the checkout and runs `git diff`, `git log` and `git show`,
+  and nothing else.  It returns a verdict and a review body, and a later step posts them, so
+  Claude never holds a token that can write to GitHub.
+- **The verdict is advisory.**  The review is not a required check and does not approve the pull
+  request.  This is a deliberate exception to every job here being a required status check.
+- **Cost.**  The review authenticates with the `CLAUDE_CODE_OAUTH_TOKEN` secret, a subscription
+  token from `claude setup-token`.  Every review draws on the allowance of whoever generated it,
+  whoever asked for the review.
+
+### Shared CI
+
+The hygiene check, the action-pins check and the review come from the organisation's public
+`github-workflows` repository, each pinned to a full commit SHA, and Dependabot proposes the
+bumps.  A change to any of them is made there, and reaches this repository when the pin moves.
+To run the hygiene check locally, fetch `actions/repo-hygiene/check-repo-hygiene.py` from that
+repository at the pinned commit and run `uv run --script check-repo-hygiene.py .` from the
+repository root.
 
 ## Checklist: adding a workspace member
 

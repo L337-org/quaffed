@@ -1,0 +1,43 @@
+name: 'Code review'
+permissions:
+  contents: read
+
+# Triggers.  A review runs once by itself, when a pull request is opened or marked ready, and
+# otherwise only when asked: a push does not start one.  Reviewing every push is what lets a
+# reviewing agent and a coding agent trade rounds without anyone deciding the next one is worth
+# its cost.
+#
+# Ask by commenting `/claude-review` (a delta review of what changed since the last one) or
+# `/claude-review full` at the start of a top-level PR comment.  GitHub runs comment-triggered
+# workflows from the default branch, so the command works only once this file is on `main`.
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+  issue_comment:
+    types: [created]
+
+# One review at a time per pull request.  A request made while one runs waits rather than
+# cancelling it, because a cancelled review has spent most of its allowance already.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    # Draft pull requests wait until they are ready.  A comment request is honoured on a
+    # draft, because asking is the signal.  Only people the repository trusts can ask: the
+    # review spends the allowance of whoever owns the token.
+    if: >-
+      (github.event_name == 'pull_request' && !github.event.pull_request.draft) ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
+       startsWith(github.event.comment.body, '/claude-review') &&
+       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: L337-org/github-workflows/.github/workflows/claude-review.yaml@dc88cd55b0e0302da14685817df51e30c386631b
+    with:
+      pr-number: ${{ github.event.pull_request.number || github.event.issue.number }}
+      depth: ${{ (github.event_name == 'issue_comment' && startsWith(github.event.comment.body, '/claude-review full')) && 'full' || 'auto' }}
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
