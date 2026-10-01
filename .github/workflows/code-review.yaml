@@ -1,0 +1,43 @@
+name: 'Code review'
+permissions:
+  contents: read
+
+# Triggers.  A review runs once by itself, when a pull request is opened, reopened or marked
+# ready, and otherwise only when asked: a push does not start one.  Reviewing every push is what
+# lets a reviewing agent and a coding agent trade rounds without anyone deciding the next one is
+# worth its cost.
+#
+# Ask by starting a top-level PR comment with `/claude-review`, which leaves the depth to the
+# shared workflow, or `/claude-review full`, each followed by a space or nothing.  A space is
+# appended before matching so that `/claude-reviewer` or `/claude-review fullness` do not count.
+# GitHub runs comment-triggered workflows from the default branch, so the command works only
+# once this file is on `main`.
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+  issue_comment:
+    types: [created]
+
+# No concurrency group here: one at workflow level is joined by every comment on the pull
+# request, before the job's `if:` runs, and an unrelated comment would replace a queued review
+# request.  The shared workflow queues reviews on its own job instead.
+
+jobs:
+  review:
+    # Draft pull requests wait until they are ready.  A comment request is honoured on a
+    # draft, because asking is the signal.  Only people the repository trusts can ask: the
+    # review spends the allowance of whoever owns the token.
+    if: >-
+      (github.event_name == 'pull_request' && !github.event.pull_request.draft) ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
+       startsWith(format('{0} ', github.event.comment.body), '/claude-review ') &&
+       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: L337-org/github-workflows/.github/workflows/claude-review.yaml@0311809f57fc8ab2a058b6aae2180cb57b99f259
+    with:
+      pr-number: ${{ github.event.pull_request.number || github.event.issue.number }}
+      depth: ${{ (github.event_name == 'issue_comment' && startsWith(format('{0} ', github.event.comment.body), '/claude-review full ')) && 'full' || 'auto' }}
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

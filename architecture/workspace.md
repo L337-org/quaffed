@@ -17,8 +17,7 @@ because the design it would describe is not settled.
 │   └── quaffed/          # the only member so far; builds the `quaff` binary
 │       ├── src/main.rs
 │       └── tests/        # integration tests, one file per concern
-├── architecture/         # detail notes, each routed from AGENTS.md
-└── scripts/              # the organisation-wide hygiene check (vendored, do not edit)
+└── architecture/         # detail notes, each routed from AGENTS.md
 ```
 
 **One crate, deliberately.**  The package is `quaffed` and the binary is `quaff`, matching
@@ -88,8 +87,8 @@ files at all, so a broken walk cannot pass by checking nothing.
 
 | job | checks |
 |---|---|
-| Repository hygiene | the organisation-wide conventions in `scripts/check-repo-hygiene.py` |
-| Action pins are immutable | every `uses:` names a full 40-hex commit SHA |
+| Repository hygiene | the organisation-wide conventions (shared) |
+| Action pins are immutable | every `uses:` names a full 40-hex commit SHA (shared) |
 | rustfmt | `cargo fmt --all -- --check` |
 | clippy | `cargo clippy --all-targets --locked -- -D warnings` |
 | Test | `cargo test --workspace --locked`, on Linux and macOS |
@@ -98,9 +97,16 @@ files at all, so a broken walk cannot pass by checking nothing.
 means updating the branch ruleset in the same change, or the branch waits on a check that never
 reports, or a new job gates nothing.
 
-`scripts/check-repo-hygiene.py` is byte-identical in every repository in the organisation and
-checks itself against `scripts/check-repo-hygiene.sha256`.  Never edit this copy: change it
-everywhere and regenerate the digest, as its own docstring describes.
+### Shared CI
+
+The `Repository hygiene` and `Action pins are immutable` jobs, and the Claude review in
+`code-review.yaml`, run code from the organisation's public `github-workflows` repository,
+pinned to a commit.  What that code does, and how to run the hygiene check locally, is in that
+repository's README at the pinned commit; it is not restated here, because it changes there.
+When and for whom this repository asks for a review is in the header of `code-review.yaml`.
+
+**The review is advisory.**  It is not a required check and does not approve the pull request,
+which is a deliberate exception to every job here being a required status check.
 
 ## Checklist: adding a workspace member
 
