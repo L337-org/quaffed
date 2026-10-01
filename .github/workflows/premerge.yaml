@@ -34,7 +34,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Repository conventions hold
-        uses: L337-org/github-workflows/actions/repo-hygiene@dc88cd55b0e0302da14685817df51e30c386631b
+        uses: L337-org/github-workflows/actions/repo-hygiene@44649cd164713a9779b56c94ac7b7a7dab9e727a
 
   action-pins:
     # Every `uses:` names a full commit SHA, checked by the shared copy pinned here.
@@ -46,7 +46,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Every `uses:` must name a 40-hex commit SHA
-        uses: L337-org/github-workflows/actions/action-pins@dc88cd55b0e0302da14685817df51e30c386631b
+        uses: L337-org/github-workflows/actions/action-pins@44649cd164713a9779b56c94ac7b7a7dab9e727a
 
   fmt:
     runs-on: [ubuntu-latest]

@@ -99,34 +99,38 @@ reports, or a new job gates nothing.
 
 ### Automated review
 
-`.github/workflows/code-review.yaml` decides when a pull request gets a review from Claude.  The
-review itself is the shared `claude-review.yaml` reusable workflow, called by commit SHA.
+`.github/workflows/code-review.yaml` decides when a pull request gets a review from Claude and
+who may ask for one.  How the review runs - depth, model, tools, queuing, its timeout - belongs
+to the shared `claude-review.yaml` workflow and is described in that repository's README, at
+the commit pinned here.
 
 - **When.**  Once by itself, when a pull request is opened, reopened or marked ready for review.
-  A push never starts one.  Otherwise a top-level comment starting `/claude-review` asks for one,
-  and `/claude-review full` forces a full review.  Comment commands only work from `main`,
-  because GitHub runs comment-triggered workflows from the default branch.
-- **Depth.**  The first review covers the whole pull request at high effort with no turn cap.
-  Later ones cover the commits since the last reviewed commit at lower effort.  The reviewed
-  commit is recorded in a marker at the end of each review comment.  A force-push that drops it
-  from the branch falls back to a full review.
-- **What Claude can do.**  It reads the checkout and runs `git diff`, `git log` and `git show`,
-  and nothing else.  It returns a verdict and a review body, and a later step posts them, so
-  Claude never holds a token that can write to GitHub.
+  A push never starts one.  Otherwise a top-level comment that starts with `/claude-review`,
+  followed by a space or nothing, asks for one, and `/claude-review full` forces a full review.
+  Comment commands only work from `main`, because GitHub runs comment-triggered workflows from
+  the default branch.
+- **Who.**  Comment requests are honoured only from an owner, a member or a collaborator, since
+  each one spends the token owner's allowance.  Drafts are not reviewed automatically.
 - **The verdict is advisory.**  The review is not a required check and does not approve the pull
   request.  This is a deliberate exception to every job here being a required status check.
-- **Cost.**  The review authenticates with the `CLAUDE_CODE_OAUTH_TOKEN` secret, a subscription
-  token from `claude setup-token`.  Every review draws on the allowance of whoever generated it,
-  whoever asked for the review.
+- **Secret.**  `CLAUDE_CODE_OAUTH_TOKEN`, a subscription token from `claude setup-token`.  Every
+  review draws on the allowance of whoever generated it, whoever asked for the review.
+- **No timeout here.**  GitHub does not allow `timeout-minutes` on a job that calls a reusable
+  workflow; the shared workflow's job carries the bound.
 
 ### Shared CI
 
 The hygiene check, the action-pins check and the review come from the organisation's public
-`github-workflows` repository, each pinned to a full commit SHA, and Dependabot proposes the
-bumps.  A change to any of them is made there, and reaches this repository when the pin moves.
-To run the hygiene check locally, fetch `actions/repo-hygiene/check-repo-hygiene.py` from that
-repository at the pinned commit and run `uv run --script check-repo-hygiene.py .` from the
-repository root.
+`github-workflows` repository, each pinned to a full commit SHA.  A change to any of them is
+made there and reaches this repository when the pin here moves.  To run the hygiene check
+locally from the repository root, with `<sha>` the commit pinned in `premerge.yaml`:
+
+```bash
+gh api -H 'Accept: application/vnd.github.raw' \
+  'repos/L337-org/github-workflows/contents/actions/repo-hygiene/check-repo-hygiene.py?ref=<sha>' \
+  > /tmp/check-repo-hygiene.py
+uv run --script /tmp/check-repo-hygiene.py .
+```
 
 ## Checklist: adding a workspace member
 
