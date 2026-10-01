@@ -2,16 +2,19 @@ name: 'Code review'
 permissions:
   contents: read
 
-# Triggers.  A full review runs when a pull request is opened, reopened or marked ready, and a
-# delta review of the new commits on every push after that.  The shared workflow decides which,
-# from whether an earlier review exists, and keeps the delta to the cheaper model and effort so
-# that a push costs a fraction of the first review.
+# What this caller decides.  The shared workflow decides everything else about the review, and
+# its README describes it at the commit pinned below.
 #
-# Ask by starting a top-level PR comment with `/claude-review`, which leaves the depth to the
-# shared workflow, or `/claude-review full`, each followed by a space or nothing.  A space is
-# appended before matching so that `/claude-reviewer` or `/claude-review fullness` do not count.
-# GitHub runs comment-triggered workflows from the default branch, so the command works only
-# once this file is on `main`.
+# - Opening a pull request, and every push to one, asks for a review at the depth the shared
+#   workflow picks.  A push is reviewed deliberately: the loop that invites, a reviewing agent and
+#   a coding agent trading rounds nobody chose, is accepted because a declined finding is not
+#   raised again and the shared workflow pauses automatic rounds after a bound.
+# - Reopening a pull request or marking it ready forces a full review, because either usually
+#   follows a change of approach that a delta of the newest commits would not see.
+# - A top-level comment starting `/claude-review` asks for a review at the picked depth, and
+#   `/claude-review full` forces a full one.  A space is appended before matching so that
+#   `/claude-reviewer` or `/claude-review fullness` do not count.  GitHub runs comment-triggered
+#   workflows from the default branch, so the commands only work from `main`.
 on:
   pull_request:
     types: [opened, reopened, ready_for_review, synchronize]
@@ -35,9 +38,15 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-    uses: L337-org/github-workflows/.github/workflows/claude-review.yaml@1817a61f163af6067324e0363ac184d7a3dbce4c
+    uses: L337-org/github-workflows/.github/workflows/claude-review.yaml@52c06c78b76eef09dde0d590cca247ffad9fb404
     with:
       pr-number: ${{ github.event.pull_request.number || github.event.issue.number }}
-      depth: ${{ (github.event_name == 'issue_comment' && startsWith(format('{0} ', github.event.comment.body), '/claude-review full ')) && 'full' || 'auto' }}
+      depth: >-
+        ${{ ((github.event_name == 'pull_request' &&
+              contains(fromJSON('["reopened","ready_for_review"]'), github.event.action)) ||
+             (github.event_name == 'issue_comment' &&
+              startsWith(format('{0} ', github.event.comment.body), '/claude-review full ')))
+            && 'full' || 'auto' }}
+      push-triggered: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
