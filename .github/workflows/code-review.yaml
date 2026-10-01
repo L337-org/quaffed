@@ -2,10 +2,10 @@ name: 'Code review'
 permissions:
   contents: read
 
-# Triggers.  A review runs once by itself, when a pull request is opened, reopened or marked
-# ready, and otherwise only when asked: a push does not start one.  Reviewing every push is what
-# lets a reviewing agent and a coding agent trade rounds without anyone deciding the next one is
-# worth its cost.
+# Triggers.  A full review runs when a pull request is opened, reopened or marked ready, and a
+# delta review of the new commits on every push after that.  The shared workflow decides which,
+# from whether an earlier review exists, and keeps the delta to the cheaper model and effort so
+# that a push costs a fraction of the first review.
 #
 # Ask by starting a top-level PR comment with `/claude-review`, which leaves the depth to the
 # shared workflow, or `/claude-review full`, each followed by a space or nothing.  A space is
@@ -14,7 +14,7 @@ permissions:
 # once this file is on `main`.
 on:
   pull_request:
-    types: [opened, reopened, ready_for_review]
+    types: [opened, reopened, ready_for_review, synchronize]
   issue_comment:
     types: [created]
 
@@ -35,7 +35,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-    uses: L337-org/github-workflows/.github/workflows/claude-review.yaml@0311809f57fc8ab2a058b6aae2180cb57b99f259
+    uses: L337-org/github-workflows/.github/workflows/claude-review.yaml@1817a61f163af6067324e0363ac184d7a3dbce4c
     with:
       pr-number: ${{ github.event.pull_request.number || github.event.issue.number }}
       depth: ${{ (github.event_name == 'issue_comment' && startsWith(format('{0} ', github.event.comment.body), '/claude-review full ')) && 'full' || 'auto' }}
