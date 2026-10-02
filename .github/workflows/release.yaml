@@ -37,7 +37,9 @@ jobs:
         env:
           OWNER: ${{ github.repository_owner }}
           TAG: ${{ github.event.release.tag_name }}
-          PRERELEASE: ${{ github.event.release.prerelease }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RELEASE_ID: ${{ github.event.release.id }}
         run: |
           if [ "$OWNER" != "L337-org" ]; then
             echo "::error::this release was published from repository owner '$OWNER', not L337-org, so nothing is built" >&2
@@ -49,9 +51,12 @@ jobs:
             exit 1
           fi
           # Below 1.0.0 every release is for trying out, and the pre-release flag keeps it off
-          # anything a user might install from by accident.
-          if [ "${version%%.*}" = "0" ] && [ "$PRERELEASE" != "true" ]; then
-            echo "::error::$version is below 1.0.0, so its release must be marked as a pre-release; edit the release, tick pre-release and re-run" >&2
+          # anything a user might install from by accident.  Read from the release now rather
+          # than from the event, because a re-run replays the original event: this way, ticking
+          # the flag and re-running is enough.
+          prerelease="$(gh api "repos/$REPO/releases/$RELEASE_ID" --jq .prerelease)"
+          if [ "${version%%.*}" = "0" ] && [ "$prerelease" != "true" ]; then
+            echo "::error::$version is below 1.0.0, so its release must be marked as a pre-release; edit release $RELEASE_ID, tick pre-release, and re-run this workflow" >&2
             exit 1
           fi
           {

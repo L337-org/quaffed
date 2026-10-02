@@ -98,9 +98,10 @@ nothing.  It:
    and write the notes by hand on top of the generated ones.
 3. Publish it, then watch the Release workflow to the end: the first run after a change to it is
    the test of that change.
-4. If a job failed, read why and re-run it; the attach step skips what is already there.  If the
-   cause is a defect, fix it and release a new version - a published package is never replaced.
-
+4. If a job failed, read why and re-run it; the attach step skips what is already there, and
+   preflight reads the pre-release flag from the release itself, so ticking it and re-running is
+   enough.  If the cause is a defect, fix it and release a new version - a published package is
+   never replaced.
 5. **At the first release**, change the README's *Installing* section, which says there is no
    release yet, to point at the release's packages.
 
