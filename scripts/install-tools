@@ -122,6 +122,13 @@ main() {
     parse_manifest
     local i
     case "$1" in
+        --list | --all | --cargo)
+            # An option takes nothing else, so a job that also names a tool, expecting it to be
+            # installed, fails here rather than in the step that needed it.
+            [[ $# -eq 1 ]] || die "$1 takes no other arguments, but was given: ${*:2}"
+            ;;
+    esac
+    case "$1" in
         --list)
             for i in "${!names[@]}"; do
                 printf '%s %s %s\n' "${sections[$i]}" "${names[$i]}" "${values[$i]}"
@@ -140,6 +147,9 @@ main() {
             ;;
         *)
             local name
+            for name in "$@"; do
+                [[ "$name" != -* ]] || die "$name is an option, and options cannot follow tool names"
+            done
             for name in "$@"; do
                 install_one "$name"
             done

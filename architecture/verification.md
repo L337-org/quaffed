@@ -14,11 +14,11 @@ and in CI alike.  No workflow names a tool version.
 ```toml
 # Crate name = exact version, for `cargo install --locked`.
 [cargo-install]
-cargo-insta = "1.48.0"
+cargo-insta = "X.Y.Z"
 
 # A dated nightly per purpose, for the one job that needs it.
 [toolchain]
-nightly-coverage = "nightly-2026-10-01"
+nightly-coverage = "nightly-YYYY-MM-DD"
 
 # Its components, space-separated.
 [toolchain-components]
@@ -55,7 +55,10 @@ scripts/install-tools --list                         # the manifest as the scrip
 ```
 
 `cargo install` skips a crate already installed at the pinned version, so re-running is cheap,
-and it installs into `CARGO_INSTALL_ROOT` when that is set.  The version is passed as `=X.Y.Z`,
+and it installs into `CARGO_INSTALL_ROOT` when that is set.  Run from the repository, it builds
+each tool with the toolchain `rust-toolchain.toml` pins rather than rustup's default, so a tool
+builds the same everywhere; cargo warns that the default toolchain was overridden, and that is
+expected.  The version is passed as `=X.Y.Z`,
 because a bare version is a caret requirement to `cargo install` and would take a newer release.
 A toolchain needs rustup; a Rust installed another way, such as Homebrew's, cannot install one,
 and the script says so rather than falling back to whatever Rust is on PATH.
@@ -100,9 +103,14 @@ fails on the pull request that introduces it rather than in the first job to use
   both present at one version, because gungraun refuses to run against a runner of a different
   version.
 
-Each rule has a test showing it fails on the thing it guards against.  The script's tests run
-it under the oldest bash it has to support - macOS's 3.2 - with stub `cargo` and `rustup`
-commands whose exit status and message were recorded from the real tools.
+Each rule has a test showing it fails on the thing it guards against, and every malformed
+manifest the test's parser refuses is shown to be refused by the script at the same line.  The
+script's tests run it under the oldest bash it has to support - macOS's 3.2 - with stub `cargo`
+and `rustup` commands whose exit status and message were recorded from the real tools.
+
+**These tests are Unix-only**: they run a bash script and set Unix file permissions.  When
+Windows joins the test matrix, how the tools install there needs deciding, rather than these
+tests being compiled out, which would report a pass having checked nothing.
 
 ## Checklist: adding or changing a tool
 

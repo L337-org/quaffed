@@ -101,16 +101,25 @@ jobs:
       - name: Each pinned version is what was installed
         # Read back from cargo's own record of the install root, against the manifest as the
         # script parses it, so no tool is named here and none can be missed.
+        # The manifest is read into a variable first, so a failing --list fails the step under
+        # bash -e, and a run that checked no tool fails rather than passing.
         run: |
           record="$HOME/.quaffed-tools/.crates.toml"
-          scripts/install-tools --list | while read -r section name version; do
+          manifest="$(scripts/install-tools --list)"
+          checked=0
+          while read -r section name version; do
             [ "$section" = cargo-install ] || continue
             if ! grep -q "^\"$name $version " "$record"; then
               echo "::error::$name $version is not recorded in $record" >&2
               exit 1
             fi
             echo "$name $version installed"
-          done
+            checked=$((checked + 1))
+          done <<<"$manifest"
+          if [ "$checked" -eq 0 ]; then
+            echo "::error::tools.toml listed no cargo tool, so nothing was checked" >&2
+            exit 1
+          fi
           ls "$HOME/.quaffed-tools/bin"
 
   test:

@@ -159,22 +159,48 @@ fn the_manifest_is_well_formed() {
 }
 
 #[test]
-fn malformed_manifests_are_rejected() {
-    for (text, expected) in [
+fn malformed_manifests_are_rejected_by_the_test_and_the_script_alike() {
+    for (index, (text, line, expected)) in [
         (
             "[cargo-install]\ncargo-insta = \"1.48.0\" # pinned\n",
-            "line 2",
+            2,
+            "not a section header",
         ),
-        ("[cargo-install]\ncargo-insta = 1.48.0\n", "line 2"),
-        ("[cargo-install]\ncargo-insta = \"\"\n", "line 2"),
-        ("[cargo-install]\nCargo_Insta = \"1.48.0\"\n", "line 2"),
-        ("cargo-insta = \"1.48.0\"\n", "before any section"),
-        ("[cargo]\ncargo-insta = \"1.48.0\"\n", "unknown section"),
-    ] {
+        (
+            "[cargo-install]\ncargo-insta = 1.48.0\n",
+            2,
+            "not a section header",
+        ),
+        (
+            "[cargo-install]\ncargo-insta = \"\"\n",
+            2,
+            "not a section header",
+        ),
+        (
+            "[cargo-install]\nCargo_Insta = \"1.48.0\"\n",
+            2,
+            "not a section header",
+        ),
+        ("cargo-insta = \"1.48.0\"\n", 1, "entry before any section"),
+        ("[cargo]\ncargo-insta = \"1.48.0\"\n", 1, "unknown section"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let err = parse_manifest(text).expect_err(text);
         assert!(
-            err.contains(expected),
-            "{text:?} gave {err:?}, not {expected:?}"
+            err.contains(&format!("line {line}")),
+            "{text:?} gave {err:?}, not line {line}"
+        );
+        // The script must refuse the same input at the same line, or the two readings differ
+        // on exactly the inputs the --list comparison never sees.
+        let sandbox = Sandbox::new(&format!("malformed-{index}"), text);
+        let output = sandbox.run(&["--list"]);
+        assert!(!output.status.success(), "the script accepted {text:?}");
+        let err = stderr(&output);
+        assert!(
+            err.contains(&format!("tools.toml:{line}: {expected}")),
+            "the script gave {err:?} for {text:?}"
         );
     }
     for (text, expected) in [
@@ -390,7 +416,11 @@ fn the_install_script_stops_naming_the_channel_when_rustup_fails() {
         "[toolchain]\nnightly-coverage = \"nightly-2026-10-01\"\n\
          [toolchain-components]\nnightly-coverage = \"llvm-tools-preview\"\n",
     );
-    sandbox.stub("rustup", "exit 1");
+    // Exit status and message as rustup 1.29.1 gave them for a channel with no release.
+    sandbox.stub(
+        "rustup",
+        "echo \"error: no release found for 'nightly-2026-10-01'\" >&2\nexit 1",
+    );
     let output = sandbox.run(&["nightly-coverage"]);
     assert!(
         !output.status.success(),
@@ -405,6 +435,11 @@ fn the_install_script_stops_naming_the_channel_when_rustup_fails() {
             "installing nightly-coverage (nightly-2026-10-01 with llvm-tools-preview) failed: rustup exited 1"
         ),
         "{}",
+        stderr(&output)
+    );
+    assert!(
+        stderr(&output).contains("no release found"),
+        "rustup's own error was lost: {}",
         stderr(&output)
     );
 }
@@ -426,6 +461,18 @@ fn the_install_script_says_what_is_missing() {
         ),
         (vec!["cargo-nope"], "cargo-nope is not in"),
         (vec![], "name the tools to install"),
+        (
+            vec!["--cargo", "nightly-coverage"],
+            "--cargo takes no other arguments",
+        ),
+        (
+            vec!["--list", "cargo-insta"],
+            "--list takes no other arguments",
+        ),
+        (
+            vec!["cargo-insta", "--all"],
+            "options cannot follow tool names",
+        ),
     ] {
         let output = sandbox.run(&args);
         assert!(!output.status.success(), "{args:?} succeeded");
@@ -435,12 +482,38 @@ fn the_install_script_says_what_is_missing() {
             stderr(&output)
         );
     }
+}
+
+#[test]
+fn cargo_installs_every_cargo_tool_and_all_adds_the_toolchains() {
+    let sandbox = Sandbox::new(
+        "selection",
+        "[cargo-install]\ncargo-insta = \"1.48.0\"\ncargo-mutants = \"27.1.0\"\n\
+         [toolchain]\nnightly-coverage = \"nightly-2026-10-01\"\n",
+    );
+    sandbox.stub("cargo", "exit 0");
+    sandbox.stub("rustup", "exit 0");
+    let cargo_calls = [
+        "install --locked --version =1.48.0 cargo-insta",
+        "install --locked --version =27.1.0 cargo-mutants",
+    ];
     // --cargo leaves toolchains alone, which is what keeps a nightly out of a job that does
     // not use it.
-    sandbox.stub("cargo", "exit 0");
     let output = sandbox.run(&["--cargo"]);
     assert!(output.status.success(), "{}", stderr(&output));
-    assert!(sandbox.calls("rustup").is_empty());
+    assert_eq!(sandbox.calls("cargo"), cargo_calls);
+    assert!(
+        sandbox.calls("rustup").is_empty(),
+        "--cargo installed a toolchain"
+    );
+
+    let output = sandbox.run(&["--all"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(sandbox.calls("cargo")[2..], cargo_calls);
+    assert_eq!(
+        sandbox.calls("rustup"),
+        ["toolchain install nightly-2026-10-01 --profile minimal"]
+    );
 }
 
 /// Returns each line of a workflow or action file that installs a tool or names a version
@@ -467,6 +540,9 @@ fn workflow_violations(label: &str, text: &str, tools: &[String]) -> Vec<String>
             ("toolchain:", "names a toolchain in the workflow"),
             ("rustup component add", "names a toolchain in the workflow"),
             ("rustup default", "names a toolchain in the workflow"),
+            ("rustup install ", "names a toolchain in the workflow"),
+            ("rustup update ", "names a toolchain in the workflow"),
+            ("rustup run ", "names a toolchain in the workflow"),
             ("rustup override", "names a toolchain in the workflow"),
             ("cargo +", "names a toolchain in the workflow"),
             ("+nightly", "names a toolchain in the workflow"),
@@ -481,6 +557,9 @@ fn workflow_violations(label: &str, text: &str, tools: &[String]) -> Vec<String>
             && !rest.trim().is_empty()
         {
             reasons.push("names a toolchain in the workflow (rustup toolchain install ...)".into());
+        }
+        if line.to_ascii_lowercase().contains("rustup_toolchain") {
+            reasons.push("names a toolchain in the workflow (RUSTUP_TOOLCHAIN)".into());
         }
         if line.contains("nightly-20") {
             reasons.push("names a dated nightly".into());
@@ -565,6 +644,10 @@ fn the_workflow_check_catches_each_way_of_naming_a_version() {
         "        run: rustup toolchain install stable",
         "        run: rustup component add llvm-tools-preview",
         "        run: rustup default nightly",
+        "        run: rustup install nightly",
+        "        run: rustup update nightly",
+        "        run: rustup run nightly cargo llvm-cov",
+        "          RUSTUP_TOOLCHAIN: nightly",
         "        run: cargo +nightly llvm-cov",
         "        run: RUSTUP_TOOLCHAIN=nightly-2026-10-01 cargo llvm-cov",
         "          tools: cargo-insta@1.48.0",
