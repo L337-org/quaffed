@@ -35,7 +35,9 @@ how, and an accidental `cargo publish` of a placeholder is not undoable.
 
 Declared once, in `[workspace.package]` in the root `Cargo.toml`.  Members read it with
 `version.workspace = true`; code reads it with `env!("CARGO_PKG_VERSION")`.  Nothing else may
-state it.  `0.0.0` means nothing has been released.
+state it.  It names the release the work in progress is for, not the last one shipped: it is
+bumped when work for a new release starts, so everything built along the way already carries
+the version it will ship as.  Nothing has been released yet.
 
 ## The toolchain
 
