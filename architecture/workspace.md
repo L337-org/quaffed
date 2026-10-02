@@ -97,7 +97,7 @@ files at all, so a broken walk cannot pass by checking nothing.
 | rustfmt | `cargo fmt --all -- --check` |
 | clippy | `cargo clippy --all-targets --locked -- -D warnings` |
 | Verification tools install | every cargo tool in `tools.toml` builds at its pin (cached; see `verification.md`) |
-| Test | `cargo test --workspace --locked`, on Linux and macOS |
+| Test | `cargo test --workspace --locked`, then the snapshot check (see `verification.md`), on Linux and macOS |
 
 **Every job here is meant to be a required status check.**  Adding, renaming or removing one
 means updating the branch ruleset in the same change, or the branch waits on a check that never
