@@ -37,7 +37,9 @@ has the details.  A tool at another version can disagree with CI about what clea
 
 Add a dependency with `cargo add`, and commit the updated `Cargo.lock` alongside `Cargo.toml`:
 CI builds `--locked` and fails if the two disagree rather than silently re-locking.  A new
-dependency's licence must be compatible with GPL-3.0-or-later.
+dependency's licence must be compatible with GPL-3.0-or-later, and a dependency the binary links
+must be named in the Linux package's copyright file - a test says so if it is not; see
+[architecture/release.md](architecture/release.md).
 
 ## Conventions
 

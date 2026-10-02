@@ -1,0 +1,160 @@
+name: 'Release'
+permissions:
+  contents: read
+
+# Publishing a release on GitHub is the one human action that ships quaffed: this workflow then
+# builds the Linux packages at the release's commit, attaches them, and checks the release
+# serves them.  Pushing a tag ships nothing.  architecture/release.md has the release checklist
+# and the reasoning; nothing else publishes a package.
+on:
+  release:
+    types: [published]
+
+# Never cancelled: a release run cut short is the one run that can leave something half
+# published, and two runs for one tag must not interleave.
+concurrency:
+  group: release-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      sha: ${{ steps.check.outputs.sha }}
+    steps:
+      - name: Check out the release's commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+
+      # The version is resolved once, here, and every later job builds this one commit.
+      - name: The release is this repository's, and its tag names the workspace version
+        id: check
+        env:
+          OWNER: ${{ github.repository_owner }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if [ "$OWNER" != "L337-org" ]; then
+            echo "::error::this release was published from repository owner '$OWNER', not L337-org, so nothing is built" >&2
+            exit 1
+          fi
+          version="$(scripts/workspace-version)"
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::the release's tag is '$TAG' but the workspace declares $version, so the tag must be v$version" >&2
+            exit 1
+          fi
+          {
+            echo "version=$version"
+            echo "sha=$(git rev-parse HEAD)"
+          } >>"$GITHUB_OUTPUT"
+          echo "Releasing $version from $(git rev-parse HEAD)"
+
+  package:
+    name: Package
+    needs: preflight
+    uses: ./.github/workflows/package.yaml
+    with:
+      ref: ${{ needs.preflight.outputs.sha }}
+
+  publish:
+    name: Attach the packages
+    # Waits on every architecture: a build that failed for either attaches nothing.
+    needs: [preflight, package]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Fetch the built packages
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: deb-*
+          merge-multiple: true
+          path: dist
+
+      # Uploads go to the release ID from the triggering event rather than a lookup by tag.  An
+      # asset already attached is compared rather than replaced: identical is a re-run and is
+      # skipped, different stops, because a published asset is never replaced.
+      - name: Attach each package to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RELEASE_ID: ${{ github.event.release.id }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          assets="$(gh api "repos/$REPO/releases/$RELEASE_ID/assets" --paginate --jq '.[] | "\(.id) \(.name)"')"
+          for arch in amd64 arm64; do
+            name="quaffed_${VERSION}_${arch}.deb"
+            file="dist/$name"
+            if [ ! -f "$file" ]; then
+              echo "::error::$name was not built, so nothing is attached; the package job's output says why" >&2
+              exit 1
+            fi
+          done
+          for arch in amd64 arm64; do
+            name="quaffed_${VERSION}_${arch}.deb"
+            file="dist/$name"
+            existing="$(printf '%s\n' "$assets" | awk -v n="$name" '$2 == n { print $1 }')"
+            if [ -n "$existing" ]; then
+              gh api -H "Accept: application/octet-stream" "repos/$REPO/releases/assets/$existing" >"$RUNNER_TEMP/existing.deb"
+              if cmp -s "$file" "$RUNNER_TEMP/existing.deb"; then
+                echo "$name is already attached and identical; skipped"
+                continue
+              fi
+              echo "::error::$name is already attached and differs from this build ($(sha256sum <"$RUNNER_TEMP/existing.deb" | cut -c1-12) against $(sha256sum <"$file" | cut -c1-12)).  A published asset is never replaced: fix the cause and release a new version" >&2
+              exit 1
+            fi
+            curl --fail-with-body --silent --show-error --max-time 300 \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "Content-Type: application/vnd.debian.binary-package" \
+              --data-binary "@$file" \
+              "https://uploads.github.com/repos/$REPO/releases/$RELEASE_ID/assets?name=$name" >/dev/null
+            echo "$name attached, sha256 $(sha256sum <"$file" | cut -d' ' -f1)"
+          done
+
+  verify:
+    name: The release serves both packages
+    needs: [preflight, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Fetch the built packages
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: deb-*
+          merge-multiple: true
+          path: built
+
+      # Read back from the release itself, not inferred from the publish job's exit status.
+      - name: Each attached package is the one built, at the release's version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RELEASE_ID: ${{ github.event.release.id }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          assets="$(gh api "repos/$REPO/releases/$RELEASE_ID/assets" --paginate --jq '.[] | "\(.id) \(.name)"')"
+          for arch in amd64 arm64; do
+            name="quaffed_${VERSION}_${arch}.deb"
+            id="$(printf '%s\n' "$assets" | awk -v n="$name" '$2 == n { print $1 }')"
+            if [ -z "$id" ]; then
+              echo "::error::the release does not serve $name" >&2
+              exit 1
+            fi
+            gh api -H "Accept: application/octet-stream" "repos/$REPO/releases/assets/$id" >"$RUNNER_TEMP/$name"
+            if ! cmp -s "$RUNNER_TEMP/$name" "built/$name"; then
+              echo "::error::the release serves a $name that differs from the one built" >&2
+              exit 1
+            fi
+            fields="$(dpkg-deb -f "$RUNNER_TEMP/$name" Package Version Architecture | tr '\n' ' ')"
+            if [ "$fields" != "Package: quaffed Version: $VERSION Architecture: $arch " ]; then
+              echo "::error::$name served by the release says: $fields" >&2
+              exit 1
+            fi
+            echo "$name served: $fields"
+          done

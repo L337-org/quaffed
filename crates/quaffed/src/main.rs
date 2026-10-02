@@ -8,6 +8,12 @@
 
 use std::process::ExitCode;
 
+// The Linux package is a static musl binary, and musl's own allocator parsed far slower than
+// mimalloc when measured; see architecture/release.md.  Other builds use the platform's.
+#[cfg(target_env = "musl")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() -> ExitCode {
     eprintln!(
         "quaff {}: nothing is implemented yet",

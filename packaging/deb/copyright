@@ -1,0 +1,57 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: quaffed
+Upstream-Contact: Gavin Lucas <Gavin@L337.org>
+Source: https://github.com/L337-org/quaffed
+
+Files: *
+Copyright: 2026 Gavin Lucas
+ 2019 Octavian Oncescu
+ 2018-2025 Microsoft Corporation, Daan Leijen
+ The Rust Project Developers
+License: GPL-3+ and Expat and (Expat or Apache-2.0)
+Comment: usr/bin/quaff is a statically linked binary.  quaffed itself is
+ licensed GPL-3+.  The binary also contains these crates, each under the Expat
+ licence: mimalloc 0.1.52 and libmimalloc-sys 0.1.49 (copyright 2019 Octavian
+ Oncescu), the latter bundling the mimalloc C library (copyright 2018-2025
+ Microsoft Corporation, Daan Leijen).  It also contains the Rust standard
+ library, licensed Expat or Apache-2.0.
+ .
+ The crates listed here are checked against the binary's dependency graph by
+ crates/quaffed/tests/packaging.rs in the source repository.
+
+License: GPL-3+
+ This program is free software: you can redistribute it and/or modify it
+ under the terms of the GNU General Public License as published by the Free
+ Software Foundation, either version 3 of the License, or (at your option) any
+ later version.
+ .
+ This program is distributed in the hope that it will be useful, but WITHOUT
+ ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+ details.
+ .
+ On Debian systems, the complete text of the GNU General Public License
+ version 3 can be found in /usr/share/common-licenses/GPL-3.
+
+License: Expat
+ Permission is hereby granted, free of charge, to any person obtaining a copy
+ of this software and associated documentation files (the "Software"), to deal
+ in the Software without restriction, including without limitation the rights
+ to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ copies of the Software, and to permit persons to whom the Software is
+ furnished to do so, subject to the following conditions:
+ .
+ The above copyright notice and this permission notice shall be included in
+ all copies or substantial portions of the Software.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ SOFTWARE.
+
+License: Apache-2.0
+ On Debian systems, the complete text of the Apache License, Version 2.0 can
+ be found in /usr/share/common-licenses/Apache-2.0.
