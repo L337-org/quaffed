@@ -37,7 +37,7 @@ done
 host="$(dpkg --print-architecture)"
 [[ "$host" == "$arch" ]] || die "building $arch on a $host host; build each architecture on its own (arm64 on an arm64 machine)"
 command -v musl-gcc >/dev/null ||
-    die "musl-gcc is not on PATH: install musl-tools.  Ruff's parser assembles psm's stack switcher and mimalloc is C, so the musl build needs a musl C compiler"
+    die "musl-gcc is not on PATH: install musl-tools.  mimalloc is C, so the musl build needs a musl C compiler"
 
 # The version is read from the workspace, the one place it is declared.
 version="$(scripts/workspace-version)"

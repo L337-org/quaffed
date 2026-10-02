@@ -37,6 +37,7 @@ jobs:
         env:
           OWNER: ${{ github.repository_owner }}
           TAG: ${{ github.event.release.tag_name }}
+          PRERELEASE: ${{ github.event.release.prerelease }}
         run: |
           if [ "$OWNER" != "L337-org" ]; then
             echo "::error::this release was published from repository owner '$OWNER', not L337-org, so nothing is built" >&2
@@ -45,6 +46,12 @@ jobs:
           version="$(scripts/workspace-version)"
           if [ "$TAG" != "v$version" ]; then
             echo "::error::the release's tag is '$TAG' but the workspace declares $version, so the tag must be v$version" >&2
+            exit 1
+          fi
+          # Below 1.0.0 every release is for trying out, and the pre-release flag keeps it off
+          # anything a user might install from by accident.
+          if [ "${version%%.*}" = "0" ] && [ "$PRERELEASE" != "true" ]; then
+            echo "::error::$version is below 1.0.0, so its release must be marked as a pre-release; edit the release, tick pre-release and re-run" >&2
             exit 1
           fi
           {
@@ -108,12 +115,17 @@ jobs:
               echo "::error::$name is already attached and differs from this build ($(sha256sum <"$RUNNER_TEMP/existing.deb" | cut -c1-12) against $(sha256sum <"$file" | cut -c1-12)).  A published asset is never replaced: fix the cause and release a new version" >&2
               exit 1
             fi
-            curl --fail-with-body --silent --show-error --max-time 300 \
+            # GitHub's response is kept, because on a refusal its body is what says why.
+            if ! curl --fail-with-body --silent --show-error --max-time 300 \
               -H "Authorization: Bearer $GH_TOKEN" \
               -H "Accept: application/vnd.github+json" \
               -H "Content-Type: application/vnd.debian.binary-package" \
               --data-binary "@$file" \
-              "https://uploads.github.com/repos/$REPO/releases/$RELEASE_ID/assets?name=$name" >/dev/null
+              --output "$RUNNER_TEMP/upload.json" \
+              "https://uploads.github.com/repos/$REPO/releases/$RELEASE_ID/assets?name=$name"; then
+              echo "::error::uploading $name to release $RELEASE_ID failed; GitHub said: $(cat "$RUNNER_TEMP/upload.json" 2>/dev/null)" >&2
+              exit 1
+            fi
             echo "$name attached, sha256 $(sha256sum <"$file" | cut -d' ' -f1)"
           done
 

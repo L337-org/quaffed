@@ -12,24 +12,27 @@ nothing else.  There is no man page.
 **The binary is static musl with mimalloc as its global allocator.**  Measured on Debian 11, 12
 and 13 and Ubuntu 20.04, 22.04, 24.04 and 26.04 on both architectures, a glibc build did not run on
 Debian 11 or Ubuntu 20.04 - it needs `GLIBC_2.34` whether built on Debian 12 or 13 - while a
-static musl build ran on all seven.  musl's own allocator made parsing 14% slower than glibc on
-arm64 and about 75% slower on amd64, and mimalloc made it 14-17% faster than glibc on both, at the
-cost of peak memory (17-27 MB against 7-9 MB on the measured workload).  mimalloc is a dependency
+static musl build ran on all seven.  On the static-linking spike's workload - Ruff's Python parser
+over CPython's test suite, which quaffed does not yet contain - musl's own allocator parsed 14%
+slower than glibc on arm64 and about 75% slower on amd64, and mimalloc parsed 14-17% faster than
+glibc on both, at the cost of peak memory (17-27 MB against 7-9 MB).  mimalloc is a dependency
 only for musl targets, so macOS and glibc builds keep the platform allocator.
 
 **The `dist` profile** - release optimisation, thin LTO, one codegen unit, symbols stripped - is
 what the package is built with.  Those are the settings the measurements were taken with; they
 are a separate profile so that a developer's `--release` build stays quick to link.
 
-**Building it needs a musl C compiler** even before mimalloc, which is C: Ruff's parser depends on
-`stacker`, whose `psm` dependency assembles a stack-switching routine with the `cc` crate.  Without
-`musl-tools` the build fails with *"failed to find tool "x86_64-linux-musl-gcc""*.
+**Building it needs a musl C compiler**, because mimalloc is C.  Without `musl-tools` the build
+fails with *"failed to find tool "x86_64-linux-musl-gcc""*.  The spike found Ruff's parser needs
+one too, through `stacker` and `psm`'s assembly, so the requirement stays when that arrives.
 
-**The copyright file is hand-written**, in Debian's machine-readable format, and names every crate
-linked into the binary with its copyright and licence, because the binary distributes them.
+**The copyright file is hand-written**, in Debian's machine-readable format, and names everything
+linked into the binary with its copyright and licence, because the binary distributes it.
 `crates/quaffed/tests/packaging.rs` reads the binary's dependency graph for both packaged targets
 with `cargo tree` and fails naming any crate the file does not mention, so adding a dependency
-means adding it there.
+means adding it there.  **What comes with the Rust toolchain rather than as a crate - the musl C
+library and LLVM's libunwind - is outside that graph, so the test cannot see it**, and it is kept
+up to date by hand: check it when the toolchain's musl target changes.
 
 **The version** is the workspace's, read by `scripts/workspace-version`, and the release's tag
 must be `v` followed by it.  The changelog has one entry per version pointing at the release notes,
@@ -76,8 +79,9 @@ output as a workflow artefact, so a change that breaks packaging fails where it 
 `.github/workflows/release.yaml` runs when a release is **published**; pushing a tag ships
 nothing.  It:
 
-1. **Preflight** - fails unless the release belongs to `L337-org` and its tag is `v` plus the
-   workspace version, and resolves the commit once for everything after it;
+1. **Preflight** - fails unless the release belongs to `L337-org`, its tag is `v` plus the
+   workspace version, and - for any version below 1.0.0 - it is marked as a pre-release; then
+   resolves the commit once for everything after it;
 2. **Package** - calls `package.yaml` at that commit;
 3. **Attach the packages** - only once both architectures built, uploads each `.deb` to the
    release ID from the event.  A package already attached is compared, not replaced: identical is
@@ -97,5 +101,8 @@ nothing.  It:
 4. If a job failed, read why and re-run it; the attach step skips what is already there.  If the
    cause is a defect, fix it and release a new version - a published package is never replaced.
 
+5. **At the first release**, change the README's *Installing* section, which says there is no
+   release yet, to point at the release's packages.
+
 **Not automated yet:** a failed release run reaches nobody except whoever is watching.  Reporting
-unattended failures to `#quaffed` is its own piece of work.
+unattended failures to the project's chat channel is its own piece of work.

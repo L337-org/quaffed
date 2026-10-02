@@ -21,8 +21,9 @@ workspace = true
 insta = { version = "=1.48.0", features = ["filters"] }
 insta-cmd = "=0.7.0"
 
-# The Linux package's static musl binary uses mimalloc, because musl's own allocator made parsing
-# 14% slower on arm64 and about 75% slower on amd64 when measured; see architecture/release.md.
+# The Linux package's static musl binary uses mimalloc, because musl's own allocator parsed 14%
+# slower on arm64 and about 75% slower on amd64 on the static-linking spike's workload; see
+# architecture/release.md.
 # Every other build keeps the platform allocator.
 [target.'cfg(target_env = "musl")'.dependencies]
 mimalloc = "=0.1.52"

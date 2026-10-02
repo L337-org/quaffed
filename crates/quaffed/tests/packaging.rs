@@ -5,6 +5,7 @@
 //! `packaging/deb/copyright` is written by hand, so this test reads the binary's real dependency
 //! graph for each packaged target and fails naming any crate the file does not mention.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -61,13 +62,15 @@ fn the_package_copyright_file_names_every_linked_crate() {
         .unwrap_or_else(|err| panic!("reading {}: {err}", path.display()));
     // The comment wraps, so compare with line breaks and continuation spaces folded away.
     let folded = copyright.split_whitespace().collect::<Vec<_>>().join(" ");
-    let mut missing = Vec::new();
+    // Each missing crate once, with every packaged target that links it.
+    let mut missing: BTreeMap<String, Vec<&str>> = BTreeMap::new();
     let mut checked = 0;
     for target in PACKAGED_TARGETS {
         for (name, version) in linked_crates(target) {
             checked += 1;
-            if !folded.contains(&format!("{name} {version}")) {
-                missing.push(format!("{name} {version} (for {target})"));
+            let crate_ = format!("{name} {version}");
+            if !folded.contains(&crate_) {
+                missing.entry(crate_).or_default().push(target);
             }
         }
     }
@@ -77,7 +80,10 @@ fn the_package_copyright_file_names_every_linked_crate() {
         checked > 0,
         "cargo tree listed no linked crate for any packaged target, so nothing was checked"
     );
-    missing.dedup();
+    let missing: Vec<String> = missing
+        .into_iter()
+        .map(|(crate_, targets)| format!("{crate_} (for {})", targets.join(", ")))
+        .collect();
     assert!(
         missing.is_empty(),
         "{} does not name these crates, which the packaged binary links: {}.  Add each, with \

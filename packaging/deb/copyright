@@ -7,17 +7,23 @@ Files: *
 Copyright: 2026 Gavin Lucas
  2019 Octavian Oncescu
  2018-2025 Microsoft Corporation, Daan Leijen
+ 2005-2020 Rich Felker and other contributors
  The Rust Project Developers
 License: GPL-3+ and Expat and (Expat or Apache-2.0)
 Comment: usr/bin/quaff is a statically linked binary.  quaffed itself is
  licensed GPL-3+.  The binary also contains these crates, each under the Expat
  licence: mimalloc 0.1.52 and libmimalloc-sys 0.1.49 (copyright 2019 Octavian
  Oncescu), the latter bundling the mimalloc C library (copyright 2018-2025
- Microsoft Corporation, Daan Leijen).  It also contains the Rust standard
- library, licensed Expat or Apache-2.0.
+ Microsoft Corporation, Daan Leijen).  It contains the musl C library
+ (copyright 2005-2020 Rich Felker and other contributors), under the Expat
+ licence, and the Rust standard library, licensed Expat or Apache-2.0.  It also
+ contains LLVM's libunwind, whose licence's LLVM exception waives the notice
+ for code embedded in a binary.
  .
  The crates listed here are checked against the binary's dependency graph by
- crates/quaffed/tests/packaging.rs in the source repository.
+ crates/quaffed/tests/packaging.rs in the source repository.  musl and
+ libunwind come with the Rust toolchain rather than as crates, so that test
+ cannot see them and they are kept here by hand.
 
 License: GPL-3+
  This program is free software: you can redistribute it and/or modify it
