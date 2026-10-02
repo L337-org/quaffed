@@ -34,6 +34,7 @@ fails on either.
 |---|---|
 | `Cargo.toml`, `rust-toolchain.toml`, `rustfmt.toml`, anything under `crates/` structurally, or `.github/workflows/` | [architecture/workspace.md](architecture/workspace.md) |
 | adding a workspace member | the checklist in [architecture/workspace.md](architecture/workspace.md) |
+| `tools.toml`, `scripts/install-tools` or `.github/actions/install-tools`, or adding a verification tool | [architecture/verification.md](architecture/verification.md) |
 
 ## Commands
 
@@ -45,6 +46,7 @@ cargo test --locked --test licence_headers         # one integration test file
 cargo clippy --all-targets --locked -- -D warnings # lint, as CI runs it
 cargo fmt --all                                    # format
 cargo fmt --all -- --check                         # format check, as CI runs it
+scripts/install-tools --all                        # every verification tool, at its pinned version
 ```
 
 CI builds `--locked`, so a dependency change must commit `Cargo.lock` alongside `Cargo.toml`.

@@ -30,6 +30,11 @@ cargo clippy --all-targets --locked -- -D warnings # lint, as CI runs it
 cargo fmt --all                                    # format
 ```
 
+The verification tools - coverage, mutation testing, snapshot review and the rest - are not
+crate dependencies.  Install the ones you need at the versions CI uses with
+`scripts/install-tools` (`--all` for every one); [architecture/verification.md](architecture/verification.md)
+has the details.  A tool at another version can disagree with CI about what clean means.
+
 Add a dependency with `cargo add`, and commit the updated `Cargo.lock` alongside `Cargo.toml`:
 CI builds `--locked` and fails if the two disagree rather than silently re-locking.  A new
 dependency's licence must be compatible with GPL-3.0-or-later.
@@ -77,7 +82,7 @@ That appends `Signed-off-by: Your Name <you@example.com>`, using your configured
 
 CI (`.github/workflows/premerge.yaml`) runs on every pull request and every push to `main`, and
 every job must pass before merging: the repository hygiene check, the action-pin check, rustfmt,
-clippy, and the tests on Linux and macOS.
+clippy, the verification tools install, and the tests on Linux and macOS.
 
 Keep pull requests focused: one logical change per pull request is easier to review than a
 bundle of unrelated fixes.  A change that alters behaviour carries its tests and its

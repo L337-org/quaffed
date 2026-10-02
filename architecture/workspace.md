@@ -13,6 +13,9 @@ because the design it would describe is not settled.
 ├── Cargo.lock            # committed; every build in CI is --locked
 ├── rust-toolchain.toml   # the Rust version and components
 ├── rustfmt.toml          # pins the style edition, nothing else
+├── tools.toml            # the verification tools' versions; see verification.md
+├── scripts/
+│   └── install-tools     # installs from tools.toml, locally and in CI
 ├── crates/
 │   └── quaffed/          # the only member so far; builds the `quaff` binary
 │       ├── src/main.rs
@@ -93,6 +96,7 @@ files at all, so a broken walk cannot pass by checking nothing.
 | Action pins are immutable | every `uses:` names a full 40-hex commit SHA (shared) |
 | rustfmt | `cargo fmt --all -- --check` |
 | clippy | `cargo clippy --all-targets --locked -- -D warnings` |
+| Verification tools install | every cargo tool in `tools.toml` builds at its pin (cached; see `verification.md`) |
 | Test | `cargo test --workspace --locked`, on Linux and macOS |
 
 **Every job here is meant to be a required status check.**  Adding, renaming or removing one

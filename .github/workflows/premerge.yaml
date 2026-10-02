@@ -76,6 +76,43 @@ jobs:
       - name: No lint warnings
         run: cargo clippy --all-targets --locked -- -D warnings
 
+  tools:
+    # Every cargo-installed tool in tools.toml builds at its pinned version.  The install is
+    # cached on a hash of the manifest, so this costs a cache restore until tools.toml changes;
+    # then it builds what changed, so a bad pin fails on the pull request that introduces it
+    # rather than in the first job to use the tool.  Toolchains are left to the jobs that use
+    # them (--cargo).
+    runs-on: [ubuntu-latest]
+    name: Verification tools install
+    # About 80 s a tool from cold in a local Linux container; a handful of tools, with headroom.
+    timeout-minutes: 30
+    steps:
+      - name: Check out source repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+
+      - name: Install every cargo tool from tools.toml
+        uses: ./.github/actions/install-tools
+        with:
+          tools: --cargo
+
+      - name: Each pinned version is what was installed
+        # Read back from cargo's own record of the install root, against the manifest as the
+        # script parses it, so no tool is named here and none can be missed.
+        run: |
+          record="$HOME/.quaffed-tools/.crates.toml"
+          scripts/install-tools --list | while read -r section name version; do
+            [ "$section" = cargo-install ] || continue
+            if ! grep -q "^\"$name $version " "$record"; then
+              echo "::error::$name $version is not recorded in $record" >&2
+              exit 1
+            fi
+            echo "$name $version installed"
+          done
+          ls "$HOME/.quaffed-tools/bin"
+
   test:
     name: Test
     # macOS and Linux are the first targets; Windows joins this matrix when it becomes one.

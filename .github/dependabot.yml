@@ -6,7 +6,11 @@ updates:
       interval: "weekly"
 
   - package-ecosystem: "github-actions"
-    directory: "/"
+    # "/" covers .github/workflows and a root action.yml only; the repository's own composite
+    # actions are listed so their pins are updated too.
+    directories:
+      - "/"
+      - "/.github/actions/*"
     schedule:
       interval: "weekly"
     groups:

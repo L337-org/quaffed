@@ -1,0 +1,26 @@
+# The verification tools, at the exact versions local runs and CI both install.
+#
+# Install from this file with `scripts/install-tools`; never name a version anywhere else.  How
+# to add a tool, and why the format is restricted, is in architecture/verification.md.
+#
+# The format is a strict subset of TOML that the install script reads without a TOML parser:
+# section headers, `name = "value"` lines, comments and blank lines.  Anything else is an error.
+
+# Crates installed with `cargo install --locked`, by crate name.  The crate is not always named
+# after the command it provides: `flamegraph` provides `cargo flamegraph`.
+[cargo-install]
+cargo-insta = "1.48.0"
+cargo-llvm-cov = "0.9.1"
+cargo-mutants = "27.1.0"
+flamegraph = "0.6.14"
+cargo-fuzz = "0.13.2"
+
+# Nightly toolchains, each pinned by date and named for the one job that needs it, so no other
+# job installs it.  A nightly that can be scoped by directory, as the fuzz targets' can, is
+# pinned in that directory's rust-toolchain.toml instead.
+[toolchain]
+nightly-coverage = "nightly-2026-10-01"
+
+# Components for a toolchain above, space-separated.
+[toolchain-components]
+nightly-coverage = "llvm-tools-preview"
