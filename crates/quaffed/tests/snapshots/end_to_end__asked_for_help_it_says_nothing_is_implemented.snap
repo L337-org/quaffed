@@ -10,4 +10,4 @@ exit_code: 1
 ----- stdout -----
 
 ----- stderr -----
-quaff 0.1.0: nothing is implemented yet
+quaff [VERSION]: nothing is implemented yet
