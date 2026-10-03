@@ -267,7 +267,9 @@ impl<'t> Parser<'t> {
         if matches!(target.node, Operand::Text(_)) {
             return Err(ParseError {
                 kind: ErrorKind::Malformed,
-                message: "`delete` removes matched nodes, so it takes a backticked pattern, not                           quoted text; to remove text, replace it with nothing:                           replace string \"...\" with \"\""
+                message: "`delete` removes matched nodes, so it takes a backticked pattern, not \
+                          quoted text; to remove text, replace it with nothing: \
+                          replace string \"...\" with \"\""
                     .into(),
                 start: target.span.start,
                 end: target.span.end,
@@ -1045,7 +1047,11 @@ mod tests {
             (err.kind, err.start, err.end),
             (ErrorKind::Malformed, 7, 10)
         );
-        assert!(err.message.contains("replace string"), "{}", err.message);
+        assert_eq!(
+            err.message,
+            "`delete` removes matched nodes, so it takes a backticked pattern, not quoted text; \
+             to remove text, replace it with nothing: replace string \"...\" with \"\""
+        );
     }
 
     #[test]
