@@ -1,7 +1,55 @@
 # Verification
 
-How the verification tooling is pinned and installed.  This note grows as the verification
-infrastructure lands; for now it covers the tool manifest.
+How quaffed's own behaviour is verified, and how the verification tooling is pinned and
+installed.  This note grows as the verification infrastructure lands; for now it covers the
+end-to-end tests and the tool manifest.
+
+## End-to-end tests and snapshots
+
+`crates/quaffed/tests/end_to_end.rs` runs the built `quaff` binary as a user runs it, in a
+throwaway project directory, and records what it printed and how it exited as a snapshot with
+`insta` and `insta-cmd`.  The snapshot holds the exit status, standard output and standard
+error, so a changed message or exit code fails until somebody reviews it, and the reviewed
+change shows on the pull request as a diff of a `.snap` file under `tests/snapshots/`.  Every
+diagnostic `quaff` can print, and `--help`, has one.
+
+**The version is filtered out of snapshots**, shown as `[VERSION]`, because it is declared in one
+place and a snapshot recording it would be a second copy every version bump had to re-accept.
+`the_version_it_reports_is_the_workspace_version` checks the real value against
+`CARGO_PKG_VERSION` instead.
+
+**The binary is `CARGO_BIN_EXE_quaff`**, which cargo sets only when the crate has that binary, so
+a missing binary fails to compile rather than skipping; if the file is gone at run time the
+harness fails naming the path.  **The command's environment is cleared** and it runs from the
+project's root, so nothing from the machine running the tests reaches the binary, and arguments
+should be relative paths: the snapshot records them.
+
+### Adding an end-to-end test
+
+1. Build the project the scenario needs with `Project::new(&[(path, content), ...])`.
+2. Run `assert_quaff_snapshot!(project.quaff(&[args...]))`, which snapshots the result with the
+   version filtered out.
+3. Check the files left behind: `project.assert_unchanged()` for anything that must not edit,
+   and assertions on the edited content for anything that must.  `assert_unchanged` compares each
+   file's content and permission bits, each directory, and each symbolic link's target, without
+   following links, so a rename that drops the executable bit or replaces a link with a file is
+   caught.  It uses Unix permissions, so like the tool-manifest tests it is Unix-only.
+4. Run `cargo insta test`, read the new snapshot in `cargo insta review`, and accept it only if it
+   says what `quaff` should say.  A snapshot accepted unread asserts whatever the code happened to
+   print.
+5. Commit the `.snap` file with the test.
+
+### Reviewing a changed snapshot
+
+`cargo insta test` stores a changed result beside the old one as `.snap.new`, and
+`cargo insta review` shows each as a diff to accept or reject; `cargo insta reject` drops them
+all.  In CI, where `CI` is set, a changed or new snapshot fails the run and nothing is written.
+
+CI runs `cargo insta test --workspace --check --unreferenced=reject` after
+`cargo test --workspace --locked`, so a snapshot file that no test produces - a test renamed or
+deleted without its snapshot - also fails the run.  The `cargo test` step is the one that enforces
+`Cargo.lock`: `cargo insta test` passes arguments after `--` to the test binaries rather than to
+cargo, whatever its help says, so it cannot take `--locked`.
 
 ## The tool manifest
 

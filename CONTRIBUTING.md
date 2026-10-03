@@ -62,6 +62,10 @@ dependency's licence must be compatible with GPL-3.0-or-later.
   crate's `tests/`, one file per concern.
 - Test the failure paths as well as the happy path - malformed input, a missing file, permission
   denied - and assert what a failure *says*, not only that it happened.
+- What `quaff` prints and how it exits is recorded in reviewed snapshots.  A change to either
+  fails until you review the snapshot with `cargo insta review` (`cargo-insta` comes from
+  `scripts/install-tools`); [architecture/verification.md](architecture/verification.md) says how
+  to add an end-to-end test.
 - A green suite shows the code behaves as the tests assert.  Before calling a feature working,
   run the real binary against a real file.
 

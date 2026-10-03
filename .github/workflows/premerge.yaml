@@ -140,3 +140,15 @@ jobs:
 
       - name: Tests pass
         run: cargo test --workspace --locked
+
+      - name: Install cargo-insta from tools.toml
+        uses: ./.github/actions/install-tools
+        with:
+          tools: cargo-insta
+
+      # `Tests pass` is what enforces Cargo.lock: cargo insta test passes arguments after
+      # `--` to the test binaries, not to cargo, so it cannot take --locked.  It reuses that
+      # build, so the second run costs little.  With CI set, a new or changed snapshot fails
+      # without writing a pending file, and a snapshot file no test references fails the run.
+      - name: Snapshots match, and none is unreferenced
+        run: cargo insta test --workspace --check --unreferenced=reject

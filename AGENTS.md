@@ -35,6 +35,7 @@ fails on either.
 | `Cargo.toml`, `rust-toolchain.toml`, `rustfmt.toml`, anything under `crates/` structurally, or `.github/workflows/` | [architecture/workspace.md](architecture/workspace.md) |
 | adding a workspace member | the checklist in [architecture/workspace.md](architecture/workspace.md) |
 | `tools.toml`, `scripts/install-tools` or `.github/actions/install-tools`, or adding a verification tool | [architecture/verification.md](architecture/verification.md) |
+| an end-to-end test, or anything that changes what `quaff` prints or how it exits | the snapshot sections of [architecture/verification.md](architecture/verification.md) |
 
 ## Commands
 
