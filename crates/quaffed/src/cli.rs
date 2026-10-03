@@ -4,8 +4,8 @@
 //! The command line: what `quaff` was asked to do, read from its arguments.
 //!
 //! Parsing is hand-written rather than built on an argument library, because the order of
-//! sources matters - `-s a -s b` is two searches, in that order - and because a usage error must
-//! exit 3, where argument libraries exit 2, which here means an assertion failed.
+//! sources matters - `-e '...' -s TODO` is the script, then one search - and because a usage
+//! error must exit 3, where argument libraries exit 2, which here means an assertion failed.
 
 use std::ffi::OsString;
 use std::fmt;
@@ -15,13 +15,31 @@ use std::fmt;
 pub enum Invocation {
     /// Print the help and exit 0.
     Help,
-    /// Search for each query in turn, over the scope if one was given.
-    Search {
-        /// The queries, in the order they were given.
-        queries: Vec<Query>,
+    /// Run each source in turn, over the scope if one was given.
+    Run {
+        /// The sources, in the order they were given.
+        sources: Vec<SourceArg>,
         /// The one positional scope argument, as given.
         scope: Option<OsString>,
     },
+}
+
+/// One source of statements, as the command line gave it.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SourceArg {
+    /// A textual query: `-s TEXT`, or the bare first positional.
+    Query(Query),
+    /// An inline script: one `-e`.
+    Expression {
+        /// Which `-e` it was, counted from 1, so that a diagnostic can name it.
+        number: usize,
+        /// The script.
+        text: String,
+    },
+    /// A script file: `-f PATH`.
+    File(OsString),
+    /// A script on standard input: `-f -`.
+    Stdin,
 }
 
 /// One textual query and where on the command line it came from.
@@ -68,18 +86,16 @@ pub enum UsageError {
     NotUtf8 { what: String, argument: OsString },
     /// More than one positional scope argument.
     TooManyScopes(Vec<OsString>),
-    /// Nothing to search for: only a scope, or nothing after `--`.
+    /// Nothing to run: only a scope, or nothing after `--`.
     NoQuery,
+    /// `-f -` given more than once, when standard input can be read only once.
+    StdinTwice,
 }
 
 /// Options in the MVP whose stories have not landed, so saying "unknown" would be wrong.
 const NOT_BUILT_YET: &[&str] = &[
     "-p",
     "--pattern",
-    "-e",
-    "--expression",
-    "-f",
-    "--file",
     "-o",
     "--output",
     "--dry-run",
@@ -90,17 +106,19 @@ impl fmt::Display for UsageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             UsageError::NoArguments => write!(f, "nothing to do: give a query, or -h for help"),
-            UsageError::NotBuiltYet(option) => write!(
-                f,
-                "{option:?} is not built yet; only a textual search - a bare query or -s - is"
-            ),
+            UsageError::NotBuiltYet(option) => write!(f, "{option:?} is not built yet"),
             UsageError::UnknownOption(option) => write!(
                 f,
                 "unknown option {option:?}; to search for text that starts with a dash, put it \
                  after --"
             ),
             UsageError::MissingValue(option) => {
-                write!(f, "{option:?} needs a value: the text to search for")
+                let wanted = match option.as_str() {
+                    "-e" | "--expression" => "the statements to run",
+                    "-f" | "--file" => "a script file, or - for standard input",
+                    _ => "the text to search for",
+                };
+                write!(f, "{option:?} needs a value: {wanted}")
             }
             UsageError::EmptyQuery(source) => {
                 write!(f, "{source} is empty: give the text to search for")
@@ -118,10 +136,23 @@ impl fmt::Display for UsageError {
                     listed.join(", ")
                 )
             }
-            UsageError::NoQuery => write!(f, "nothing to search for: give a query"),
+            UsageError::NoQuery => {
+                write!(f, "nothing to run: give a query, or a script with -e or -f")
+            }
+            UsageError::StdinTwice => {
+                write!(
+                    f,
+                    "-f - is given twice, and standard input can be read only once"
+                )
+            }
         }
     }
 }
+
+/// The options that take a value, by their short and long names.
+const STRING: (&str, &str) = ("-s", "--string");
+const EXPRESSION: (&str, &str) = ("-e", "--expression");
+const FILE: (&str, &str) = ("-f", "--file");
 
 /// Reads the command line, excluding the program name.
 ///
@@ -137,7 +168,7 @@ where
     if args.peek().is_none() {
         return Err(UsageError::NoArguments);
     }
-    let mut queries = Vec::new();
+    let mut sources = Vec::new();
     let mut positionals = Vec::new();
     let mut options_ended = false;
     while let Some(arg) = args.next() {
@@ -150,23 +181,29 @@ where
             positionals.push(arg);
             continue;
         };
-        match text {
-            "--" => options_ended = true,
-            "-h" | "--help" => return Ok(Invocation::Help),
-            "-s" | "--string" => {
-                let value = args
+        let (name, inline) = match text.split_once('=') {
+            Some((name, value)) if name.starts_with("--") => (name, Some(value)),
+            _ => (text, None),
+        };
+        let option = [STRING, EXPRESSION, FILE]
+            .into_iter()
+            .find(|(short, long)| name == *long || (inline.is_none() && name == *short));
+        if let Some(option) = option {
+            let value = match inline {
+                Some(value) => OsString::from(value),
+                None => args
                     .next()
-                    .ok_or_else(|| UsageError::MissingValue(text.to_owned()))?;
-                queries.push(query(value, Source::StringOption)?);
-            }
-            _ if text.starts_with("--string=") => {
-                let value = OsString::from(&text["--string=".len()..]);
-                queries.push(query(value, Source::StringOption)?);
-            }
+                    .ok_or_else(|| UsageError::MissingValue(name.to_owned()))?,
+            };
+            sources.push(source(option, value, &sources)?);
+            continue;
+        }
+        match name {
+            "--" if inline.is_none() => options_ended = true,
+            "-h" | "--help" if inline.is_none() => return Ok(Invocation::Help),
             // `--pattern=X` is the not-built option as surely as `--pattern X` is.
-            _ if NOT_BUILT_YET.contains(&text.split('=').next().unwrap_or(text)) => {
-                let option = text.split('=').next().unwrap_or(text);
-                return Err(UsageError::NotBuiltYet(option.to_owned()));
+            _ if NOT_BUILT_YET.contains(&name) => {
+                return Err(UsageError::NotBuiltYet(name.to_owned()));
             }
             // A lone "-" is a positional, as it is to most tools.
             _ if text.starts_with('-') && text != "-" => {
@@ -176,19 +213,50 @@ where
         }
     }
     let mut positionals = positionals.into_iter();
-    // The first positional is the query only when no query was given as an option.
-    if queries.is_empty() {
+    // The first positional is the query only when no source was given as an option.
+    if sources.is_empty() {
         let first = positionals.next().ok_or(UsageError::NoQuery)?;
-        queries.push(query(first, Source::Positional)?);
+        sources.push(SourceArg::Query(query(first, Source::Positional)?));
     }
     let scopes: Vec<OsString> = positionals.collect();
     if scopes.len() > 1 {
         return Err(UsageError::TooManyScopes(scopes));
     }
-    Ok(Invocation::Search {
-        queries,
+    Ok(Invocation::Run {
+        sources,
         scope: scopes.into_iter().next(),
     })
+}
+
+/// The source the option `(short, long)` gives with `value`, after the `sources` before it.
+fn source(
+    option: (&str, &str),
+    value: OsString,
+    sources: &[SourceArg],
+) -> Result<SourceArg, UsageError> {
+    if option == STRING {
+        return Ok(SourceArg::Query(query(value, Source::StringOption)?));
+    }
+    if option == EXPRESSION {
+        let number = 1 + sources
+            .iter()
+            .filter(|s| matches!(s, SourceArg::Expression { .. }))
+            .count();
+        let text = value
+            .into_string()
+            .map_err(|argument| UsageError::NotUtf8 {
+                what: format!("-e expression {number}"),
+                argument,
+            })?;
+        return Ok(SourceArg::Expression { number, text });
+    }
+    if value != "-" {
+        return Ok(SourceArg::File(value));
+    }
+    if sources.contains(&SourceArg::Stdin) {
+        return Err(UsageError::StdinTwice);
+    }
+    Ok(SourceArg::Stdin)
 }
 
 fn query(value: OsString, source: Source) -> Result<Query, UsageError> {
@@ -212,15 +280,23 @@ mod tests {
         parse(args.iter().map(OsString::from))
     }
 
-    fn search(queries: &[(&str, Source)], scope: Option<&str>) -> Invocation {
-        Invocation::Search {
-            queries: queries
-                .iter()
-                .map(|(text, source)| Query {
-                    text: (*text).to_owned(),
-                    source: *source,
-                })
-                .collect(),
+    fn query_arg(text: &str, source: Source) -> SourceArg {
+        SourceArg::Query(Query {
+            text: text.to_owned(),
+            source,
+        })
+    }
+
+    fn expression(number: usize, text: &str) -> SourceArg {
+        SourceArg::Expression {
+            number,
+            text: text.to_owned(),
+        }
+    }
+
+    fn run(sources: Vec<SourceArg>, scope: Option<&str>) -> Invocation {
+        Invocation::Run {
+            sources,
             scope: scope.map(OsString::from),
         }
     }
@@ -229,11 +305,14 @@ mod tests {
     fn a_bare_query_and_a_scope() {
         assert_eq!(
             parse_strs(&["TODO"]),
-            Ok(search(&[("TODO", Source::Positional)], None))
+            Ok(run(vec![query_arg("TODO", Source::Positional)], None))
         );
         assert_eq!(
             parse_strs(&["TODO", "src"]),
-            Ok(search(&[("TODO", Source::Positional)], Some("src")))
+            Ok(run(
+                vec![query_arg("TODO", Source::Positional)],
+                Some("src")
+            ))
         );
     }
 
@@ -241,14 +320,70 @@ mod tests {
     fn with_a_string_option_the_first_positional_is_the_scope() {
         assert_eq!(
             parse_strs(&["-s", "TODO", "src"]),
-            Ok(search(&[("TODO", Source::StringOption)], Some("src")))
+            Ok(run(
+                vec![query_arg("TODO", Source::StringOption)],
+                Some("src")
+            ))
         );
         assert_eq!(
             parse_strs(&["--string=a", "--string", "b"]),
-            Ok(search(
-                &[("a", Source::StringOption), ("b", Source::StringOption)],
+            Ok(run(
+                vec![
+                    query_arg("a", Source::StringOption),
+                    query_arg("b", Source::StringOption)
+                ],
                 None
             ))
+        );
+    }
+
+    #[test]
+    fn sources_compose_in_the_order_given() {
+        assert_eq!(
+            parse_strs(&[
+                "-e",
+                "find \"a\"",
+                "-f",
+                "x.quaff",
+                "-s",
+                "TODO",
+                "--expression=find \"b=c\"",
+                "--file",
+                "-",
+                "--file=y.quaff",
+                "src"
+            ]),
+            Ok(run(
+                vec![
+                    expression(1, "find \"a\""),
+                    SourceArg::File("x.quaff".into()),
+                    query_arg("TODO", Source::StringOption),
+                    expression(2, "find \"b=c\""),
+                    SourceArg::Stdin,
+                    SourceArg::File("y.quaff".into()),
+                ],
+                Some("src")
+            ))
+        );
+    }
+
+    #[test]
+    fn with_a_script_the_first_positional_is_the_scope() {
+        assert_eq!(
+            parse_strs(&["-e", "find \"a\"", "src"]),
+            Ok(run(vec![expression(1, "find \"a\"")], Some("src")))
+        );
+        assert_eq!(
+            parse_strs(&["-f", "x.quaff"]),
+            Ok(run(vec![SourceArg::File("x.quaff".into())], None))
+        );
+    }
+
+    #[test]
+    fn an_empty_expression_is_a_source() {
+        assert_eq!(
+            parse_strs(&["-e", ""]),
+            Ok(run(vec![expression(1, "")], None))
         );
     }
 
@@ -256,15 +391,30 @@ mod tests {
     fn an_option_value_may_start_with_a_dash() {
         assert_eq!(
             parse_strs(&["-s", "-x"]),
-            Ok(search(&[("-x", Source::StringOption)], None))
+            Ok(run(vec![query_arg("-x", Source::StringOption)], None))
         );
+        assert_eq!(
+            parse_strs(&["-f", "-x"]),
+            Ok(run(vec![SourceArg::File("-x".into())], None))
+        );
+    }
+
+    #[test]
+    fn only_a_long_option_that_takes_a_value_takes_an_equals_value() {
+        for arg in ["-s=x", "-p=x", "--=x", "--help=x", "-h=x"] {
+            assert_eq!(
+                parse_strs(&[arg]),
+                Err(UsageError::UnknownOption(arg.into())),
+                "{arg}"
+            );
+        }
     }
 
     #[test]
     fn after_a_double_dash_everything_is_positional() {
         assert_eq!(
             parse_strs(&["--", "-h", "--x"]),
-            Ok(search(&[("-h", Source::Positional)], Some("--x")))
+            Ok(run(vec![query_arg("-h", Source::Positional)], Some("--x")))
         );
         assert_eq!(parse_strs(&["--"]), Err(UsageError::NoQuery));
     }
@@ -279,7 +429,7 @@ mod tests {
     fn a_lone_dash_is_positional() {
         assert_eq!(
             parse_strs(&["-"]),
-            Ok(search(&[("-", Source::Positional)], None))
+            Ok(run(vec![query_arg("-", Source::Positional)], None))
         );
     }
 
@@ -302,10 +452,12 @@ mod tests {
             parse_strs(&["--explain"]),
             Err(UsageError::UnknownOption("--explain".into()))
         );
-        assert_eq!(
-            parse_strs(&["-s"]),
-            Err(UsageError::MissingValue("-s".into()))
-        );
+        for option in ["-s", "--string", "-e", "--expression", "-f", "--file"] {
+            assert_eq!(
+                parse_strs(&[option]),
+                Err(UsageError::MissingValue(option.into()))
+            );
+        }
         assert_eq!(
             parse_strs(&[""]),
             Err(UsageError::EmptyQuery(Source::Positional))
@@ -321,18 +473,41 @@ mod tests {
                 "b.py".into()
             ]))
         );
+        assert_eq!(
+            parse_strs(&["-f", "-", "-e", "x", "--file=-"]),
+            Err(UsageError::StdinTwice)
+        );
     }
 
     #[test]
-    fn a_query_that_is_not_utf8_is_refused_naming_it() {
+    fn text_that_is_not_utf8_is_refused_naming_it() {
         use std::os::unix::ffi::OsStringExt;
         let bad = OsString::from_vec(vec![b'a', 0xff]);
         assert_eq!(
             parse([bad.clone()]),
             Err(UsageError::NotUtf8 {
                 what: "the query".into(),
-                argument: bad
+                argument: bad.clone()
             })
+        );
+        assert_eq!(
+            parse([
+                "-e".into(),
+                "x".into(),
+                "-s".into(),
+                "y".into(),
+                "-e".into(),
+                bad.clone()
+            ]),
+            Err(UsageError::NotUtf8 {
+                what: "-e expression 2".into(),
+                argument: bad.clone()
+            })
+        );
+        // A file name need not be UTF-8: it names a file, and is not read as text.
+        assert_eq!(
+            parse(["-f".into(), bad.clone()]),
+            Ok(run(vec![SourceArg::File(bad)], None))
         );
     }
 
@@ -346,6 +521,30 @@ mod tests {
         assert_eq!(
             UsageError::UnknownOption("-x".into()).to_string(),
             "unknown option \"-x\"; to search for text that starts with a dash, put it after --"
+        );
+        assert_eq!(
+            UsageError::MissingValue("--expression".into()).to_string(),
+            "\"--expression\" needs a value: the statements to run"
+        );
+        assert_eq!(
+            UsageError::MissingValue("-f".into()).to_string(),
+            "\"-f\" needs a value: a script file, or - for standard input"
+        );
+        assert_eq!(
+            UsageError::MissingValue("--string".into()).to_string(),
+            "\"--string\" needs a value: the text to search for"
+        );
+        assert_eq!(
+            UsageError::StdinTwice.to_string(),
+            "-f - is given twice, and standard input can be read only once"
+        );
+        assert_eq!(
+            UsageError::NoQuery.to_string(),
+            "nothing to run: give a query, or a script with -e or -f"
+        );
+        assert_eq!(
+            UsageError::NotBuiltYet("-p".into()).to_string(),
+            "\"-p\" is not built yet"
         );
     }
 }

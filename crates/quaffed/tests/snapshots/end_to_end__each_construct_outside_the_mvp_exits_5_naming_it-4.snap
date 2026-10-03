@@ -1,0 +1,14 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "replace `f($a)` with `g(${a|x})` expect 1"
+---
+success: false
+exit_code: 5
+----- stdout -----
+
+----- stderr -----
+quaff: -e expression 1, at character 22: unknown construct: the value filter `${a|x}` is not in this build

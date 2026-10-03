@@ -1,0 +1,20 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "find \"TODO\" expect 2\nfind \"Client\" expect 3\nfind \"FIXME\" expect none\nfind \"pass\" expect at most 0\nfind \"def\""
+    - src
+---
+success: false
+exit_code: 2
+----- stdout -----
+src/app.py:2:21-2:24: TODO
+src/lib.py:1:3-1:6: TODO
+src/lib.py:2:7-2:12: Client
+src/lib.py:3:5-3:8: pass
+
+----- stderr -----
+quaff: -e expression 1, at character 22: expected exactly 3 matches of "Client", found 1
+quaff: -e expression 1, at character 70: expected at most 0 matches of "pass", found 1

@@ -1,0 +1,17 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "find \"TODO\" expect 2; find \"def\""
+    - src
+---
+success: true
+exit_code: 0
+----- stdout -----
+src/app.py:2:21-2:24: TODO
+src/lib.py:1:3-1:6: TODO
+src/app.py:1:1-1:3: def
+
+----- stderr -----

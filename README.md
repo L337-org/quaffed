@@ -9,8 +9,9 @@ The binary is `quaff`, so you quaff a file, or quaff every file in a repository.
 
 ## Status
 
-**Pre-release.**  Textual search across a project is built; scripts, structural search and
-edits are not, and the design is still being settled.
+**Pre-release.**  Textual search across a project is built, and so are scripts of textual
+searches and assertions; structural search and edits are not, and the design is still being
+settled.
 
 ## Installing
 
@@ -34,11 +35,14 @@ cargo build --release
 quaff TODO                 # every TODO in the project, from wherever you are in it
 quaff TODO src             # only under src
 quaff -s TODO -s FIXME     # two searches, in turn
+quaff -e 'find "TODO" expect none' src   # fail, exit 2, if any TODO is left
+quaff -f checks.quaff      # a script file; -f - reads one from standard input
 quaff -h                   # the rest
 ```
 
-Each match prints as `path:line:column-endline:endcolumn: text`.  The exit status is 0 when
-something was found and 1 when nothing was.
+Each match prints as `path:line:column-endline:endcolumn: text`.  With no assertion, the exit
+status is 0 when something was found and 1 when nothing was.  With assertions, it is 0 when
+every one held and 2 when one did not.  `quaff -h` lists the rest.
 
 ## Contributing
 

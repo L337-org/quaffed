@@ -3,12 +3,13 @@ source: crates/quaffed/tests/end_to_end.rs
 info:
   program: quaff
   args:
-    - "-p"
-    - handle($a)
+    - "-e"
+    - "find \"e\" \"nd\""
+    - lf.txt
 ---
-success: false
-exit_code: 3
+success: true
+exit_code: 0
 ----- stdout -----
+lf.txt:2:1-2:3: end
 
 ----- stderr -----
-quaff: "-p" is not built yet

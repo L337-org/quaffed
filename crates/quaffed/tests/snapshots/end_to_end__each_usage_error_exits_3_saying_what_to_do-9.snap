@@ -3,12 +3,11 @@ source: crates/quaffed/tests/end_to_end.rs
 info:
   program: quaff
   args:
-    - "-p"
-    - handle($a)
+    - "--file"
 ---
 success: false
 exit_code: 3
 ----- stdout -----
 
 ----- stderr -----
-quaff: "-p" is not built yet
+quaff: "--file" needs a value: a script file, or - for standard input
