@@ -81,6 +81,15 @@ git commit -s
 ```
 
 That appends `Signed-off-by: Your Name <you@example.com>`, using your configured name and email.
+CI checks every commit on a pull request for a sign-off carrying the same email address the
+commit is authored under, so a sign-off typed by hand, or added under another identity, fails.
+
+If you forgot, sign off every commit on your branch at once and force-push:
+
+```bash
+git rebase --signoff main
+git push --force-with-lease
+```
 
 ## Submitting your change
 
