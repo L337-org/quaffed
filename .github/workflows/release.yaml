@@ -91,6 +91,9 @@ jobs:
       # Uploads go to the release ID from the triggering event rather than a lookup by tag.  An
       # asset already attached is compared rather than replaced: identical is a re-run and is
       # skipped, different stops, because a published asset is never replaced.
+      # Only assets GitHub reports as fully uploaded count as attached; one left "open" by an
+      # interrupted upload is reported separately, because deleting it, not a new version, is
+      # the fix for that.
       - name: Attach each package to the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -98,10 +101,15 @@ jobs:
           RELEASE_ID: ${{ github.event.release.id }}
           VERSION: ${{ needs.preflight.outputs.version }}
         run: |
-          assets="$(gh api "repos/$REPO/releases/$RELEASE_ID/assets" --paginate --jq '.[] | "\(.id) \(.name)"')"
+          assets="$(gh api "repos/$REPO/releases/$RELEASE_ID/assets" --paginate --jq '.[] | "\(.id) \(.name) \(.state)"')"
           for arch in amd64 arm64; do
             name="quaffed_${VERSION}_${arch}.deb"
             file="dist/$name"
+            unfinished="$(printf '%s\n' "$assets" | awk -v n="$name" '$2 == n && $3 != "uploaded" { print $1 " (" $3 ")" }')"
+            if [ -n "$unfinished" ]; then
+              echo "::error::release $RELEASE_ID has an unfinished upload of $name, asset $unfinished, probably from an interrupted earlier run.  Delete that asset from the release and re-run" >&2
+              exit 1
+            fi
             if [ ! -f "$file" ]; then
               echo "::error::$name was not built, so nothing is attached; the package job's output says why" >&2
               exit 1
@@ -117,7 +125,7 @@ jobs:
                 echo "$name is already attached and identical; skipped"
                 continue
               fi
-              echo "::error::$name is already attached and differs from this build ($(sha256sum <"$RUNNER_TEMP/existing.deb" | cut -c1-12) against $(sha256sum <"$file" | cut -c1-12)).  A published asset is never replaced: fix the cause and release a new version" >&2
+              echo "::error::$name is already attached and differs from this build ($(sha256sum <"$RUNNER_TEMP/existing.deb" | cut -c1-12) against $(sha256sum <"$file" | cut -c1-12)).  A published asset is never replaced.  If nothing changed but the runner image, whose C compiler builds mimalloc, the rebuild can differ on that alone; either way, release a new version" >&2
               exit 1
             fi
             # GitHub's response is kept, because on a refusal its body is what says why.

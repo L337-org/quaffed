@@ -55,6 +55,38 @@ fn linked_crates(target: &str) -> Vec<(String, String)> {
     crates
 }
 
+/// Whether `text` contains `crate_` - "name version" - as whole words.
+///
+/// A substring match would find `mimalloc 0.1.5` inside `mimalloc 0.1.52`, or `sys 0.1.49`
+/// inside `libmimalloc-sys 0.1.49`, and pass with the wrong crate or version named.
+fn names(text: &str, crate_: &str) -> bool {
+    let part_of_a_word = |c: char| c.is_ascii_alphanumeric() || "._-+".contains(c);
+    text.match_indices(crate_).any(|(start, _)| {
+        let before = text[..start].chars().next_back();
+        let after = text[start + crate_.len()..].chars().next();
+        // A full stop straight after is the end of a sentence, not more of a version.
+        let after_ends_it = match after {
+            Some('.') => text[start + crate_.len() + 1..]
+                .chars()
+                .next()
+                .is_none_or(|c| !c.is_ascii_alphanumeric()),
+            Some(c) => !part_of_a_word(c),
+            None => true,
+        };
+        !before.is_some_and(part_of_a_word) && after_ends_it
+    })
+}
+
+#[test]
+fn a_crate_is_named_only_as_whole_words() {
+    let text = "contains mimalloc 0.1.52 and libmimalloc-sys 0.1.49.";
+    assert!(names(text, "mimalloc 0.1.52"));
+    assert!(names(text, "libmimalloc-sys 0.1.49"));
+    assert!(!names(text, "mimalloc 0.1.5"));
+    assert!(!names(text, "sys 0.1.49"));
+    assert!(!names(text, "mimalloc 0.1"));
+}
+
 #[test]
 fn the_package_copyright_file_names_every_linked_crate() {
     let path = workspace_root().join("packaging/deb/copyright");
@@ -69,7 +101,7 @@ fn the_package_copyright_file_names_every_linked_crate() {
         for (name, version) in linked_crates(target) {
             checked += 1;
             let crate_ = format!("{name} {version}");
-            if !folded.contains(&crate_) {
+            if !names(&folded, &crate_) {
                 missing.entry(crate_).or_default().push(target);
             }
         }

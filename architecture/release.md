@@ -48,8 +48,13 @@ scripts/build-deb arm64     # on an arm64 Linux machine
 
 Each architecture is built on a machine of that architecture; the script refuses otherwise.  The
 package lands in `target/deb/`, with lintian's full output beside it.  Package timestamps come
-from the commit, so two builds of one commit give the same bytes; a re-run of a release relies
-on that to tell an identical asset from a different one.
+from the commit, so two builds of one commit in the same environment give the same bytes - shown
+twice for each architecture in one container - and a re-run of a release relies on that to tell
+an identical asset from a different one.  **The environment is only partly pinned**: Rust is, by
+`rust-toolchain.toml`, but the C compiler that builds mimalloc comes from the runner image's
+`musl-tools` and gcc, which GitHub updates.  So a re-run after an image update can rebuild a
+package that differs from one already attached with nothing wrong; the attach step stops rather
+than replace it, and says so.
 
 **lintian is a gate.**  The script accepts exactly two findings and fails on any other, so a new
 one is seen rather than buried:
