@@ -20,19 +20,18 @@ because the design it would describe is not settled.
 │   ├── build-deb         # builds the Linux package; see release.md
 │   └── workspace-version # prints the declared version; see release.md
 ├── crates/
-│   └── quaffed/          # the only member so far; builds the `quaff` binary
-│       ├── src/          # main.rs, and one module per concern; see search.md
-│       └── tests/        # integration tests, one file per concern
+│   ├── quaffed/          # builds the `quaff` binary
+│   │   ├── src/          # main.rs, and one module per concern; see search.md
+│   │   └── tests/        # integration tests, one file per concern
+│   └── representation/   # quaffed-representation: what a program means; see representation.md
 └── architecture/         # detail notes, each routed from AGENTS.md
 ```
 
-**One crate, deliberately.**  The package is `quaffed` and the binary is `quaff`, matching
-the name decision.  Splitting into several crates - a parser front end over a format-neutral
-operation representation, an engine behind it - is an architecture decision for when the
-design settles, not something to guess at in a scaffold.  The workspace exists so that split
-costs a new directory under `crates/` rather than a restructure: `members = ["crates/*"]`
-picks up a new member without an edit, and it inherits the version, edition, licence and lints
-from `[workspace.package]` and `[workspace.lints]`.
+**The members.**  `quaffed` builds the `quaff` binary, matching the name decision.
+`quaffed-representation` is the operation representation, a crate of its own so that its
+lint configuration - no hash maps or sets - applies to it alone, and so that it can depend on
+no parser.  `members = ["crates/*"]` picks up a new member without an edit, and it inherits the
+version, edition, licence and lints from `[workspace.package]` and `[workspace.lints]`.
 
 **`publish = false`** on the member.  Nothing is published until a release decides where and
 how, and an accidental `cargo publish` of a placeholder is not undoable.

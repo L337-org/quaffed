@@ -1,0 +1,14 @@
+[package]
+name = "quaffed-representation"
+description = "The operation representation: what a quaff script means, with no syntax in it"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+# Nothing is published until a release decides where and how.
+publish = false
+
+[lints]
+workspace = true
