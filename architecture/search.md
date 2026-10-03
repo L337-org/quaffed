@@ -53,10 +53,14 @@ this one rather than replacing it.
      run says how many it met;
    - a scope that names a file or an ignored directory is searched even so - naming it is asking
      for it - and the ignore rules apply beneath it;
-   - anything the walker cannot read, or an ignore file it cannot parse, stops the run with exit
-     7 rather than searching the rest and answering short.  The message names the path relative
-     to the current directory, quoted, with the line of an ignore file and the system's or the
-     glob parser's own words.
+   - **a line of an ignore file that cannot be parsed** - `a{b`, which git reads as literal
+     braces, or `[z-a]` - is skipped, and the rest of that file applies.  The run names the file
+     and the line on standard error, with the glob parser's own words, and searches on: skipping
+     a rule searches more, never less, so nothing is hidden;
+   - anything else the walker cannot read - a directory that cannot be listed, an ignore file
+     that cannot be opened - stops the run with exit 7 rather than searching the rest and
+     answering short.  The message names the path relative to the current directory, quoted,
+     with the system's own error.
 5. Files are searched in path order, so output is the same on every run.
 
 ## Matching, in the file's own encoding
@@ -107,8 +111,8 @@ src/app.py:12:5-12:22: def connect(self):
 - With several queries, each query's matches print together, in the order the queries were
   given.  Every file is read once whatever the number of queries.
 - **Notes go to standard error**, prefixed `quaff:`: no matches for a query, binary files not
-  searched, files in an unknown encoding not searched for a non-ASCII query, special files not
-  read, symbolic links not followed.  Anything not looked at is said, never silently left out.
+  searched, files in an unknown encoding not searched for a non-ASCII query, ignore file lines
+  skipped, special files not read, symbolic links not followed.  Anything not looked at is said, never silently left out.
 - A closed standard output - piping into `head` - ends the run quietly.
 
 ## Exit codes

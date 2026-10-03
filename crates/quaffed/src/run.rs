@@ -174,11 +174,43 @@ pub fn search(
             }
         }
     }
+    let skipped = Skipped {
+        binary,
+        unknown_encoding: &unknown_encoding,
+        found: &found,
+    };
+    write_notes(notes, queries, &matches, &skipped);
+    Ok(any)
+}
+
+/// What a run did not look at, for its notes.
+struct Skipped<'a> {
+    /// Binary files, counted once whatever the number of queries.
+    binary: usize,
+    /// For each query, the files in an unknown 8-bit encoding it has no spelling in.
+    unknown_encoding: &'a [usize],
+    /// What discovery passed over.
+    found: &'a discover::Found,
+}
+
+/// Writes a note to `notes` for every query that found nothing and everything not looked at,
+/// so that nothing is silently left out.
+fn write_notes(
+    notes: &mut impl Write,
+    queries: &[Query],
+    matches: &[Vec<(PathBuf, Vec<Match>)>],
+    skipped: &Skipped,
+) {
     // Notes are best effort: a run that cannot write to standard error has nowhere to say so.
     let mut note = |text: String| {
         let _ = writeln!(notes, "quaff: {text}");
     };
-    for ((query, per_file), &unknown) in queries.iter().zip(&matches).zip(&unknown_encoding) {
+    let Skipped {
+        binary,
+        unknown_encoding,
+        found,
+    } = skipped;
+    for ((query, per_file), &unknown) in queries.iter().zip(matches).zip(*unknown_encoding) {
         if unknown > 0 {
             note(format!(
                 "{} in an unknown 8-bit encoding not searched for {:?}, which is not ASCII and so \
@@ -191,10 +223,15 @@ pub fn search(
             note(format!("no matches for {:?}", query.text));
         }
     }
-    if binary > 0 {
+    if *binary > 0 {
         note(format!(
             "{} not searched",
-            count(binary, "binary file", "binary files")
+            count(*binary, "binary file", "binary files")
+        ));
+    }
+    for rule in &found.skipped_rules {
+        note(format!(
+            "ignore file {rule}; that line is skipped and the rest of the file applies"
         ));
     }
     if found.special_files > 0 {
@@ -209,7 +246,6 @@ pub fn search(
             count(found.links_not_followed, "symbolic link", "symbolic links")
         ));
     }
-    Ok(any)
 }
 
 /// Writes one line of results.  Returns `false` if the reader has gone, which ends the run

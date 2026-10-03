@@ -434,11 +434,12 @@ fn a_query_that_is_not_utf8_is_refused() {
 }
 
 #[test]
-fn an_ignore_file_line_the_walker_cannot_parse_stops_the_run_naming_it() {
+fn an_unparseable_ignore_line_is_skipped_and_the_rest_of_the_file_applies() {
     let project = Project::new(&[
         (".git/HEAD", ""),
         (".gitignore", "build/\na{b\n"),
         ("a.py", "TODO\n"),
+        ("build/out.py", "TODO in an ignored directory\n"),
     ]);
     assert_quaff_snapshot!(project.quaff(&["TODO"]));
     project.assert_unchanged();

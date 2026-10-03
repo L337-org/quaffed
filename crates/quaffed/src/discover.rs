@@ -29,6 +29,9 @@ pub struct Found {
     /// FIFOs, sockets and device files met and not searched: reading a FIFO would wait for a
     /// writer that may never come, so they are counted rather than read.
     pub special_files: usize,
+    /// Each line of an ignore file that could not be parsed, described for the user.  The line
+    /// is skipped and the rest of its file applies, as git applies the lines it understands.
+    pub skipped_rules: Vec<String>,
 }
 
 /// Discovery could not finish, and a search over part of the scope must not pass for a search
@@ -48,6 +51,28 @@ impl fmt::Display for Error {
             "finding the files to search: {}",
             describe(&self.cause, &self.cwd)
         )
+    }
+}
+
+/// Whether `err` is only ignore-file lines that could not be parsed, which cost one rule each,
+/// rather than something that stops the walk.
+fn is_rule_error(err: &ignore::Error) -> bool {
+    match err {
+        ignore::Error::Glob { .. } => true,
+        ignore::Error::WithPath { err, .. }
+        | ignore::Error::WithLineNumber { err, .. }
+        | ignore::Error::WithDepth { err, .. } => is_rule_error(err),
+        ignore::Error::Partial(errs) => errs.iter().all(is_rule_error),
+        _ => false,
+    }
+}
+
+/// The separate errors inside `err`: one per unparseable line, however the walker grouped them.
+fn each_error(err: &ignore::Error) -> Vec<&ignore::Error> {
+    match err {
+        ignore::Error::Partial(errs) => errs.iter().flat_map(each_error).collect(),
+        ignore::Error::WithDepth { err, .. } => each_error(err),
+        other => vec![other],
     }
 }
 
@@ -115,16 +140,38 @@ pub fn files(scope: &Path, cwd: &Path) -> Result<Found, Error> {
         });
     let mut found = Found::default();
     for entry in walker.build() {
-        let entry = entry.map_err(|cause| Error {
-            cause,
-            cwd: cwd.to_path_buf(),
-        })?;
-        // An ignore file that only partly parsed is reported here, on the entry it applied to.
+        // An ignore file line that could not be parsed costs that one rule: say so, and carry
+        // on with the rest.  Anything else - a directory that cannot be listed, an ignore file
+        // that cannot be read - stops the run rather than answering short.
+        let mut skipped = |cause: &ignore::Error| {
+            for each in each_error(cause) {
+                let described = describe(each, cwd);
+                if !found.skipped_rules.contains(&described) {
+                    found.skipped_rules.push(described);
+                }
+            }
+        };
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(cause) if is_rule_error(&cause) => {
+                skipped(&cause);
+                continue;
+            }
+            Err(cause) => {
+                return Err(Error {
+                    cause,
+                    cwd: cwd.to_path_buf(),
+                });
+            }
+        };
         if let Some(cause) = entry.error() {
-            return Err(Error {
-                cause: cause.clone(),
-                cwd: cwd.to_path_buf(),
-            });
+            if !is_rule_error(cause) {
+                return Err(Error {
+                    cause: cause.clone(),
+                    cwd: cwd.to_path_buf(),
+                });
+            }
+            skipped(cause);
         }
         let Some(kind) = entry.file_type() else {
             continue;
@@ -264,25 +311,69 @@ mod tests {
     }
 
     #[test]
-    fn an_ignore_file_the_walker_cannot_parse_is_named_with_its_line() {
-        let tree = Tree::new("badglob", &[(".git/HEAD", ""), (".gitignore", "ok\na{b\n")]);
-        let message = files(&tree.0, &tree.0).unwrap_err().to_string();
-        assert!(
-            message.starts_with("finding the files to search: \".gitignore\": line 2: "),
-            "{message}"
+    fn an_unparseable_ignore_line_is_skipped_and_the_rest_of_the_file_applies() {
+        let tree = Tree::new(
+            "badglob",
+            &[
+                (".git/HEAD", ""),
+                (".gitignore", "ok.log\na{b\n[z-a]\n"),
+                ("ok.log", ""),
+                ("a{b", ""),
+                ("kept.py", ""),
+            ],
         );
+        let found = files(&tree.0, &tree.0).unwrap();
+        let names: Vec<_> = found
+            .files
+            .iter()
+            .map(|p| {
+                p.strip_prefix(&tree.0)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        // The good line still ignores ok.log; the skipped one ignores nothing.
+        assert_eq!(names, [".gitignore", "a{b", "kept.py"]);
+        assert_eq!(found.skipped_rules.len(), 2, "{:?}", found.skipped_rules);
+        assert!(
+            found.skipped_rules[0].starts_with("\".gitignore\": line 2: "),
+            "{:?}",
+            found.skipped_rules
+        );
+        assert!(
+            found.skipped_rules[1].starts_with("\".gitignore\": line 3: "),
+            "{:?}",
+            found.skipped_rules
+        );
+    }
+
+    #[test]
+    fn an_unparseable_line_in_a_parent_ignore_file_is_skipped_too() {
+        let tree = Tree::new(
+            "badparent",
+            &[(".git/HEAD", ""), (".gitignore", "a{b\n"), ("sub/x.py", "")],
+        );
+        let found = files(&tree.0.join("sub"), &tree.0).unwrap();
+        assert_eq!(found.files.len(), 1);
+        assert_eq!(found.skipped_rules.len(), 1, "{:?}", found.skipped_rules);
     }
 
     #[test]
     fn the_walker_error_stays_on_the_chain() {
         use std::error::Error as _;
-        let tree = Tree::new("chain", &[(".git/HEAD", ""), (".gitignore", "a{b\n")]);
-        let err = files(&tree.0, &tree.0).unwrap_err();
+        let err = Error {
+            cause: ignore::Error::Io(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+            cwd: PathBuf::from("/"),
+        };
         let source = err
             .source()
             .expect("the walker's error is the source")
             .to_string();
-        assert!(source.contains("a{b"), "{source}");
+        assert_eq!(
+            source,
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied).to_string()
+        );
     }
 
     #[test]
