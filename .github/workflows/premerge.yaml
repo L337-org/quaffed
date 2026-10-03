@@ -48,6 +48,52 @@ jobs:
       - name: Every `uses:` must name a 40-hex commit SHA
         uses: L337-org/github-workflows/actions/action-pins@6136c02585a1a6f27eac1e733b45134d287f1616 # v1.1.2
 
+  dco:
+    # Every commit carries a Signed-off-by for its author (CONTRIBUTING.md, Developer
+    # Certificate of Origin).  Pull requests only: the squash merge keeps every commit's message,
+    # so a pull request that passes here lands on main signed off, but GitHub authors the squash
+    # commit under whichever of the author's addresses it chooses - often the noreply one - so
+    # matching main's commits against their author would fail every merge.  Merge commits, which
+    # GitHub writes, are skipped.
+    if: github.event_name == 'pull_request'
+    runs-on: [ubuntu-latest]
+    name: Commits are signed off
+    timeout-minutes: 5
+    steps:
+      - name: Check out source repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Every commit has its author's sign-off
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        # The sign-off is matched on the author's email, ignoring case, as people type their
+        # address both ways.  The commit list is read into a variable first, so a failing
+        # rev-list fails the step under bash -e, and a range with no commit in it fails rather
+        # than passing.
+        run: |
+          commits="$(git rev-list --no-merges "$BASE..$HEAD")"
+          checked=0
+          unsigned=0
+          while read -r sha; do
+            [ -n "$sha" ] || continue
+            checked=$((checked + 1))
+            email="$(git log -1 --format='%ae' "$sha")"
+            if git log -1 --format='%(trailers:key=Signed-off-by,valueonly)' "$sha" | grep -qiF "<$email>"; then
+              echo "$(git log -1 --format='%h %s' "$sha"): signed off"
+            else
+              echo "::error::$(git log -1 --format='%h %s' "$sha") has no Signed-off-by for its author <$email>; amend it with git commit --amend -s" >&2
+              unsigned=$((unsigned + 1))
+            fi
+          done <<<"$commits"
+          if [ "$checked" -eq 0 ]; then
+            echo "::error::no commit in $BASE..$HEAD to check, so nothing was checked" >&2
+            exit 1
+          fi
+          [ "$unsigned" -eq 0 ]
+
   fmt:
     runs-on: [ubuntu-latest]
     name: rustfmt

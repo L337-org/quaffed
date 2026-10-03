@@ -85,8 +85,9 @@ That appends `Signed-off-by: Your Name <you@example.com>`, using your configured
 ## Submitting your change
 
 CI (`.github/workflows/premerge.yaml`) runs on every pull request and every push to `main`, and
-every job must pass before merging: the repository hygiene check, the action-pin check, rustfmt,
-clippy, the verification tools install, and the tests on Linux and macOS.
+every job must pass before merging: the repository hygiene check, the action-pin check, the
+sign-off check (pull requests only), rustfmt, clippy, the verification tools install, and the
+tests on Linux and macOS.
 
 Keep pull requests focused: one logical change per pull request is easier to review than a
 bundle of unrelated fixes.  A change that alters behaviour carries its tests and its

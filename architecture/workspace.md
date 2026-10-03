@@ -94,6 +94,7 @@ files at all, so a broken walk cannot pass by checking nothing.
 |---|---|
 | Repository hygiene | the organisation-wide conventions (shared) |
 | Action pins are immutable | every `uses:` names a full 40-hex commit SHA (shared) |
+| Commits are signed off | every non-merge commit has a `Signed-off-by` for its author (pull requests only) |
 | rustfmt | `cargo fmt --all -- --check` |
 | clippy | `cargo clippy --all-targets --locked -- -D warnings` |
 | Verification tools install | every cargo tool in `tools.toml` builds at its pin (cached; see `verification.md`) |
