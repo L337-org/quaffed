@@ -1,0 +1,14 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "find \"a\" $x \"b\""
+---
+success: false
+exit_code: 5
+----- stdout -----
+
+----- stderr -----
+quaff: -e expression 1, at character 10: unknown construct: a metavariable between quoted pieces is textual capture, which is not in this build

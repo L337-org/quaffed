@@ -1,0 +1,14 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-f"
+    - scripts/missing.quaff
+---
+success: false
+exit_code: 7
+----- stdout -----
+
+----- stderr -----
+quaff: reading the script "scripts/missing.quaff": No such file or directory (os error 2)

@@ -3,6 +3,8 @@
 
 //! Finding a textual query in one file's bytes.
 
+use quaffed_representation::program::{TextPart, TextPattern};
+
 use crate::encoding::Encoding;
 
 /// A line and column, both counted from 1, the column in characters.
@@ -23,48 +25,140 @@ pub struct Match {
     pub end: Position,
 }
 
-/// Finds every occurrence of `query` in `text`, the body of a file in `encoding` - after any
-/// byte-order mark - by encoding the query the way the file is.
+/// Finds every match of `pattern` in `text`, the body of a file in `encoding` - after any
+/// byte-order mark - by encoding the pattern's text the way the file is.
 ///
-/// Matches are found left to right and do not overlap, so `aa` occurs once in `aaa`.  The query
-/// is literal: nothing in it is special.
+/// Matches are found left to right and do not overlap, so `aa` occurs once in `aaa`.  Literal
+/// text is literal: nothing in it is special.  A line break matches LF, CRLF or a lone CR,
+/// whichever the file has there; a start anchor holds at the start of the file or after a line
+/// ending, and an end anchor at the end of the file or before one.
 ///
-/// An empty query matches nothing: every position would otherwise be an occurrence of it, and
-/// the command line refuses one before it gets here.
+/// An empty pattern matches nothing: every position would otherwise be a match, and the
+/// command line and the parser both refuse one before it gets here.
 ///
-/// Returns `None` when the query has no honest spelling in the encoding - a non-ASCII query in
-/// an unknown 8-bit encoding - so that the caller reports the file as not searched rather than
-/// as holding no matches.
-pub fn search(text: &[u8], encoding: Encoding, query: &str) -> Option<Vec<Match>> {
-    let needle = encoding.encode(query)?;
-    if needle.is_empty() {
+/// Returns `None` when the pattern's text has no honest spelling in the encoding - non-ASCII
+/// text in an unknown 8-bit encoding - so that the caller reports the file as not searched
+/// rather than as holding no matches.
+pub fn search(text: &[u8], encoding: Encoding, pattern: &TextPattern) -> Option<Vec<Match>> {
+    let compiled = Compiled::new(pattern, encoding)?;
+    if compiled.parts.is_empty() {
         return Some(Vec::new());
     }
-    let offsets = occurrences(text, &needle, encoding.unit());
-    if offsets.is_empty() {
+    let ranges = compiled.ranges(text);
+    if ranges.is_empty() {
         return Some(Vec::new());
     }
-    Some(positions(text, encoding, &offsets, needle.len()))
+    Some(positions(text, encoding, &ranges))
 }
 
-/// Byte offsets of each non-overlapping occurrence of `needle`, starting on a code unit.
-///
-/// A byte match that straddles two code units is not a match of the text, so the search moves
-/// on by one byte and tries again rather than skipping past it.
-fn occurrences(text: &[u8], needle: &[u8], unit: usize) -> Vec<usize> {
-    let finder = memchr::memmem::Finder::new(needle);
-    let mut found = Vec::new();
-    let mut from = 0;
-    while let Some(i) = finder.find(&text[from..]) {
-        let at = from + i;
-        if at % unit == 0 {
-            found.push(at);
-            from = at + needle.len();
-        } else {
-            from = at + 1;
+/// One part of a pattern, spelled in the file's encoding.
+enum Part {
+    /// These exact bytes.
+    Literal(Vec<u8>),
+    /// A line ending: CRLF, LF or CR.
+    LineBreak,
+}
+
+/// A pattern spelled in one file's encoding.
+struct Compiled {
+    parts: Vec<Part>,
+    start_anchor: bool,
+    end_anchor: bool,
+    cr: Vec<u8>,
+    lf: Vec<u8>,
+    unit: usize,
+}
+
+impl Compiled {
+    fn new(pattern: &TextPattern, encoding: Encoding) -> Option<Self> {
+        let mut parts = Vec::new();
+        for part in pattern.parts() {
+            parts.push(match part {
+                TextPart::Literal(text) => Part::Literal(encoding.encode(text)?),
+                TextPart::LineBreak => Part::LineBreak,
+                // A part this build cannot match is never produced for it: the parser refuses
+                // textual capture as an unknown construct.
+                _ => return None,
+            });
+        }
+        Some(Compiled {
+            parts,
+            start_anchor: pattern.start_anchor,
+            end_anchor: pattern.end_anchor,
+            cr: encoding.encode("\r")?,
+            lf: encoding.encode("\n")?,
+            unit: encoding.unit(),
+        })
+    }
+
+    /// The length of the line ending at the start of `rest`, if there is one: CRLF before CR,
+    /// so a CRLF file's break is one break, not two.
+    fn line_ending(&self, rest: &[u8]) -> Option<usize> {
+        if rest.starts_with(&self.cr) {
+            if rest[self.cr.len()..].starts_with(&self.lf) {
+                return Some(self.cr.len() + self.lf.len());
+            }
+            return Some(self.cr.len());
+        }
+        rest.starts_with(&self.lf).then_some(self.lf.len())
+    }
+
+    /// Whether the code unit just before `at` ends a line.
+    fn after_line_ending(&self, text: &[u8], at: usize) -> bool {
+        at == 0 || {
+            let previous = &text[at - self.unit..at];
+            previous == self.cr.as_slice() || previous == self.lf.as_slice()
         }
     }
-    found
+
+    /// Where the pattern matches if it starts at `at`: the byte after its end.
+    fn match_at(&self, text: &[u8], at: usize) -> Option<usize> {
+        let mut position = at;
+        for part in &self.parts {
+            let rest = &text[position..];
+            position += match part {
+                Part::Literal(bytes) => rest.starts_with(bytes).then_some(bytes.len())?,
+                Part::LineBreak => self.line_ending(rest)?,
+            };
+        }
+        let end_holds = !self.end_anchor
+            || position == text.len()
+            || self.line_ending(&text[position..]).is_some();
+        end_holds.then_some(position)
+    }
+
+    /// Byte ranges of every non-overlapping match, left to right, each starting on a code unit.
+    ///
+    /// Candidates are found by the first literal's bytes where the pattern starts with one -
+    /// a byte match straddling two code units is not a match of the text - and otherwise at
+    /// every code unit.
+    fn ranges(&self, text: &[u8]) -> Vec<(usize, usize)> {
+        let first = match self.parts.first() {
+            Some(Part::Literal(bytes)) => Some(memchr::memmem::Finder::new(bytes)),
+            _ => None,
+        };
+        let mut found = Vec::new();
+        let mut from = 0;
+        while from < text.len() {
+            let candidate = match &first {
+                Some(finder) => match finder.find(&text[from..]) {
+                    Some(i) => from + i,
+                    None => break,
+                },
+                None => from,
+            };
+            let usable = candidate % self.unit == 0
+                && (!self.start_anchor || self.after_line_ending(text, candidate));
+            match usable.then(|| self.match_at(text, candidate)).flatten() {
+                Some(end) => {
+                    found.push((candidate, end));
+                    from = end;
+                }
+                None => from = candidate + 1,
+            }
+        }
+        found
+    }
 }
 
 /// Turns each match's byte range into positions, in one pass over the file's characters.
@@ -72,12 +166,12 @@ fn occurrences(text: &[u8], needle: &[u8], unit: usize) -> Vec<usize> {
 /// Only the current line and column are kept, never a table of every character, so the memory
 /// a search needs beyond the file's own bytes does not grow with the file.  The walk stops at
 /// the last match's last character.
-fn positions(text: &[u8], encoding: Encoding, offsets: &[usize], len: usize) -> Vec<Match> {
+fn positions(text: &[u8], encoding: Encoding, ranges: &[(usize, usize)]) -> Vec<Match> {
     // Each match's first and last byte, in order: matches do not overlap, so starts and ends
     // interleave.
-    let targets: Vec<usize> = offsets
+    let targets: Vec<usize> = ranges
         .iter()
-        .flat_map(|&start| [start, start + len - 1])
+        .flat_map(|&(start, end)| [start, end - 1])
         .collect();
     let mut placed = Vec::with_capacity(targets.len());
     let mut line = 1;
@@ -146,10 +240,12 @@ mod tests {
     fn outcome(bytes: &[u8], query: &str) -> Outcome {
         match classify(bytes) {
             Content::Binary => Outcome::Binary,
-            Content::Text { encoding, body } => match search(&bytes[body..], encoding, query) {
-                None => Outcome::NoSpelling,
-                Some(matches) => Outcome::Found(matches),
-            },
+            Content::Text { encoding, body } => {
+                match search(&bytes[body..], encoding, &TextPattern::literal(query)) {
+                    None => Outcome::NoSpelling,
+                    Some(matches) => Outcome::Found(matches),
+                }
+            }
         }
     }
 
@@ -168,6 +264,103 @@ mod tests {
             vec![(pos(1, 3), pos(1, 6)), (pos(1, 10), pos(1, 13))]
         );
         assert_eq!(found(b"nothing", "TODO"), vec![]);
+    }
+
+    /// A pattern from pieces: `|` is a line break, and `^` and `$` at the ends are anchors.
+    fn pattern(written: &str) -> TextPattern {
+        let mut pattern = TextPattern::default();
+        let mut body = written;
+        if let Some(rest) = body.strip_prefix('^') {
+            pattern.start_anchor = true;
+            body = rest;
+        }
+        if let Some(rest) = body.strip_suffix('$') {
+            pattern.end_anchor = true;
+            body = rest;
+        }
+        for (i, piece) in body.split('|').enumerate() {
+            if i > 0 {
+                pattern.push_line_break();
+            }
+            pattern.push_literal(piece.to_owned());
+        }
+        pattern
+    }
+
+    fn found_pattern(bytes: &[u8], written: &str) -> Vec<(Position, Position)> {
+        let Content::Text { encoding, body } = classify(bytes) else {
+            panic!("binary")
+        };
+        search(&bytes[body..], encoding, &pattern(written))
+            .expect("a spelling")
+            .iter()
+            .map(|m| (m.start, m.end))
+            .collect()
+    }
+
+    #[test]
+    fn a_line_break_matches_lf_crlf_and_cr_alike() {
+        for file in [&b"x one\ntwo"[..], b"x one\r\ntwo", b"x one\rtwo"] {
+            assert_eq!(
+                found_pattern(file, "one|two"),
+                vec![(pos(1, 3), pos(2, 3))],
+                "{file:?}"
+            );
+        }
+        assert_eq!(found_pattern(b"one two", "one|two"), vec![]);
+    }
+
+    #[test]
+    fn a_crlf_is_one_break_not_two() {
+        assert_eq!(
+            found_pattern(b"a\r\n\r\nb", "a||b"),
+            vec![(pos(1, 1), pos(3, 1))]
+        );
+        assert_eq!(found_pattern(b"a\r\nb", "a||b"), vec![]);
+    }
+
+    #[test]
+    fn anchors_hold_only_at_line_ends() {
+        let file = b"import x\n  import y\nfrom import\r\nimport";
+        assert_eq!(
+            found_pattern(file, "^import"),
+            vec![(pos(1, 1), pos(1, 6)), (pos(4, 1), pos(4, 6))]
+        );
+        assert_eq!(
+            found_pattern(file, "import$"),
+            vec![(pos(3, 6), pos(3, 11)), (pos(4, 1), pos(4, 6))]
+        );
+        assert_eq!(
+            found_pattern(file, "^import$"),
+            vec![(pos(4, 1), pos(4, 6))]
+        );
+        assert_eq!(
+            found_pattern(b"pass\rpass ", "^pass$"),
+            vec![(pos(1, 1), pos(1, 4))]
+        );
+    }
+
+    #[test]
+    fn a_pattern_may_start_with_a_line_break() {
+        assert_eq!(
+            found_pattern(b"a\nb\nb", "|b"),
+            vec![(pos(1, 2), pos(2, 1)), (pos(2, 2), pos(3, 1))]
+        );
+    }
+
+    #[test]
+    fn line_breaks_and_anchors_work_in_utf16() {
+        let mut file = vec![0xFF, 0xFE];
+        file.extend("x\r\nimport y".encode_utf16().flat_map(u16::to_le_bytes));
+        assert_eq!(
+            found_pattern(&file, "x|import"),
+            vec![(pos(1, 1), pos(2, 6))]
+        );
+        assert_eq!(
+            found_pattern(&file, "^import"),
+            vec![(pos(2, 1), pos(2, 6))]
+        );
+        assert_eq!(found_pattern(&file, "x$"), vec![(pos(1, 1), pos(1, 1))]);
     }
 
     #[test]

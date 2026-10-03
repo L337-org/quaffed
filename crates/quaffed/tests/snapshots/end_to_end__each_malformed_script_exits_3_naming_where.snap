@@ -1,0 +1,14 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "find \"say \"hi\"\""
+---
+success: false
+exit_code: 3
+----- stdout -----
+
+----- stderr -----
+quaff: -e expression 1, at character 11: `hi` follows straight on from an operand that closed here: if the operand contains its own delimiter, open and close it with a longer run, as """ say "hi" """

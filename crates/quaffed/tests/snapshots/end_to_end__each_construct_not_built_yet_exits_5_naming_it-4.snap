@@ -3,12 +3,12 @@ source: crates/quaffed/tests/end_to_end.rs
 info:
   program: quaff
   args:
-    - "-p"
-    - handle($a)
+    - "-e"
+    - "find \"a\"; delete `a` expect 1"
 ---
 success: false
-exit_code: 3
+exit_code: 5
 ----- stdout -----
 
 ----- stderr -----
-quaff: "-p" is not built yet
+quaff: -e expression 1, at character 11: delete is not built yet

@@ -3,12 +3,12 @@ source: crates/quaffed/tests/end_to_end.rs
 info:
   program: quaff
   args:
-    - "-p"
-    - handle($a)
+    - "-f"
+    - scripts/bad.quaff
 ---
 success: false
 exit_code: 3
 ----- stdout -----
 
 ----- stderr -----
-quaff: "-p" is not built yet
+quaff: scripts/bad.quaff:2:19: `in` cannot follow `expect`: clauses come in the order in, where, expect

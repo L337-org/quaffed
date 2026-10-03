@@ -42,13 +42,16 @@ fn linked_crates(target: &str) -> Vec<(String, String)> {
     let mut crates: Vec<(String, String)> = String::from_utf8_lossy(&output.stdout)
         .lines()
         .filter_map(|line| {
-            // "mimalloc v0.1.52", or "quaffed v0.1.0 (/path)" for the workspace's own crate.
+            // "mimalloc v0.1.52", or "quaffed-script v0.1.0 (/path)" for one of the workspace's
+            // own crates, which the package's own copyright covers.
             let mut fields = line.split_whitespace();
             let name = fields.next()?;
             let version = fields.next()?.strip_prefix('v')?;
+            if fields.next().is_some_and(|source| source.starts_with("(/")) {
+                return None;
+            }
             Some((name.to_owned(), version.to_owned()))
         })
-        .filter(|(name, _)| name != "quaffed")
         .collect();
     crates.sort();
     crates.dedup();
