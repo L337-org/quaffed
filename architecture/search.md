@@ -1,9 +1,9 @@
 # Textual search
 
-What `quaff TEXT [PATH]` and `quaff -s TEXT [PATH]` do, as built.  This is the first behaviour
-in the repository, so it also carries the command line and the exit codes as far as they exist.
-Scripts, structural search and edits are not built; when they land, their specifications join
-this one rather than replacing it.
+What `quaff TEXT [PATH]`, `quaff -s TEXT [PATH]` and a script's textual `find` do, as built.
+This page also carries the command line and the exit codes as far as they exist; the script
+language itself is `script.md`.  Structural search and edits are not built; when they land,
+their specifications join this one rather than replacing it.
 
 ## The command line
 
@@ -11,21 +11,28 @@ this one rather than replacing it.
 |---|---|
 | `quaff TEXT` | search the project for `TEXT` |
 | `quaff TEXT PATH` | the same, narrowed to `PATH` |
-| `quaff -s TEXT [PATH]`, `--string TEXT`, `--string=TEXT` | the same; `-s` may be repeated, and each query is searched in turn |
+| `quaff -s TEXT [PATH]`, `--string TEXT`, `--string=TEXT` | the same, as an option |
+| `quaff -e SCRIPT [PATH]`, `--expression SCRIPT`, `--expression=SCRIPT` | run the statements in `SCRIPT` |
+| `quaff -f FILE [PATH]`, `--file FILE`, `--file=FILE` | run the script in `FILE`; `-f -` reads it from standard input |
 | `quaff -h`, `quaff --help` | the help, on standard output, exit 0 |
 | `quaff` | the help, on standard error, exit 3 |
 | `--` | ends option parsing, so `quaff -- --verbose` searches for `--verbose` |
 
-- **The first positional is the query only when no `-s` was given**; otherwise it is the scope.
+- **Sources compose in the order given.**  `-s`, `-e` and `-f` may each be repeated and mixed,
+  and their statements make one program in command-line order; `-s TEXT` is `find` of that text,
+  exactly.  `-f -` may be given once, because standard input can be read only once; a second is
+  a usage error.  A script is read as UTF-8, and a script that is not is refused at the first
+  byte that is not, exit 3.
+- **The first positional is the query only when no `-s`, `-e` or `-f` was given**; otherwise it
+  is the scope.
 - **There is exactly one scope argument.**  More than one is refused, naming them and the
   shell's glob expansion as the likely cause: bash 3.2 expands `src/**/*.py` to one file of
   many and the search would look successful.
 - **The query is literal.**  Nothing in it is special: `^`, `$`, `*` and `[` match themselves.
-  Anchors and line breaks are a script construct, written outside an operand's quotes, and
-  scripts are not built yet.
-- **Options in the MVP whose stories have not landed** - `-p`, `-e`, `-f`, `-o`, `--dry-run`,
-  `--version` - are refused as not built yet, rather than as unknown, which would be wrong.
-  Every other option is unknown.  Both exit 3.
+  Anchors and line breaks are a script construct, written outside an operand's quotes.
+- **Options in the MVP whose stories have not landed** - `-p`, `-o`, `--dry-run`, `--version` -
+  are refused as not built yet, rather than as unknown, which would be wrong.  Every other
+  option is unknown.  Both exit 3.  A short option never takes `=VALUE`: `-s=x` is unknown.
 - **Parsing is hand-written** (`src/cli.rs`).  The order of sources matters, and an argument
   library's own usage errors exit 2, which here means an assertion failed.
 
@@ -86,6 +93,11 @@ checked before UTF-16's, because it begins with it.
 Matches are found left to right and do not overlap: `aa` occurs once in `aaa`.  Each file is
 classified once, whatever the number of queries.
 
+A script's textual operand adds line breaks and anchors (`script.md`).  **A line break** matches
+LF, CRLF or a lone CR, whichever the file has there, preferring CRLF to its CR alone.  **A start
+anchor** holds at the start of the file or just after a line ending, **an end anchor** at the
+end of the file or just before one.  Both are spelled in the file's encoding like the text.
+
 **Memory.**  A file is read whole, and positions are worked out in one pass over its
 characters that keeps only the current line and column and stops at the last match, so a search
 needs about the size of the largest file it reads.  No size limit is applied.  Python's
@@ -110,22 +122,40 @@ src/app.py:12:5-12:22: def connect(self):
 - **The text is the matched text**, folded onto one line: each line ending, with the
   indentation after it, becomes one space, never nothing, so `return` and `value` on two lines
   do not read as `returnvalue`.  It is printed in full.
-- With several queries, each query's matches print together, in the order the queries were
-  given.  Every file is read once whatever the number of queries.
-- **Notes go to standard error**, prefixed `quaff:`: no matches for a query, binary files not
-  searched, files in an unknown encoding not searched for a non-ASCII query, ignore file lines
-  skipped, special files not read, symbolic links not followed.  Anything not looked at is
-  said, never silently left out.
-- A closed standard output - piping into `head` - ends the run quietly.
+- With several queries, each query's matches print together, in program order: a `find` with
+  an `expect` prints its matches as a `find` without one does.  Every file is read once
+  whatever the number of queries.
+- **Notes go to standard error**, prefixed `quaff:`: no matches for a `find` without an
+  `expect`, binary files not searched, files in an unknown encoding not searched for a
+  non-ASCII query, ignore file lines skipped, special files not read, symbolic links not
+  followed.  Anything not looked at is said, never silently left out.
+- **A failed assertion** goes to standard error before the notes, as where it was written, the
+  count expected and the count found:
+  `quaff: checks.quaff:3:1: expected exactly 2 matches of "TODO", found 1`.
+- A closed standard output - piping into `head` - stops the printing quietly.  Assertions are
+  still evaluated, so the exit code is still the answer.
 
 ## Exit codes
 
 | code | when |
 |---|---|
-| 0 | something was found |
-| 1 | nothing was found; not an error |
-| 3 | a usage error, or a scope outside the project |
+| 0 | every assertion held; or, with no assertion, something was found |
+| 1 | nothing was found, and there was no assertion; not an error |
+| 2 | an assertion failed |
+| 3 | a usage error, a malformed script, an edit with no `expect`, or a scope outside the project |
+| 5 | a statement or construct this build does not have: outside the MVP, or in it and not built yet |
 | 7 | an I/O error, naming the path and quoting the system's error |
+
+**An assertion block** - a run of consecutive `find ... expect` statements - is evaluated to
+the end: every assertion in it is checked and each that fails is reported.  If any failed, the
+run stops after the block, exit 2, and nothing after it runs.
+
+**Every source is read and parsed, and the whole program checked, before any file is looked
+at**, so a script with an error anywhere does not run at all.  A script error names where it is
+- `refactor.quaff:12:5`, `<stdin>:12:5`, or `-e expression 2, at character 10` - and what was
+expected (`script.md`).  The constructs that parse but are not built yet - a backticked
+pattern, an `in` or `where` clause, `replace` and `delete` - exit 5, named, at where they were
+written.
 
 A failure prints nothing on standard output, so a partial answer never passes for a whole one.
 Every message says what was being done, quotes the path or argument it concerns, and says what

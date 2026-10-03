@@ -88,6 +88,15 @@ delimiter.
 `<stdin>:12:5` for standard input, `-e expression 2, at character 10` for an inline script.
 Lines and columns count from 1, columns in characters.
 
+## Running a script
+
+The command line (`crates/quaffed/src/run.rs`) reads each source in order - `-s` and the bare
+query become a `find` of their text - parses it into one `Program`, runs the checker, then
+refuses anything this build cannot yet run: a backticked pattern, an `in` or `where` clause, and
+`replace` and `delete`, each exit 5 at where it was written.  Only then does it look at a file.
+Every file is read once, for every query in the program, and the statements are evaluated in
+order over the results.  Output, notes, assertion failures and exit codes are in `search.md`.
+
 ## Properties
 
 `tests/properties.rs` checks, over generated input, that any content reads back from its
@@ -100,4 +109,8 @@ program a script parses to.
 2. Parse it in `src/parser.rs`, removing it from `NOT_IN_THIS_BUILD` or the matching list.
 3. Add unit tests for the form and for each way it can be malformed, with what each says.
 4. Extend the statement generator in `tests/properties.rs` so layout invariance covers it.
-5. Update this page in the same change.
+5. When it becomes runnable, remove its refusal from `plan` in `crates/quaffed/src/run.rs`, and
+   replace its end-to-end snapshot in `each_construct_not_built_yet_exits_5_naming_it` with one
+   that runs it.
+6. Update this page, and `search.md` where it changes the output or the exit codes, in the same
+   change.

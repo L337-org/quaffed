@@ -3,12 +3,12 @@ source: crates/quaffed/tests/end_to_end.rs
 info:
   program: quaff
   args:
-    - "-p"
-    - handle($a)
+    - "-f"
+    - scripts/latin1.quaff
 ---
 success: false
 exit_code: 3
 ----- stdout -----
 
 ----- stderr -----
-quaff: "-p" is not built yet
+quaff: scripts/latin1.quaff:2:10: the script is not valid UTF-8 here; a script is read as UTF-8

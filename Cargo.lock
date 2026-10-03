@@ -321,6 +321,8 @@ dependencies = [
  "insta-cmd",
  "memchr",
  "mimalloc",
+ "quaffed-representation",
+ "quaffed-script",
 ]
 
 [[package]]

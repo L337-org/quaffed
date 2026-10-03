@@ -1,0 +1,14 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "find `f($a)` as call"
+---
+success: false
+exit_code: 5
+----- stdout -----
+
+----- stderr -----
+quaff: -e expression 1, at character 14: unknown construct: the `as` clause is not in this build

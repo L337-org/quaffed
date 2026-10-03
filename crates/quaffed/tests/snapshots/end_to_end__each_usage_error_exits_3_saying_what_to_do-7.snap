@@ -10,4 +10,4 @@ exit_code: 3
 ----- stdout -----
 
 ----- stderr -----
-quaff: nothing to search for: give a query
+quaff: nothing to run: give a query, or a script with -e or -f

@@ -1,0 +1,16 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "find \"a\""
+    - "-e"
+    - "find ^`f()`"
+---
+success: false
+exit_code: 3
+----- stdout -----
+
+----- stderr -----
+quaff: -e expression 2, at character 7: `^` cannot anchor a backticked pattern: anchors are for quoted text, and a pattern is already anchored by its shape
