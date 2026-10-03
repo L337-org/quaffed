@@ -1,0 +1,14 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-s"
+    - "[a-z]*"
+---
+success: true
+exit_code: 0
+----- stdout -----
+a.txt:2:1-2:6: [a-z]*
+
+----- stderr -----

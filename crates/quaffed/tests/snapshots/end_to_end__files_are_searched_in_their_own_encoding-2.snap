@@ -1,0 +1,15 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - café
+---
+success: true
+exit_code: 0
+----- stdout -----
+utf16.txt:1:1-1:4: café
+utf8.txt:1:1-1:4: café
+
+----- stderr -----
+quaff: 1 file in an unknown 8-bit encoding not searched for "café", which is not ASCII and so has no one spelling there

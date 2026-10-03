@@ -1,0 +1,14 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - TODO
+    - app.py
+---
+success: true
+exit_code: 0
+----- stdout -----
+app.py:2:23-2:26: TODO
+
+----- stderr -----

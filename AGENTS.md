@@ -10,15 +10,13 @@ It is written in Rust and licensed GPL-3.0-or-later.
 
 ## Status
 
-**Nothing is implemented.**  The repository holds a scaffold: a Cargo workspace with one
-placeholder binary, CI, and the contributor documentation.  The design is still being settled
-and has not yet been written into this repository as a specification.
+**Textual search is built; nothing else is.**  `quaff TEXT [PATH]` and `quaff -s TEXT [PATH]`
+search a project, and `architecture/search.md` specifies them as built.  Scripts, structural
+search and edits are not built, and the rest of the design is still being settled.
 
 - **Do not implement features from a recollection of the design.**  When a piece of it settles,
   its specification lands in `architecture/` in the same change as the code, and that is what
   to build against.
-- **The placeholder `quaff` exits non-zero on purpose**, so that nothing can mistake the
-  scaffold for a working build.  Replace it; do not make it exit 0.
 
 ## This repository will be public
 
@@ -36,6 +34,7 @@ fails on either.
 | adding a workspace member | the checklist in [architecture/workspace.md](architecture/workspace.md) |
 | `tools.toml`, `scripts/install-tools` or `.github/actions/install-tools`, or adding a verification tool | [architecture/verification.md](architecture/verification.md) |
 | an end-to-end test, or anything that changes what `quaff` prints or how it exits | the snapshot sections of [architecture/verification.md](architecture/verification.md) |
+| `crates/quaffed/src/`: the command line, discovery, encodings, matching or output | [architecture/search.md](architecture/search.md) |
 | `packaging/`, `scripts/build-deb`, the package or release workflows, or a dependency the binary links | [architecture/release.md](architecture/release.md) |
 
 ## Commands

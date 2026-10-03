@@ -27,3 +27,7 @@ insta-cmd = "=0.7.0"
 # Every other build keeps the platform allocator.
 [target.'cfg(target_env = "musl")'.dependencies]
 mimalloc = "=0.1.52"
+
+[dependencies]
+ignore = "=0.4.33"
+memchr = "=2.8.3"

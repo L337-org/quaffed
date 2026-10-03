@@ -5,7 +5,7 @@ Contributions are welcome.  By participating, you are expected to uphold the
 
 ## Before you start
 
-**The design is not settled and nothing is implemented yet.**  Until it settles, the most
+**The design is not settled, and only textual search is implemented.**  Until it settles, the most
 useful contribution is discussion rather than code: open an issue before starting anything
 beyond a small fix, so the approach can be agreed before you invest time in it.
 

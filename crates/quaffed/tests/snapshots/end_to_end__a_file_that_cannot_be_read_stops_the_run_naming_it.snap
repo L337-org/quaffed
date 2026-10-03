@@ -2,11 +2,12 @@
 source: crates/quaffed/tests/end_to_end.rs
 info:
   program: quaff
-  args: []
+  args:
+    - TODO
 ---
 success: false
-exit_code: 1
+exit_code: 7
 ----- stdout -----
 
 ----- stderr -----
-quaff [VERSION]: nothing is implemented yet
+quaff: reading "pkg/client.py": Permission denied (os error 13)

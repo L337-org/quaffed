@@ -1,0 +1,15 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - TODO
+    - image.bin
+---
+success: false
+exit_code: 1
+----- stdout -----
+
+----- stderr -----
+quaff: no matches for "TODO"
+quaff: 1 binary file not searched

@@ -7,6 +7,9 @@ Files: *
 Copyright: 2026 Gavin Lucas
  2019 Octavian Oncescu
  2018-2025 Microsoft Corporation, Daan Leijen
+ 2015-2019 Andrew Gallant
+ 2014 The Rust Project Developers
+ 2019 The Crossbeam Project Developers
  2005-2020 Rich Felker and other contributors
  The Rust Project Developers
 License: GPL-3+ and Expat and (Expat or Apache-2.0)
@@ -14,7 +17,19 @@ Comment: usr/bin/quaff is a statically linked binary.  quaffed itself is
  licensed GPL-3+.  The binary also contains these crates, each under the Expat
  licence: mimalloc 0.1.52 and libmimalloc-sys 0.1.49 (copyright 2019 Octavian
  Oncescu), the latter bundling the mimalloc C library (copyright 2018-2025
- Microsoft Corporation, Daan Leijen).  It contains the musl C library
+ Microsoft Corporation, Daan Leijen).
+ .
+ It contains these crates, each offered under a choice of licences and used
+ here under the Expat licence: ignore 0.4.33, globset 0.4.20, memchr 2.8.3,
+ aho-corasick 1.1.5 and walkdir 2.5.0 (copyright 2015 Andrew Gallant),
+ same-file 1.0.6 (copyright 2017 Andrew Gallant) and bstr 1.13.1 (copyright
+ 2018-2019 Andrew Gallant), each Unlicense or Expat, or for bstr Expat or
+ Apache-2.0; regex-automata 0.4.18, regex-syntax 0.8.11 and log 0.4.34
+ (copyright 2014 The Rust Project Developers), each Expat or Apache-2.0; and
+ crossbeam-deque 0.8.8, crossbeam-epoch 0.9.21 and crossbeam-utils 0.8.23
+ (copyright 2019 The Crossbeam Project Developers), each Expat or Apache-2.0.
+ .
+ It contains the musl C library
  (copyright 2005-2020 Rich Felker and other contributors), under the Expat
  licence, and the Rust standard library, licensed Expat or Apache-2.0.  It also
  contains LLVM's libunwind, whose licence's LLVM exception waives the notice
