@@ -131,7 +131,10 @@ src/app.py:12:5-12:22: def connect(self):
   followed.  Anything not looked at is said, never silently left out.
 - **A failed assertion** goes to standard error before the notes, as where it was written, the
   count expected and the count found:
-  `quaff: checks.quaff:3:1: expected exactly 2 matches of "TODO", found 1`.
+  `quaff: checks.quaff:3:1: expected exactly 2 matches of "TODO", found 1`.  A message names a
+  pattern by its text quoted, a line break as `\n`, with any anchors outside the quotes as a
+  script writes them: `^"x"$`.  Statements after a failed block do not run, so they add no
+  notes.
 - A closed standard output - piping into `head` - stops the printing quietly.  Assertions are
   still evaluated, so the exit code is still the answer.
 

@@ -429,6 +429,8 @@ fn each_usage_error_exits_3_saying_what_to_do() {
     assert_quaff_snapshot!(project.quaff(&["--pattern=handle($a)"]));
     assert_quaff_snapshot!(project.quaff(&["-s", ""]));
     assert_quaff_snapshot!(project.quaff(&["--"]));
+    assert_quaff_snapshot!(project.quaff(&["-e"]));
+    assert_quaff_snapshot!(project.quaff(&["--file"]));
     project.assert_unchanged();
 }
 
@@ -438,6 +440,16 @@ fn a_query_that_is_not_utf8_is_refused() {
     let project = Project::new(PROJECT);
     let mut command = project.quaff(&[]);
     command.arg(std::ffi::OsStr::from_bytes(b"caf\xe9"));
+    assert_quaff_snapshot!(command);
+    project.assert_unchanged();
+}
+
+#[test]
+fn an_expression_that_is_not_utf8_is_refused_naming_which() {
+    use std::os::unix::ffi::OsStrExt;
+    let project = Project::new(PROJECT);
+    let mut command = project.quaff(&["-e", "find \"TODO\"", "-e"]);
+    command.arg(std::ffi::OsStr::from_bytes(b"find \"caf\xe9\""));
     assert_quaff_snapshot!(command);
     project.assert_unchanged();
 }
@@ -715,6 +727,21 @@ fn a_script_file_that_cannot_be_read_exits_7_naming_it() {
 fn standard_input_can_be_a_source_only_once() {
     let project = Project::new(SCRIPTED);
     assert_quaff_snapshot!(project.quaff(&["-f", "-", "-f", "-"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_failed_assertion_comes_before_the_notes_and_later_statements_note_nothing() {
+    let mut project = Project::new(&[(".git/HEAD", ""), ("a.txt", "TODO\n")]);
+    project.add_bytes("image.bin", b"TODO\0");
+    project.add_bytes("latin1.txt", b"caf\xe9\n");
+    // A note from the find before the block, the failure, then what was not looked at.  The
+    // non-ASCII find after the failed block never runs, so the Latin-1 file is not noted for
+    // it.  Anchors stay in the messages, outside the quotes.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "find ^\"FIXME\"$\nfind \"TODO\" expect none\nfind \"caf\u{e9}\"",
+    ]));
     project.assert_unchanged();
 }
 

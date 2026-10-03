@@ -501,7 +501,7 @@ impl Evaluation<'_> {
                     let found = self.print_matches(pattern, out)?;
                     if found == 0 {
                         self.notes
-                            .push(format!("no matches for {:?}", display(pattern)));
+                            .push(format!("no matches for {}", quoted(pattern)));
                     }
                     any |= found > 0;
                 }
@@ -512,10 +512,10 @@ impl Evaluation<'_> {
                         let found = self.print_matches(assertion.pattern, out)?;
                         if !assertion.count.holds(found) {
                             failed.push(format!(
-                                "{}: expected {} of {:?}, found {found}",
+                                "{}: expected {} of {}, found {found}",
                                 built.locate(assertion.span, assertion.span.start),
                                 expected(assertion.count),
-                                display(assertion.pattern)
+                                quoted(assertion.pattern)
                             ));
                         }
                     }
@@ -570,6 +570,17 @@ fn display(pattern: &TextPattern) -> String {
         .collect()
 }
 
+/// `pattern` as a message names it: its text quoted, with any anchors outside the quotes as a
+/// script writes them, so an anchored pattern is not mistaken for the bare text.
+fn quoted(pattern: &TextPattern) -> String {
+    format!(
+        "{}{:?}{}",
+        if pattern.start_anchor { "^" } else { "" },
+        display(pattern),
+        if pattern.end_anchor { "$" } else { "" }
+    )
+}
+
 /// What `count` requires, worded for a failed assertion.
 fn expected(count: Count) -> String {
     let matches = |n: u64| if n == 1 { "match" } else { "matches" };
@@ -591,10 +602,10 @@ fn skipped(searched: &Searched, patterns: &[&TextPattern], found: &discover::Fou
     for (pattern, &unknown) in patterns.iter().zip(&searched.unknown_encoding) {
         if unknown > 0 {
             notes.push(format!(
-                "{} in an unknown 8-bit encoding not searched for {:?}, which is not ASCII and so \
+                "{} in an unknown 8-bit encoding not searched for {}, which is not ASCII and so \
                  has no one spelling there",
                 count(unknown, "file", "files"),
-                display(pattern)
+                quoted(pattern)
             ));
         }
     }
@@ -683,18 +694,60 @@ mod tests {
         );
     }
 
+    /// A standard output whose reader has gone.
+    struct Closed;
+
+    impl Write for Closed {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::Error::from(io::ErrorKind::BrokenPipe))
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
     #[test]
     fn a_closed_pipe_ends_the_run_quietly() {
-        struct Closed;
-        impl Write for Closed {
-            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
-                Err(io::Error::from(io::ErrorKind::BrokenPipe))
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
         assert!(!print(&mut Closed, "x").unwrap());
+    }
+
+    #[test]
+    fn with_the_reader_gone_assertions_still_decide_the_outcome() {
+        let dir = std::env::temp_dir().join(format!("quaffed-closed-{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("creating the directory");
+        fs::write(dir.join("a.txt"), "TODO\nTODO\n").expect("writing");
+        let outcome = |script: &str| {
+            let sources = vec![SourceArg::Expression {
+                number: 1,
+                text: script.to_owned(),
+            }];
+            run(
+                sources,
+                None,
+                &dir,
+                &mut io::empty(),
+                &mut Closed,
+                &mut io::sink(),
+            )
+        };
+        let failed = outcome("find \"TODO\" expect 1");
+        let held = outcome("find \"TODO\" expect 2");
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(failed.expect("running"), Outcome::AssertionFailed);
+        assert_eq!(held.expect("running"), Outcome::Success);
+    }
+
+    #[test]
+    fn a_pattern_is_named_with_its_anchors_outside_the_quotes() {
+        let mut pattern = TextPattern::literal("x");
+        assert_eq!(quoted(&pattern), "\"x\"");
+        pattern.start_anchor = true;
+        pattern.push_line_break();
+        pattern.push_literal("y".into());
+        assert_eq!(quoted(&pattern), "^\"x\\ny\"");
+        pattern.start_anchor = false;
+        pattern.end_anchor = true;
+        assert_eq!(quoted(&pattern), "\"x\\ny\"$");
     }
 
     #[test]
