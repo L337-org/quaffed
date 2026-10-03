@@ -65,6 +65,57 @@ fn parse(text: &str) -> Result<Program, quaffed_script::ParseError> {
     Ok(program)
 }
 
+/// Words the parser acts on, so that generated input gets past the first word and reaches the
+/// clause, condition and count parsers, which random characters almost never do.
+const VOCABULARY: &[&str] = &[
+    "find",
+    "replace",
+    "string",
+    "with",
+    "delete",
+    "expect",
+    "in",
+    "where",
+    "not",
+    "and",
+    "matches",
+    "contains",
+    "FILE",
+    "at",
+    "least",
+    "most",
+    "or",
+    "none",
+    "any",
+    "as",
+    "reject",
+    "applicable",
+    "no",
+    "insert",
+    "ENCLOSING",
+    "LANGUAGE",
+    "\"x\"",
+    "\"\"",
+    "\"\"\" a \"\"\"",
+    "`f($a)`",
+    "`g(${a|x})`",
+    "``",
+    "$x",
+    "$_",
+    "$x...",
+    "$^",
+    "^",
+    "$",
+    "0",
+    "1",
+    "18446744073709551616",
+    "[",
+    "]",
+    ";",
+    "\n",
+    "#",
+];
+
 /// Statements as token lists, so that they can be laid out in more than one way.
 fn statement() -> impl Strategy<Value = Vec<String>> {
     let literal = "[a-z ;#$^]{1,6}";
@@ -124,6 +175,19 @@ proptest! {
 
     #[test]
     fn the_parser_never_panics(text in "[a-z\"`$^;#\\[\\]{}|.0-9 \n]{0,48}") {
+        let _ = parse(&text);
+    }
+
+    #[test]
+    fn the_parser_never_panics_on_sequences_of_its_own_words(
+        words in proptest::collection::vec(proptest::sample::select(VOCABULARY), 0..24),
+        gaps in proptest::collection::vec(0usize..3, 24),
+    ) {
+        let mut text = String::new();
+        for (word, gap) in words.iter().zip(&gaps) {
+            text.push_str(word);
+            text.push_str([" ", "", "\n"][*gap]);
+        }
         let _ = parse(&text);
     }
 

@@ -259,10 +259,20 @@ impl<'t> Parser<'t> {
         ))
     }
 
-    /// `` delete `X` clauses ``.
+    /// `` delete `X` clauses ``.  `delete` removes matched nodes, so its operand is a pattern;
+    /// there is no textual delete, and a quoted operand is refused rather than read as one.
     fn delete(&mut self, first: &Token) -> Result<Spanned<Statement>, ParseError> {
         self.at += 1;
         let target = self.operand(OperandUse::Search)?;
+        if matches!(target.node, Operand::Text(_)) {
+            return Err(ParseError {
+                kind: ErrorKind::Malformed,
+                message: "`delete` removes matched nodes, so it takes a backticked pattern, not                           quoted text; to remove text, replace it with nothing:                           replace string \"...\" with \"\""
+                    .into(),
+                start: target.span.start,
+                end: target.span.end,
+            });
+        }
         let clauses = self.clauses()?;
         let span = self.token_span(first).through(self.last_span());
         Ok(Spanned::new(
@@ -660,7 +670,16 @@ impl<'t> Parser<'t> {
             TokenKind::Word(word) if word == "at" => self.bounded_count()?,
             TokenKind::Word(word) if word == "none" => Count::None,
             TokenKind::Word(word) if word == "any" => {
-                if let Some(set) = self.peek().filter(|t| matches!(t.kind, TokenKind::Word(_))) {
+                // A clause keyword after `any` is the next clause, or a clause out of order,
+                // which `clauses` reports as the malformed script it is.
+                let is_set = |token: &&Token| match &token.kind {
+                    TokenKind::Word(word) => {
+                        !CLAUSE_ORDER.contains(&word.as_str())
+                            && !CLAUSES_NOT_IN_THIS_BUILD.contains(&word.as_str())
+                    }
+                    _ => false,
+                };
+                if let Some(set) = self.peek().filter(is_set) {
                     return Err(Self::unknown(
                         format!(
                             "unknown construct: counting the finding set {} is not in this \
@@ -994,6 +1013,39 @@ mod tests {
             repeated.message
         );
         assert_eq!(repeated.start, 16);
+        // After `expect any`, a clause keyword is a clause, not a finding set.
+        let after_any = error(r#"find "x" expect any in "src""#);
+        assert_eq!(after_any.kind, ErrorKind::Malformed);
+        assert!(
+            after_any.message.contains("cannot follow `expect`"),
+            "{}",
+            after_any.message
+        );
+        assert_eq!(after_any.start, 20);
+        let repeated_after_any = error("delete `x` expect any expect 1");
+        assert_eq!(repeated_after_any.kind, ErrorKind::Malformed);
+        assert!(
+            repeated_after_any.message.contains("repeated"),
+            "{}",
+            repeated_after_any.message
+        );
+        let not_built_after_any = error("find `x` expect any as y");
+        assert_eq!(not_built_after_any.kind, ErrorKind::Unknown);
+        assert!(
+            not_built_after_any.message.contains("`as`"),
+            "{}",
+            not_built_after_any.message
+        );
+    }
+
+    #[test]
+    fn delete_takes_a_pattern_never_text() {
+        let err = error(r#"delete "x" expect 1"#);
+        assert_eq!(
+            (err.kind, err.start, err.end),
+            (ErrorKind::Malformed, 7, 10)
+        );
+        assert!(err.message.contains("replace string"), "{}", err.message);
     }
 
     #[test]

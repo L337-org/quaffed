@@ -20,8 +20,11 @@ A double-quoted operand is text; a backticked one is a pattern in the target lan
   is never trimmed.
 - Only `"` and `` ` `` are delimiters.  An operand may span lines.
 
-The shortest spelling of any content is the shortest fence whose length does not occur as a run
-in it, padded with a space at each end when the content starts or ends with the delimiter.
+The shortest spelling of any content is a single delimiter when no lone one occurs in it and it
+neither starts nor ends with one.  Otherwise it is the shortest fence of three or more whose
+length does not occur as a run in it, padded with a space at each end when the content starts
+or ends with the delimiter, or already starts and ends with a space - which the fence would
+otherwise trim.
 The unit tests check every spelling the design lists, and a property test checks that any
 content read back from its shortest spelling is unchanged.
 
@@ -45,7 +48,9 @@ delete `breakpoint()` expect any
   `contains`.  There is no `or`.
 - **Counts:** `N`, `at least N`, `at most N`, `N or none`, `none`, `any`.
 - **Textual operations are spelled textually.**  `replace string` takes quoted operands and
-  `replace` backticked ones; a mismatch is an error naming it, never a guess.
+  `replace` backticked ones; a mismatch is an error naming it, never a guess.  `delete` removes
+  matched nodes and takes only a backticked pattern: there is no textual delete, and text is
+  removed by replacing it with `""`.
 - **An edit without an `expect` parses**, and the representation's checker refuses it, so the
   rule holds however a program was built.
 

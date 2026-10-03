@@ -6,7 +6,8 @@
 //! Operands follow the one rule settled for them: nothing inside an operand is escaped.  An
 //! operand opens with a run of one delimiter, or of three or more, and closes at the next run
 //! of exactly that length; two delimiters in a row are the empty operand; in an operand fenced
-//! with three or more, content that both starts and ends with a space loses one from each end.
+//! with three or more, content at least two characters long that both starts and ends with a
+//! space loses one from each end.
 //! Only `"` and `` ` `` are delimiters.
 
 use std::fmt;
@@ -85,8 +86,10 @@ pub struct LexError {
     pub end: usize,
 }
 
-/// Splits `text` into tokens.  Comments - `#` to the end of a line, outside operands - and
-/// whitespace other than newlines are dropped.
+/// Splits `text` into tokens.
+///
+/// Comments - `#` to the end of a line, outside operands - and whitespace other than newlines
+/// are dropped.
 ///
 /// # Errors
 ///
@@ -242,7 +245,9 @@ fn operand(text: &str, at: usize) -> Result<(String, usize), LexError> {
             let length = run(bytes, i, delimiter);
             if length == fence {
                 let mut content = &text[content_start..i];
-                // Markdown's rule, which is what lets content begin or end with the delimiter.
+                // Like Markdown's code spans, which is what lets content begin or end with the
+                // delimiter - except that content of spaces alone is trimmed too, where
+                // CommonMark keeps it.  The two-character minimum keeps a lone space.
                 if fence >= 3
                     && content.len() >= 2
                     && content.starts_with(' ')
