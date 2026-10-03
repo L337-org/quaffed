@@ -81,12 +81,22 @@ git commit -s
 ```
 
 That appends `Signed-off-by: Your Name <you@example.com>`, using your configured name and email.
+CI checks every commit on a pull request for a sign-off carrying the same email address the
+commit is authored under, so a sign-off typed by hand, or added under another identity, fails.
+
+If you forgot, sign off every commit on your branch at once and force-push:
+
+```bash
+git rebase --signoff main
+git push --force-with-lease
+```
 
 ## Submitting your change
 
 CI (`.github/workflows/premerge.yaml`) runs on every pull request and every push to `main`, and
-every job must pass before merging: the repository hygiene check, the action-pin check, rustfmt,
-clippy, the verification tools install, and the tests on Linux and macOS.
+every job must pass before merging: the repository hygiene check, the action-pin check, the
+sign-off check (pull requests only), rustfmt, clippy, the verification tools install, and the
+tests on Linux and macOS.
 
 Keep pull requests focused: one logical change per pull request is easier to review than a
 bundle of unrelated fixes.  A change that alters behaviour carries its tests and its

@@ -48,6 +48,67 @@ jobs:
       - name: Every `uses:` must name a 40-hex commit SHA
         uses: L337-org/github-workflows/actions/action-pins@17b9df0328001e9f15abbac77118a31124993b15 # v1.1.3
 
+  dco:
+    # Every commit carries a Signed-off-by for its author (CONTRIBUTING.md, Developer
+    # Certificate of Origin).  Pull requests only: the squash merge keeps every commit's message,
+    # so a pull request that passes here lands on main signed off, but GitHub authors the squash
+    # commit under whichever of the author's addresses it chooses - often the noreply one - so
+    # matching main's commits against their author would fail every merge.  Merge commits, which
+    # GitHub writes, are skipped.
+    if: github.event_name == 'pull_request'
+    runs-on: [ubuntu-latest]
+    name: Commits are signed off
+    timeout-minutes: 5
+    steps:
+      - name: Check out source repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Every commit has its author's sign-off
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.base_ref }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        # The sign-off is matched on the author's email, ignoring case, as people type their
+        # address both ways.  Dependabot is the one exception: it authors under its noreply
+        # address but signs off as support@github.com, so for that author only, that sign-off
+        # is the one expected.  Seen on its pull requests in this organisation; without it every
+        # dependency update would fail here.
+        # The pull request's commits are those not on the base branch as fetched now, as well as
+        # not at base.sha: base.sha can predate an "Update branch" merge, and main's own squash
+        # commits, authored under a noreply address, would then be counted and fail.  Each step
+        # is read into a variable first, so a failing git command fails the step under bash -e,
+        # and a range with no commit in it fails rather than passing.
+        run: |
+          commits="$(git rev-list --no-merges "$HEAD" --not "$BASE" "origin/$BASE_REF")"
+          dependabot='49699333+dependabot[bot]@users.noreply.github.com'
+          checked=0
+          unsigned=0
+          while read -r sha; do
+            [ -n "$sha" ] || continue
+            checked=$((checked + 1))
+            email="$(git log -1 --format='%ae' "$sha")"
+            expected="$email"
+            if [ "$email" = "$dependabot" ]; then
+              expected='support@github.com'
+            fi
+            if git log -1 --format='%(trailers:key=Signed-off-by,valueonly)' "$sha" | grep -qiF "<$expected>"; then
+              echo "$(git log -1 --format='%h %s' "$sha"): signed off"
+            else
+              echo "::error::$(git log -1 --format='%h %s' "$sha") has no Signed-off-by <$expected> for its author" >&2
+              unsigned=$((unsigned + 1))
+            fi
+          done <<<"$commits"
+          if [ "$checked" -eq 0 ]; then
+            echo "::error::no commit on $HEAD that is not on $BASE_REF, so nothing was checked" >&2
+            exit 1
+          fi
+          if [ "$unsigned" -ne 0 ]; then
+            echo "::error::sign off every commit on the branch with git rebase --signoff $BASE_REF, then force-push (CONTRIBUTING.md)" >&2
+            exit 1
+          fi
+
   fmt:
     runs-on: [ubuntu-latest]
     name: rustfmt
