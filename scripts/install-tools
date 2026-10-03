@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+# Install verification tools at the versions pinned in tools.toml.
+#
+#   scripts/install-tools NAME...    install the named entries
+#   scripts/install-tools --all      install every entry
+#   scripts/install-tools --cargo    install every [cargo-install] entry, and no toolchain
+#   scripts/install-tools --list     print the manifest as parsed: section, name, value
+#
+# Local runs and CI both install through this script, so the version comes from tools.toml and
+# nowhere else.  Cargo tools go wherever `cargo install` puts them, which is CARGO_INSTALL_ROOT
+# when that is set; CI sets it to a directory it caches.  architecture/verification.md has the
+# reasoning and the checklist for adding a tool.
+#
+# Every failure stops the script, naming the tool and version, because a job that carried on
+# without its tool would run something else or nothing and might still pass.
+
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+manifest="$root/tools.toml"
+
+die() {
+    printf 'install-tools: %s\n' "$*" >&2
+    exit 1
+}
+
+# Parallel arrays, in manifest order: section, name, value.
+sections=()
+names=()
+values=()
+
+parse_manifest() {
+    [[ -f "$manifest" ]] || die "manifest $manifest does not exist"
+    local section="" line lineno=0
+    local header='^\[([a-z-]+)\]$'
+    local entry='^([a-z0-9-]+) = "([^"]+)"$'
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        lineno=$((lineno + 1))
+        # A comment is a whole line starting with '#'; trailing comments are not part of the
+        # subset, so they fail as an unrecognised line rather than being half-understood.
+        if [[ -z "${line//[[:space:]]/}" || "$line" =~ ^[[:space:]]*# ]]; then
+            continue
+        elif [[ "$line" =~ $header ]]; then
+            section="${BASH_REMATCH[1]}"
+            case "$section" in
+                cargo-install | toolchain | toolchain-components) ;;
+                *) die "$manifest:$lineno: unknown section [$section]" ;;
+            esac
+        elif [[ "$line" =~ $entry ]]; then
+            [[ -n "$section" ]] || die "$manifest:$lineno: entry before any section: $line"
+            sections+=("$section")
+            names+=("${BASH_REMATCH[1]}")
+            values+=("${BASH_REMATCH[2]}")
+        else
+            die "$manifest:$lineno: not a section header or a name = \"value\" line: $line"
+        fi
+    done <"$manifest"
+    [[ ${#names[@]} -gt 0 ]] || die "manifest $manifest has no entries"
+}
+
+# Print the value of NAME in SECTION, or nothing.
+lookup() {
+    local section="$1" name="$2" i
+    for i in "${!names[@]}"; do
+        if [[ "${sections[$i]}" == "$section" && "${names[$i]}" == "$name" ]]; then
+            printf '%s' "${values[$i]}"
+            return
+        fi
+    done
+}
+
+install_cargo_tool() {
+    local name="$1" version="$2"
+    command -v cargo >/dev/null || die "installing $name $version needs cargo, which is not on PATH"
+    printf 'install-tools: %s %s\n' "$name" "$version" >&2
+    # --locked builds with the crate's own lock file, as the spikes measured it.  An exact
+    # requirement, because a bare version is a caret requirement to cargo install.  cargo skips
+    # a crate already installed at that version, so a warm cache costs an index lookup.
+    local status=0
+    cargo install --locked --version "=$version" "$name" || status=$?
+    [[ $status -eq 0 ]] || die "installing $name $version failed: cargo install exited $status; its output is above"
+}
+
+install_toolchain() {
+    local name="$1" channel="$2" components
+    components="$(lookup toolchain-components "$name")"
+    command -v rustup >/dev/null ||
+        die "installing $name ($channel) needs rustup, which is not on PATH; see https://rustup.rs"
+    printf 'install-tools: %s %s %s\n' "$name" "$channel" "$components" >&2
+    local args=(toolchain install "$channel" --profile minimal)
+    local component
+    for component in $components; do
+        args+=(--component "$component")
+    done
+    local status=0
+    rustup "${args[@]}" || status=$?
+    [[ $status -eq 0 ]] ||
+        die "installing $name ($channel with ${components:-no components}) failed: rustup exited $status; its output is above"
+}
+
+install_one() {
+    local name="$1" version
+    version="$(lookup cargo-install "$name")"
+    if [[ -n "$version" ]]; then
+        install_cargo_tool "$name" "$version"
+        return
+    fi
+    version="$(lookup toolchain "$name")"
+    if [[ -n "$version" ]]; then
+        install_toolchain "$name" "$version"
+        return
+    fi
+    local known=() i
+    for i in "${!names[@]}"; do
+        [[ "${sections[$i]}" == toolchain-components ]] || known+=("${names[$i]}")
+    done
+    die "$name is not in $manifest; the tools it names are: ${known[*]}"
+}
+
+main() {
+    [[ $# -gt 0 ]] || die "name the tools to install, or pass --all, --cargo or --list"
+    parse_manifest
+    local i
+    case "$1" in
+        --list | --all | --cargo)
+            # An option takes nothing else, so a job that also names a tool, expecting it to be
+            # installed, fails here rather than in the step that needed it.
+            [[ $# -eq 1 ]] || die "$1 takes no other arguments, but was given: ${*:2}"
+            ;;
+    esac
+    case "$1" in
+        --list)
+            for i in "${!names[@]}"; do
+                printf '%s %s %s\n' "${sections[$i]}" "${names[$i]}" "${values[$i]}"
+            done
+            ;;
+        --all | --cargo)
+            for i in "${!names[@]}"; do
+                case "${sections[$i]}" in
+                    cargo-install) install_cargo_tool "${names[$i]}" "${values[$i]}" ;;
+                    toolchain) [[ "$1" == --cargo ]] || install_toolchain "${names[$i]}" "${values[$i]}" ;;
+                esac
+            done
+            ;;
+        -*)
+            die "unknown option $1; use NAME..., --all, --cargo or --list"
+            ;;
+        *)
+            local name
+            for name in "$@"; do
+                [[ "$name" != -* ]] || die "$name is an option, and options cannot follow tool names"
+            done
+            for name in "$@"; do
+                install_one "$name"
+            done
+            ;;
+    esac
+}
+
+main "$@"

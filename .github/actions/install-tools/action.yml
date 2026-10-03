@@ -1,0 +1,41 @@
+name: 'Install verification tools'
+description: 'Install tools pinned in tools.toml through scripts/install-tools, with the cargo-installed ones cached.'
+
+# A job that needs a tool installs it with this action and nothing else, so the version comes from
+# tools.toml.  Cargo tools build from source, at one to two minutes each, so they are installed
+# into a directory of their own and cached; the key carries a hash of tools.toml, so a changed pin
+# misses the cache and builds.  The prefix restore lets an unchanged tool come back from an older
+# entry, and `cargo install` skips a crate already installed at the pinned version.  Nightly
+# toolchains are not cached: rustup installs one in about half a minute.
+inputs:
+  tools:
+    description: 'Arguments for scripts/install-tools: names from tools.toml, or --cargo, or --all.'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Restore the installed tools
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.quaffed-tools
+        key: quaffed-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools.toml') }}-${{ inputs.tools }}
+        restore-keys: |
+          quaffed-tools-${{ runner.os }}-${{ runner.arch }}-
+
+    - name: Put the tools directory on PATH
+      shell: bash
+      run: |
+        echo "CARGO_INSTALL_ROOT=$HOME/.quaffed-tools" >> "$GITHUB_ENV"
+        echo "$HOME/.quaffed-tools/bin" >> "$GITHUB_PATH"
+
+    - name: Install from tools.toml
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      # Through the environment rather than interpolated into the script, so the arguments are
+      # data to the shell, never code.
+      env:
+        TOOLS: ${{ inputs.tools }}
+      run: |
+        read -ra tools <<<"$TOOLS"
+        scripts/install-tools "${tools[@]}"
