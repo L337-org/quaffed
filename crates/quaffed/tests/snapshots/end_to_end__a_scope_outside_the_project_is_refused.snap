@@ -1,0 +1,14 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - TODO
+    - ".."
+---
+success: false
+exit_code: 3
+----- stdout -----
+
+----- stderr -----
+quaff: the scope ".." is outside the project at ".", and a scope can only narrow a search; run quaff from inside the other project instead

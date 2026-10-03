@@ -9,9 +9,8 @@ The binary is `quaff`, so you quaff a file, or quaff every file in a repository.
 
 ## Status
 
-**Pre-release, and nothing is implemented yet.**  The design is still being settled.  This
-repository currently holds a scaffold - a Cargo workspace, CI and the contributor
-documentation - and a placeholder `quaff` that says it is not implemented and exits non-zero.
+**Pre-release.**  Textual search across a project is built; scripts, structural search and
+edits are not, and the design is still being settled.
 
 ## Installing
 
@@ -26,12 +25,20 @@ picks up automatically):
 git clone https://github.com/L337-org/quaffed.git
 cd quaffed
 cargo build --release
-./target/release/quaff
+./target/release/quaff -h
 ```
 
 ## Running
 
-Not yet: see Status.
+```bash
+quaff TODO                 # every TODO in the project, from wherever you are in it
+quaff TODO src             # only under src
+quaff -s TODO -s FIXME     # two searches, in turn
+quaff -h                   # the rest
+```
+
+Each match prints as `path:line:column-endline:endcolumn: text`.  The exit status is 0 when
+something was found and 1 when nothing was.
 
 ## Contributing
 

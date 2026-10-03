@@ -1,0 +1,30 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "--help"
+---
+success: true
+exit_code: 0
+----- stdout -----
+quaff [VERSION] - the QUAntiFied File EDitor
+
+Usage:
+  quaff TEXT [PATH]        search the project for TEXT
+  quaff -s TEXT [PATH]     the same, with TEXT given as an option; -s may be repeated
+  quaff -h, --help         this help
+
+TEXT is literal: nothing in it is special.  Put -- before TEXT that starts with a dash.
+
+A search covers the whole project - the nearest directory at or above this one that holds
+.git - or this directory when there is no project.  PATH narrows it to one file or directory
+inside the project.  Files ignored by .gitignore, .ignore or .git/info/exclude are skipped,
+and so is version-control metadata.  Hidden files are searched.
+
+Each match prints on its own line as path:line:column-endline:endcolumn: text, with columns
+counted in characters.  Binary files are not searched, and the run says how many there were.
+
+Exit status: 0 found, 1 nothing found, 3 usage error, 7 I/O error.
+
+----- stderr -----

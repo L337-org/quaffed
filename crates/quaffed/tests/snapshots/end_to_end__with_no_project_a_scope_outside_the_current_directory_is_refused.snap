@@ -1,0 +1,14 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - TODO
+    - ".."
+---
+success: false
+exit_code: 3
+----- stdout -----
+
+----- stderr -----
+quaff: the scope ".." is outside the current directory; with no project - no .git here or above - a search covers only this directory, and a scope can only narrow it.  Run quaff from the directory you want searched

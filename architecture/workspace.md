@@ -21,7 +21,7 @@ because the design it would describe is not settled.
 │   └── workspace-version # prints the declared version; see release.md
 ├── crates/
 │   └── quaffed/          # the only member so far; builds the `quaff` binary
-│       ├── src/main.rs
+│       ├── src/          # main.rs, and one module per concern; see search.md
 │       └── tests/        # integration tests, one file per concern
 └── architecture/         # detail notes, each routed from AGENTS.md
 ```

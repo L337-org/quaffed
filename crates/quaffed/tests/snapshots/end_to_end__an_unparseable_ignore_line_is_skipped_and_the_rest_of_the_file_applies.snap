@@ -1,0 +1,14 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - TODO
+---
+success: true
+exit_code: 0
+----- stdout -----
+a.py:1:1-1:4: TODO
+
+----- stderr -----
+quaff: ignore file ".gitignore": line 2: error parsing glob 'a{b': unclosed alternate group; missing '}' (maybe escape '{' with '[{]'?); that line is skipped and the rest of the file applies

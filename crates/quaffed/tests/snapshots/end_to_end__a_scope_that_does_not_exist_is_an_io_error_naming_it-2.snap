@@ -1,0 +1,14 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - TODO
+    - src/**/*.py
+---
+success: false
+exit_code: 7
+----- stdout -----
+
+----- stderr -----
+quaff: reading the scope "src/**/*.py": No such file or directory (os error 2).  quaff does not expand a glob given as the scope; name one file or directory

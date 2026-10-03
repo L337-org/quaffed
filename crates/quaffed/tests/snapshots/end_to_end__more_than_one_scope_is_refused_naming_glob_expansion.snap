@@ -1,0 +1,15 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - TODO
+    - app.py
+    - pkg/client.py
+---
+success: false
+exit_code: 3
+----- stdout -----
+
+----- stderr -----
+quaff: 2 scope arguments, "app.py", "pkg/client.py"; quaff takes one.  The shell has probably expanded a glob: name one file or directory instead

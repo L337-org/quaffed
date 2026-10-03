@@ -1,0 +1,13 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - FIXME
+---
+success: false
+exit_code: 1
+----- stdout -----
+
+----- stderr -----
+quaff: no matches for "FIXME"

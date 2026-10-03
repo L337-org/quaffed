@@ -9,8 +9,8 @@ and scripts are resolved locally, from the directory installed beside the binary
 project, and are never fetched.  There is no author-operated service, and nothing for your
 code, your files or your usage to pass through.
 
-*quaffed is pre-release and nothing is implemented yet.  This page states what it is being
-built to do, and is part of the specification it will be held to.*
+*quaffed is pre-release, and only textual search is implemented.  This page states what it is
+being built to do, and is part of the specification it will be held to.*
 
 ## What stays on your machine
 

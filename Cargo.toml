@@ -20,6 +20,9 @@ missing_docs = "warn"
 # Pedantic from the first line rather than retrofitted, when turning it on would mean
 # revisiting every file.  Individual lints are relaxed here, with a reason, not in the code.
 pedantic = { level = "warn", priority = -1 }
+# Off because a path or argument in a message is quoted on purpose, with `{:?}`, so that a value
+# from outside the program is never interpolated bare; this lint asks for the unquoted form.
+unnecessary_debug_formatting = "allow"
 
 # What the Linux package ships: the settings its static-linking measurements were taken with.
 # Kept apart from `release` so a developer's --release build stays quick to link.
