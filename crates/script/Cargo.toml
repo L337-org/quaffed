@@ -1,0 +1,20 @@
+[package]
+name = "quaffed-script"
+description = "The quaff script language: from text to the operation representation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+# Nothing is published until a release decides where and how.
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+quaffed-representation = { path = "../representation" }
+
+[dev-dependencies]
+proptest = "=1.11.0"

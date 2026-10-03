@@ -2,7 +2,8 @@
 
 How the Cargo workspace is laid out, what pins what, and the conventions that are enforced
 mechanically.  What each member does is specified in its own note: textual search in
-`search.md` and the operation representation in `representation.md`.  The rest of the engine -
+`search.md`, the operation representation in `representation.md`, and the script language in
+`script.md`.  The rest of the engine -
 language modules, the journal - is not written here yet, because it is not built.
 
 ## Layout
@@ -23,15 +24,17 @@ language modules, the journal - is not written here yet, because it is not built
 │   ├── quaffed/          # builds the `quaff` binary
 │   │   ├── src/          # main.rs, and one module per concern; see search.md
 │   │   └── tests/        # integration tests, one file per concern
-│   └── representation/   # quaffed-representation: what a program means; see representation.md
+│   ├── representation/   # quaffed-representation: what a program means; see representation.md
+│   └── script/           # quaffed-script: the script language, text to program; see script.md
 └── architecture/         # detail notes, each routed from AGENTS.md
 ```
 
 **The members.**  `quaffed` builds the `quaff` binary, matching the name decision.
 `quaffed-representation` is the operation representation, a crate of its own so that its
 lint configuration - no hash maps or sets - applies to it alone, and so that it can depend on
-no parser.  `members = ["crates/*"]` picks up a new member without an edit, and it inherits the
-version, edition, licence and lints from `[workspace.package]` and `[workspace.lints]`.
+no parser.  `quaffed-script` parses the script language into it.  `members = ["crates/*"]`
+picks up a new member without an edit, and it inherits the version, edition, licence and lints
+from `[workspace.package]` and `[workspace.lints]`.
 
 **`publish = false`** on every member.  Nothing is published until a release decides where and
 how, and an accidental `cargo publish` of a placeholder is not undoable.

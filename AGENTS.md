@@ -12,8 +12,9 @@ It is written in Rust and licensed GPL-3.0-or-later.
 
 **Textual search is built; nothing else is yet.**  `quaff TEXT [PATH]` and `quaff -s TEXT [PATH]`
 search a project, and `architecture/search.md` specifies them as built.  The operation
-representation that scripts will be parsed into is settled and specified in
-`architecture/representation.md`, but nothing produces it yet.  Scripts, structural search and
+representation that scripts are parsed into is specified in `architecture/representation.md`,
+and the script language's parser in `architecture/script.md`, but the command line does not
+run scripts yet.  Scripts, structural search and
 edits are not built, and the rest of the design is still being settled.
 
 - **Do not implement features from a recollection of the design.**  When a piece of it settles,
@@ -38,6 +39,7 @@ fails on either.
 | an end-to-end test, or anything that changes what `quaff` prints or how it exits | the snapshot sections of [architecture/verification.md](architecture/verification.md) |
 | `crates/quaffed/src/`: the command line, discovery, encodings, matching or output | [architecture/search.md](architecture/search.md) |
 | `crates/representation/`: what a program means, the checker, or its lint configuration | [architecture/representation.md](architecture/representation.md) |
+| `crates/script/`: the script language's operands, grammar, errors or locations | [architecture/script.md](architecture/script.md) |
 | `packaging/`, `scripts/build-deb`, the package or release workflows, or a dependency the binary links | [architecture/release.md](architecture/release.md) |
 
 ## Commands
