@@ -14,8 +14,11 @@ because the design it would describe is not settled.
 ├── rust-toolchain.toml   # the Rust version and components
 ├── rustfmt.toml          # pins the style edition, nothing else
 ├── tools.toml            # the verification tools' versions; see verification.md
+├── packaging/deb/        # the Linux package's copyright file; see release.md
 ├── scripts/
-│   └── install-tools     # installs from tools.toml, locally and in CI
+│   ├── install-tools     # installs from tools.toml, locally and in CI; see verification.md
+│   ├── build-deb         # builds the Linux package; see release.md
+│   └── workspace-version # prints the declared version; see release.md
 ├── crates/
 │   └── quaffed/          # the only member so far; builds the `quaff` binary
 │       ├── src/main.rs
@@ -99,6 +102,9 @@ files at all, so a broken walk cannot pass by checking nothing.
 | clippy | `cargo clippy --all-targets --locked -- -D warnings` |
 | Verification tools install | every cargo tool in `tools.toml` builds at its pin (cached; see `verification.md`) |
 | Test | `cargo test --workspace --locked`, then the snapshot check (see `verification.md`), on Linux and macOS |
+
+`.github/workflows/package.yaml` also runs on every pull request, building the Linux package for
+each architecture; `architecture/release.md` describes it and the release workflow.
 
 **Every job here is meant to be a required status check.**  Adding, renaming or removing one
 means updating the branch ruleset in the same change, or the branch waits on a check that never

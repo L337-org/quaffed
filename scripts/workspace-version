@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Print the version the workspace declares, as cargo reads it from the root Cargo.toml.
+#
+# The one reading of the version that scripts and workflows use, so that the package, the
+# release check and anything later cannot each parse Cargo.toml their own way.
+
+set -euo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+# path+file:///.../crates/quaffed#0.1.0, or ...#quaffed@0.1.0 when name and directory differ.
+pkgid="$(cargo pkgid --locked -p quaffed)"
+version="${pkgid##*#}"
+version="${version##*@}"
+# A plain MAJOR.MINOR.PATCH: the release versions are numbered so that each upgrades over the
+# last without a pre-release suffix, and a suffix would mean the parse went wrong.
+if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    printf 'workspace-version: could not read a MAJOR.MINOR.PATCH version from cargo pkgid, which printed %q\n' "$pkgid" >&2
+    exit 1
+fi
+printf '%s\n' "$version"

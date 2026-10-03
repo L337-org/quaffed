@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# Build the Linux package for one architecture, on a Linux host of that architecture.
+#
+#   scripts/build-deb amd64|arm64
+#
+# Builds the static musl binary with the `dist` profile, assembles quaffed_<version>_<arch>.deb
+# under target/deb/, and runs lintian over it, keeping lintian's full output beside the package.
+# CI's package workflow and a contributor both run exactly this.  architecture/release.md has the
+# reasoning.
+#
+# Needs: rustup (or the musl target already installed), musl-tools, dpkg-deb, lintian, readelf.
+# Every failure stops the script and says what was being done.
+
+set -euo pipefail
+
+die() {
+    printf 'build-deb: %s\n' "$*" >&2
+    exit 1
+}
+
+[[ $# -eq 1 ]] || die "usage: scripts/build-deb amd64|arm64"
+arch="$1"
+case "$arch" in
+    amd64) triple=x86_64-unknown-linux-musl ;;
+    arm64) triple=aarch64-unknown-linux-musl ;;
+    *) die "unknown architecture $arch; use amd64 or arm64" ;;
+esac
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+
+for tool in cargo dpkg dpkg-deb lintian readelf gzip; do
+    command -v "$tool" >/dev/null || die "$tool is not on PATH; see architecture/release.md for what a package build needs"
+done
+# Building natively is what was measured, and it means the same script runs on a contributor's
+# machine as on the runner; a cross build would need a second toolchain nobody has tested.
+host="$(dpkg --print-architecture)"
+[[ "$host" == "$arch" ]] || die "building $arch on a $host host; build each architecture on its own (arm64 on an arm64 machine)"
+command -v musl-gcc >/dev/null ||
+    die "musl-gcc is not on PATH: install musl-tools.  mimalloc is C, so the musl build needs a musl C compiler"
+
+# The version is read from the workspace, the one place it is declared.
+version="$(scripts/workspace-version)"
+
+# Timestamps inside the package come from the commit, so two builds of one commit in the same
+# environment produce the same package, and a re-run of a release can tell an identical asset
+# from a different one.  Only Rust is pinned: the C compiler that builds mimalloc comes from the
+# machine, so a different one can change the bytes; see architecture/release.md.
+export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct)}"
+
+if command -v rustup >/dev/null; then
+    rustup target add "$triple" >&2
+fi
+cc_var="CC_${triple//-/_}"
+printf 'build-deb: building quaff %s for %s\n' "$version" "$triple" >&2
+env "$cc_var=musl-gcc" cargo build --locked --profile dist --target "$triple" -p quaffed --bin quaff
+binary="target/$triple/dist/quaff"
+[[ -x "$binary" ]] || die "cargo reported success but $binary is not an executable"
+# A dynamic dependency would make the package fail on the distributions it exists to reach.
+if readelf -d "$binary" | grep -q NEEDED; then
+    die "$binary is dynamically linked: $(readelf -d "$binary" | grep NEEDED | tr -s ' ')"
+fi
+
+name="quaffed_${version}_${arch}"
+out="target/deb"
+tree="$out/$name"
+rm -rf "$tree" "$out/$name.deb" "$out/$name.lintian.txt"
+install -d "$tree/DEBIAN" "$tree/usr/bin" "$tree/usr/share/doc/quaffed"
+install -m 0755 "$binary" "$tree/usr/bin/quaff"
+install -m 0644 packaging/deb/copyright "$tree/usr/share/doc/quaffed/copyright"
+# A native package: the release notes are the changelog, so the entry points at them rather
+# than keeping a second history to drift.
+changelog_date="$(date -u -d "@$SOURCE_DATE_EPOCH" -R)"
+cat >"$tree/usr/share/doc/quaffed/changelog" <<EOF
+quaffed ($version) unstable; urgency=medium
+
+  * Release $version.  See https://github.com/L337-org/quaffed/releases/tag/v$version
+
+ -- Gavin Lucas <Gavin@L337.org>  $changelog_date
+EOF
+gzip -9n "$tree/usr/share/doc/quaffed/changelog"
+# Apparent size rather than disk usage, which varies with the filesystem the tree was built on.
+installed_size="$(du -sk --apparent-size --exclude=DEBIAN "$tree" | cut -f1)"
+cat >"$tree/DEBIAN/control" <<EOF
+Package: quaffed
+Version: $version
+Architecture: $arch
+Maintainer: Gavin Lucas <Gavin@L337.org>
+Installed-Size: $installed_size
+Section: devel
+Priority: optional
+Homepage: https://github.com/L337-org/quaffed
+Description: structural, asserted, atomic edits to source code
+ quaff, the QUAntiFied File EDitor, makes mechanical code changes structural
+ rather than textual, with declared cardinality and assertions, so that an
+ edit either happens exactly as specified or does not happen at all.
+EOF
+find "$tree" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
+dpkg-deb --root-owner-group --build "$tree" "$out/$name.deb" >&2
+
+# lintian's whole output is kept.  The gate accepts exactly the findings below and fails on
+# anything else, so a new finding is seen rather than buried.  no-manual-page: the man page is
+# out of scope.  The second describes the static binary, and depends on the architecture,
+# because Rust builds a static PIE (ELF type DYN, keeping address-space randomisation) for
+# x86_64 musl but a non-PIE static executable (type EXEC) for aarch64 musl.  lintian 2.122 calls
+# the first shared-library-lacks-prerequisites and the second statically-linked-binary, which is
+# the finding the static-linking spike recorded, on arm64.  architecture/release.md has more.
+case "$arch" in
+    amd64) static_finding=shared-library-lacks-prerequisites ;;
+    arm64) static_finding=statically-linked-binary ;;
+esac
+lintian --tag-display-limit 0 "$out/$name.deb" >"$out/$name.lintian.txt" 2>&1 || true
+accepted="^[EW]: quaffed: (no-manual-page|$static_finding) \\[usr/bin/quaff\\]\$"
+unexpected="$(grep -E '^[EW]: ' "$out/$name.lintian.txt" | grep -Ev "$accepted" || true)"
+if [[ -n "$unexpected" ]]; then
+    die "lintian reported findings beyond the accepted two (full output in $out/$name.lintian.txt):
+$unexpected"
+fi
+# no-manual-page is certain while there is no man page, so its absence means lintian did not
+# really check the package.
+grep -q '^W: quaffed: no-manual-page ' "$out/$name.lintian.txt" ||
+    die "lintian did not report the expected no-manual-page finding, so it may not have checked the package: $(head -5 "$out/$name.lintian.txt")"
+
+printf '%s\n' "$out/$name.deb"
