@@ -38,9 +38,10 @@ this one rather than replacing it.
    project root it covers the current directory.
 3. **A scope** is one file or directory path, relative to the current directory.  It must exist -
    otherwise exit 7, naming it - and must lie inside the project, because a command-line scope
-   narrows and never widens - otherwise exit 3.  **It is a path, not a glob**: a quoted glob that
-   reaches quaff is reported as not found, with a note that globs are not expanded.  This is the
-   MVP's behaviour and is expected to change.
+   narrows and never widens - otherwise exit 3.  With no project root the current directory is
+   the whole search, so it bounds the scope instead, again with exit 3.  **It is a path, not a
+   glob**: a quoted glob that reaches quaff is reported as not found, with a note that globs are
+   not expanded.  This is the MVP's behaviour and is expected to change.
 4. **Discovery** (`src/discover.rs`) uses the `ignore` crate, ripgrep's walker:
    - `.gitignore`, `.ignore` and `.git/info/exclude` are honoured, `.gitignore` only inside a git
      repository, as git itself does;

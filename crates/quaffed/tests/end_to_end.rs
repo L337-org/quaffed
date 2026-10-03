@@ -389,6 +389,15 @@ fn a_scope_outside_the_project_is_refused() {
 }
 
 #[test]
+fn with_no_project_a_scope_outside_the_current_directory_is_refused() {
+    let project = Project::new(&[("a.txt", "TODO\n"), ("sub/b.txt", "TODO\n")]);
+    assert_quaff_snapshot!(project.quaff_in("sub", &["TODO", ".."]));
+    // Inside it, a scope still narrows as usual.
+    assert_quaff_snapshot!(project.quaff(&["TODO", "sub"]));
+    project.assert_unchanged();
+}
+
+#[test]
 fn anchors_and_other_punctuation_are_literal() {
     let project = Project::new(&[(".git/HEAD", ""), ("a.txt", "^x$ and x\n[a-z]* and abc\n")]);
     assert_quaff_snapshot!(project.quaff(&["^x$"]));

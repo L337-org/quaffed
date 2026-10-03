@@ -30,6 +30,12 @@ pub enum Failure {
         /// The project root it lies outside.
         root: PathBuf,
     },
+    /// With no project, the scope lies outside the current directory, which is then all a
+    /// search covers; a scope narrows, never widens.  Exit 3.
+    OutsideCurrentDirectory {
+        /// The scope as given.
+        scope: OsString,
+    },
     /// Something could not be read.  Exit 7.
     Io {
         /// What was being done, in the user's terms.
@@ -47,7 +53,9 @@ impl Failure {
     /// The exit code this failure ends the run with.
     pub fn exit_code(&self) -> u8 {
         match self {
-            Failure::Usage(_) | Failure::OutsideProject { .. } => 3,
+            Failure::Usage(_)
+            | Failure::OutsideProject { .. }
+            | Failure::OutsideCurrentDirectory { .. } => 3,
             Failure::Io { .. } | Failure::Discovery(_) => 7,
         }
     }
@@ -61,6 +69,12 @@ impl fmt::Display for Failure {
                 f,
                 "the scope {scope:?} is outside the project at {root:?}, and a scope can only \
                  narrow a search; run quaff from inside the other project instead"
+            ),
+            Failure::OutsideCurrentDirectory { scope } => write!(
+                f,
+                "the scope {scope:?} is outside the current directory; with no project - no .git \
+                 here or above - a search covers only this directory, and a scope can only \
+                 narrow it.  Run quaff from the directory you want searched"
             ),
             Failure::Io { doing, path, cause } => {
                 write!(f, "{doing} {path:?}: {cause}")?;
@@ -84,7 +98,9 @@ impl std::error::Error for Failure {
         match self {
             Failure::Io { cause, .. } => Some(cause),
             Failure::Discovery(err) => Some(err),
-            Failure::Usage(_) | Failure::OutsideProject { .. } => None,
+            Failure::Usage(_)
+            | Failure::OutsideProject { .. }
+            | Failure::OutsideCurrentDirectory { .. } => None,
         }
     }
 }
@@ -123,13 +139,21 @@ pub fn search(
                 path: PathBuf::from(given),
                 cause,
             })?;
-            if let Some(root) = &root
-                && !scope.starts_with(root)
-            {
-                return Err(Failure::OutsideProject {
-                    scope: given.clone(),
-                    root: output::relative(root, &cwd),
-                });
+            match &root {
+                Some(root) if !scope.starts_with(root) => {
+                    return Err(Failure::OutsideProject {
+                        scope: given.clone(),
+                        root: output::relative(root, &cwd),
+                    });
+                }
+                // With no project the current directory is the whole search, so it bounds the
+                // scope as a project root would.
+                None if !scope.starts_with(&cwd) => {
+                    return Err(Failure::OutsideCurrentDirectory {
+                        scope: given.clone(),
+                    });
+                }
+                _ => {}
             }
             scope
         }
