@@ -11,9 +11,10 @@ use std::path::{Path, PathBuf};
 
 use crate::cli::{Query, UsageError};
 use crate::discover;
+use crate::encoding::{self, Content};
 use crate::output;
 use crate::project;
-use crate::search::{self, Match, Outcome};
+use crate::search::{self, Match};
 
 /// Why a run could not give an answer.  Each kind maps to one exit code, because each asks the
 /// caller for a different action.
@@ -133,7 +134,7 @@ pub fn search(
             scope
         }
     };
-    let found = discover::files(&scope).map_err(Failure::Discovery)?;
+    let found = discover::files(&scope, &cwd).map_err(Failure::Discovery)?;
 
     let mut matches: Vec<Vec<(PathBuf, Vec<Match>)>> = vec![Vec::new(); queries.len()];
     let mut binary = 0;
@@ -145,17 +146,19 @@ pub fn search(
             path: shown.clone(),
             cause,
         })?;
+        // Classified once, whatever the number of queries.
+        let (encoding, body) = match encoding::classify(&bytes) {
+            Content::Binary => {
+                binary += 1;
+                continue;
+            }
+            Content::Text { encoding, body } => (encoding, body),
+        };
         for (i, query) in queries.iter().enumerate() {
-            match search::search(&bytes, &query.text) {
-                Outcome::Binary => {
-                    // The same for every query, so counted once.
-                    if i == 0 {
-                        binary += 1;
-                    }
-                }
-                Outcome::UnknownEncoding => unknown_encoding[i] += 1,
-                Outcome::Searched(in_file) if in_file.is_empty() => {}
-                Outcome::Searched(in_file) => matches[i].push((shown.clone(), in_file)),
+            match search::search(&bytes[body..], encoding, &query.text) {
+                None => unknown_encoding[i] += 1,
+                Some(in_file) if in_file.is_empty() => {}
+                Some(in_file) => matches[i].push((shown.clone(), in_file)),
             }
         }
     }
@@ -192,6 +195,12 @@ pub fn search(
         note(format!(
             "{} not searched",
             count(binary, "binary file", "binary files")
+        ));
+    }
+    if found.special_files > 0 {
+        note(format!(
+            "{} - FIFOs, sockets or devices - not searched",
+            count(found.special_files, "special file", "special files")
         ));
     }
     if found.links_not_followed > 0 {

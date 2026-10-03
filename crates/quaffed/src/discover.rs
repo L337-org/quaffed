@@ -26,6 +26,9 @@ pub struct Found {
     pub files: Vec<PathBuf>,
     /// Symbolic links met and not followed, so the run can say it did not look through them.
     pub links_not_followed: usize,
+    /// FIFOs, sockets and device files met and not searched: reading a FIFO would wait for a
+    /// writer that may never come, so they are counted rather than read.
+    pub special_files: usize,
 }
 
 /// Discovery could not finish, and a search over part of the scope must not pass for a search
@@ -34,11 +37,47 @@ pub struct Found {
 pub struct Error {
     /// What the walker reported, verbatim.
     pub cause: ignore::Error,
+    /// The directory paths in the message are made relative to, as every other message's are.
+    pub cwd: PathBuf,
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "finding the files to search: {}", self.cause)
+        write!(
+            f,
+            "finding the files to search: {}",
+            describe(&self.cause, &self.cwd)
+        )
+    }
+}
+
+/// The walker's error in quaff's form: a path relative to `cwd` and quoted, a line number
+/// where there is one, and the underlying error's own words.
+fn describe(err: &ignore::Error, cwd: &Path) -> String {
+    match err {
+        ignore::Error::WithPath { path, err } => {
+            format!(
+                "{:?}: {}",
+                crate::output::relative(path, cwd),
+                describe(err, cwd)
+            )
+        }
+        ignore::Error::WithLineNumber { line, err } => {
+            format!("line {line}: {}", describe(err, cwd))
+        }
+        ignore::Error::WithDepth { err, .. } => describe(err, cwd),
+        ignore::Error::Partial(errs) => errs
+            .iter()
+            .map(|err| describe(err, cwd))
+            .collect::<Vec<_>>()
+            .join("; "),
+        // walkdir wraps the system's error in one of its own, whose message repeats the
+        // absolute path already given above; the system's error is the one to quote.
+        ignore::Error::Io(io) => io
+            .get_ref()
+            .and_then(std::error::Error::source)
+            .map_or_else(|| io.to_string(), ToString::to_string),
+        other => other.to_string(),
     }
 }
 
@@ -57,7 +96,7 @@ impl std::error::Error for Error {
 ///
 /// Returns an [`Error`] for anything the walker cannot read - a directory, or an ignore file
 /// it could not parse - rather than searching the rest and reporting a short answer as complete.
-pub fn files(scope: &Path) -> Result<Found, Error> {
+pub fn files(scope: &Path, cwd: &Path) -> Result<Found, Error> {
     let mut walker = ignore::WalkBuilder::new(scope);
     walker
         .hidden(false)
@@ -76,11 +115,15 @@ pub fn files(scope: &Path) -> Result<Found, Error> {
         });
     let mut found = Found::default();
     for entry in walker.build() {
-        let entry = entry.map_err(|cause| Error { cause })?;
+        let entry = entry.map_err(|cause| Error {
+            cause,
+            cwd: cwd.to_path_buf(),
+        })?;
         // An ignore file that only partly parsed is reported here, on the entry it applied to.
         if let Some(cause) = entry.error() {
             return Err(Error {
                 cause: cause.clone(),
+                cwd: cwd.to_path_buf(),
             });
         }
         let Some(kind) = entry.file_type() else {
@@ -90,6 +133,8 @@ pub fn files(scope: &Path) -> Result<Found, Error> {
             found.links_not_followed += 1;
         } else if kind.is_file() {
             found.files.push(entry.into_path());
+        } else if !kind.is_dir() {
+            found.special_files += 1;
         }
     }
     found.files.sort();
@@ -118,7 +163,7 @@ mod tests {
         }
 
         fn found(&self, scope: &str) -> Vec<String> {
-            files(&self.0.join(scope))
+            files(&self.0.join(scope), &self.0)
                 .unwrap()
                 .files
                 .iter()
@@ -205,10 +250,34 @@ mod tests {
     }
 
     #[test]
+    fn special_files_are_counted_not_read() {
+        let tree = Tree::new("special", &[("a.py", "")]);
+        let fifo = tree.0.join("pipe");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("running mkfifo");
+        assert!(made.success(), "mkfifo {} failed", fifo.display());
+        let found = files(&tree.0, &tree.0).unwrap();
+        assert_eq!(found.files.len(), 1);
+        assert_eq!(found.special_files, 1);
+    }
+
+    #[test]
+    fn an_ignore_file_the_walker_cannot_parse_is_named_with_its_line() {
+        let tree = Tree::new("badglob", &[(".git/HEAD", ""), (".gitignore", "ok\na{b\n")]);
+        let message = files(&tree.0, &tree.0).unwrap_err().to_string();
+        assert!(
+            message.starts_with("finding the files to search: \".gitignore\": line 2: "),
+            "{message}"
+        );
+    }
+
+    #[test]
     fn symbolic_links_are_counted_not_followed() {
         let tree = Tree::new("links", &[("a.py", "")]);
         std::os::unix::fs::symlink("a.py", tree.0.join("link.py")).unwrap();
-        let found = files(&tree.0).unwrap();
+        let found = files(&tree.0, &tree.0).unwrap();
         assert_eq!(found.files.len(), 1);
         assert_eq!(found.links_not_followed, 1);
     }
@@ -220,7 +289,7 @@ mod tests {
         let locked = tree.0.join("locked");
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
         let readable_anyway = fs::read_dir(&locked).is_ok();
-        let result = files(&tree.0);
+        let result = files(&tree.0, &tree.0);
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
         if readable_anyway {
             // Root reads a mode-000 directory, so the failure cannot happen; say so rather than
@@ -232,9 +301,8 @@ mod tests {
             .expect_err("an unreadable directory must stop discovery")
             .to_string();
         assert!(
-            message.starts_with("finding the files to search: "),
+            message.starts_with("finding the files to search: \"locked\": Permission denied"),
             "{message}"
         );
-        assert!(message.contains("locked"), "{message}");
     }
 }

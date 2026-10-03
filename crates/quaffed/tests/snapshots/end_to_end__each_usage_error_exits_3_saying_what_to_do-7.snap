@@ -1,0 +1,13 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "--"
+---
+success: false
+exit_code: 3
+----- stdout -----
+
+----- stderr -----
+quaff: nothing to search for: give a query

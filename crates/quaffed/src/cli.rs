@@ -163,8 +163,10 @@ where
                 let value = OsString::from(&text["--string=".len()..]);
                 queries.push(query(value, Source::StringOption)?);
             }
-            _ if NOT_BUILT_YET.contains(&text) => {
-                return Err(UsageError::NotBuiltYet(text.to_owned()));
+            // `--pattern=X` is the not-built option as surely as `--pattern X` is.
+            _ if NOT_BUILT_YET.contains(&text.split('=').next().unwrap_or(text)) => {
+                let option = text.split('=').next().unwrap_or(text);
+                return Err(UsageError::NotBuiltYet(option.to_owned()));
             }
             // A lone "-" is a positional, as it is to most tools.
             _ if text.starts_with('-') && text != "-" => {
@@ -291,6 +293,10 @@ mod tests {
         assert_eq!(
             parse_strs(&["--version"]),
             Err(UsageError::NotBuiltYet("--version".into()))
+        );
+        assert_eq!(
+            parse_strs(&["--pattern=handle($a)"]),
+            Err(UsageError::NotBuiltYet("--pattern".into()))
         );
         assert_eq!(
             parse_strs(&["--explain"]),

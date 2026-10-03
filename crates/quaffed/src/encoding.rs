@@ -107,33 +107,48 @@ impl Encoding {
         }
     }
 
-    /// Yields each character of `bytes` with the offset of its first byte.
+    /// Calls `visit` with each character of `bytes` and the offset of its first byte, in
+    /// order, until it returns `false`.
     ///
-    /// Bytes that do not decode - any non-ASCII byte in an unknown 8-bit encoding, an unpaired
-    /// surrogate, a truncated unit - each count as one character, `U+FFFD`, so that positions
-    /// stay countable.  For a single-byte encoding such as Latin-1 that is one column a byte,
-    /// which is what an editor showing the file in that encoding counts.
-    pub fn chars(self, bytes: &[u8]) -> Vec<(usize, char)> {
+    /// Nothing is collected, so a search needs no memory for the characters it walks past.
+    /// Bytes that do not decode - an invalid sequence in UTF-8, any non-ASCII byte in an
+    /// unknown 8-bit encoding, an unpaired surrogate, a truncated unit - each count as one
+    /// character, `U+FFFD`, so that positions stay countable.  For a single-byte encoding such
+    /// as Latin-1 that is one column a byte, which is what an editor showing the file in that
+    /// encoding counts.
+    pub fn each_char(self, bytes: &[u8], mut visit: impl FnMut(usize, char) -> bool) {
         match self {
-            Encoding::Utf8 => match std::str::from_utf8(bytes) {
-                Ok(text) => text.char_indices().collect(),
-                // Not reached for a file classified as UTF-8; kept total rather than panicking.
-                Err(_) => Encoding::Unknown8Bit.chars(bytes),
-            },
-            Encoding::Unknown8Bit => bytes
-                .iter()
-                .enumerate()
-                .map(|(i, &b)| {
-                    (
-                        i,
-                        if b.is_ascii() {
-                            char::from(b)
-                        } else {
-                            '\u{FFFD}'
-                        },
-                    )
-                })
-                .collect(),
+            Encoding::Utf8 => {
+                // A UTF-8 file declared by its byte-order mark may still hold invalid bytes, so
+                // valid runs and invalid bytes are walked separately.
+                let mut offset = 0;
+                for chunk in bytes.utf8_chunks() {
+                    for (i, c) in chunk.valid().char_indices() {
+                        if !visit(offset + i, c) {
+                            return;
+                        }
+                    }
+                    offset += chunk.valid().len();
+                    for i in 0..chunk.invalid().len() {
+                        if !visit(offset + i, '\u{FFFD}') {
+                            return;
+                        }
+                    }
+                    offset += chunk.invalid().len();
+                }
+            }
+            Encoding::Unknown8Bit => {
+                for (i, &b) in bytes.iter().enumerate() {
+                    let c = if b.is_ascii() {
+                        char::from(b)
+                    } else {
+                        '\u{FFFD}'
+                    };
+                    if !visit(i, c) {
+                        return;
+                    }
+                }
+            }
             Encoding::Utf16Le | Encoding::Utf16Be => {
                 let little = self == Encoding::Utf16Le;
                 let units = bytes.as_chunks::<2>().0.iter().map(|&pair| {
@@ -144,40 +159,35 @@ impl Encoding {
                     }
                 });
                 let mut offset = 0;
-                let mut out = Vec::new();
                 for decoded in char::decode_utf16(units) {
                     let (c, width) = match decoded {
                         Ok(c) => (c, c.len_utf16() * 2),
                         Err(_) => ('\u{FFFD}', 2),
                     };
-                    out.push((offset, c));
+                    if !visit(offset, c) {
+                        return;
+                    }
                     offset += width;
                 }
                 if !bytes.len().is_multiple_of(2) {
-                    out.push((bytes.len() - 1, '\u{FFFD}'));
+                    visit(bytes.len() - 1, '\u{FFFD}');
                 }
-                out
             }
             Encoding::Utf32Le | Encoding::Utf32Be => {
                 let little = self == Encoding::Utf32Le;
-                let mut out: Vec<(usize, char)> = bytes
-                    .as_chunks::<4>()
-                    .0
-                    .iter()
-                    .enumerate()
-                    .map(|(i, &quad)| {
-                        let value = if little {
-                            u32::from_le_bytes(quad)
-                        } else {
-                            u32::from_be_bytes(quad)
-                        };
-                        (i * 4, char::from_u32(value).unwrap_or('\u{FFFD}'))
-                    })
-                    .collect();
-                if !bytes.len().is_multiple_of(4) {
-                    out.push((bytes.len() - bytes.len() % 4, '\u{FFFD}'));
+                for (i, &quad) in bytes.as_chunks::<4>().0.iter().enumerate() {
+                    let value = if little {
+                        u32::from_le_bytes(quad)
+                    } else {
+                        u32::from_be_bytes(quad)
+                    };
+                    if !visit(i * 4, char::from_u32(value).unwrap_or('\u{FFFD}')) {
+                        return;
+                    }
                 }
-                out
+                if !bytes.len().is_multiple_of(4) {
+                    visit(bytes.len() - bytes.len() % 4, '\u{FFFD}');
+                }
             }
         }
     }
@@ -271,28 +281,57 @@ mod tests {
         assert_eq!(Encoding::Unknown8Bit.encode("café"), None);
     }
 
+    fn chars(encoding: Encoding, bytes: &[u8]) -> Vec<(usize, char)> {
+        let mut found = Vec::new();
+        encoding.each_char(bytes, |offset, c| {
+            found.push((offset, c));
+            true
+        });
+        found
+    }
+
+    #[test]
+    fn a_byte_order_mark_does_not_vouch_for_every_byte() {
+        // Declared UTF-8 with one stray byte: the multi-byte character before it is still one
+        // character, and the stray byte is one.
+        assert_eq!(
+            chars(Encoding::Utf8, b"\xC3\xA9 \xE9x"),
+            vec![(0, 'é'), (2, ' '), (3, '\u{FFFD}'), (4, 'x')]
+        );
+    }
+
+    #[test]
+    fn visiting_stops_when_asked() {
+        let mut seen = 0;
+        Encoding::Utf8.each_char(b"abcdef", |_, _| {
+            seen += 1;
+            seen < 2
+        });
+        assert_eq!(seen, 2);
+    }
+
     #[test]
     fn characters_carry_their_byte_offsets() {
         assert_eq!(
-            Encoding::Utf8.chars("aé b".as_bytes()),
+            chars(Encoding::Utf8, "aé b".as_bytes()),
             vec![(0, 'a'), (1, 'é'), (3, ' '), (4, 'b')]
         );
         assert_eq!(
-            Encoding::Unknown8Bit.chars(b"a\xE9b"),
+            chars(Encoding::Unknown8Bit, b"a\xE9b"),
             vec![(0, 'a'), (1, '\u{FFFD}'), (2, 'b')]
         );
         // A surrogate pair is one character, four bytes wide.
         let emoji: Vec<u8> = "a😀b".encode_utf16().flat_map(u16::to_le_bytes).collect();
         assert_eq!(
-            Encoding::Utf16Le.chars(&emoji),
+            chars(Encoding::Utf16Le, &emoji),
             vec![(0, 'a'), (2, '😀'), (6, 'b')]
         );
         assert_eq!(
-            Encoding::Utf16Le.chars(b"a\x00b"),
+            chars(Encoding::Utf16Le, b"a\x00b"),
             vec![(0, 'a'), (2, '\u{FFFD}')]
         );
         assert_eq!(
-            Encoding::Utf32Be.chars(b"\x00\x00\x00a\x00\x11\x00\x00"),
+            chars(Encoding::Utf32Be, b"\x00\x00\x00a\x00\x11\x00\x00"),
             vec![(0, 'a'), (4, '\u{FFFD}')]
         );
     }

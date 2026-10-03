@@ -3,7 +3,7 @@
 
 //! Finding a textual query in one file's bytes.
 
-use crate::encoding::{self, Content, Encoding};
+use crate::encoding::Encoding;
 
 /// A line and column, both counted from 1, the column in characters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,37 +23,22 @@ pub struct Match {
     pub end: Position,
 }
 
-/// What searching one file found.  A file that was not searched says why, so that the run can
-/// report it rather than count it as a file with no matches.
-#[derive(Debug, PartialEq, Eq)]
-pub enum Outcome {
-    /// Searched; every match, in order.  Possibly none.
-    Searched(Vec<Match>),
-    /// Not searched: binary, by git's test.
-    Binary,
-    /// Not searched: in an unknown 8-bit encoding, where a non-ASCII query has no honest
-    /// spelling.
-    UnknownEncoding,
-}
-
-/// Finds every occurrence of `query` in `bytes`, in the file's own encoding.
+/// Finds every occurrence of `query` in `text`, the body of a file in `encoding` - after any
+/// byte-order mark - by encoding the query the way the file is.
 ///
 /// Matches are found left to right and do not overlap, so `aa` occurs once in `aaa`.  The query
 /// is literal: nothing in it is special.
-pub fn search(bytes: &[u8], query: &str) -> Outcome {
-    let (encoding, body) = match encoding::classify(bytes) {
-        Content::Binary => return Outcome::Binary,
-        Content::Text { encoding, body } => (encoding, body),
-    };
-    let Some(needle) = encoding.encode(query) else {
-        return Outcome::UnknownEncoding;
-    };
-    let text = &bytes[body..];
+///
+/// Returns `None` when the query has no honest spelling in the encoding - a non-ASCII query in
+/// an unknown 8-bit encoding - so that the caller reports the file as not searched rather than
+/// as holding no matches.
+pub fn search(text: &[u8], encoding: Encoding, query: &str) -> Option<Vec<Match>> {
+    let needle = encoding.encode(query)?;
     let offsets = occurrences(text, &needle, encoding.unit());
     if offsets.is_empty() {
-        return Outcome::Searched(Vec::new());
+        return Some(Vec::new());
     }
-    Outcome::Searched(positions(text, encoding, &offsets, needle.len()))
+    Some(positions(text, encoding, &offsets, needle.len()))
 }
 
 /// Byte offsets of each non-overlapping occurrence of `needle`, starting on a code unit.
@@ -77,40 +62,59 @@ fn occurrences(text: &[u8], needle: &[u8], unit: usize) -> Vec<usize> {
 }
 
 /// Turns each match's byte range into positions, in one pass over the file's characters.
+///
+/// Only the current line and column are kept, never a table of every character, so the memory
+/// a search needs beyond the file's own bytes does not grow with the file.  The walk stops at
+/// the last match's last character.
 fn positions(text: &[u8], encoding: Encoding, offsets: &[usize], len: usize) -> Vec<Match> {
-    let chars = encoding.chars(text);
-    // The line and column of every character, so a match's last character can be found by its
-    // offset whichever way the encoding is laid out.
-    let mut placed = Vec::with_capacity(chars.len());
+    // Each match's first and last byte, in order: matches do not overlap, so starts and ends
+    // interleave.
+    let targets: Vec<usize> = offsets
+        .iter()
+        .flat_map(|&start| [start, start + len - 1])
+        .collect();
+    let mut placed = Vec::with_capacity(targets.len());
     let mut line = 1;
     let mut column = 1;
-    let mut previous = None;
-    for &(offset, c) in &chars {
+    let mut previous: Option<(char, Position)> = None;
+    encoding.each_char(text, |offset, c| {
         // The LF of a CRLF belongs to the line its CR ended, one column on.
-        if previous == Some('\r') && c != '\n' {
+        if previous.is_some_and(|(p, _)| p == '\r') && c != '\n' {
             line += 1;
             column = 1;
         }
-        placed.push((offset, Position { line, column }));
+        let here = Position { line, column };
+        // A target before this character lies in the previous one: the character containing a
+        // byte is the last one starting at or before it.
+        while let Some(&target) = targets.get(placed.len()) {
+            if target >= offset {
+                break;
+            }
+            placed.push(
+                previous
+                    .expect("a target lies at or after the first character")
+                    .1,
+            );
+        }
         if c == '\n' {
             line += 1;
             column = 1;
         } else {
             column += 1;
         }
-        previous = Some(c);
+        previous = Some((c, here));
+        // Carry on until every target is placed; the rest of the file is not walked.
+        placed.len() < targets.len()
+    });
+    // Targets in the last character visited.
+    while placed.len() < targets.len() {
+        placed.push(previous.expect("a match has at least one character").1);
     }
-    let at = |offset: usize| -> Position {
-        // The character containing `offset`: the last one starting at or before it.
-        let i = placed.partition_point(|(start, _)| *start <= offset) - 1;
-        placed[i].1
-    };
-    offsets
+    placed
+        .as_chunks::<2>()
+        .0
         .iter()
-        .map(|&start| Match {
-            start: at(start),
-            end: at(start + len - 1),
-        })
+        .map(|&[start, end]| Match { start, end })
         .collect()
 }
 
@@ -122,9 +126,29 @@ mod tests {
         Position { line, column }
     }
 
+    use crate::encoding::{Content, classify};
+
+    /// What the run makes of a whole file's bytes: classified first, then searched.
+    #[derive(Debug, PartialEq, Eq)]
+    enum Outcome {
+        Binary,
+        NoSpelling,
+        Found(Vec<Match>),
+    }
+
+    fn outcome(bytes: &[u8], query: &str) -> Outcome {
+        match classify(bytes) {
+            Content::Binary => Outcome::Binary,
+            Content::Text { encoding, body } => match search(&bytes[body..], encoding, query) {
+                None => Outcome::NoSpelling,
+                Some(matches) => Outcome::Found(matches),
+            },
+        }
+    }
+
     fn found(bytes: &[u8], query: &str) -> Vec<(Position, Position)> {
-        match search(bytes, query) {
-            Outcome::Searched(matches) => matches.iter().map(|m| (m.start, m.end)).collect(),
+        match outcome(bytes, query) {
+            Outcome::Found(matches) => matches.iter().map(|m| (m.start, m.end)).collect(),
             other => panic!("expected a search, got {other:?}"),
         }
     }
@@ -195,12 +219,26 @@ mod tests {
     #[test]
     fn an_unknown_8bit_file_is_searched_for_ascii_and_not_otherwise() {
         assert_eq!(found(b"caf\xE9 TODO", "TODO"), vec![(pos(1, 6), pos(1, 9))]);
-        assert_eq!(search(b"caf\xE9", "café"), Outcome::UnknownEncoding);
+        assert_eq!(outcome(b"caf\xE9", "café"), Outcome::NoSpelling);
     }
 
     #[test]
     fn a_binary_file_is_not_searched() {
-        assert_eq!(search(b"TODO\0", "TODO"), Outcome::Binary);
+        assert_eq!(outcome(b"TODO\0", "TODO"), Outcome::Binary);
+    }
+
+    #[test]
+    fn an_invalid_byte_in_declared_utf8_is_one_column_and_the_rest_are_characters() {
+        assert_eq!(
+            found(b"\xEF\xBB\xBF\xC3\xA9 TODO\n\xE9", "TODO"),
+            vec![(pos(1, 3), pos(1, 6))]
+        );
+    }
+
+    #[test]
+    fn positions_hold_at_the_very_end_of_a_file() {
+        assert_eq!(found(b"abc\nTODO", "TODO"), vec![(pos(2, 1), pos(2, 4))]);
+        assert_eq!(found(b"x\r", "\r"), vec![(pos(1, 2), pos(1, 2))]);
     }
 
     #[test]

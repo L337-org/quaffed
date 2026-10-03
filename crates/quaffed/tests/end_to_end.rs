@@ -76,9 +76,21 @@ fn quaff_binary() -> PathBuf {
 /// is a change, as is a dropped executable bit or a directory created and left empty.
 #[derive(Debug, PartialEq, Eq)]
 enum Entry {
-    File { mode: u32, content: Vec<u8> },
-    Dir { mode: u32 },
-    Symlink { target: PathBuf },
+    File {
+        mode: u32,
+        content: Vec<u8>,
+    },
+    Dir {
+        mode: u32,
+    },
+    Symlink {
+        target: PathBuf,
+    },
+    /// A FIFO, socket or device: recorded by its mode, never read, because reading a FIFO
+    /// waits for a writer.
+    Special {
+        mode: u32,
+    },
 }
 
 /// A throwaway project directory, and what it held before `quaff` ran.
@@ -202,10 +214,12 @@ fn snapshot_files(dir: &Path) -> BTreeMap<PathBuf, Entry> {
             } else if meta.is_dir() {
                 walk(root, &path, found);
                 Entry::Dir { mode }
-            } else {
+            } else if meta.is_file() {
                 let content = fs::read(&path)
                     .unwrap_or_else(|err| panic!("reading {}: {err}", path.display()));
                 Entry::File { mode, content }
+            } else {
+                Entry::Special { mode }
             };
             found.insert(relative, recorded);
         }
@@ -381,6 +395,64 @@ fn each_usage_error_exits_3_saying_what_to_do() {
     assert_quaff_snapshot!(project.quaff(&["-s"]));
     assert_quaff_snapshot!(project.quaff(&["--frobnicate"]));
     assert_quaff_snapshot!(project.quaff(&["-p", "handle($a)"]));
+    assert_quaff_snapshot!(project.quaff(&["--pattern=handle($a)"]));
+    assert_quaff_snapshot!(project.quaff(&["-s", ""]));
+    assert_quaff_snapshot!(project.quaff(&["--"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_query_that_is_not_utf8_is_refused() {
+    use std::os::unix::ffi::OsStrExt;
+    let project = Project::new(PROJECT);
+    let mut command = project.quaff(&[]);
+    command.arg(std::ffi::OsStr::from_bytes(b"caf\xe9"));
+    assert_quaff_snapshot!(command);
+    project.assert_unchanged();
+}
+
+#[test]
+fn an_ignore_file_line_the_walker_cannot_parse_stops_the_run_naming_it() {
+    let project = Project::new(&[
+        (".git/HEAD", ""),
+        (".gitignore", "build/\na{b\n"),
+        ("a.py", "TODO\n"),
+    ]);
+    assert_quaff_snapshot!(project.quaff(&["TODO"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_directory_that_cannot_be_listed_stops_the_run_naming_it() {
+    let project = Project::new(&[(".git/HEAD", ""), ("locked/a.py", "TODO\n")]);
+    let locked = project.dir.join("locked");
+    let mode = fs::metadata(&locked)
+        .expect("reading the mode")
+        .permissions();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).expect("locking a directory");
+    if fs::read_dir(&locked).is_ok() {
+        // Root lists a mode-000 directory, so the failure cannot happen; say so rather than
+        // pass having checked nothing.
+        eprintln!("skipped: this user can list a mode-000 directory, so it cannot fail");
+        return;
+    }
+    assert_quaff_snapshot!(project.quaff(&["TODO"]));
+    // Unlocked again before comparing, because the comparison lists every directory.
+    fs::set_permissions(&locked, mode).expect("unlocking the directory");
+    project.assert_unchanged();
+}
+
+#[test]
+fn special_files_are_not_read_and_the_run_says_so() {
+    let mut project = Project::new(PROJECT);
+    let fifo = project.dir.join("pipe");
+    let made = Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("running mkfifo");
+    assert!(made.success(), "mkfifo {} failed", fifo.display());
+    project.before = snapshot_files(&project.dir);
+    assert_quaff_snapshot!(project.quaff(&["TODO", "."]));
     project.assert_unchanged();
 }
 

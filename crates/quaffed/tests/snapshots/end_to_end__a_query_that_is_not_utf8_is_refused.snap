@@ -1,0 +1,13 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - caf�
+---
+success: false
+exit_code: 3
+----- stdout -----
+
+----- stderr -----
+quaff: the query "caf\xE9" is not valid UTF-8

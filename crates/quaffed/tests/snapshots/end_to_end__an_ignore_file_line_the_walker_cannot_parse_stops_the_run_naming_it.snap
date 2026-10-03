@@ -1,0 +1,13 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - TODO
+---
+success: false
+exit_code: 7
+----- stdout -----
+
+----- stderr -----
+quaff: finding the files to search: ".gitignore": line 2: error parsing glob 'a{b': unclosed alternate group; missing '}' (maybe escape '{' with '[{]'?)

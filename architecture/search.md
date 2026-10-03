@@ -49,10 +49,14 @@ this one rather than replacing it.
    - version-control metadata is skipped by name at any depth: `.git`, `.hg`, `.svn`, `.bzr`,
      `_darcs`, `.jj`, `.pijul` and `CVS`;
    - symbolic links are not followed, and the run says how many it met;
+   - FIFOs, sockets and device files are not read - reading a FIFO waits for a writer - and the
+     run says how many it met;
    - a scope that names a file or an ignored directory is searched even so - naming it is asking
      for it - and the ignore rules apply beneath it;
    - anything the walker cannot read, or an ignore file it cannot parse, stops the run with exit
-     7 rather than searching the rest and answering short.
+     7 rather than searching the rest and answering short.  The message names the path relative
+     to the current directory, quoted, with the line of an ignore file and the system's or the
+     glob parser's own words.
 5. Files are searched in path order, so output is the same on every run.
 
 ## Matching, in the file's own encoding
@@ -73,7 +77,12 @@ The binary test is git's: `xdiff-interface.c` defines `FIRST_FEW_BYTES` as 8000,
 checked first, because UTF-16 and UTF-32 text is full of NULs; UTF-32's little-endian mark is
 checked before UTF-16's, because it begins with it.
 
-Matches are found left to right and do not overlap: `aa` occurs once in `aaa`.  Python's
+Matches are found left to right and do not overlap: `aa` occurs once in `aaa`.  Each file is
+classified once, whatever the number of queries.
+
+**Memory.**  A file is read whole, and positions are worked out in one pass over its
+characters that keeps only the current line and column and stops at the last match, so a search
+needs about the size of the largest file it reads.  No size limit is applied.  Python's
 encoding declarations are not read yet; when the Python front end decodes them, textual search
 should take a Python file's encoding from there too.
 
@@ -98,8 +107,8 @@ src/app.py:12:5-12:22: def connect(self):
 - With several queries, each query's matches print together, in the order the queries were
   given.  Every file is read once whatever the number of queries.
 - **Notes go to standard error**, prefixed `quaff:`: no matches for a query, binary files not
-  searched, files in an unknown encoding not searched for a non-ASCII query, symbolic links not
-  followed.  Anything not looked at is said, never silently left out.
+  searched, files in an unknown encoding not searched for a non-ASCII query, special files not
+  read, symbolic links not followed.  Anything not looked at is said, never silently left out.
 - A closed standard output - piping into `head` - ends the run quietly.
 
 ## Exit codes
