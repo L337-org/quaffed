@@ -1,0 +1,7 @@
+# Iteration over a hash map or set runs in an order that changes from run to run, and output
+# here must be byte-identical for identical inputs.  Every collection in this crate is a Vec in
+# source order instead.  tests/disallowed_types.rs shows the lint firing.
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "iteration order varies between runs; use a Vec in source order" },
+    { path = "std::collections::HashSet", reason = "iteration order varies between runs; use a Vec in source order" },
+]
