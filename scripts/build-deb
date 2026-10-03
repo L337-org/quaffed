@@ -42,8 +42,10 @@ command -v musl-gcc >/dev/null ||
 # The version is read from the workspace, the one place it is declared.
 version="$(scripts/workspace-version)"
 
-# Timestamps inside the package come from the commit, so two builds of one commit produce the
-# same package and a re-run of a release can tell an identical asset from a different one.
+# Timestamps inside the package come from the commit, so two builds of one commit in the same
+# environment produce the same package, and a re-run of a release can tell an identical asset
+# from a different one.  Only Rust is pinned: the C compiler that builds mimalloc comes from the
+# machine, so a different one can change the bytes; see architecture/release.md.
 export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct)}"
 
 if command -v rustup >/dev/null; then
@@ -77,7 +79,8 @@ quaffed ($version) unstable; urgency=medium
  -- Gavin Lucas <Gavin@L337.org>  $changelog_date
 EOF
 gzip -9n "$tree/usr/share/doc/quaffed/changelog"
-installed_size="$(du -sk --exclude=DEBIAN "$tree" | cut -f1)"
+# Apparent size rather than disk usage, which varies with the filesystem the tree was built on.
+installed_size="$(du -sk --apparent-size --exclude=DEBIAN "$tree" | cut -f1)"
 cat >"$tree/DEBIAN/control" <<EOF
 Package: quaffed
 Version: $version
