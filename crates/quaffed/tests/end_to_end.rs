@@ -29,8 +29,23 @@ macro_rules! assert_quaff_snapshot {
 }
 
 /// A regular expression matching the workspace version as a whole word.
+///
+/// Every regular-expression metacharacter is escaped, so a version with build metadata such as
+/// `1.0.0+abc` is matched literally rather than read as a quantifier.
 fn version_pattern() -> String {
-    format!(r"\b{}\b", env!("CARGO_PKG_VERSION").replace('.', r"\."))
+    format!(r"\b{}\b", escape_regex(env!("CARGO_PKG_VERSION")))
+}
+
+/// Returns `text` with every regular-expression metacharacter backslash-escaped.
+fn escape_regex(text: &str) -> String {
+    let mut escaped = String::new();
+    for c in text.chars() {
+        if r"\.+*?()|[]{}^$".contains(c) {
+            escaped.push('\\');
+        }
+        escaped.push(c);
+    }
+    escaped
 }
 
 /// Returns `path` if a binary is there, and fails the test naming it if not.
@@ -81,7 +96,14 @@ impl Project {
             std::process::id(),
             COUNT.fetch_add(1, Ordering::Relaxed)
         ));
-        let _ = fs::remove_dir_all(&dir);
+        // A directory left by an earlier run whose process ID this one reuses would start the
+        // project with stale files, so anything but "not there" stops the test.
+        match fs::remove_dir_all(&dir) {
+            Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+                panic!("clearing {} before the test: {err}", dir.display())
+            }
+            _ => {}
+        }
         for (path, content) in files {
             let path = dir.join(path);
             fs::create_dir_all(path.parent().expect("a project file has a parent"))
@@ -131,6 +153,9 @@ impl Project {
 
 impl Drop for Project {
     fn drop(&mut self) {
+        // Not checked: a panic here, during the unwinding of a failed test, would abort the
+        // whole run and hide that failure.  A directory left behind is cleared by the next
+        // Project::new that reuses its name.
         let _ = fs::remove_dir_all(&self.dir);
     }
 }
@@ -193,9 +218,16 @@ fn asked_for_help_it_says_nothing_is_implemented() {
 }
 
 #[test]
-#[should_panic(expected = "the quaff binary is not at")]
+#[should_panic(expected = "the quaff binary is not at /nonexistent/quaff,")]
 fn a_missing_binary_fails_rather_than_skips() {
     binary_at(Path::new("/nonexistent/quaff"));
+}
+
+#[test]
+fn the_version_pattern_escapes_every_metacharacter() {
+    assert_eq!(escape_regex("0.1.0"), r"0\.1\.0");
+    assert_eq!(escape_regex("1.0.0-rc.1"), r"1\.0\.0-rc\.1");
+    assert_eq!(escape_regex("1.0.0+build.5"), r"1\.0\.0\+build\.5");
 }
 
 #[test]
