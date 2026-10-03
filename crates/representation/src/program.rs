@@ -9,7 +9,9 @@
 
 use std::path::PathBuf;
 
-use crate::span::{Source, Span, Spanned};
+#[cfg(test)]
+use crate::span::Span;
+use crate::span::{Source, Spanned};
 
 /// A whole program: its sources, its statements in source order, and the scope the command line
 /// narrowed it to.
@@ -17,8 +19,9 @@ use crate::span::{Source, Span, Spanned};
 pub struct Program {
     /// Every source, in command-line order; a [`Span`]'s `source` indexes this.
     pub sources: Vec<Source>,
-    /// The statements, in source order.
-    pub body: Vec<Spanned<Statement>>,
+    /// The statements, in source order.  Private, so that every statement goes through
+    /// [`Program::push`] and the grouping of assertion blocks always holds.
+    body: Vec<Spanned<Statement>>,
     /// The one positional scope argument, which narrows every statement's scope.
     pub narrow_to: Option<PathBuf>,
 }
@@ -61,6 +64,20 @@ impl Query {
             filter: None,
         }
     }
+
+    /// A query for `operand`, scoped to `scope` and filtered by `filter`.
+    #[must_use]
+    pub fn with(
+        operand: Spanned<Operand>,
+        scope: Vec<Spanned<String>>,
+        filter: Option<Spanned<Filter>>,
+    ) -> Self {
+        Query {
+            operand,
+            scope,
+            filter,
+        }
+    }
 }
 
 /// What a query matches.
@@ -95,6 +112,7 @@ pub struct TextPattern {
 
 /// One part of a [`TextPattern`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum TextPart {
     /// Text that must appear exactly.
     Literal(String),
@@ -261,40 +279,44 @@ impl Count {
 }
 
 impl Program {
+    /// The statements, in source order.
+    #[must_use]
+    pub fn body(&self) -> &[Spanned<Statement>] {
+        &self.body
+    }
+
     /// Appends `statement`, grouping consecutive assertion blocks into one.
     ///
     /// An `Assert` that follows another `Assert` joins it, so a run of asserting statements is
     /// one block however many statements wrote it.  Within a block, an expectation equal to one
-    /// already there - the same statement, wherever it was written - is not added again.
+    /// already there - the same statement, wherever it was written - is kept once, whether the
+    /// two arrive together or the second joins the first later.
     pub fn push(&mut self, statement: Spanned<Statement>) {
-        if let Statement::Assert(new) = &statement.node
-            && let Some(Spanned {
-                node: Statement::Assert(block),
-                ..
-            }) = self.body.last_mut()
-        {
-            for expectation in new {
-                if !block.contains(expectation) {
-                    block.push(expectation.clone());
-                }
-            }
+        let Spanned { node, span } = statement;
+        let Statement::Assert(new) = node else {
+            self.body.push(Spanned::new(node, span));
             return;
+        };
+        if let Some(Spanned {
+            node: Statement::Assert(block),
+            ..
+        }) = self.body.last_mut()
+        {
+            add_once(block, new);
+        } else {
+            let mut block = Vec::new();
+            add_once(&mut block, new);
+            self.body.push(Spanned::new(Statement::Assert(block), span));
         }
-        self.body.push(statement);
     }
 }
 
-/// The span of a statement, for building one where only its parts are known.
-#[must_use]
-pub fn statement_span(first: Span, last: Span) -> Span {
-    Span {
-        source: first.source,
-        start: first.start,
-        end: if last.source == first.source {
-            last.end
-        } else {
-            first.end
-        },
+/// Adds each of `new` to `block` unless an equal expectation is already there.
+fn add_once(block: &mut Vec<Spanned<Expectation>>, new: Vec<Spanned<Expectation>>) {
+    for expectation in new {
+        if !block.contains(&expectation) {
+            block.push(expectation);
+        }
     }
 }
 
@@ -329,7 +351,7 @@ mod tests {
 
     fn block_sizes(program: &Program) -> Vec<usize> {
         program
-            .body
+            .body()
             .iter()
             .map(|s| match &s.node {
                 Statement::Assert(block) => block.len(),
@@ -389,6 +411,25 @@ mod tests {
     }
 
     #[test]
+    fn duplicates_arriving_together_in_a_block_that_starts_are_kept_once() {
+        let twice = |start| {
+            let Statement::Assert(mut block) = assert_of("a", Count::Exactly(1), start).node else {
+                unreachable!()
+            };
+            block.extend(block.clone());
+            Spanned::new(Statement::Assert(block), at(start))
+        };
+        let mut first = Program::default();
+        first.push(twice(0));
+        assert_eq!(block_sizes(&first), [1]);
+        // After an action, a new block starts the same way.
+        let mut after_action = Program::default();
+        after_action.push(Spanned::new(Statement::Find(find_text("x", 0)), at(0)));
+        after_action.push(twice(10));
+        assert_eq!(block_sizes(&after_action), [0, 1]);
+    }
+
+    #[test]
     fn each_count_holds_exactly_where_it_should() {
         assert!(Count::Exactly(2).holds(2) && !Count::Exactly(2).holds(3));
         assert!(
@@ -401,33 +442,5 @@ mod tests {
         assert!(!Count::ExactlyOrNone(2).holds(1));
         assert!(Count::None.holds(0) && !Count::None.holds(1));
         assert!(Count::Any.holds(0) && Count::Any.holds(u64::MAX));
-    }
-
-    #[test]
-    fn a_statement_span_covers_its_parts_within_one_source() {
-        let first = Span {
-            source: 0,
-            start: 3,
-            end: 5,
-        };
-        let last = Span {
-            source: 0,
-            start: 9,
-            end: 12,
-        };
-        assert_eq!(
-            statement_span(first, last),
-            Span {
-                source: 0,
-                start: 3,
-                end: 12
-            }
-        );
-        let elsewhere = Span {
-            source: 1,
-            start: 0,
-            end: 2,
-        };
-        assert_eq!(statement_span(first, elsewhere), first);
     }
 }

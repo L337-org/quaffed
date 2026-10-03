@@ -35,6 +35,25 @@ pub struct Span {
     pub end: usize,
 }
 
+impl Span {
+    /// The span from the start of `self` to the end of `last`: a statement's span from its
+    /// first and last parts.
+    ///
+    /// When `last` lies in another source - sources compose, but a span cannot cross from one
+    /// to the next - the result is `self` alone, so it still names a real place.
+    #[must_use]
+    pub fn through(self, last: Span) -> Span {
+        Span {
+            end: if last.source == self.source {
+                last.end
+            } else {
+                self.end
+            },
+            ..self
+        }
+    }
+}
+
 /// A node with the span it was written at.
 ///
 /// **The span takes no part in equality or hashing**, so two nodes that parse the same are the
@@ -100,6 +119,34 @@ mod tests {
         );
         assert_eq!(here, there);
         assert_eq!(hash_of(&here), hash_of(&there));
+    }
+
+    #[test]
+    fn a_span_through_another_covers_both_within_one_source() {
+        let first = Span {
+            source: 0,
+            start: 3,
+            end: 5,
+        };
+        let last = Span {
+            source: 0,
+            start: 9,
+            end: 12,
+        };
+        assert_eq!(
+            first.through(last),
+            Span {
+                source: 0,
+                start: 3,
+                end: 12
+            }
+        );
+        let elsewhere = Span {
+            source: 1,
+            start: 0,
+            end: 2,
+        };
+        assert_eq!(first.through(elsewhere), first);
     }
 
     #[test]

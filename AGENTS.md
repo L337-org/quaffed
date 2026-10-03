@@ -10,9 +10,11 @@ It is written in Rust and licensed GPL-3.0-or-later.
 
 ## Status
 
-**Textual search is built; nothing else is.**  `quaff TEXT [PATH]` and `quaff -s TEXT [PATH]`
-search a project, and `architecture/search.md` specifies them as built.  Scripts, structural
-search and edits are not built, and the rest of the design is still being settled.
+**Textual search is built; nothing else is yet.**  `quaff TEXT [PATH]` and `quaff -s TEXT [PATH]`
+search a project, and `architecture/search.md` specifies them as built.  The operation
+representation that scripts will be parsed into is settled and specified in
+`architecture/representation.md`, but nothing produces it yet.  Scripts, structural search and
+edits are not built, and the rest of the design is still being settled.
 
 - **Do not implement features from a recollection of the design.**  When a piece of it settles,
   its specification lands in `architecture/` in the same change as the code, and that is what

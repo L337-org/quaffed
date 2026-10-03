@@ -32,11 +32,13 @@ without the engine noticing, and keeps a script's meaning in one place.
   two statements that parse the same are the same statement wherever they were written.
 - **Assertion blocks.**  `Program::push` joins an `Assert` to an `Assert` it follows, so a run
   of asserting statements is one block, and an action between two runs keeps them apart.
-  Within a block, an expectation equal to one already there is not added again.  A block is
-  evaluated to the end before a failure stops the run.
+  Within a block an expectation is kept once, whether an equal one is already there or two
+  arrive together.  `Program`'s statements are private, read through `body()`, so nothing can
+  append one any other way.  A block is evaluated to the end before a failure stops the run.
 - **The checker** (`src/check.rs`) refuses an edit with no `expect`, and an `expect` on an edit
   whose target is a node already bound.  `first_outside_mvp` is the one answer to whether a
-  program is inside the MVP subset; what it finds is an unknown statement, exit 5.
+  program is inside the MVP subset; what it finds is an unknown statement, which the command
+  line exits with a code of its own, as its exit-code table says.
 - **Determinism.**  Every collection is a `Vec` in source order.  `clippy.toml` forbids
   `HashMap` and `HashSet` in this crate, and `tests/disallowed_types.rs` shows the lint firing:
   it builds a throwaway crate with this `clippy.toml` and checks that clippy refuses a hash map

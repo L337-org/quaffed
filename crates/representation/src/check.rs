@@ -32,12 +32,23 @@ pub enum ViolationKind {
 }
 
 impl Violation {
-    /// Whether this is an unknown statement - exit 5 - rather than a malformed one - exit 3.
+    /// Whether this is a construct this build does not have, rather than a malformed program.
+    /// The command line gives the two different exit codes; its exit-code table says which.
     #[must_use]
     pub fn is_unknown_statement(&self) -> bool {
         matches!(self.kind, ViolationKind::OutsideMvp(_))
     }
 }
+
+impl fmt::Display for Violation {
+    /// The violation's message; where it is, the caller says, because only the caller holds
+    /// the source text to turn a span into a line and column.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.kind.fmt(f)
+    }
+}
+
+impl std::error::Error for Violation {}
 
 impl fmt::Display for ViolationKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -63,7 +74,7 @@ impl fmt::Display for ViolationKind {
 /// Returns the first [`Violation`] in source order.  The assertion rules come first, so a
 /// program that breaks one is told about it whatever else it uses.
 pub fn check(program: &Program) -> Result<(), Violation> {
-    for statement in &program.body {
+    for statement in program.body() {
         if let Statement::Act(action) = &statement.node {
             check_action(action, statement.span)?;
         }
@@ -94,12 +105,12 @@ fn check_action(action: &Action, span: Span) -> Result<(), Violation> {
 
 /// The first construct in `program` outside the MVP subset, with where it was written.
 ///
-/// The one answer to "is this in the MVP".  The parser reports what it finds as an unknown
-/// statement, exit 5, naming it.
+/// The one answer to "is this in the MVP".  What it finds is reported as an unknown
+/// statement, naming it.
 #[must_use]
 pub fn first_outside_mvp(program: &Program) -> Option<(&'static str, Span)> {
     program
-        .body
+        .body()
         .iter()
         .find_map(|statement| match &statement.node {
             Statement::Find(query) => query_outside_mvp(query),
@@ -129,7 +140,7 @@ fn query_outside_mvp(query: &Query) -> Option<(&'static str, Span)> {
 
 fn operand_outside_mvp(operand: &Spanned<Operand>) -> Option<(&'static str, Span)> {
     match &operand.node {
-        Operand::Bound(_) => Some(("a bound node, which needs `as` or `for`", operand.span)),
+        Operand::Bound(_) => Some(("a bound node, needing `as` or `for`,", operand.span)),
         Operand::Text(_) | Operand::Pattern(_) => None,
     }
 }
@@ -234,6 +245,42 @@ mod tests {
     }
 
     #[test]
+    fn a_bound_node_as_a_replacement_or_under_and_or_contains_is_found_too() {
+        let bound = |start| Spanned::new(Operand::Bound("b".into()), at(start));
+        let replace = program_of(Statement::Act(Action::new(
+            ActionKind::Replace(bound(6)),
+            Query::new(text("a", 0)),
+            vec![Spanned::new(Count::Any, at(9))],
+        )));
+        assert_eq!(first_outside_mvp(&replace).map(|(_, s)| s), Some(at(6)));
+        let filtered = |filter| {
+            program_of(Statement::Find(Query::with(
+                text("a", 0),
+                Vec::new(),
+                Some(Spanned::new(filter, at(2))),
+            )))
+        };
+        let contains = Filter::Contains(Subject::File, bound(5));
+        assert_eq!(
+            first_outside_mvp(&filtered(contains.clone())).map(|(_, s)| s),
+            Some(at(5))
+        );
+        let and = Filter::And(vec![
+            Spanned::new(Filter::Matches(Subject::File, text("x", 3)), at(3)),
+            Spanned::new(contains, at(4)),
+        ]);
+        assert_eq!(
+            first_outside_mvp(&filtered(and)).map(|(_, s)| s),
+            Some(at(5))
+        );
+        let clean = Filter::And(vec![Spanned::new(
+            Filter::Contains(Subject::File, text("x", 3)),
+            at(3),
+        )]);
+        assert_eq!(first_outside_mvp(&filtered(clean)), None);
+    }
+
+    #[test]
     fn the_mvp_subset_passes() {
         let mut program = Program::default();
         program.push(Spanned::new(
@@ -260,6 +307,14 @@ mod tests {
         assert_eq!(
             ViolationKind::OutsideMvp("`rename`").to_string(),
             "unknown statement: `rename` is not in this build"
+        );
+        let bound = Violation {
+            kind: ViolationKind::OutsideMvp("a bound node, needing `as` or `for`,"),
+            span: at(0),
+        };
+        assert_eq!(
+            bound.to_string(),
+            "unknown statement: a bound node, needing `as` or `for`, is not in this build"
         );
     }
 }

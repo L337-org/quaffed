@@ -1,9 +1,9 @@
 # Workspace and toolchain
 
 How the Cargo workspace is laid out, what pins what, and the conventions that are enforced
-mechanically.  This describes the scaffold only.  The engine's own architecture - the parser,
-the operation representation, language modules, the journal - is not written here yet,
-because the design it would describe is not settled.
+mechanically.  What each member does is specified in its own note: textual search in
+`search.md` and the operation representation in `representation.md`.  The rest of the engine -
+language modules, the journal - is not written here yet, because it is not built.
 
 ## Layout
 
@@ -33,7 +33,7 @@ lint configuration - no hash maps or sets - applies to it alone, and so that it 
 no parser.  `members = ["crates/*"]` picks up a new member without an edit, and it inherits the
 version, edition, licence and lints from `[workspace.package]` and `[workspace.lints]`.
 
-**`publish = false`** on the member.  Nothing is published until a release decides where and
+**`publish = false`** on every member.  Nothing is published until a release decides where and
 how, and an accidental `cargo publish` of a placeholder is not undoable.
 
 ## The version
