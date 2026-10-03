@@ -107,9 +107,10 @@ fn positions(text: &[u8], encoding: Encoding, offsets: &[usize], len: usize) -> 
         placed.len() < targets.len()
     });
     // Targets in the last character visited.
-    while placed.len() < targets.len() {
-        placed.push(previous.expect("a match has at least one character").1);
-    }
+    placed.resize(
+        targets.len(),
+        previous.expect("a match has at least one character").1,
+    );
     placed
         .as_chunks::<2>()
         .0

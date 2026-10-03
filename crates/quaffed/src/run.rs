@@ -285,6 +285,42 @@ mod tests {
     }
 
     #[test]
+    fn any_other_write_failure_is_an_io_error_naming_standard_output() {
+        struct Full;
+        impl Write for Full {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::Error::from(io::ErrorKind::StorageFull))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let failure = print(&mut Full, "x").unwrap_err();
+        assert_eq!(failure.exit_code(), 7);
+        assert!(
+            failure
+                .to_string()
+                .starts_with("writing the results to \"standard output\": "),
+            "{failure}"
+        );
+    }
+
+    #[test]
+    fn the_underlying_error_stays_on_the_chain() {
+        use std::error::Error as _;
+        let io = Failure::Io {
+            doing: "reading",
+            path: "a".into(),
+            cause: io::Error::from(io::ErrorKind::PermissionDenied),
+        };
+        assert_eq!(
+            io.source().map(ToString::to_string),
+            Some(io::Error::from(io::ErrorKind::PermissionDenied).to_string())
+        );
+        assert!(Failure::Usage(UsageError::NoQuery).source().is_none());
+    }
+
+    #[test]
     fn counts_are_worded_for_one_and_for_many() {
         assert_eq!(count(1, "binary file", "binary files"), "1 binary file");
         assert_eq!(count(3, "binary file", "binary files"), "3 binary files");

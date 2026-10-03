@@ -301,6 +301,25 @@ mod tests {
     }
 
     #[test]
+    fn each_byte_of_a_longer_invalid_sequence_is_one_character() {
+        // A truncated three-byte sequence: two bytes, then a valid character.
+        assert_eq!(
+            chars(Encoding::Utf8, b"\xE2\x82x"),
+            vec![(0, '\u{FFFD}'), (1, '\u{FFFD}'), (2, 'x')]
+        );
+    }
+
+    #[test]
+    fn a_truncated_utf32_tail_is_one_character_at_its_own_offset() {
+        assert_eq!(
+            // Three whole units and one stray byte, so the tail's offset, 12, is neither the
+            // length less a whole unit nor the length less its unit count.
+            chars(Encoding::Utf32Le, b"a\0\0\0b\0\0\0c\0\0\0d"),
+            vec![(0, 'a'), (4, 'b'), (8, 'c'), (12, '\u{FFFD}')]
+        );
+    }
+
+    #[test]
     fn visiting_stops_when_asked() {
         let mut seen = 0;
         Encoding::Utf8.each_char(b"abcdef", |_, _| {

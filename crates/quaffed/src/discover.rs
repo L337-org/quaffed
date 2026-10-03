@@ -274,6 +274,18 @@ mod tests {
     }
 
     #[test]
+    fn the_walker_error_stays_on_the_chain() {
+        use std::error::Error as _;
+        let tree = Tree::new("chain", &[(".git/HEAD", ""), (".gitignore", "a{b\n")]);
+        let err = files(&tree.0, &tree.0).unwrap_err();
+        let source = err
+            .source()
+            .expect("the walker's error is the source")
+            .to_string();
+        assert!(source.contains("a{b"), "{source}");
+    }
+
+    #[test]
     fn symbolic_links_are_counted_not_followed() {
         let tree = Tree::new("links", &[("a.py", "")]);
         std::os::unix::fs::symlink("a.py", tree.0.join("link.py")).unwrap();
