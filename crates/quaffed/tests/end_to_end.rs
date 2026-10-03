@@ -229,6 +229,28 @@ fn snapshot_files(dir: &Path) -> BTreeMap<PathBuf, Entry> {
     found
 }
 
+/// Takes every permission from a path for as long as it lives, and gives them back when it is
+/// dropped - including when the test fails - so no run leaves a locked file behind.
+struct Locked {
+    path: PathBuf,
+    mode: fs::Permissions,
+}
+
+impl Locked {
+    fn new(path: PathBuf) -> Self {
+        let mode = fs::metadata(&path).expect("reading the mode").permissions();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).expect("locking");
+        Locked { path, mode }
+    }
+}
+
+impl Drop for Locked {
+    fn drop(&mut self) {
+        // Not checked: a panic while a failed test unwinds would abort the run and hide it.
+        let _ = fs::set_permissions(&self.path, self.mode.clone());
+    }
+}
+
 const PROJECT: &[(&str, &str)] = &[
     (".git/HEAD", "ref: refs/heads/main\n"),
     (
@@ -425,20 +447,16 @@ fn an_ignore_file_line_the_walker_cannot_parse_stops_the_run_naming_it() {
 #[test]
 fn a_directory_that_cannot_be_listed_stops_the_run_naming_it() {
     let project = Project::new(&[(".git/HEAD", ""), ("locked/a.py", "TODO\n")]);
-    let locked = project.dir.join("locked");
-    let mode = fs::metadata(&locked)
-        .expect("reading the mode")
-        .permissions();
-    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).expect("locking a directory");
-    if fs::read_dir(&locked).is_ok() {
+    let locked = Locked::new(project.dir.join("locked"));
+    if fs::read_dir(&locked.path).is_ok() {
         // Root lists a mode-000 directory, so the failure cannot happen; say so rather than
         // pass having checked nothing.
         eprintln!("skipped: this user can list a mode-000 directory, so it cannot fail");
         return;
     }
     assert_quaff_snapshot!(project.quaff(&["TODO"]));
-    // Unlocked again before comparing, because the comparison lists every directory.
-    fs::set_permissions(&locked, mode).expect("unlocking the directory");
+    // Unlocked before comparing, because the comparison lists every directory.
+    drop(locked);
     project.assert_unchanged();
 }
 
@@ -492,21 +510,17 @@ fn symbolic_links_are_not_followed_and_the_run_says_so() {
 #[test]
 fn a_file_that_cannot_be_read_stops_the_run_naming_it() {
     let project = Project::new(PROJECT);
-    let locked = project.dir.join("pkg/client.py");
-    let mode = fs::metadata(&locked)
-        .expect("reading the mode")
-        .permissions();
-    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).expect("locking a file");
-    if fs::read(&locked).is_ok() {
+    let locked = Locked::new(project.dir.join("pkg/client.py"));
+    if fs::read(&locked.path).is_ok() {
         // Root reads a mode-000 file, so the failure cannot happen; say so rather than pass
         // having checked nothing.
         eprintln!("skipped: this user can read a mode-000 file, so it cannot fail");
         return;
     }
     assert_quaff_snapshot!(project.quaff(&["TODO"]));
-    // Unlocked again before comparing, because the comparison reads every file; the mode is
-    // then the original, so a change quaff made would still show.
-    fs::set_permissions(&locked, mode).expect("unlocking the file");
+    // Unlocked before comparing, because the comparison reads every file; the mode is then the
+    // original, so a change quaff made would still show.
+    drop(locked);
     project.assert_unchanged();
 }
 

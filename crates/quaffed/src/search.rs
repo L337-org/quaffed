@@ -29,11 +29,17 @@ pub struct Match {
 /// Matches are found left to right and do not overlap, so `aa` occurs once in `aaa`.  The query
 /// is literal: nothing in it is special.
 ///
+/// An empty query matches nothing: every position would otherwise be an occurrence of it, and
+/// the command line refuses one before it gets here.
+///
 /// Returns `None` when the query has no honest spelling in the encoding - a non-ASCII query in
 /// an unknown 8-bit encoding - so that the caller reports the file as not searched rather than
 /// as holding no matches.
 pub fn search(text: &[u8], encoding: Encoding, query: &str) -> Option<Vec<Match>> {
     let needle = encoding.encode(query)?;
+    if needle.is_empty() {
+        return Some(Vec::new());
+    }
     let offsets = occurrences(text, &needle, encoding.unit());
     if offsets.is_empty() {
         return Some(Vec::new());
@@ -162,6 +168,11 @@ mod tests {
             vec![(pos(1, 3), pos(1, 6)), (pos(1, 10), pos(1, 13))]
         );
         assert_eq!(found(b"nothing", "TODO"), vec![]);
+    }
+
+    #[test]
+    fn an_empty_query_matches_nothing_rather_than_looping() {
+        assert_eq!(found(b"abc", ""), vec![]);
     }
 
     #[test]
