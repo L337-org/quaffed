@@ -140,8 +140,9 @@ src/app.py:12:5-12:22: def connect(self):
 - **A failed assertion** goes to standard error before the notes, as where it was written, the
   count expected and the count found:
   `quaff: checks.quaff:3:1: expected exactly 2 matches of "TODO", found 1`.  One whose scope
-  held files its query could not be searched in says instead that it cannot check, names the
-  files, and says how to make them checkable (see *Exit codes*).  A message names a
+  held files its query could not be searched in also names those files, and, where what was
+  found does not settle it, says it cannot check and how to make them checkable (see *Exit
+  codes*).  A message names a
   pattern by its text quoted, a line break as `\n`, with any anchors outside the quotes as a
   script writes them: `^"x"$`.  Statements after a failed block do not run, so they add no
   notes.
