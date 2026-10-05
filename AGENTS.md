@@ -10,9 +10,13 @@ It is written in Rust and licensed GPL-3.0-or-later.
 
 ## Status
 
-**Textual search is built; nothing else is.**  `quaff TEXT [PATH]` and `quaff -s TEXT [PATH]`
-search a project, and `architecture/search.md` specifies them as built.  Scripts, structural
-search and edits are not built, and the rest of the design is still being settled.
+**Textual search and textual scripts are built; nothing else is yet.**  `quaff TEXT [PATH]`,
+`-s TEXT`, and scripts from `-e` and `-f` of `find` statements, with or without an `expect`,
+search a project.  `architecture/search.md` specifies the command line, the search and the exit
+codes as built; `architecture/representation.md` the operation representation scripts are
+parsed into; `architecture/script.md` the script language.  Structural search, the `in` and
+`where` clauses, and edits parse but are refused as not built yet, and the rest of the design is
+still being settled.
 
 - **Do not implement features from a recollection of the design.**  When a piece of it settles,
   its specification lands in `architecture/` in the same change as the code, and that is what
@@ -35,6 +39,8 @@ fails on either.
 | `tools.toml`, `scripts/install-tools` or `.github/actions/install-tools`, or adding a verification tool | [architecture/verification.md](architecture/verification.md) |
 | an end-to-end test, or anything that changes what `quaff` prints or how it exits | the snapshot sections of [architecture/verification.md](architecture/verification.md) |
 | `crates/quaffed/src/`: the command line, discovery, encodings, matching or output | [architecture/search.md](architecture/search.md) |
+| `crates/representation/`: what a program means, the checker, or its lint configuration | [architecture/representation.md](architecture/representation.md) |
+| `crates/script/`: the script language's operands, grammar, errors or locations | [architecture/script.md](architecture/script.md) |
 | `packaging/`, `scripts/build-deb`, the package or release workflows, or a dependency the binary links | [architecture/release.md](architecture/release.md) |
 
 ## Commands

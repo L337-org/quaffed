@@ -1,0 +1,19 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "# a comment"
+    - "-f"
+    - scripts/comments.quaff
+    - "-f"
+    - "-"
+  stdin: "\n"
+---
+success: false
+exit_code: 3
+----- stdout -----
+
+----- stderr -----
+quaff: nothing to run: -e expression 1, "scripts/comments.quaff", <stdin> have no statements, only blank lines and comments

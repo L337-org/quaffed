@@ -1,0 +1,17 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "find ^\"FIXME\"$\nfind \"TODO\" expect none\nfind \"café\""
+---
+success: false
+exit_code: 2
+----- stdout -----
+a.txt:1:1-1:4: TODO
+
+----- stderr -----
+quaff: -e expression 1, at character 16: expected no matches of "TODO", found 1
+quaff: no matches for ^"FIXME"$
+quaff: 1 binary file not searched

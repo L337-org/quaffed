@@ -1,0 +1,16 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "find \"x\""
+    - lf.txt
+---
+success: true
+exit_code: 0
+----- stdout -----
+lf.txt:1:1-1:1: x
+lf.txt:3:3-3:3: x
+
+----- stderr -----

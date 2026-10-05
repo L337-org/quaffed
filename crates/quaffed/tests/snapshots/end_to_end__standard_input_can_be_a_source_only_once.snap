@@ -1,0 +1,16 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-f"
+    - "-"
+    - "-f"
+    - "-"
+---
+success: false
+exit_code: 3
+----- stdout -----
+
+----- stderr -----
+quaff: -f - is given twice, and standard input can be read only once

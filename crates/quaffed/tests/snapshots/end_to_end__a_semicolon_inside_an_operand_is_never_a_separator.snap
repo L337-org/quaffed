@@ -1,0 +1,16 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "find \"a;b\"; find \"class\""
+    - src
+---
+success: true
+exit_code: 0
+----- stdout -----
+src/app.py:2:12-2:14: a;b
+src/lib.py:2:1-2:5: class
+
+----- stderr -----

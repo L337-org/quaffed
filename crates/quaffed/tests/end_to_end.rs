@@ -429,6 +429,8 @@ fn each_usage_error_exits_3_saying_what_to_do() {
     assert_quaff_snapshot!(project.quaff(&["--pattern=handle($a)"]));
     assert_quaff_snapshot!(project.quaff(&["-s", ""]));
     assert_quaff_snapshot!(project.quaff(&["--"]));
+    assert_quaff_snapshot!(project.quaff(&["-e"]));
+    assert_quaff_snapshot!(project.quaff(&["--file"]));
     project.assert_unchanged();
 }
 
@@ -438,6 +440,16 @@ fn a_query_that_is_not_utf8_is_refused() {
     let project = Project::new(PROJECT);
     let mut command = project.quaff(&[]);
     command.arg(std::ffi::OsStr::from_bytes(b"caf\xe9"));
+    assert_quaff_snapshot!(command);
+    project.assert_unchanged();
+}
+
+#[test]
+fn an_expression_that_is_not_utf8_is_refused_naming_which() {
+    use std::os::unix::ffi::OsStrExt;
+    let project = Project::new(PROJECT);
+    let mut command = project.quaff(&["-e", "find \"TODO\"", "-e"]);
+    command.arg(std::ffi::OsStr::from_bytes(b"find \"caf\xe9\""));
     assert_quaff_snapshot!(command);
     project.assert_unchanged();
 }
@@ -531,6 +543,229 @@ fn a_file_that_cannot_be_read_stops_the_run_naming_it() {
     // Unlocked before comparing, because the comparison reads every file; the mode is then the
     // original, so a change quaff made would still show.
     drop(locked);
+    project.assert_unchanged();
+}
+
+// Scripts: `-e`, `-f` and `-f -`, and what the script language does when run.
+
+/// A project for scripts: the files a script searches, and scripts kept apart from them under
+/// `scripts/`, which every run narrows away from with the scope `src`.
+const SCRIPTED: &[(&str, &str)] = &[
+    (".git/HEAD", "ref: refs/heads/main\n"),
+    (
+        "src/app.py",
+        "def main():\n    print('a;b')  # TODO: greet\n    return value\n",
+    ),
+    ("src/lib.py", "# TODO: retry\nclass Client:\n    pass\n"),
+    (
+        "scripts/checks.quaff",
+        "# Comments are ignored outside operands.\nfind \"retry\"   # trailing\nfind \"# TODO\" \
+         # a # inside an operand is content\n",
+    ),
+    (
+        "scripts/bad.quaff",
+        "find \"a\"\nfind \"b\" expect 1 in \"src\"\n",
+    ),
+    (
+        "scripts/unknown.quaff",
+        "find \"a\"\n\ninsert \"x\" after \"a\"\n",
+    ),
+];
+
+#[test]
+fn every_source_runs_in_the_order_given() {
+    let project = Project::new(SCRIPTED);
+    assert_quaff_snapshot!(
+        project
+            .quaff(&[
+                "-e",
+                "find \"Client\"",
+                "-f",
+                "scripts/checks.quaff",
+                "-s",
+                "def",
+                "-e",
+                "find \"value\"",
+                "-f",
+                "-",
+                "src",
+            ])
+            .pass_stdin("find \"print\"\n")
+    );
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_semicolon_inside_an_operand_is_never_a_separator() {
+    let project = Project::new(SCRIPTED);
+    assert_quaff_snapshot!(project.quaff(&["-e", "find \"a;b\"; find \"class\"", "src"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn an_assertion_block_that_holds_exits_0() {
+    let project = Project::new(SCRIPTED);
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "find \"TODO\" expect 2\nfind \"FIXME\" expect none\nfind \"Client\" expect at least 1",
+        "src",
+    ]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn an_assertion_block_reports_every_failure_and_stops_the_run_with_exit_2() {
+    let project = Project::new(SCRIPTED);
+    // The second and fourth fail; both are reported, and the `find` after the block never runs.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "find \"TODO\" expect 2\nfind \"Client\" expect 3\nfind \"FIXME\" expect none\n\
+         find \"pass\" expect at most 0\nfind \"def\"",
+        "src",
+    ]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_find_without_an_expect_after_a_block_still_runs_when_the_block_holds() {
+    let project = Project::new(SCRIPTED);
+    assert_quaff_snapshot!(project.quaff(&["-e", "find \"TODO\" expect 2; find \"def\"", "src"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn line_breaks_join_and_anchors_match_as_the_language_says() {
+    let mut project = Project::new(&[(".git/HEAD", "")]);
+    project.add_bytes("lf.txt", b"x\nend\n  x\n");
+    project.add_bytes("crlf.txt", b"x\r\nend\r\n");
+    project.add_bytes("cr.txt", b"x\rend\r");
+    // `$^` matches LF, CRLF and a lone CR alike.
+    assert_quaff_snapshot!(project.quaff(&["-e", "find \"x\" $^ \"end\""]));
+    // Anchored, `x` matches only a whole line; unanchored it matches the indented one too.
+    assert_quaff_snapshot!(project.quaff(&["-e", "find ^\"x\"$", "lf.txt"]));
+    assert_quaff_snapshot!(project.quaff(&["-e", "find \"x\"", "lf.txt"]));
+    // Adjacent pieces join with nothing between them.
+    assert_quaff_snapshot!(project.quaff(&["-e", "find \"e\" \"nd\"", "lf.txt"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_fenced_operand_holds_its_own_delimiter() {
+    let project = Project::new(&[(".git/HEAD", ""), ("a.txt", "say \"hi\" and C:\\temp\n")]);
+    assert_quaff_snapshot!(
+        project.quaff(&["-e", "find \"\"\" say \"hi\" \"\"\"; find \"C:\\temp\""])
+    );
+    project.assert_unchanged();
+}
+
+#[test]
+fn each_malformed_script_exits_3_naming_where() {
+    let project = Project::new(SCRIPTED);
+    // An unfenced delimiter inside an operand, reported where the operand closed.
+    assert_quaff_snapshot!(project.quaff(&["-e", "find \"say \"hi\"\""]));
+    // A clause out of order, in a script file, by line and column.
+    assert_quaff_snapshot!(project.quaff(&["-f", "scripts/bad.quaff"]));
+    // A textual operation spelled with a pattern, on standard input.
+    assert_quaff_snapshot!(
+        project
+            .quaff(&["-f", "-"])
+            .pass_stdin("\nreplace string `a` with `b` expect 1\n")
+    );
+    // An anchor on a backticked operand, in the second -e.
+    assert_quaff_snapshot!(project.quaff(&["-e", "find \"a\"", "-e", "find ^`f()`"]));
+    // An edit with no expect, refused by the checker.
+    assert_quaff_snapshot!(project.quaff(&["-e", "replace string \"a\" with \"b\""]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_script_that_is_not_utf8_exits_3_naming_where() {
+    let mut project = Project::new(SCRIPTED);
+    project.add_bytes("scripts/latin1.quaff", b"find \"a\"\nfind \"caf\xe9\"\n");
+    assert_quaff_snapshot!(project.quaff(&["-f", "scripts/latin1.quaff"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn each_construct_outside_the_mvp_exits_5_naming_it() {
+    let project = Project::new(SCRIPTED);
+    assert_quaff_snapshot!(project.quaff(&["-f", "scripts/unknown.quaff"]));
+    assert_quaff_snapshot!(project.quaff(&["-e", "expect 1"]));
+    assert_quaff_snapshot!(project.quaff(&["-e", "find \"a\" $x \"b\""]));
+    assert_quaff_snapshot!(project.quaff(&["-e", "replace `f($a)` with `g(${a|x})` expect 1"]));
+    assert_quaff_snapshot!(project.quaff(&["-e", "find `f($a)` as call"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn each_construct_not_built_yet_exits_5_naming_it() {
+    let project = Project::new(SCRIPTED);
+    assert_quaff_snapshot!(project.quaff(&["-e", "find `f($a)`"]));
+    assert_quaff_snapshot!(project.quaff(&["-e", "find \"a\" in \"src/**\""]));
+    assert_quaff_snapshot!(project.quaff(&["-e", "find \"a\" where not FILE matches \"x\""]));
+    assert_quaff_snapshot!(project.quaff(&["-e", "find \"a\"; delete `a` expect 1"]));
+    assert_quaff_snapshot!(project.quaff(&["-e", "replace string \"a\" with \"b\" expect any"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn nothing_runs_when_any_source_is_wrong() {
+    let project = Project::new(SCRIPTED);
+    // The first -e is fine, and finds something; the error in the second stops the run first.
+    assert_quaff_snapshot!(project.quaff(&["-e", "find \"TODO\"", "-e", "fnd \"x\"", "src"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_script_file_that_cannot_be_read_exits_7_naming_it() {
+    let project = Project::new(SCRIPTED);
+    assert_quaff_snapshot!(project.quaff(&["-f", "scripts/missing.quaff"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn standard_input_can_be_a_source_only_once() {
+    let project = Project::new(SCRIPTED);
+    assert_quaff_snapshot!(project.quaff(&["-f", "-", "-f", "-"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_program_with_no_statements_exits_3_naming_its_sources() {
+    let mut project = Project::new(SCRIPTED);
+    project.add_bytes("scripts/comments.quaff", b"# nothing here yet\n\n");
+    // An empty -e, as `-e "$CHECKS"` gives with the variable unset.
+    assert_quaff_snapshot!(project.quaff(&["-e", ""]));
+    // Several sources, none with a statement.
+    assert_quaff_snapshot!(
+        project
+            .quaff(&[
+                "-e",
+                "# a comment",
+                "-f",
+                "scripts/comments.quaff",
+                "-f",
+                "-"
+            ])
+            .pass_stdin("\n")
+    );
+    // One source with a statement is a program, even beside an empty one.
+    assert_quaff_snapshot!(project.quaff(&["-e", "", "-e", "find \"Client\"", "src"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_failed_assertion_comes_before_the_notes_and_later_statements_note_nothing() {
+    let mut project = Project::new(&[(".git/HEAD", ""), ("a.txt", "TODO\n")]);
+    project.add_bytes("image.bin", b"TODO\0");
+    project.add_bytes("latin1.txt", b"caf\xe9\n");
+    // A note from the find before the block, the failure, then what was not looked at.  The
+    // non-ASCII find after the failed block never runs, so the Latin-1 file is not noted for
+    // it.  Anchors stay in the messages, outside the quotes.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "find ^\"FIXME\"$\nfind \"TODO\" expect none\nfind \"caf\u{e9}\"",
+    ]));
     project.assert_unchanged();
 }
 

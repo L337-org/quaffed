@@ -1,0 +1,14 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - ""
+---
+success: false
+exit_code: 3
+----- stdout -----
+
+----- stderr -----
+quaff: nothing to run: -e expression 1 has no statements, only blank lines and comments

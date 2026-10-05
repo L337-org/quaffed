@@ -11,4 +11,4 @@ exit_code: 3
 ----- stdout -----
 
 ----- stderr -----
-quaff: "-p" is not built yet; only a textual search - a bare query or -s - is
+quaff: "-p" is not built yet

@@ -1,0 +1,15 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-f"
+    - "-"
+  stdin: "\nreplace string `a` with `b` expect 1\n"
+---
+success: false
+exit_code: 3
+----- stdout -----
+
+----- stderr -----
+quaff: <stdin>:2:16: `replace string` replaces text, so it takes quoted operands, not a backticked pattern; for a structural replace, drop `string`

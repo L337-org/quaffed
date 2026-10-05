@@ -5,9 +5,10 @@ Contributions are welcome.  By participating, you are expected to uphold the
 
 ## Before you start
 
-**The design is not settled, and only textual search is implemented.**  Until it settles, the most
-useful contribution is discussion rather than code: open an issue before starting anything
-beyond a small fix, so the approach can be agreed before you invest time in it.
+**The design is not settled, and only textual search and textual scripts are implemented.**
+Until it settles, the most useful contribution is discussion rather than code: open an issue
+before starting anything beyond a small fix, so the approach can be agreed before you invest
+time in it.
 
 `AGENTS.md` in the repository root is the always-loaded brief for every assistant, and the map
 of everything else: it carries the conventions and a table pointing at the deeper notes.  Those

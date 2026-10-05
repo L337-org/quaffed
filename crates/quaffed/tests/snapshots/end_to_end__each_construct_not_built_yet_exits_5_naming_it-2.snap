@@ -1,0 +1,14 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "find \"a\" in \"src/**\""
+---
+success: false
+exit_code: 5
+----- stdout -----
+
+----- stderr -----
+quaff: -e expression 1, at character 13: an `in` clause is not built yet
