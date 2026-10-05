@@ -23,7 +23,9 @@ their specifications join this one rather than replacing it.
   exactly.  `-f -` may be given once, because standard input can be read only once; a second is
   a usage error.  A script is read as UTF-8, exit 3 if it is not: a file or standard input is
   refused at its first byte that is not, and an `-e` argument, which arrives whole, is refused
-  naming which `-e` it was.  A program with no statements at all - every source empty, or only
+  naming which `-e` it was.  A leading UTF-8 byte-order mark on a file or standard input is
+  skipped, as it is in a searched file, so locations count from the first visible character;
+  anywhere else it is content inside an operand and an error outside one.  A program with no statements at all - every source empty, or only
   blank lines and comments, as `-e "$CHECKS"` with the variable unset gives - is refused too,
   exit 3, naming the sources, rather than searching for nothing and exiting 1.
 - **The first positional is the query only when no `-s`, `-e` or `-f` was given**; otherwise it

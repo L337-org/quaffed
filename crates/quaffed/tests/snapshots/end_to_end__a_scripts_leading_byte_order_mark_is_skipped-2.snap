@@ -1,0 +1,14 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-f"
+    - scripts/bom-error.quaff
+---
+success: false
+exit_code: 5
+----- stdout -----
+
+----- stderr -----
+quaff: scripts/bom-error.quaff:1:1: unknown statement: `fnd`; the statements in this build are find, replace and delete

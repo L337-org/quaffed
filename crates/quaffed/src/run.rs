@@ -352,7 +352,11 @@ impl Built {
     }
 }
 
-/// The text of a script that `read` read from `source`, which must be UTF-8.
+/// The UTF-8 byte-order mark.
+const UTF8_BOM: &[u8] = b"\xEF\xBB\xBF";
+
+/// The text of a script that `read` read from `source`, which must be UTF-8, without a leading
+/// byte-order mark.
 fn script_text(read: io::Result<Vec<u8>>, source: &Source) -> Result<String, Failure> {
     let bytes = read.map_err(|cause| Failure::Io {
         doing: "reading the script",
@@ -362,6 +366,13 @@ fn script_text(read: io::Result<Vec<u8>>, source: &Source) -> Result<String, Fai
         },
         cause,
     })?;
+    // A leading byte-order mark is skipped, as it is in a searched file: some editors write
+    // one, and nothing else can mean anything there.  It goes before decoding, so a location
+    // counts from the first visible character.
+    let bytes = match bytes.strip_prefix(UTF8_BOM) {
+        Some(rest) => rest.to_vec(),
+        None => bytes,
+    };
     String::from_utf8(bytes).map_err(|err| {
         let valid_up_to = err.utf8_error().valid_up_to();
         let text = String::from_utf8_lossy(&err.into_bytes()[..valid_up_to]).into_owned();

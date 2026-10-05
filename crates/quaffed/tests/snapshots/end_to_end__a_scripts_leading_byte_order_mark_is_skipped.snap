@@ -1,0 +1,15 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-f"
+    - scripts/bom.quaff
+    - src
+---
+success: true
+exit_code: 0
+----- stdout -----
+src/lib.py:2:7-2:12: Client
+
+----- stderr -----

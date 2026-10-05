@@ -759,6 +759,30 @@ fn a_binary_file_does_not_fail_an_assertion() {
 }
 
 #[test]
+fn a_scripts_leading_byte_order_mark_is_skipped() {
+    let mut project = Project::new(SCRIPTED);
+    project.add_bytes("scripts/bom.quaff", b"\xEF\xBB\xBFfind \"Client\"\n");
+    project.add_bytes("scripts/bom-error.quaff", b"\xEF\xBB\xBFfnd \"x\"\n");
+    project.add_bytes(
+        "scripts/bom-later.quaff",
+        b"find \"a\"\n\xEF\xBB\xBFfind \"b\"\n",
+    );
+    // A script file with a byte-order mark runs as it would without one.
+    assert_quaff_snapshot!(project.quaff(&["-f", "scripts/bom.quaff", "src"]));
+    // Locations count from after the mark: the first visible character is 1:1.
+    assert_quaff_snapshot!(project.quaff(&["-f", "scripts/bom-error.quaff"]));
+    // The same on standard input.
+    assert_quaff_snapshot!(
+        project
+            .quaff(&["-f", "-", "src"])
+            .pass_stdin(&b"\xEF\xBB\xBFfind \"Client\"\n"[..])
+    );
+    // A byte-order mark anywhere else is an error outside an operand, as before.
+    assert_quaff_snapshot!(project.quaff(&["-f", "scripts/bom-later.quaff"]));
+    project.assert_unchanged();
+}
+
+#[test]
 fn a_program_with_no_statements_exits_3_naming_its_sources() {
     let mut project = Project::new(SCRIPTED);
     project.add_bytes("scripts/comments.quaff", b"# nothing here yet\n\n");
