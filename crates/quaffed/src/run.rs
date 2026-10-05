@@ -244,7 +244,15 @@ pub fn run(
     for text in &evaluation.notes {
         note(text);
     }
-    for text in skipped(&searched, &patterns[..evaluation.next], &found) {
+    let asserted: Vec<bool> = steps
+        .iter()
+        .flat_map(|step| match step {
+            Step::Find(_) => vec![false],
+            Step::Assert(block) => vec![true; block.len()],
+        })
+        .collect();
+    let evaluated = &patterns[..evaluation.next];
+    for text in skipped(&searched, evaluated, &asserted, &found) {
         note(&text);
     }
     Ok(outcome)
@@ -469,8 +477,9 @@ fn resolve_scope(scope: Option<&Path>, cwd: &Path) -> Result<PathBuf, Failure> {
 struct Searched {
     /// For each pattern, the files with matches, in discovery order.
     matches: Vec<Vec<(PathBuf, Vec<Match>)>>,
-    /// For each pattern, the files in an unknown 8-bit encoding it has no spelling in.
-    unknown_encoding: Vec<usize>,
+    /// For each pattern, the files in an unknown 8-bit encoding it has no spelling in, by the
+    /// paths a message shows.
+    unknown_encoding: Vec<Vec<PathBuf>>,
     /// Binary files, counted once whatever the number of patterns.
     binary: usize,
 }
@@ -483,7 +492,7 @@ fn search_files(
 ) -> Result<Searched, Failure> {
     let mut searched = Searched {
         matches: vec![Vec::new(); patterns.len()],
-        unknown_encoding: vec![0; patterns.len()],
+        unknown_encoding: vec![Vec::new(); patterns.len()],
         binary: 0,
     };
     for file in files {
@@ -503,7 +512,7 @@ fn search_files(
         };
         for (i, pattern) in patterns.iter().enumerate() {
             match search::search(&bytes[body..], encoding, pattern) {
-                None => searched.unknown_encoding[i] += 1,
+                None => searched.unknown_encoding[i].push(shown.clone()),
                 Some(in_file) if in_file.is_empty() => {}
                 Some(in_file) => searched.matches[i].push((shown.clone(), in_file)),
             }
@@ -546,13 +555,30 @@ impl Evaluation<'_> {
                     asserted = true;
                     let mut failed = Vec::new();
                     for assertion in block {
+                        let unsearched = &self.searched.unknown_encoding[self.next];
                         let found = self.print_matches(assertion.pattern, out)?;
-                        if !assertion.count.holds(found) {
+                        let location = built.locate(assertion.span, assertion.span.start);
+                        let wanted = expected(assertion.count);
+                        let pattern = quoted(assertion.pattern);
+                        // A count over fewer files than the scope holds is not a passed
+                        // assertion, whatever it came to.
+                        if !unsearched.is_empty() {
+                            let listed: Vec<String> =
+                                unsearched.iter().map(|path| format!("{path:?}")).collect();
+                            let one = unsearched.len() == 1;
                             failed.push(format!(
-                                "{}: expected {} of {}, found {found}",
-                                built.locate(assertion.span, assertion.span.start),
-                                expected(assertion.count),
-                                quoted(assertion.pattern)
+                                "{location}: cannot check for {wanted} of {pattern}: {} in scope \
+                                 {} in an unknown 8-bit encoding, which a non-ASCII query has no \
+                                 one spelling in, so {} not searched - {}.  Found {found} in the \
+                                 files that were searched",
+                                count(unsearched.len(), "file", "files"),
+                                if one { "is" } else { "are" },
+                                if one { "it was" } else { "they were" },
+                                listed.join(", ")
+                            ));
+                        } else if !assertion.count.holds(found) {
+                            failed.push(format!(
+                                "{location}: expected {wanted} of {pattern}, found {found}"
                             ));
                         }
                     }
@@ -631,17 +657,28 @@ fn expected(count: Count) -> String {
     }
 }
 
-/// A note for everything not looked at, so that nothing is silently left out: per pattern
+/// A note for everything not looked at, so that nothing is silently left out: per `find`
 /// evaluated, the files it had no spelling in, then what discovery and classification passed
-/// over.
-fn skipped(searched: &Searched, patterns: &[&TextPattern], found: &discover::Found) -> Vec<String> {
+/// over.  An assertion's unsearched files are not noted: they failed it, and its failure names
+/// them.
+fn skipped(
+    searched: &Searched,
+    patterns: &[&TextPattern],
+    asserted: &[bool],
+    found: &discover::Found,
+) -> Vec<String> {
     let mut notes = Vec::new();
-    for (pattern, &unknown) in patterns.iter().zip(&searched.unknown_encoding) {
-        if unknown > 0 {
+    for ((pattern, unknown), _) in patterns
+        .iter()
+        .zip(&searched.unknown_encoding)
+        .zip(asserted)
+        .filter(|(_, asserted)| !**asserted)
+    {
+        if !unknown.is_empty() {
             notes.push(format!(
                 "{} in an unknown 8-bit encoding not searched for {}, which is not ASCII and so \
                  has no one spelling there",
-                count(unknown, "file", "files"),
+                count(unknown.len(), "file", "files"),
                 quoted(pattern)
             ));
         }

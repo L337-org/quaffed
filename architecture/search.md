@@ -158,6 +158,14 @@ src/app.py:12:5-12:22: def connect(self):
 the end: every assertion in it is checked and each that fails is reported.  If any failed, the
 run stops after the block, exit 2, and nothing after it runs.
 
+**An assertion whose scope holds a file its query could not be searched in fails**, exit 2,
+whatever the count it found: a count over fewer files than the scope holds is not a passed
+assertion.  Today that is a non-ASCII query and a file in an unknown 8-bit encoding.  The
+failure names every such file, by its path relative to the current directory, with what was
+found in the rest, and those files get no separate note.  A `find` without `expect` notes them
+instead.  Binary files never fail an assertion: they are not text, so skipping them leaves no
+question unanswered.
+
 **Every source is read and parsed, and the whole program checked, before any file is looked
 at**, so a script with an error anywhere does not run at all.  A script error names where it is
 - `refactor.quaff:12:5`, `<stdin>:12:5`, or `-e expression 2, at character 10` - and what was

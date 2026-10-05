@@ -731,6 +731,34 @@ fn standard_input_can_be_a_source_only_once() {
 }
 
 #[test]
+fn an_assertion_over_files_its_query_cannot_be_searched_in_fails_naming_them() {
+    let mut project = Project::new(&[(".git/HEAD", ""), ("utf8.txt", "TODO here\n")]);
+    // Latin-1, with no declaration: an unknown 8-bit encoding, which "café" has no one
+    // spelling in.
+    project.add_bytes("latin1.txt", b"caf\xe9 TODO\n");
+    project.add_bytes("legacy/old.txt", b"na\xefve\n");
+    // The count found would hold, and the assertion fails all the same, naming both files;
+    // the ASCII assertion in the same block is still checked, and holds.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "find \"caf\u{e9}\" expect none\nfind \"TODO\" expect 2",
+    ]));
+    // One file, narrowed to it by the scope.
+    assert_quaff_snapshot!(project.quaff(&["-e", "find \"na\u{ef}ve\" expect 1", "legacy"]));
+    // A find without an expect only notes the files, and exits by what it found.
+    assert_quaff_snapshot!(project.quaff(&["-e", "find \"caf\u{e9}\""]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_binary_file_does_not_fail_an_assertion() {
+    let mut project = Project::new(&[(".git/HEAD", ""), ("a.txt", "nothing\n")]);
+    project.add_bytes("image.bin", b"TODO\0caf\xc3\xa9");
+    assert_quaff_snapshot!(project.quaff(&["-e", "find \"TODO\" expect none"]));
+    project.assert_unchanged();
+}
+
+#[test]
 fn a_program_with_no_statements_exits_3_naming_its_sources() {
     let mut project = Project::new(SCRIPTED);
     project.add_bytes("scripts/comments.quaff", b"# nothing here yet\n\n");
