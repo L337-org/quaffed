@@ -23,9 +23,12 @@ their specifications join this one rather than replacing it.
   exactly.  `-f -` may be given once, because standard input can be read only once; a second is
   a usage error.  A script is read as UTF-8, exit 3 if it is not: a file or standard input is
   refused at its first byte that is not, and an `-e` argument, which arrives whole, is refused
-  naming which `-e` it was.  A program with no statements at all - every source empty, or only
-  blank lines and comments, as `-e "$CHECKS"` with the variable unset gives - is refused too,
-  exit 3, naming the sources, rather than searching for nothing and exiting 1.
+  naming which `-e` it was.  A leading UTF-8 byte-order mark on a file or standard input is
+  skipped, as it is in a searched file, so locations count from the first visible character;
+  anywhere else it is content inside an operand and an error outside one.  A program with no
+  statements at all - every source empty, or only blank lines and comments, as `-e "$CHECKS"`
+  with the variable unset gives - is refused too, exit 3, naming the sources, rather than
+  searching for nothing and exiting 1.
 - **The first positional is the query only when no `-s`, `-e` or `-f` was given**; otherwise it
   is the scope.
 - **There is exactly one scope argument.**  More than one is refused, naming them and the
@@ -86,7 +89,7 @@ the file declares, never guessed from statistics:
 | starts with a byte-order mark | UTF-8, UTF-16 or UTF-32, as the mark says | encoded to match; a match must start on a code unit |
 | no mark, and a NUL in its first 8000 bytes | binary, by git's own test | not at all: the run says how many binary files it skipped |
 | no mark, valid UTF-8 | UTF-8 | as its UTF-8 bytes |
-| anything else | an unknown 8-bit encoding | if ASCII, as its bytes, which are the same in every ASCII-compatible encoding; otherwise not at all, and the run says how many files it skipped for that query |
+| anything else | an unknown 8-bit encoding | if ASCII, as its bytes, which are the same in every ASCII-compatible encoding; otherwise not at all: a `find` notes how many files it skipped, and an assertion fails naming them (see *Exit codes*) |
 
 The binary test is git's: `xdiff-interface.c` defines `FIRST_FEW_BYTES` as 8000, and
 `buffer_is_binary` looks for a NUL within at most that many bytes.  A byte-order mark is
@@ -136,7 +139,10 @@ src/app.py:12:5-12:22: def connect(self):
   followed.  Anything not looked at is said, never silently left out.
 - **A failed assertion** goes to standard error before the notes, as where it was written, the
   count expected and the count found:
-  `quaff: checks.quaff:3:1: expected exactly 2 matches of "TODO", found 1`.  A message names a
+  `quaff: checks.quaff:3:1: expected exactly 2 matches of "TODO", found 1`.  One whose scope
+  held files its query could not be searched in also names those files, and, where what was
+  found does not settle it, says it cannot check and how to make them checkable (see *Exit
+  codes*).  A message names a
   pattern by its text quoted, a line break as `\n`, with any anchors outside the quotes as a
   script writes them: `^"x"$`.  Statements after a failed block do not run, so they add no
   notes.
@@ -157,6 +163,22 @@ src/app.py:12:5-12:22: def connect(self):
 **An assertion block** - a run of consecutive `find ... expect` statements - is evaluated to
 the end: every assertion in it is checked and each that fails is reported.  If any failed, the
 run stops after the block, exit 2, and nothing after it runs.
+
+**An assertion whose scope holds a file its query could not be searched in** is decided only
+where no number of matches in those files could change it, since they can only add matches.
+Today that is a non-ASCII query and a file in an unknown 8-bit encoding.
+- **Settled by what was found, held:** `at least N` with N already found, or `any`.  It passes,
+  and a note names the unsearched files.
+- **Settled by what was found, failed:** `none`, `at most N`, `exactly N` or `N or none` with
+  more than N already found.  It fails as an ordinary count, exit 2, naming the files.
+- **Otherwise it cannot be checked, and fails, exit 2**: a count over fewer files than the
+  scope holds is not a passed assertion.  The failure names every unsearched file, by its path
+  relative to the current directory, with what was found in the rest and how to make the files
+  checkable.
+
+An assertion's unsearched files get no separate note.  A `find` without `expect` notes them
+instead.  Binary files never fail an assertion: they are not text, so skipping them leaves no
+question unanswered.
 
 **Every source is read and parsed, and the whole program checked, before any file is looked
 at**, so a script with an error anywhere does not run at all.  A script error names where it is

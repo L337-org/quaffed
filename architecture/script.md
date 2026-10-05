@@ -86,7 +86,10 @@ delimiter.
 
 **Locations** (`src/location.rs`) name the source: `refactor.quaff:12:5` for a file,
 `<stdin>:12:5` for standard input, `-e expression 2, at character 10` for an inline script.
-Lines and columns count from 1, columns in characters.
+Lines and columns count from 1, columns in characters.  A script file or standard input is read
+as UTF-8, and a leading byte-order mark is dropped before parsing, so line 1, column 1 is the
+first visible character; the command line does that (`crates/quaffed/src/run.rs`), and the
+parser never sees the mark.
 
 ## Running a script
 

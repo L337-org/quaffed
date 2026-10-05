@@ -1,0 +1,15 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "find \"café\" expect none"
+---
+success: false
+exit_code: 2
+----- stdout -----
+menu.txt:1:1-1:4: café
+
+----- stderr -----
+quaff: -e expression 1, at character 1: expected no matches of "café", found 1, and more can only be in the rest: 1 file in an unknown 8-bit encoding, which a non-ASCII query has no one spelling in, was not searched - "latin1.txt"

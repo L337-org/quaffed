@@ -1,0 +1,14 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-f"
+    - scripts/bom-later.quaff
+---
+success: false
+exit_code: 3
+----- stdout -----
+
+----- stderr -----
+quaff: scripts/bom-later.quaff:2:1: unexpected '\u{feff}': text to search for is quoted, as "TODO", and a pattern is backticked

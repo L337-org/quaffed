@@ -1,0 +1,14 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "find \"TODO\" expect none"
+---
+success: true
+exit_code: 0
+----- stdout -----
+
+----- stderr -----
+quaff: 1 binary file not searched
