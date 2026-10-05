@@ -96,11 +96,12 @@ checked before UTF-16's, because it begins with it.
 Matches are found left to right and do not overlap: `aa` occurs once in `aaa`.  Each file is
 classified once, whatever the number of queries.
 
-A script's textual operand adds line breaks and anchors (`script.md`).  **A line break** matches
-LF, CRLF or a lone CR, whichever the file has there, preferring CRLF to its CR alone.  **A start
-anchor** holds at the start of the file or just after a line ending, **an end anchor** at the
-end of the file or just before one.  A CRLF is one line ending, so neither holds between its CR
-and its LF: a pattern answers a CRLF file as it answers the same file with LF endings.  Both are spelled in the file's encoding like the text.
+A script's textual operand adds line breaks and anchors (`script.md`), both spelled in the
+file's encoding like the text.  **A line break** matches LF, CRLF or a lone CR, whichever the
+file has there, preferring CRLF to its CR alone.  **A start anchor** holds at the start of the
+file or just after a line ending, **an end anchor** at the end of the file or just before one.
+A CRLF is one line ending, so neither anchor holds between its CR and its LF: a pattern answers
+a CRLF file as it answers the same file with LF endings.
 
 **Memory.**  A file is read whole, and positions are worked out in one pass over its
 characters that keeps only the current line and column and stops at the last match, so a search

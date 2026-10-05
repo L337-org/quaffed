@@ -274,6 +274,8 @@ fn name(source: &Source) -> String {
         Source::File(path) => format!("{path:?}"),
         Source::Stdin => "<stdin>".into(),
         Source::Expression(n) => format!("-e expression {n}"),
+        // Unreachable while only scripts can be empty; `Source` is non-exhaustive, so a source
+        // added later still gets a name rather than a compile error here.
         _ => "a source".into(),
     }
 }
