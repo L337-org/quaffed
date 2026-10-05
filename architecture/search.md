@@ -163,11 +163,19 @@ src/app.py:12:5-12:22: def connect(self):
 the end: every assertion in it is checked and each that fails is reported.  If any failed, the
 run stops after the block, exit 2, and nothing after it runs.
 
-**An assertion whose scope holds a file its query could not be searched in fails**, exit 2,
-whatever the count it found: a count over fewer files than the scope holds is not a passed
-assertion.  Today that is a non-ASCII query and a file in an unknown 8-bit encoding.  The
-failure names every such file, by its path relative to the current directory, with what was
-found in the rest, and those files get no separate note.  A `find` without `expect` notes them
+**An assertion whose scope holds a file its query could not be searched in** is decided only
+where no number of matches in those files could change it, since they can only add matches.
+Today that is a non-ASCII query and a file in an unknown 8-bit encoding.
+- **Settled by what was found, held:** `at least N` with N already found, or `any`.  It passes,
+  and a note names the unsearched files.
+- **Settled by what was found, failed:** `none`, `at most N`, `exactly N` or `N or none` with
+  more than N already found.  It fails as an ordinary count, exit 2, naming the files.
+- **Otherwise it cannot be checked, and fails, exit 2**: a count over fewer files than the
+  scope holds is not a passed assertion.  The failure names every unsearched file, by its path
+  relative to the current directory, with what was found in the rest and how to make the files
+  checkable.
+
+An assertion's unsearched files get no separate note.  A `find` without `expect` notes them
 instead.  Binary files never fail an assertion: they are not text, so skipping them leaves no
 question unanswered.
 

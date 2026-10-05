@@ -757,6 +757,20 @@ fn an_assertion_over_files_its_query_cannot_be_searched_in_fails_naming_them() {
 }
 
 #[test]
+fn an_assertion_the_searched_files_already_settle_is_decided_despite_unsearched_ones() {
+    let mut project = Project::new(&[(".git/HEAD", ""), ("menu.txt", "caf\u{e9} au lait\n")]);
+    project.add_bytes("latin1.txt", b"caf\xe9\n");
+    // One match already meets `at least 1`, whatever the Latin-1 file holds: it holds, with
+    // a note naming the file.
+    assert_quaff_snapshot!(project.quaff(&["-e", "find \"caf\u{e9}\" expect at least 1"]));
+    // One match already breaks `none`: it fails as an ordinary count, naming the file too.
+    assert_quaff_snapshot!(project.quaff(&["-e", "find \"caf\u{e9}\" expect none"]));
+    // `exactly 1` is met so far, but the Latin-1 file could hold another: cannot check.
+    assert_quaff_snapshot!(project.quaff(&["-e", "find \"caf\u{e9}\" expect 1"]));
+    project.assert_unchanged();
+}
+
+#[test]
 fn a_binary_file_does_not_fail_an_assertion() {
     let mut project = Project::new(&[(".git/HEAD", ""), ("a.txt", "nothing\n")]);
     project.add_bytes("image.bin", b"TODO\0caf\xc3\xa9");

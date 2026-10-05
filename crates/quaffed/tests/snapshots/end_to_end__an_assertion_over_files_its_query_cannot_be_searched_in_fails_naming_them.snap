@@ -13,4 +13,4 @@ latin1.txt:1:6-1:9: TODO
 utf8.txt:1:1-1:4: TODO
 
 ----- stderr -----
-quaff: -e expression 1, at character 1: cannot check for no matches of "café": 2 files in scope are in an unknown 8-bit encoding, which a non-ASCII query has no one spelling in, so they were not searched - "latin1.txt", "legacy/old.txt".  Found 0 in the files that were searched.  To check it, re-encode the files as UTF-8, or leave them out with the scope or an ignore file
+quaff: -e expression 1, at character 1: cannot check for no matches of "café": 2 files in an unknown 8-bit encoding, which a non-ASCII query has no one spelling in, were not searched - "latin1.txt", "legacy/old.txt".  Found 0 in the files that were searched.  To check it, re-encode the files as UTF-8, or leave them out with the scope or an ignore file

@@ -582,29 +582,45 @@ impl Evaluation<'_> {
                         let location = built.locate(assertion.span, assertion.span.start);
                         let wanted = expected(assertion.count);
                         let pattern = quoted(assertion.pattern);
-                        // A count over fewer files than the scope holds is not a passed
-                        // assertion, whatever it came to.
-                        if !unsearched.is_empty() {
-                            let listed: Vec<String> =
-                                unsearched.iter().map(|path| format!("{path:?}")).collect();
-                            let one = unsearched.len() == 1;
-                            failed.push(format!(
-                                "{location}: cannot check for {wanted} of {pattern}: {} in scope \
-                                 {} in an unknown 8-bit encoding, which a non-ASCII query has no \
-                                 one spelling in, so {} not searched - {}.  Found {found} in the \
-                                 files that were searched.  To check it, re-encode {} as UTF-8, \
-                                 or leave {} out with the scope or an ignore file",
-                                count(unsearched.len(), "file", "files"),
-                                if one { "is" } else { "are" },
-                                if one { "it was" } else { "they were" },
-                                listed.join(", "),
+                        if unsearched.is_empty() {
+                            if !assertion.count.holds(found) {
+                                failed.push(format!(
+                                    "{location}: expected {wanted} of {pattern}, found {found}"
+                                ));
+                            }
+                            continue;
+                        }
+                        // Unsearched files can only add matches, so a count is decided without
+                        // them only where no number of further matches could change it.
+                        // Otherwise a count over fewer files than the scope holds is not a
+                        // passed assertion.
+                        let one = unsearched.len() == 1;
+                        let listed: Vec<String> =
+                            unsearched.iter().map(|path| format!("{path:?}")).collect();
+                        let files = format!(
+                            "{} in an unknown 8-bit encoding, which a non-ASCII query has no one \
+                             spelling in, {} not searched - {}",
+                            count(unsearched.len(), "file", "files"),
+                            if one { "was" } else { "were" },
+                            listed.join(", ")
+                        );
+                        match settled(assertion.count, found) {
+                            Some(true) => self.notes.push(format!(
+                                "{location}: found {found} of {pattern}, enough for {wanted} \
+                                 whatever the rest hold; {files}"
+                            )),
+                            Some(false) => failed.push(format!(
+                                "{location}: expected {wanted} of {pattern}, found {found}, \
+                                 and more can only be in the rest: {files}"
+                            )),
+                            None => failed.push(format!(
+                                "{location}: cannot check for {wanted} of {pattern}: {files}.  \
+                                 Found {found} in the files that were searched.  To check it, \
+                                 re-encode {} as UTF-8, or leave {} out with the scope or an \
+                                 ignore file",
                                 if one { "the file" } else { "the files" },
                                 if one { "it" } else { "them" }
-                            ));
-                        } else if !assertion.count.holds(found) {
-                            failed.push(format!(
-                                "{location}: expected {wanted} of {pattern}, found {found}"
-                            ));
+                            )),
                         }
                     }
                     if !failed.is_empty() {
@@ -669,6 +685,22 @@ fn quoted(pattern: &TextPattern) -> String {
     )
 }
 
+/// Whether `count` is decided by `found` whatever more matches are added: `Some(true)` if it
+/// holds however many more there are, `Some(false)` if it fails however many, and `None` if
+/// more could change the answer.
+fn settled(count: Count, found: u64) -> Option<bool> {
+    match count {
+        Count::AtLeast(n) => (found >= n).then_some(true),
+        Count::Any => Some(true),
+        Count::Exactly(n) | Count::AtMost(n) | Count::ExactlyOrNone(n) => {
+            (found > n).then_some(false)
+        }
+        Count::None => (found > 0).then_some(false),
+        // A count added later is undecided until it says otherwise, which only fails safe.
+        _ => None,
+    }
+}
+
 /// What `count` requires, worded for a failed assertion.
 fn expected(count: Count) -> String {
     let matches = |n: u64| if n == 1 { "match" } else { "matches" };
@@ -678,6 +710,7 @@ fn expected(count: Count) -> String {
         Count::AtMost(n) => format!("at most {n} {}", matches(n)),
         Count::ExactlyOrNone(n) => format!("exactly {n} {} or none", matches(n)),
         Count::None => "no matches".into(),
+        Count::Any => "any number of matches".into(),
         _ => format!("{count:?}"),
     }
 }
@@ -828,6 +861,23 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         assert_eq!(failed.expect("running"), Outcome::AssertionFailed);
         assert_eq!(held.expect("running"), Outcome::Success);
+    }
+
+    #[test]
+    fn a_count_is_settled_only_where_no_further_match_could_change_it() {
+        // More matches can only be added, never taken away.
+        assert_eq!(settled(Count::AtLeast(2), 2), Some(true));
+        assert_eq!(settled(Count::AtLeast(2), 1), None);
+        assert_eq!(settled(Count::Any, 0), Some(true));
+        assert_eq!(settled(Count::Exactly(2), 3), Some(false));
+        assert_eq!(settled(Count::Exactly(2), 2), None);
+        assert_eq!(settled(Count::AtMost(2), 3), Some(false));
+        assert_eq!(settled(Count::AtMost(2), 2), None);
+        assert_eq!(settled(Count::ExactlyOrNone(2), 3), Some(false));
+        assert_eq!(settled(Count::ExactlyOrNone(2), 0), None);
+        assert_eq!(settled(Count::None, 1), Some(false));
+        assert_eq!(settled(Count::None, 0), None);
+        assert_eq!(expected(Count::Any), "any number of matches");
     }
 
     #[test]
