@@ -227,7 +227,8 @@ pub fn run(
     let scope = resolve_scope(built.program.narrow_to.as_deref(), &cwd)?;
     let found = discover::files(&scope, &cwd).map_err(Failure::Discovery)?;
 
-    let patterns: Vec<&TextPattern> = steps.iter().flat_map(Step::patterns).collect();
+    let searching: Vec<Searching> = steps.iter().flat_map(Step::patterns).collect();
+    let patterns: Vec<&TextPattern> = searching.iter().map(|s| s.pattern).collect();
     let searched = search_files(&found.files, &cwd, &patterns)?;
     let mut evaluation = Evaluation {
         searched: &searched,
@@ -244,15 +245,7 @@ pub fn run(
     for text in &evaluation.notes {
         note(text);
     }
-    let asserted: Vec<bool> = steps
-        .iter()
-        .flat_map(|step| match step {
-            Step::Find(_) => vec![false],
-            Step::Assert(block) => vec![true; block.len()],
-        })
-        .collect();
-    let evaluated = &patterns[..evaluation.next];
-    for text in skipped(&searched, evaluated, &asserted, &found) {
+    for text in skipped(&searched, &searching[..evaluation.next], &found) {
         note(&text);
     }
     Ok(outcome)
@@ -398,11 +391,29 @@ struct Assertion<'p> {
     span: Span,
 }
 
+/// One pattern the run searches for, and whether an assertion counts it.
+#[derive(Clone, Copy)]
+struct Searching<'p> {
+    pattern: &'p TextPattern,
+    asserted: bool,
+}
+
 impl Step<'_> {
-    fn patterns(&self) -> Vec<&TextPattern> {
+    /// The step's patterns in order, each with whether it is asserted.  One list carries both,
+    /// so the search and the notes cannot disagree about which pattern is which.
+    fn patterns(&self) -> Vec<Searching<'_>> {
         match self {
-            Step::Find(pattern) => vec![pattern],
-            Step::Assert(block) => block.iter().map(|a| a.pattern).collect(),
+            Step::Find(pattern) => vec![Searching {
+                pattern,
+                asserted: false,
+            }],
+            Step::Assert(block) => block
+                .iter()
+                .map(|a| Searching {
+                    pattern: a.pattern,
+                    asserted: true,
+                })
+                .collect(),
         }
     }
 }
@@ -581,11 +592,14 @@ impl Evaluation<'_> {
                                 "{location}: cannot check for {wanted} of {pattern}: {} in scope \
                                  {} in an unknown 8-bit encoding, which a non-ASCII query has no \
                                  one spelling in, so {} not searched - {}.  Found {found} in the \
-                                 files that were searched",
+                                 files that were searched.  To check it, re-encode {} as UTF-8, \
+                                 or leave {} out with the scope or an ignore file",
                                 count(unsearched.len(), "file", "files"),
                                 if one { "is" } else { "are" },
                                 if one { "it was" } else { "they were" },
-                                listed.join(", ")
+                                listed.join(", "),
+                                if one { "the file" } else { "the files" },
+                                if one { "it" } else { "them" }
                             ));
                         } else if !assertion.count.holds(found) {
                             failed.push(format!(
@@ -672,18 +686,12 @@ fn expected(count: Count) -> String {
 /// evaluated, the files it had no spelling in, then what discovery and classification passed
 /// over.  An assertion's unsearched files are not noted: they failed it, and its failure names
 /// them.
-fn skipped(
-    searched: &Searched,
-    patterns: &[&TextPattern],
-    asserted: &[bool],
-    found: &discover::Found,
-) -> Vec<String> {
+fn skipped(searched: &Searched, evaluated: &[Searching], found: &discover::Found) -> Vec<String> {
     let mut notes = Vec::new();
-    for ((pattern, unknown), _) in patterns
+    for (Searching { pattern, .. }, unknown) in evaluated
         .iter()
         .zip(&searched.unknown_encoding)
-        .zip(asserted)
-        .filter(|(_, asserted)| !**asserted)
+        .filter(|(searching, _)| !searching.asserted)
     {
         if !unknown.is_empty() {
             notes.push(format!(

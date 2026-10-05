@@ -25,9 +25,10 @@ their specifications join this one rather than replacing it.
   refused at its first byte that is not, and an `-e` argument, which arrives whole, is refused
   naming which `-e` it was.  A leading UTF-8 byte-order mark on a file or standard input is
   skipped, as it is in a searched file, so locations count from the first visible character;
-  anywhere else it is content inside an operand and an error outside one.  A program with no statements at all - every source empty, or only
-  blank lines and comments, as `-e "$CHECKS"` with the variable unset gives - is refused too,
-  exit 3, naming the sources, rather than searching for nothing and exiting 1.
+  anywhere else it is content inside an operand and an error outside one.  A program with no
+  statements at all - every source empty, or only blank lines and comments, as `-e "$CHECKS"`
+  with the variable unset gives - is refused too, exit 3, naming the sources, rather than
+  searching for nothing and exiting 1.
 - **The first positional is the query only when no `-s`, `-e` or `-f` was given**; otherwise it
   is the scope.
 - **There is exactly one scope argument.**  More than one is refused, naming them and the
@@ -88,7 +89,7 @@ the file declares, never guessed from statistics:
 | starts with a byte-order mark | UTF-8, UTF-16 or UTF-32, as the mark says | encoded to match; a match must start on a code unit |
 | no mark, and a NUL in its first 8000 bytes | binary, by git's own test | not at all: the run says how many binary files it skipped |
 | no mark, valid UTF-8 | UTF-8 | as its UTF-8 bytes |
-| anything else | an unknown 8-bit encoding | if ASCII, as its bytes, which are the same in every ASCII-compatible encoding; otherwise not at all, and the run says how many files it skipped for that query |
+| anything else | an unknown 8-bit encoding | if ASCII, as its bytes, which are the same in every ASCII-compatible encoding; otherwise not at all: a `find` notes how many files it skipped, and an assertion fails naming them (see *Exit codes*) |
 
 The binary test is git's: `xdiff-interface.c` defines `FIRST_FEW_BYTES` as 8000, and
 `buffer_is_binary` looks for a NUL within at most that many bytes.  A byte-order mark is
@@ -138,7 +139,9 @@ src/app.py:12:5-12:22: def connect(self):
   followed.  Anything not looked at is said, never silently left out.
 - **A failed assertion** goes to standard error before the notes, as where it was written, the
   count expected and the count found:
-  `quaff: checks.quaff:3:1: expected exactly 2 matches of "TODO", found 1`.  A message names a
+  `quaff: checks.quaff:3:1: expected exactly 2 matches of "TODO", found 1`.  One whose scope
+  held files its query could not be searched in says instead that it cannot check, names the
+  files, and says how to make them checkable (see *Exit codes*).  A message names a
   pattern by its text quoted, a line break as `\n`, with any anchors outside the quotes as a
   script writes them: `^"x"$`.  Statements after a failed block do not run, so they add no
   notes.

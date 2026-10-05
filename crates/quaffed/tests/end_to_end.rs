@@ -745,6 +745,12 @@ fn an_assertion_over_files_its_query_cannot_be_searched_in_fails_naming_them() {
     ]));
     // One file, narrowed to it by the scope.
     assert_quaff_snapshot!(project.quaff(&["-e", "find \"na\u{ef}ve\" expect 1", "legacy"]));
+    // A find after a passing block of several assertions keeps its note: the assertions'
+    // patterns come before it, so a note out of step with them would be lost.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "find \"TODO\" expect 2\nfind \"here\" expect at least 0\nfind \"caf\u{e9}\"",
+    ]));
     // A find without an expect only notes the files, and exits by what it found.
     assert_quaff_snapshot!(project.quaff(&["-e", "find \"caf\u{e9}\""]));
     project.assert_unchanged();
