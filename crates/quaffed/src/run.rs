@@ -38,6 +38,13 @@ pub enum Failure {
         /// What is wrong.
         message: String,
     },
+    /// Sources that hold no statements at all - only blank lines and comments - so there is
+    /// nothing to run.  Usually a script that was not what was meant, such as `-e "$CHECKS"`
+    /// with the variable unset.  Exit 3.
+    Empty {
+        /// Each source, as a diagnostic names it.
+        sources: Vec<String>,
+    },
     /// A statement or construct this build does not have: outside the MVP, or in it and not
     /// built yet.  Exit 5.
     Unknown {
@@ -79,6 +86,7 @@ impl Failure {
         match self {
             Failure::Usage(_)
             | Failure::Script { .. }
+            | Failure::Empty { .. }
             | Failure::OutsideProject { .. }
             | Failure::OutsideCurrentDirectory { .. } => 3,
             Failure::Unknown { .. } => 5,
@@ -94,6 +102,12 @@ impl fmt::Display for Failure {
             Failure::Script { location, message } | Failure::Unknown { location, message } => {
                 write!(f, "{location}: {message}")
             }
+            Failure::Empty { sources } => write!(
+                f,
+                "nothing to run: {} {} no statements, only blank lines and comments",
+                sources.join(", "),
+                if sources.len() == 1 { "has" } else { "have" }
+            ),
             Failure::OutsideProject { scope, root } => write!(
                 f,
                 "the scope {scope:?} is outside the project at {root:?}, and a scope can only \
@@ -129,6 +143,7 @@ impl std::error::Error for Failure {
             Failure::Discovery(err) => Some(err),
             Failure::Usage(_)
             | Failure::Script { .. }
+            | Failure::Empty { .. }
             | Failure::Unknown { .. }
             | Failure::OutsideProject { .. }
             | Failure::OutsideCurrentDirectory { .. } => None,
@@ -183,7 +198,13 @@ pub fn run(
     out: &mut impl Write,
     notes: &mut impl Write,
 ) -> Result<Outcome, Failure> {
-    let built = build(sources, stdin)?;
+    let mut built = build(sources, stdin)?;
+    built.program.narrow_to = scope.map(PathBuf::from);
+    if built.program.body().is_empty() {
+        return Err(Failure::Empty {
+            sources: built.program.sources.iter().map(name).collect(),
+        });
+    }
     check::check(&built.program).map_err(|violation| {
         let location = built.locate(violation.span, violation.span.start);
         let message = violation.to_string();
@@ -203,7 +224,7 @@ pub fn run(
         path: cwd.to_path_buf(),
         cause,
     })?;
-    let scope = resolve_scope(scope, &cwd)?;
+    let scope = resolve_scope(built.program.narrow_to.as_deref(), &cwd)?;
     let found = discover::files(&scope, &cwd).map_err(Failure::Discovery)?;
 
     let patterns: Vec<&TextPattern> = steps.iter().flat_map(Step::patterns).collect();
@@ -246,6 +267,17 @@ impl Built {
     }
 }
 
+/// A script source as a diagnostic names it, with no position.  A query always holds a
+/// statement, so only a script can be empty.
+fn name(source: &Source) -> String {
+    match source {
+        Source::File(path) => format!("{path:?}"),
+        Source::Stdin => "<stdin>".into(),
+        Source::Expression(n) => format!("-e expression {n}"),
+        _ => "a source".into(),
+    }
+}
+
 /// Reads and parses each source in turn into one program.
 fn build(sources: Vec<SourceArg>, stdin: &mut impl Read) -> Result<Built, Failure> {
     let mut built = Built {
@@ -261,13 +293,14 @@ fn build(sources: Vec<SourceArg>, stdin: &mut impl Read) -> Result<Built, Failur
             SourceArg::Expression { number, text } => (Source::Expression(number), text),
             SourceArg::File(path) => {
                 let path = PathBuf::from(path);
-                let text = script_text(fs::read(&path), &path)?;
-                (Source::File(path), text)
+                let source = Source::File(path.clone());
+                let text = script_text(fs::read(&path), &source)?;
+                (source, text)
             }
             SourceArg::Stdin => {
                 let mut bytes = Vec::new();
                 let read = stdin.read_to_end(&mut bytes).map(|_| bytes);
-                (Source::Stdin, script_text(read, Path::new("<stdin>"))?)
+                (Source::Stdin, script_text(read, &Source::Stdin)?)
             }
         };
         let parsed = parse_source(&mut built.program, source, &text);
@@ -309,19 +342,21 @@ impl Built {
     }
 }
 
-/// The text of a script that `read` read from `path`, which must be UTF-8.
-fn script_text(read: io::Result<Vec<u8>>, path: &Path) -> Result<String, Failure> {
+/// The text of a script that `read` read from `source`, which must be UTF-8.
+fn script_text(read: io::Result<Vec<u8>>, source: &Source) -> Result<String, Failure> {
     let bytes = read.map_err(|cause| Failure::Io {
         doing: "reading the script",
-        path: path.to_path_buf(),
+        path: match source {
+            Source::File(path) => path.clone(),
+            _ => PathBuf::from("<stdin>"),
+        },
         cause,
     })?;
     String::from_utf8(bytes).map_err(|err| {
         let valid_up_to = err.utf8_error().valid_up_to();
         let text = String::from_utf8_lossy(&err.into_bytes()[..valid_up_to]).into_owned();
-        let (line, column) = location::line_and_column(&text, valid_up_to);
         Failure::Script {
-            location: format!("{}:{line}:{column}", path.display()),
+            location: location::describe(source, &text, valid_up_to),
             message: "the script is not valid UTF-8 here; a script is read as UTF-8".into(),
         }
     })
@@ -404,25 +439,25 @@ fn buildable(query: &Query) -> Result<&TextPattern, (&'static str, Span)> {
 
 /// The directory or file a run covers: the project, or `cwd` with no project, narrowed to
 /// `scope`.
-fn resolve_scope(scope: Option<&OsString>, cwd: &Path) -> Result<PathBuf, Failure> {
+fn resolve_scope(scope: Option<&Path>, cwd: &Path) -> Result<PathBuf, Failure> {
     let root = project::find_root(cwd);
     let Some(given) = scope else {
         return Ok(root.unwrap_or_else(|| cwd.to_path_buf()));
     };
     let scope = fs::canonicalize(cwd.join(given)).map_err(|cause| Failure::Io {
         doing: "reading the scope",
-        path: PathBuf::from(given),
+        path: given.to_path_buf(),
         cause,
     })?;
     match &root {
         Some(root) if !scope.starts_with(root) => Err(Failure::OutsideProject {
-            scope: given.clone(),
+            scope: given.as_os_str().to_owned(),
             root: output::relative(root, cwd),
         }),
         // With no project the current directory is the whole search, so it bounds the scope as
         // a project root would.
         None if !scope.starts_with(cwd) => Err(Failure::OutsideCurrentDirectory {
-            scope: given.clone(),
+            scope: given.as_os_str().to_owned(),
         }),
         _ => Ok(scope),
     }

@@ -21,8 +21,11 @@ their specifications join this one rather than replacing it.
 - **Sources compose in the order given.**  `-s`, `-e` and `-f` may each be repeated and mixed,
   and their statements make one program in command-line order; `-s TEXT` is `find` of that text,
   exactly.  `-f -` may be given once, because standard input can be read only once; a second is
-  a usage error.  A script is read as UTF-8, and a script that is not is refused at the first
-  byte that is not, exit 3.
+  a usage error.  A script is read as UTF-8, exit 3 if it is not: a file or standard input is
+  refused at its first byte that is not, and an `-e` argument, which arrives whole, is refused
+  naming which `-e` it was.  A program with no statements at all - every source empty, or only
+  blank lines and comments, as `-e "$CHECKS"` with the variable unset gives - is refused too,
+  exit 3, naming the sources, rather than searching for nothing and exiting 1.
 - **The first positional is the query only when no `-s`, `-e` or `-f` was given**; otherwise it
   is the scope.
 - **There is exactly one scope argument.**  More than one is refused, naming them and the
@@ -96,7 +99,8 @@ classified once, whatever the number of queries.
 A script's textual operand adds line breaks and anchors (`script.md`).  **A line break** matches
 LF, CRLF or a lone CR, whichever the file has there, preferring CRLF to its CR alone.  **A start
 anchor** holds at the start of the file or just after a line ending, **an end anchor** at the
-end of the file or just before one.  Both are spelled in the file's encoding like the text.
+end of the file or just before one.  A CRLF is one line ending, so neither holds between its CR
+and its LF: a pattern answers a CRLF file as it answers the same file with LF endings.  Both are spelled in the file's encoding like the text.
 
 **Memory.**  A file is read whole, and positions are worked out in one pass over its
 characters that keeps only the current line and column and stops at the last match, so a search
@@ -145,7 +149,7 @@ src/app.py:12:5-12:22: def connect(self):
 | 0 | every assertion held; or, with no assertion, something was found |
 | 1 | nothing was found, and there was no assertion; not an error |
 | 2 | an assertion failed |
-| 3 | a usage error, a malformed script, an edit with no `expect`, or a scope outside the project |
+| 3 | a usage error, a malformed script, a program with no statements, an edit with no `expect`, or a scope outside the project |
 | 5 | a statement or construct this build does not have: outside the MVP, or in it and not built yet |
 | 7 | an I/O error, naming the path and quoting the system's error |
 
@@ -160,7 +164,8 @@ expected (`script.md`).  The constructs that parse but are not built yet - a bac
 pattern, an `in` or `where` clause, `replace` and `delete` - exit 5, named, at where they were
 written.
 
-A failure prints nothing on standard output, so a partial answer never passes for a whole one.
+A run that cannot give an answer - exit 3, 5 or 7 - prints nothing on standard output, so a
+partial answer never passes for a whole one.
 Every message says what was being done, quotes the path or argument it concerns, and says what
 to do where there is something to do (`src/run.rs`).
 

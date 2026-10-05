@@ -587,7 +587,36 @@ impl<'t> Parser<'t> {
     }
 
     /// `not term`, or `subject matches|contains operand`.
+    ///
+    /// A run of `not`s is read in a loop and kept as the one negation, or none, that it means,
+    /// so `not not x` is `x`.  Recursing once per `not` would let a long enough run exhaust the
+    /// stack and abort, where every other malformed script exits 3, and a nested `Not` per word
+    /// would carry the same depth into every walk of the program.
     fn term(&mut self) -> Result<Spanned<Filter>, ParseError> {
+        let mut negated = false;
+        let mut start = None;
+        while let Some(token) = self
+            .peek()
+            .filter(|t| t.kind == TokenKind::Word("not".into()))
+        {
+            self.at += 1;
+            start.get_or_insert(token.start);
+            negated = !negated;
+        }
+        let test = self.test()?;
+        let Some(start) = start else {
+            return Ok(test);
+        };
+        let span = self.span(start, test.span.end);
+        if negated {
+            Ok(Spanned::new(Filter::Not(Box::new(test)), span))
+        } else {
+            Ok(Spanned::new(test.node, span))
+        }
+    }
+
+    /// `subject matches|contains operand`.
+    fn test(&mut self) -> Result<Spanned<Filter>, ParseError> {
         let Some(first) = self.next() else {
             return Err(Self::malformed(
                 "expected a condition after `where`, such as where not FILE matches \
@@ -597,11 +626,6 @@ impl<'t> Parser<'t> {
                 self.end_position(),
             ));
         };
-        if first.kind == TokenKind::Word("not".into()) {
-            let inner = self.term()?;
-            let span = self.span(first.start, inner.span.end);
-            return Ok(Spanned::new(Filter::Not(Box::new(inner)), span));
-        }
         let subject = match &first.kind {
             TokenKind::Metavariable {
                 name,
@@ -1038,6 +1062,32 @@ mod tests {
             "{}",
             not_built_after_any.message
         );
+    }
+
+    #[test]
+    fn a_run_of_nots_is_the_one_negation_it_means_however_long() {
+        let plain = program(r#"find "x" where FILE matches "a""#).unwrap();
+        let once = program(r#"find "x" where not FILE matches "a""#).unwrap();
+        assert_ne!(plain, once);
+        assert_eq!(
+            program(r#"find "x" where not not FILE matches "a""#).unwrap(),
+            plain
+        );
+        assert_eq!(
+            program(r#"find "x" where not not not FILE matches "a""#).unwrap(),
+            once
+        );
+        // Deep enough to have overflowed the stack when each `not` recursed.
+        let many = format!(
+            r#"find "x" where {}FILE matches "a""#,
+            "not ".repeat(200_001)
+        );
+        assert_eq!(program(&many).unwrap(), once);
+        let Statement::Find(query) = only(r#"find "x" where not not FILE matches "a""#) else {
+            panic!("a find")
+        };
+        // The span still starts at the first `not`.
+        assert_eq!(query.filter.unwrap().span.start, 15);
     }
 
     #[test]

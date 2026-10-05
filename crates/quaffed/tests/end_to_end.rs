@@ -731,6 +731,30 @@ fn standard_input_can_be_a_source_only_once() {
 }
 
 #[test]
+fn a_program_with_no_statements_exits_3_naming_its_sources() {
+    let mut project = Project::new(SCRIPTED);
+    project.add_bytes("scripts/comments.quaff", b"# nothing here yet\n\n");
+    // An empty -e, as `-e "$CHECKS"` gives with the variable unset.
+    assert_quaff_snapshot!(project.quaff(&["-e", ""]));
+    // Several sources, none with a statement.
+    assert_quaff_snapshot!(
+        project
+            .quaff(&[
+                "-e",
+                "# a comment",
+                "-f",
+                "scripts/comments.quaff",
+                "-f",
+                "-"
+            ])
+            .pass_stdin("\n")
+    );
+    // One source with a statement is a program, even beside an empty one.
+    assert_quaff_snapshot!(project.quaff(&["-e", "", "-e", "find \"Client\"", "src"]));
+    project.assert_unchanged();
+}
+
+#[test]
 fn a_failed_assertion_comes_before_the_notes_and_later_statements_note_nothing() {
     let mut project = Project::new(&[(".git/HEAD", ""), ("a.txt", "TODO\n")]);
     project.add_bytes("image.bin", b"TODO\0");

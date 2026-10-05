@@ -103,12 +103,19 @@ impl Compiled {
         rest.starts_with(&self.lf).then_some(self.lf.len())
     }
 
-    /// Whether the code unit just before `at` ends a line.
+    /// Whether the code unit just before `at` ends a line.  Between the CR and the LF of a CRLF
+    /// is inside one line ending, not after it.
     fn after_line_ending(&self, text: &[u8], at: usize) -> bool {
         at == 0 || {
             let previous = &text[at - self.unit..at];
-            previous == self.cr.as_slice() || previous == self.lf.as_slice()
+            previous == self.lf.as_slice()
+                || (previous == self.cr.as_slice() && !self.inside_crlf(text, at))
         }
+    }
+
+    /// Whether `at` falls between the CR and the LF of a CRLF.
+    fn inside_crlf(&self, text: &[u8], at: usize) -> bool {
+        at >= self.unit && text[at - self.unit..at] == *self.cr && text[at..].starts_with(&self.lf)
     }
 
     /// Where the pattern matches if it starts at `at`: the byte after its end.
@@ -121,9 +128,10 @@ impl Compiled {
                 Part::LineBreak => self.line_ending(rest)?,
             };
         }
+        // A match that ends on the CR of a CRLF ends inside the line ending, not before it.
         let end_holds = !self.end_anchor
             || position == text.len()
-            || self.line_ending(&text[position..]).is_some();
+            || (self.line_ending(&text[position..]).is_some() && !self.inside_crlf(text, position));
         end_holds.then_some(position)
     }
 
@@ -338,6 +346,28 @@ mod tests {
             found_pattern(b"pass\rpass ", "^pass$"),
             vec![(pos(1, 1), pos(1, 4))]
         );
+    }
+
+    #[test]
+    fn a_crlf_is_one_line_ending_to_the_anchors() {
+        // Between the CR and the LF is inside the line ending, so a pattern answers a CRLF
+        // file as it answers the same file with LF endings.
+        for file in [&b"a\r\nx"[..], b"a\nx"] {
+            assert_eq!(found_pattern(file, "^|x"), vec![], "{file:?}");
+            assert_eq!(found_pattern(file, "^\nx"), vec![], "{file:?}");
+        }
+        // A match that ends on the CR of a CRLF ends inside it, not before one; after a lone
+        // CR, the next CR is a line ending of its own.
+        assert_eq!(found_pattern(b"a\r\nb", "a\r$"), vec![]);
+        assert_eq!(
+            found_pattern(b"a\r\r", "a\r$"),
+            vec![(pos(1, 1), pos(1, 2))]
+        );
+        // The same in UTF-16, where a line ending is two-byte code units.
+        let mut utf16 = vec![0xFF, 0xFE];
+        utf16.extend("a\r\nx".encode_utf16().flat_map(u16::to_le_bytes));
+        assert_eq!(found_pattern(&utf16, "^|x"), vec![]);
+        assert_eq!(found_pattern(&utf16, "^x"), vec![(pos(2, 1), pos(2, 1))]);
     }
 
     #[test]
