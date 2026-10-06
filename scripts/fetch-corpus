@@ -9,21 +9,26 @@ A source already fetched with the same pin is not fetched again.
 
 Usage: scripts/fetch-corpus [--manifest FILE] [--dest DIR]
 
-Run it with the oracle's Python - python3.14 for CPython 3.14.8 - or it stops, naming the
-version it needs.  architecture/verification.md describes the corpus.
+Run it with the oracle's Python, the CPython release the manifest names, or it stops, naming
+the version it needs.  architecture/verification.md describes the corpus.
 """
 
 import argparse
 import ast
 import hashlib
+import json
 import os
 import pathlib
-import shutil
 import sys
 import tarfile
 import tempfile
-import tomllib
 import urllib.request
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    # tomllib arrived in Python 3.11; say so rather than leave a traceback.
+    sys.exit(f"fetch-corpus: needs Python 3.11 or later to read the manifest; this is {sys.version}")
 
 # The archive is about 31 MB; anything near this means the URL serves something else.
 MAX_ARCHIVE_BYTES = 200 * 1024 * 1024
@@ -72,15 +77,19 @@ def read_manifest(path):
 def fetch(name, source, dest):
     """Fetch one source unless it is already fetched at this pin, then report what the oracle said."""
     running = ".".join(str(part) for part in sys.version_info[:3])
-    if running != source["oracle"]:
+    implementation = sys.implementation.name
+    if implementation != "cpython" or running != source["oracle"]:
         raise FetchError(
-            f"source {name!r} is judged by CPython {source['oracle']}, but this is {running} at "
-            f"{sys.executable!r}; run this script with that Python, for example "
-            f"python{source['oracle'].rsplit('.', 1)[0]} scripts/fetch-corpus"
+            f"source {name!r} is judged by CPython {source['oracle']}, but this is "
+            f"{implementation} {running} at {sys.executable!r}; run this script with that "
+            f"Python, for example python{source['oracle'].rsplit('.', 1)[0]} scripts/fetch-corpus"
         )
     target = dest / name
     stamp = target / ".fetched"
-    if stamp.is_file() and stamp.read_text() == source["sha256"]:
+    # A fetch is reused only if everything that shaped it is unchanged: the source's whole entry
+    # and this script, which is what CI's cache key covers too.
+    fingerprint = fingerprint_of(source)
+    if stamp.is_file() and stamp.read_text() == fingerprint:
         report(name, source, target)
         return
     dest.mkdir(parents=True, exist_ok=True)
@@ -90,13 +99,22 @@ def fetch(name, source, dest):
         staging = scratch / "tree"
         extract(name, source, archive, staging)
         judge(name, source, staging)
-        (staging / ".fetched").write_text(source["sha256"])
-        # The new tree replaces any old one only once it is complete, so an interrupted run
-        # never leaves a half-fetched corpus that looks finished.
+        (staging / ".fetched").write_text(fingerprint)
+        # The new tree replaces any old one only once it is complete, and by renames alone: the
+        # old tree is moved into the scratch directory, which is deleted with it, so no moment
+        # leaves a partly deleted tree that still carries its stamp.
         if target.exists():
-            shutil.rmtree(target)
+            os.replace(target, scratch / "previous")
         os.replace(staging, target)
     report(name, source, target)
+
+
+def fingerprint_of(source):
+    """A digest of the source's whole entry and of this script."""
+    digest = hashlib.sha256()
+    digest.update(json.dumps(source, sort_keys=True).encode())
+    digest.update(pathlib.Path(__file__).read_bytes())
+    return digest.hexdigest()
 
 
 def download(name, source, path):

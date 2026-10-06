@@ -122,8 +122,8 @@ names it:
 python3.14 scripts/fetch-corpus     # into target/corpus/cpython/
 ```
 
-**One command, run with the oracle's Python**; any other version stops it, naming the one it
-needs.  It downloads the archive and refuses it unless the SHA-256 matches, extracts only the
+**One command, run with the oracle's Python**; any other version, or a Python that is not
+CPython, stops it, naming the one it needs.  It downloads the archive and refuses it unless the SHA-256 matches, extracts only the
 named path with Python's `data` filter - which refuses any member that would land outside the
 directory, by an absolute path, `..` or a link - and runs the oracle over every `.py` file.  It
 writes `refused.txt` beside the files, one line per refused file with the oracle's reason, and
@@ -132,8 +132,10 @@ four refused, all encoding or tokenizer failures in `Lib/test/tokenizedata/`.  *
 filtered out**: every file stays in the tree, and a refused one is listed, so a consumer must
 expect the oracle's refusal of exactly those files rather than skip them.
 
-The tree replaces an earlier one only once it is complete, and a source already fetched at the
-same SHA-256 is not fetched again.
+The tree replaces an earlier one only once it is complete, by renames alone, so an interrupted
+run never leaves a partly replaced tree that looks finished; a failed refetch keeps the
+previous tree.  A fetch is reused only while everything that shaped it is unchanged - the
+source's whole entry in the manifest, and the script - which is also what CI's cache key covers.
 
 **The refused list is not committed.**  It can only change when the pin does, and it comes from
 running the oracle, so it is generated with the files rather than kept in step by hand.
@@ -144,8 +146,10 @@ The **Real-world corpus** job reads the oracle's version from the manifest, inst
 Python with `actions/setup-python`, restores `target/corpus` from a cache keyed on the manifest
 and the script, and runs `scripts/fetch-corpus`.  `crates/quaffed/tests/fetch_corpus.rs` tests the
 script itself in the ordinary run, against small archives it builds: only the path is
-extracted, a changed hash is refused, a member escaping the directory is refused, the floor
-fails saying how many it read, another Python is refused, and a completed fetch is reused.
+extracted, a changed hash is refused, a member or a link escaping the directory is refused, the
+floor fails saying how many it read, another Python is refused, a completed fetch is reused, a
+changed pin is fetched again, a failed download leaves nothing behind, and a failed refetch
+keeps the previous tree.
 
 ### Checklist: moving the pin to a new CPython release
 
@@ -153,8 +157,11 @@ fails saying how many it read, another Python is refused, and a completed fetch 
 2. Download the new tarball, and set `sha256` from it.
 3. Run `scripts/fetch-corpus` with the new Python, and read the refused files it prints: each
    should be a deliberate fixture, not a file the parser should handle.
-4. Raise `floor` if the release has many more files, keeping it below the count.
-5. Update the counts in this section in the same change.
+4. Raise `floor` if the release has many more files, keeping it below the count, and update the
+   count in the comment beside it.
+5. Update the release everywhere else it is named, in the same change: the counts, the tag and
+   the `python3.X` command in this section, and the fetch command in `AGENTS.md`.  The script
+   names no release; its refusal says which Python it needs.
 
 ## The tool manifest
 

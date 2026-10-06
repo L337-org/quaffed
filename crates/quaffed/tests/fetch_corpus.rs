@@ -65,7 +65,8 @@ impl Drop for Scratch {
 }
 
 /// Builds `archive.tgz` in `dir` holding `members`, each a name and its content, and returns its
-/// SHA-256.  Built by Python so that a member can carry a name no file system would hold.
+/// SHA-256.  Built by Python so that a member can carry a name no file system would hold.  A
+/// content of `->target` makes the member a symbolic link to `target`.
 fn build_archive(dir: &Path, members: &[(&str, &str)]) -> String {
     let listed: Vec<String> = members
         .iter()
@@ -76,8 +77,13 @@ fn build_archive(dir: &Path, members: &[(&str, &str)]) -> String {
          path = sys.argv[1]\n\
          with tarfile.open(path, 'w:gz') as tar:\n\
          \x20   for name, content in [{}]:\n\
-         \x20       data = content.encode()\n\
          \x20       info = tarfile.TarInfo(name)\n\
+         \x20       if content.startswith('->'):\n\
+         \x20           info.type = tarfile.SYMTYPE\n\
+         \x20           info.linkname = content[2:]\n\
+         \x20           tar.addfile(info)\n\
+         \x20           continue\n\
+         \x20       data = content.encode()\n\
          \x20       info.size = len(data)\n\
          \x20       tar.addfile(info, io.BytesIO(data))\n\
          print(hashlib.sha256(open(path, 'rb').read()).hexdigest())\n",
@@ -264,7 +270,9 @@ fn a_member_that_would_escape_the_directory_is_refused() {
         &scratch.0,
         &[
             ("Root-1/Lib/test/good.py", "x = 1\n"),
-            ("Root-1/Lib/test/../../../escaped.py", "y = 2\n"),
+            // Extraction happens in dest/.fixture-XXXX/tree, so five steps up from Lib/test is
+            // the scratch directory itself: outside everything the run cleans up.
+            ("Root-1/Lib/test/../../../../../escaped.py", "y = 2\n"),
         ],
     );
     let manifest = manifest(
@@ -320,5 +328,104 @@ fn a_manifest_missing_a_field_is_refused_naming_it() {
             && stderr(&out).contains("has no sha256, root, path, oracle, floor"),
         "{}",
         stderr(&out)
+    );
+}
+
+#[test]
+fn a_link_pointing_outside_the_directory_is_refused() {
+    let scratch = Scratch::new();
+    let sha = build_archive(
+        &scratch.0,
+        &[
+            ("Root-1/Lib/test/good.py", "x = 1\n"),
+            ("Root-1/Lib/test/link.py", "->/etc/passwd"),
+        ],
+    );
+    let archive = scratch.0.join("archive.tgz");
+    let manifest = manifest(&scratch.0, &sha, &python_version(), 1, &archive);
+    let dest = scratch.0.join("corpus");
+    let out = fetch(&manifest, &dest);
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    assert!(
+        stderr(&out).contains("extracting 'Root-1/Lib/test/' from the archive"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!dest.join("fixture").exists());
+}
+
+#[test]
+fn a_changed_pin_is_fetched_again() {
+    let scratch = Scratch::new();
+    let version = python_version();
+    let first_dir = scratch.0.join("first");
+    let second_dir = scratch.0.join("second");
+    fs::create_dir_all(&first_dir).expect("making a directory");
+    fs::create_dir_all(&second_dir).expect("making a directory");
+    let first_sha = build_archive(&first_dir, MEMBERS);
+    let mut more = MEMBERS.to_vec();
+    more.push(("Root-1/Lib/test/added.py", "z = 3\n"));
+    let second_sha = build_archive(&second_dir, &more);
+    let dest = scratch.0.join("corpus");
+    let first = manifest(
+        &first_dir,
+        &first_sha,
+        &version,
+        3,
+        &first_dir.join("archive.tgz"),
+    );
+    assert!(fetch(&first, &dest).status.success());
+    let second = manifest(
+        &second_dir,
+        &second_sha,
+        &version,
+        3,
+        &second_dir.join("archive.tgz"),
+    );
+    let out = fetch(&second, &dest);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(dest.join("fixture/Lib/test/added.py").is_file());
+    assert!(stdout(&out).contains("4 files read"), "{}", stdout(&out));
+}
+
+#[test]
+fn a_failed_download_names_the_url_and_leaves_nothing_behind() {
+    let scratch = Scratch::new();
+    let missing = scratch.0.join("missing.tgz");
+    let manifest = manifest(&scratch.0, &"0".repeat(64), &python_version(), 1, &missing);
+    let dest = scratch.0.join("corpus");
+    let out = fetch(&manifest, &dest);
+    assert_eq!(out.status.code(), Some(1));
+    let err = stderr(&out);
+    assert!(
+        err.contains(&format!(
+            "downloading the archive for 'fixture' from 'file://{}': ",
+            missing.display()
+        )),
+        "{err}"
+    );
+    let left: Vec<_> = fs::read_dir(&dest)
+        .map(|entries| entries.map(|e| e.expect("an entry").path()).collect())
+        .unwrap_or_default();
+    assert!(left.is_empty(), "left behind: {left:?}");
+}
+
+#[test]
+fn a_failed_refetch_keeps_the_previous_tree() {
+    let scratch = Scratch::new();
+    let version = python_version();
+    let sha = build_archive(&scratch.0, MEMBERS);
+    let archive = scratch.0.join("archive.tgz");
+    let dest = scratch.0.join("corpus");
+    let good = manifest(&scratch.0, &sha, &version, 3, &archive);
+    assert!(fetch(&good, &dest).status.success());
+    let stamp = fs::read_to_string(dest.join("fixture/.fetched")).expect("the stamp");
+    // A new pin whose archive fails its hash: the refetch fails, and the old tree stands.
+    let bad = manifest(&scratch.0, &"0".repeat(64), &version, 3, &archive);
+    assert_eq!(fetch(&bad, &dest).status.code(), Some(1));
+    assert!(dest.join("fixture/Lib/test/good.py").is_file());
+    assert_eq!(
+        fs::read_to_string(dest.join("fixture/.fetched")).expect("the stamp"),
+        stamp
     );
 }
