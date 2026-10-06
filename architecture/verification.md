@@ -164,6 +164,24 @@ keeps the previous tree.
    the `python3.X` command in this section, and the fetch command in `AGENTS.md`.  The script
    names no release; its refusal says which Python it needs.
 
+## docker-mcp is never in either corpus
+
+docker-mcp is the repository quaff's first version is to be trialled on.  Code from it in either
+corpus would tune quaff against the very code it is then judged by, and the trial would flatter
+it, so it is excluded, and the exclusion is a check rather than a convention.
+
+Code reaches the corpora two ways, and `crates/python/tests/corpus_exclusion.rs` closes both:
+
+- **A fetched source**: it fails if any value in `corpus/real-world.toml` names docker-mcp,
+  however the repository or archive is spelled, in any case.  Comments are exempt, so the
+  manifest may say why.
+- **A file in the synthetic corpus**: it fails if any file's path or content names docker-mcp or
+  its package, `docker_mcp`, which catches a file copied in from it.
+
+Each was shown to fail: a `[trial]` source pointing at docker-mcp failed the first, and a module
+importing `docker_mcp` failed the second.  Code rewritten from docker-mcp so that it no longer
+names it is beyond any mechanical check; the corpus is written, not copied.
+
 ## The tool manifest
 
 Most verification tools are binaries installed with `cargo install`, not crate dependencies,
