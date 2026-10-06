@@ -113,7 +113,7 @@ def fetch(name, source, dest):
             if previous.exists():
                 os.replace(previous, target)
             raise FetchError(
-                f"moving the fetched tree for {name!r} into {str(target)!r}: {err}"
+                f"replacing the tree for {name!r} at {str(target)!r} with the one fetched: {err}"
             ) from err
     report(name, source, target)
 
