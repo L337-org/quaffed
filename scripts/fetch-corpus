@@ -22,17 +22,22 @@ import pathlib
 import sys
 import tarfile
 import tempfile
+import time
 import urllib.request
 
-try:
-    import tomllib
-except ModuleNotFoundError:
-    # tomllib arrived in Python 3.11; say so rather than leave a traceback.
-    sys.exit(f"fetch-corpus: needs Python 3.11 or later to read the manifest; this is {sys.version}")
+# tomllib arrived in Python 3.11 and tar's data filter in 3.12; say so rather than fail later
+# with a traceback.
+if sys.version_info < (3, 12) or not hasattr(tarfile, "data_filter"):
+    sys.exit(f"fetch-corpus: needs Python 3.12 or later; this is {sys.version}")
+
+import tomllib  # noqa: E402 - after the version check, so an old Python is told why
 
 # The archive is about 31 MB; anything near this means the URL serves something else.
 MAX_ARCHIVE_BYTES = 200 * 1024 * 1024
+# Each read waits at most this long, and the whole download at most the next: a server that
+# trickles bytes within the first limit would otherwise never stop.
 DOWNLOAD_TIMEOUT_SECONDS = 120
+DOWNLOAD_DEADLINE_SECONDS = 600
 REQUIRED = ("archive", "sha256", "root", "path", "oracle", "floor")
 
 
@@ -131,10 +136,16 @@ def download(name, source, path):
     url = source["archive"]
     digest = hashlib.sha256()
     size = 0
+    deadline = time.monotonic() + DOWNLOAD_DEADLINE_SECONDS
     try:
         with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response:
             with open(path, "wb") as out:
                 while chunk := response.read(1024 * 1024):
+                    if time.monotonic() > deadline:
+                        raise FetchError(
+                            f"downloading the archive for {name!r} from {url!r} took over "
+                            f"{DOWNLOAD_DEADLINE_SECONDS} seconds; stopped"
+                        )
                     size += len(chunk)
                     if size > MAX_ARCHIVE_BYTES:
                         raise FetchError(
@@ -160,6 +171,13 @@ def extract(name, source, archive, staging):
         with tarfile.open(archive, "r:gz") as tar:
             members = []
             for member in tar.getmembers():
+                # A ".." step could leave the named path while staying inside the extraction
+                # directory, which the data filter allows, so such a member is refused outright.
+                if ".." in member.name.split("/"):
+                    raise FetchError(
+                        f"the archive for {name!r} has a member with a '..' step, "
+                        f"{member.name!r}, so nothing was extracted"
+                    )
                 if member.name.startswith(prefix):
                     member.name = member.name[len(source["root"]) + 1 :]
                     members.append(member)

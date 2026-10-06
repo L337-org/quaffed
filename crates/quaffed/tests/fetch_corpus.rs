@@ -264,35 +264,36 @@ fn another_python_than_the_oracle_is_refused_naming_both() {
 }
 
 #[test]
-fn a_member_that_would_escape_the_directory_is_refused() {
-    let scratch = Scratch::new();
-    let sha = build_archive(
-        &scratch.0,
-        &[
-            ("Root-1/Lib/test/good.py", "x = 1\n"),
-            // Extraction happens in dest/.fixture-XXXX/tree, so five steps up from Lib/test is
-            // the scratch directory itself: outside everything the run cleans up.
-            ("Root-1/Lib/test/../../../../../escaped.py", "y = 2\n"),
-        ],
-    );
-    let manifest = manifest(
-        &scratch.0,
-        &sha,
-        &python_version(),
-        1,
-        &scratch.0.join("archive.tgz"),
-    );
-    let dest = scratch.0.join("corpus");
-    let out = fetch(&manifest, &dest);
-    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
-    assert!(
-        stderr(&out).contains("extracting 'Root-1/Lib/test/' from the archive"),
-        "{}",
-        stderr(&out)
-    );
-    assert!(!scratch.0.join("escaped.py").exists());
-    assert!(!dest.join("escaped.py").exists());
-    assert!(!dest.join("fixture").exists());
+fn a_member_with_a_dot_dot_step_is_refused_and_nothing_is_extracted() {
+    // Two steps up stays inside the extraction directory, which the tar filter allows, but
+    // leaves the named path; five reach the scratch directory itself.  Both are refused.
+    for escaping in [
+        "Root-1/Lib/test/../../Tools/x.py",
+        "Root-1/Lib/test/../../../../../escaped.py",
+    ] {
+        let scratch = Scratch::new();
+        let sha = build_archive(
+            &scratch.0,
+            &[
+                ("Root-1/Lib/test/good.py", "x = 1\n"),
+                (escaping, "y = 2\n"),
+            ],
+        );
+        let archive = scratch.0.join("archive.tgz");
+        let manifest = manifest(&scratch.0, &sha, &python_version(), 1, &archive);
+        let dest = scratch.0.join("corpus");
+        let out = fetch(&manifest, &dest);
+        assert_eq!(out.status.code(), Some(1), "{escaping}: {}", stdout(&out));
+        assert!(
+            stderr(&out).contains(&format!(
+                "has a member with a '..' step, '{escaping}', so nothing was extracted"
+            )),
+            "{escaping}: {}",
+            stderr(&out)
+        );
+        assert!(!scratch.0.join("escaped.py").exists());
+        assert!(!dest.join("fixture").exists());
+    }
 }
 
 #[test]

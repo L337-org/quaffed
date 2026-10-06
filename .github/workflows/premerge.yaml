@@ -215,8 +215,10 @@ jobs:
         run: cargo insta test --workspace --check --unreferenced=reject
 
   real-world-corpus:
-    # The real-world corpus in corpus/real-world.toml fetches, matches its pinned SHA-256, and
-    # has the oracle judge every file: scripts/fetch-corpus fails on a hash mismatch, an archive
+    # The oracle - the CPython release corpus/real-world.toml names - judges both corpora.  It
+    # confirms every Python file of the synthetic corpus is valid Python (scripts/check-synthetic).
+    # The real-world corpus fetches, matches its pinned SHA-256, and has the oracle judge every
+    # file: scripts/fetch-corpus fails on a hash mismatch, an archive
     # member that would land outside its directory, or fewer files than the floor.  The fetched
     # tree and the oracle's verdicts are cached on a hash of the manifest and the script, so
     # this costs a cache restore until either changes.  The oracle's version is read from the
@@ -241,6 +243,11 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ steps.oracle.outputs.version }}
+
+      - name: The oracle accepts every Python file of the synthetic corpus
+        env:
+          PYTHON: ${{ steps.python.outputs.python-path }}
+        run: '"$PYTHON" scripts/check-synthetic'
 
       - name: Restore the fetched corpus
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

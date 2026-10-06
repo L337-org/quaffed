@@ -84,15 +84,18 @@ every file exactly, CRLF and lone-CR line endings and the byte-order mark includ
 - **Fewer files than the floor fails**, saying how many it found, so an emptied or missing
   directory cannot pass by checking nothing.
 
-Every module and expression file is also accepted by CPython 3.14's `ast.parse`, in the
-matching mode; the `IPython` files are not Python, so CPython refuses them.
+**Every module and expression file is valid Python to the oracle**, checked by
+`scripts/check-synthetic` in the **Real-world corpus** CI job, which already installs the
+oracle's Python: CPython's `ast.parse` over `modules/` as modules and `expressions/` in
+expression mode, failing naming each file it refuses and why.  `ipython/` is not Python, so it is
+not judged, and the run says so.
 
 ### Adding to the synthetic corpus
 
 1. Add the construct to the file whose theme it fits, or a new themed file under `modules/`,
    `expressions/` for a single expression, or `ipython/` for an `IPython` escape command.
-2. Keep it valid Python: check it with `python3.14 -c "import ast,sys; ast.parse(open(sys.argv[1],'rb').read(), sys.argv[1])" FILE`,
-   adding `mode='eval'` for an expression.
+2. Keep it valid Python: run `python3.14 scripts/check-synthetic`, with the oracle's Python.  CI
+   runs it too.
 3. Run `cargo test -p quaffed-python`, which runs the coverage check and the docker-mcp exclusion
    below.
 4. A file kept for its bytes - line endings, a byte-order mark, tabs - must be written with
@@ -124,10 +127,11 @@ python3.14 scripts/fetch-corpus     # into target/corpus/cpython/
 ```
 
 **One command, run with the oracle's Python**; any other version, or a Python that is not
-CPython, stops it, naming the one it needs.  It downloads the archive and refuses it unless the
-SHA-256 matches, extracts only the named path with Python's `data` filter - which refuses any
-member that would land outside the directory, by an absolute path, `..` or a link - and runs the
-oracle over every `.py` file.  It writes `refused.txt` beside the files, one line per refused
+CPython, stops it, naming the one it needs.  It downloads the archive, within an overall time
+limit, and refuses it unless the SHA-256 matches.  It refuses any member with a `..` step, then
+extracts only the named path with Python's `data` filter, which also refuses any member that
+would land outside the directory by an absolute path or a link.  Then it runs the oracle over
+every `.py` file.  It writes `refused.txt` beside the files, one line per refused
 file with the oracle's reason, and prints the counts and the refused files.  At `v3.14.8` that is
 1150 files, 1146 accepted, and four refused, all encoding or tokenizer failures in
 `Lib/test/tokenizedata/`.  **Nothing is filtered out**: every file stays in the tree, and a
@@ -144,21 +148,28 @@ running the oracle, so it is generated with the files rather than kept in step b
 
 ### In CI
 
-The **Real-world corpus** job reads the oracle's version from the manifest, installs that
-Python with `actions/setup-python`, restores `target/corpus` from a cache keyed on the manifest
-and the script, and runs `scripts/fetch-corpus`.  `crates/quaffed/tests/fetch_corpus.rs` tests the
-script itself in the ordinary run, against small archives it builds: only the path is
-extracted, a changed hash is refused, a member or a link escaping the directory is refused, the
-floor fails saying how many it read, another Python is refused, a completed fetch is reused, a
-changed pin is fetched again, a failed download leaves nothing behind, and a failed refetch
-keeps the previous tree.
+The **Real-world corpus** job reads the oracle's version from the manifest, installs that Python
+with `actions/setup-python`, runs `scripts/check-synthetic`, restores `target/corpus` from a
+cache keyed on the manifest and the script, and runs
+`scripts/fetch-corpus`.  `crates/quaffed/tests/fetch_corpus.rs` tests the fetch script itself in
+the ordinary run, against small archives it builds: only the path is extracted, a changed hash
+is refused, a member with a `..` step or a link escaping the directory is refused, the floor
+fails saying how many it read, another Python is refused, a completed fetch is reused, a changed
+pin is fetched again, a failed download leaves nothing behind, and a failed refetch keeps the
+previous tree.  `crates/quaffed/tests/check_synthetic.rs` tests the oracle check the same way: a
+refused file fails naming it in its parse mode, another Python is refused, and an empty group
+fails rather than passing having checked nothing.  Neither has a test of the overall download
+deadline or of a rename failing mid-replacement, which would need a slow server and fault
+injection.
 
 ### Checklist: moving the pin to a new CPython release
 
 1. Change `tag`, `archive`, `root` and `oracle` in `corpus/real-world.toml` together.
 2. Download the new tarball, and set `sha256` from it.
 3. Run `scripts/fetch-corpus` with the new Python, and read the refused files it prints: each
-   should be a deliberate fixture, not a file the parser should handle.
+   should be a deliberate fixture, not a file the parser should handle.  Run
+   `scripts/check-synthetic` with it too, since the oracle now judges the synthetic corpus as
+   that release.
 4. Raise `floor` if the release has many more files, keeping it below the count, and update the
    count in the comment beside it.
 5. Update the release everywhere else it is named, in the same change: the counts, the tag and

@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+"""Have the oracle confirm that every Python file in the synthetic corpus is valid Python.
+
+Ruff parsing the corpus, which crates/python/tests/corpus.rs checks, does not show CPython
+accepts it.  This runs the oracle - CPython's `ast.parse`, at the exact version
+corpus/real-world.toml names for the real-world corpus - over corpus/synthetic/: modules/*.py
+as modules and expressions/*.pyexpr as single expressions.  ipython/ is not Python, so it is
+not judged, and the run says so.
+
+Usage: scripts/check-synthetic [--manifest FILE] [--corpus DIR]
+
+Run it with the oracle's Python, or it stops, naming the version it needs.
+architecture/verification.md describes the corpus.
+"""
+
+import argparse
+import ast
+import pathlib
+import sys
+
+if sys.version_info < (3, 11):
+    sys.exit(f"check-synthetic: needs Python 3.11 or later; this is {sys.version}")
+
+import tomllib  # noqa: E402 - after the version check, so an old Python is told why
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    repo = pathlib.Path(__file__).resolve().parent.parent
+    parser.add_argument("--manifest", type=pathlib.Path, default=repo / "corpus/real-world.toml")
+    parser.add_argument("--corpus", type=pathlib.Path, default=repo / "corpus/synthetic")
+    args = parser.parse_args(argv)
+
+    try:
+        with open(args.manifest, "rb") as handle:
+            oracle = tomllib.load(handle)["cpython"]["oracle"]
+    except (OSError, tomllib.TOMLDecodeError, KeyError) as err:
+        return fail(f"reading the oracle's version from {str(args.manifest)!r}: {err!r}")
+    running = ".".join(str(part) for part in sys.version_info[:3])
+    if sys.implementation.name != "cpython" or running != oracle:
+        return fail(
+            f"the oracle is CPython {oracle}, but this is {sys.implementation.name} {running} at "
+            f"{sys.executable!r}; run this script with that Python"
+        )
+
+    groups = [("modules", "*.py", "exec"), ("expressions", "*.pyexpr", "eval")]
+    refused = []
+    counts = []
+    for directory, pattern, mode in groups:
+        files = sorted((args.corpus / directory).glob(pattern))
+        if not files:
+            return fail(f"found no {pattern} files under {str(args.corpus / directory)!r}")
+        for path in files:
+            relative = path.relative_to(args.corpus).as_posix()
+            try:
+                ast.parse(path.read_bytes(), filename=relative, mode=mode)
+            except (SyntaxError, ValueError) as err:
+                refused.append(f"{relative}: {type(err).__name__}: {err}")
+        counts.append(f"{len(files)} {directory}")
+    if refused:
+        return fail(
+            f"CPython {oracle} refuses {len(refused)} file(s) of the synthetic corpus, which must "
+            "all be valid Python:\n  " + "\n  ".join(refused)
+        )
+    print(
+        f"CPython {oracle} accepts every file of the synthetic corpus: {', '.join(counts)}.  "
+        "ipython/ is not Python and is not judged."
+    )
+    return 0
+
+
+def fail(message):
+    print(f"check-synthetic: {message}", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
