@@ -3,8 +3,9 @@
 //! The corpus, under `corpus/synthetic/` at the workspace root, is the input the invariant
 //! harness, the budgets and the benchmarks will measure, so a construct missing from it is a
 //! construct none of them checks.  This test parses every file - `modules/*.py` as modules,
-//! `expressions/*.pyexpr` as single expressions, `ipython/*.ipy` as `IPython` source - and fails
-//! naming each kind of node that no file contains.  `architecture/verification.md` says how to add to the corpus.
+//! `expressions/*.pyexpr` as single expressions, `ipython/*.ipy` as `IPython` source - and
+//! fails naming each kind of node that no file contains.  `architecture/verification.md` says
+//! how to add to the corpus.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -186,20 +187,4 @@ fn the_line_ending_reader_tells_the_three_apart() {
     assert_eq!(line_endings(b"a\r\nb"), (false, true, false));
     assert_eq!(line_endings(b"a\rb"), (false, false, true));
     assert_eq!(line_endings(b"\na\r\nb\rc"), (true, true, true));
-}
-
-#[test]
-fn every_construct_the_story_names_is_in_the_corpus() {
-    let found: Vec<&str> = kinds_in_corpus().iter().map(|kind| kind.name()).collect();
-    for name in [
-        "Decorator",
-        "Comprehension",
-        "StmtMatch",
-        "TypeParams",
-        "ExprFString",
-        "ExprTString",
-        "InterpolatedStringFormatSpec",
-    ] {
-        assert!(found.contains(&name), "the synthetic corpus has no {name}");
-    }
 }

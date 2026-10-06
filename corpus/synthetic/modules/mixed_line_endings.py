@@ -1,8 +1,7 @@
-"""Mixed line endings: LF, CRLF and a lone CR in one file."""
+"""Mixed line endings: LF, CRLF and a lone CR in one file, each line named for its own."""
 
 lf = 1
-crlf = 2cr = 3
-
-
+crlf = 2
+cr = 3
 def function():
     return lf + crlf + cr

@@ -235,6 +235,31 @@ mod tests {
         );
     }
 
+    /// Pins the quirk `kinds_under` works around.  If a Ruff upgrade makes its walk enter the
+    /// format spec, this fails: delete the workaround, this test and the quirk in `python.md`.
+    #[test]
+    fn ruffs_walk_still_skips_the_format_spec() {
+        struct Entered(Vec<NodeKind>);
+        impl<'a> SourceOrderVisitor<'a> for Entered {
+            fn enter_node(&mut self, node: AnyNodeRef<'a>) -> TraversalSignal {
+                self.0.push(node.kind());
+                TraversalSignal::Traverse
+            }
+        }
+        let parsed = ruff_python_parser::parse_expression("f\"{x:>10}\"").unwrap();
+        let mut entered = Entered(Vec::new());
+        walk_node(&mut entered, AnyNodeRef::from(parsed.syntax()));
+        assert!(
+            entered.0.contains(&NodeKind::InterpolatedElement),
+            "{:?}",
+            entered.0
+        );
+        assert!(
+            !entered.0.contains(&NodeKind::InterpolatedStringFormatSpec),
+            "Ruff's walk now enters the format spec; the workaround in kinds_under is dead"
+        );
+    }
+
     #[test]
     fn invalid_source_is_an_error_naming_where() {
         let err = kinds_in_module("def f(:\n").unwrap_err();

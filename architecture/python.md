@@ -3,6 +3,8 @@
 `crates/python`, the `quaffed-python` crate: Python source through Ruff's parser, in quaff's own
 terms.  **It is the only crate that may name a `ruff_*` type**, so that a Ruff upgrade, which
 Ruff warns "will have frequent breaking changes", is absorbed here and reaches nothing else.
+`crates/quaffed/tests/ruff_containment.rs` fails naming any other member that depends on a
+`ruff_*` crate.
 Today it offers what the synthetic corpus's coverage check needs; structural search extends it
 with the node arena and the matcher.
 
@@ -13,9 +15,8 @@ with the node arena and the matcher.
 - **`kinds_in_module(source)`**, **`kinds_in_expression(source)`** and
   **`kinds_in_ipython(source)`**: the kinds of node a piece of source contains, parsed as a
   module, as a single expression, or as `IPython` source with its `%magic` and `!shell` escape
-  commands.  Source that does not parse
-  is a `ParseError` carrying Ruff's message verbatim and the byte offset, never a partial
-  answer.
+  commands.  Source that does not parse is a `ParseError` carrying Ruff's message verbatim and
+  the byte offset, never a partial answer.
 - **`Kind`**: a kind, by the name Ruff gives it - `StmtFunctionDef`, `ExprCall` - so nothing
   outside the adapter sees Ruff's own enum.
 
@@ -33,6 +34,8 @@ own.
 - **A format spec is invisible to Ruff's walk.**  `InterpolatedElement::visit_source_order`
   visits a format spec's parts but never enters the `InterpolatedStringFormatSpec` node, so the
   adapter records that kind wherever an element has a spec.
+  `ruffs_walk_still_skips_the_format_spec` pins the quirk: an upgrade that fixes it fails that
+  test, which says to delete the workaround.
 
 ## Pins
 
@@ -47,5 +50,6 @@ own.
    and update the count in `every_kind_is_listed_once_by_ruffs_name`.
 4. Run `cargo test -p quaffed-python`.  A new kind the synthetic corpus does not produce fails
    its coverage check; add Python that produces it, as `verification.md` describes.
-5. Check each quirk above still holds, and record any new one here.
+5. Each quirk above is pinned by a test that fails when it stops holding; delete the workaround
+   that test names.  Record any new quirk here, with a test of its own.
 6. Update this page in the same change.

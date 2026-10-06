@@ -34,10 +34,10 @@ language modules, the journal - is not written here yet, because it is not built
 **The members.**  `quaffed` builds the `quaff` binary, matching the name decision.
 `quaffed-representation` is the operation representation, a crate of its own so that its
 lint configuration - no hash maps or sets - applies to it alone, and so that it can depend on
-no parser.  `quaffed-script` parses the script language into it.  `quaffed-python` is the Python adapter,
-the one crate allowed to depend on a `ruff_*` crate, so that Ruff's API changes stop there.  `members = ["crates/*"]`
-picks up a new member without an edit, and it inherits the version, edition, licence and lints
-from `[workspace.package]` and `[workspace.lints]`.
+no parser.  `quaffed-script` parses the script language into it.  `quaffed-python` is the Python
+adapter, the one crate allowed to depend on a `ruff_*` crate, so that Ruff's API changes stop
+there.  `members = ["crates/*"]` picks up a new member without an edit, and it inherits the
+version, edition, licence and lints from `[workspace.package]` and `[workspace.lints]`.
 
 **`publish = false`** on every member.  Nothing is published until a release decides where and
 how, and an accidental `cargo publish` of a placeholder is not undoable.
