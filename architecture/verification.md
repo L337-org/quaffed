@@ -93,7 +93,8 @@ matching mode; the `IPython` files are not Python, so CPython refuses them.
    `expressions/` for a single expression, or `ipython/` for an `IPython` escape command.
 2. Keep it valid Python: check it with `python3.14 -c "import ast,sys; ast.parse(open(sys.argv[1],'rb').read(), sys.argv[1])" FILE`,
    adding `mode='eval'` for an expression.
-3. Run `cargo test -p quaffed-python --test corpus`.
+3. Run `cargo test -p quaffed-python`, which runs the coverage check and the docker-mcp exclusion
+   below.
 4. A file kept for its bytes - line endings, a byte-order mark, tabs - must be written with
    those bytes, not through an editor that normalises them; check with `od -c`.
 
@@ -172,15 +173,18 @@ it, so it is excluded, and the exclusion is a check rather than a convention.
 
 Code reaches the corpora two ways, and `crates/python/tests/corpus_exclusion.rs` closes both:
 
-- **A fetched source**: it fails if any value in `corpus/real-world.toml` names docker-mcp,
-  however the repository or archive is spelled, in any case.  Comments are exempt, so the
-  manifest may say why.
+- **A fetched source**: it fails if any line of `corpus/real-world.toml` other than a whole-line
+  comment contains `docker-mcp` or `docker_mcp`, in any case - a table name, a repository, an
+  archive URL.  A whole-line comment is exempt, so the manifest may say why.
 - **A file in the synthetic corpus**: it fails if any file's path or content names docker-mcp or
   its package, `docker_mcp`, which catches a file copied in from it.
 
 Each was shown to fail: a `[trial]` source pointing at docker-mcp failed the first, and a module
-importing `docker_mcp` failed the second.  Code rewritten from docker-mcp so that it no longer
-names it is beyond any mechanical check; the corpus is written, not copied.
+importing `docker_mcp` failed the second.  The check matches those two names, so a source that
+reaches docker-mcp's code without them - a mirror or fork under another name, or an archive URL
+by repository ID - is not caught, and nor is code rewritten from it so that it no longer names
+it.  Those are beyond a mechanical check; the corpus is written, not copied, and a new source
+in the manifest is reviewed.
 
 ## The tool manifest
 
