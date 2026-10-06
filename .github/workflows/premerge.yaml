@@ -213,3 +213,42 @@ jobs:
       # without writing a pending file, and a snapshot file no test references fails the run.
       - name: Snapshots match, and none is unreferenced
         run: cargo insta test --workspace --check --unreferenced=reject
+
+  real-world-corpus:
+    # The real-world corpus in corpus/real-world.toml fetches, matches its pinned SHA-256, and
+    # has the oracle judge every file: scripts/fetch-corpus fails on a hash mismatch, an archive
+    # member that would land outside its directory, or fewer files than the floor.  The fetched
+    # tree and the oracle's verdicts are cached on a hash of the manifest and the script, so
+    # this costs a cache restore until either changes.  The oracle's version is read from the
+    # manifest, so no Python version is named here.
+    runs-on: [ubuntu-latest]
+    name: Real-world corpus
+    # A 31 MB download and about 1150 parses: well under a minute measured locally.
+    timeout-minutes: 10
+    steps:
+      - name: Check out source repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Read the oracle's version from the manifest
+        id: oracle
+        # The runner's own Python only reads the manifest; the oracle is installed next.
+        run: |
+          version="$(python3 -c "import tomllib; print(tomllib.load(open('corpus/real-world.toml', 'rb'))['cpython']['oracle'])")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install the oracle's Python
+        id: python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ steps.oracle.outputs.version }}
+
+      - name: Restore the fetched corpus
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/corpus
+          key: real-world-corpus-${{ hashFiles('corpus/real-world.toml', 'scripts/fetch-corpus') }}
+
+      - name: Fetch, verify and judge the corpus
+        env:
+          PYTHON: ${{ steps.python.outputs.python-path }}
+        run: '"$PYTHON" scripts/fetch-corpus'

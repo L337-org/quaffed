@@ -1,0 +1,20 @@
+# The real-world corpus: real Python, fetched rather than checked in, and used for round-tripping
+# only - never by a gate, a budget or a benchmark.  scripts/fetch-corpus reads this file;
+# architecture/verification.md describes it.
+
+[cpython]
+# CPython's own test suite, at the release matching the oracle: a large body of real Python
+# written to exercise the language.  Its main branch carries syntax the oracle refuses.
+repository = "https://github.com/python/cpython"
+tag = "v3.14.8"
+# The release's source tarball from python.org, a fixed artefact, rather than GitHub's archive
+# of the tag, which is generated on request and whose bytes have changed before.  The two hold
+# identical Lib/test trees.
+archive = "https://www.python.org/ftp/python/3.14.8/Python-3.14.8.tgz"
+sha256 = "a65b20a728f169f4e66ae143f40b1bd3d33c38d770251663f627c9767b79b210"
+root = "Python-3.14.8"
+path = "Lib/test"
+# The CPython that judges which files are valid Python, by exact version.
+oracle = "3.14.8"
+# 1150 .py files at this release; fewer than this means the fetch or the walk is broken.
+floor = 1100

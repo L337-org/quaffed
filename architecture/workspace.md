@@ -19,6 +19,7 @@ language modules, the journal - is not written here yet, because it is not built
 ├── scripts/
 │   ├── install-tools     # installs from tools.toml, locally and in CI; see verification.md
 │   ├── build-deb         # builds the Linux package; see release.md
+│   ├── fetch-corpus      # fetches the real-world corpus and runs the oracle; see verification.md
 │   └── workspace-version # prints the declared version; see release.md
 ├── crates/
 │   ├── quaffed/          # builds the `quaff` binary
@@ -27,7 +28,9 @@ language modules, the journal - is not written here yet, because it is not built
 │   ├── python/           # quaffed-python: the Python adapter, the only crate naming Ruff; see python.md
 │   ├── representation/   # quaffed-representation: what a program means; see representation.md
 │   └── script/           # quaffed-script: the script language, text to program; see script.md
-├── corpus/synthetic/     # the synthetic Python corpus; see verification.md
+├── corpus/
+│   ├── synthetic/        # the synthetic Python corpus, checked in; see verification.md
+│   └── real-world.toml   # pins the fetched real-world corpus; see verification.md
 └── architecture/         # detail notes, each routed from AGENTS.md
 ```
 
@@ -107,6 +110,7 @@ files at all, so a broken walk cannot pass by checking nothing.
 | clippy | `cargo clippy --all-targets --locked -- -D warnings` |
 | Verification tools install | every cargo tool in `tools.toml` builds at its pin (cached; see `verification.md`) |
 | Test | `cargo test --workspace --locked`, then the snapshot check (see `verification.md`), on Linux and macOS |
+| Real-world corpus | `scripts/fetch-corpus` with the oracle's Python: the pinned archive fetches, matches its hash, and the oracle judges every file (see `verification.md`) |
 
 `.github/workflows/package.yaml` also runs on every pull request, building the Linux package for
 each architecture; `architecture/release.md` describes it and the release workflow.
