@@ -66,7 +66,7 @@ they land, and it is checked in, so it needs no fetching and carries no third-pa
   commands - `%timeit`, `!ls`, `?len` - which IPython and Jupyter notebooks run before handing
   the rest to Python.  They are not Python, so CPython refuses these files, and anything that
   judges the corpus by CPython takes this directory as its own, without the oracle.  These files
-  cover Ruff's two escape-command kinds like every other kind.
+  cover Ruff's escape-command kinds like every other kind.
 
 **Its bytes are its point**, so `.gitattributes` marks it `-text`: git stores and checks out
 every file exactly, CRLF and lone-CR line endings and the byte-order mark included.

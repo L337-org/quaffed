@@ -51,9 +51,11 @@ jobs:
   dco:
     # Every commit carries a Signed-off-by for its author (CONTRIBUTING.md, Developer
     # Certificate of Origin).  Pull requests only: the squash merge keeps every commit's message,
-    # so a pull request that passes here lands on main signed off.  A squash commit is authored by
-    # whoever merges, not by the commits' authors, so main's own commits are not checked against
-    # their author here.  Merge commits, which GitHub writes, are skipped.
+    # so a pull request that passes here lands on main signed off.  GitHub authors a squash commit
+    # as the pull request's author, under the address that author's account chooses, which need
+    # not be the address the commits were signed off with, so main's own commits would fail a
+    # check against their author and are not checked here.  Merge commits, which GitHub writes,
+    # are skipped.
     if: github.event_name == 'pull_request'
     runs-on: [ubuntu-latest]
     name: Commits are signed off
@@ -76,7 +78,7 @@ jobs:
         # dependency update would fail here.
         # The pull request's commits are those not on the base branch as fetched now, as well as
         # not at base.sha: base.sha can predate an "Update branch" merge, and main's own squash
-        # commits, authored by whoever merged them, would then be counted.  Each step
+        # commits would then be counted, and fail for the reason above.  Each step
         # is read into a variable first, so a failing git command fails the step under bash -e,
         # and a range with no commit in it fails rather than passing.
         run: |
@@ -224,8 +226,10 @@ jobs:
     # manifest, so no Python version is named here.
     runs-on: [ubuntu-latest]
     name: Real-world corpus
-    # One download and one parse of each file, with headroom.
-    timeout-minutes: 10
+    # Longer than scripts/fetch-corpus's download deadline plus one read's wait, with room for the
+    # setup, the parse and check-synthetic, so a stalled download ends in the script's own error
+    # rather than a bare cancellation.
+    timeout-minutes: 20
     steps:
       - name: Check out source repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
