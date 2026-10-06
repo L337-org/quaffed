@@ -2,7 +2,7 @@
 
 How quaffed's own behaviour is verified, and how the verification tooling is pinned and
 installed.  This note grows as the verification infrastructure lands; for now it covers the
-end-to-end tests, the synthetic Python corpus and the tool manifest.
+end-to-end tests, the two Python corpora and the tool manifest.
 
 ## End-to-end tests and snapshots
 
@@ -96,6 +96,65 @@ matching mode; the `IPython` files are not Python, so CPython refuses them.
 3. Run `cargo test -p quaffed-python --test corpus`.
 4. A file kept for its bytes - line endings, a byte-order mark, tabs - must be written with
    those bytes, not through an editor that normalises them; check with `od -c`.
+
+## The real-world corpus
+
+Real Python, as a check on what the synthetic corpus did not think to write: **CPython's own
+`Lib/test` at the release tag matching the oracle**, `v3.14.8`, about 1150 files written to
+exercise the language.  It is **used for round-tripping only**, never by a gate, a budget or a
+benchmark, so its contents cannot move one.  Nothing that gates reads `target/corpus/`.
+
+It is **fetched, not checked in**: it is CPython's code, under the PSF licence, and far larger
+than the rest of the repository.  `corpus/real-world.toml` pins it, and is the one place that
+names it:
+
+- **the archive**, python.org's source tarball for the release, by URL and SHA-256.  Not
+  GitHub's archive of the tag: GitHub generates those on request, and their bytes have changed
+  before.  The two hold identical `Lib/test` trees, checked when it was pinned;
+- **the path** extracted from it, `Lib/test`, under the archive's top directory;
+- **the oracle**, by exact version: the CPython whose `ast.parse` says which files are valid
+  Python.  Pinned to the release, never `main`, which carries syntax the release refuses;
+- **the floor**: fewer `.py` files than this means the fetch or the walk is broken.
+
+### Fetching it
+
+```bash
+python3.14 scripts/fetch-corpus     # into target/corpus/cpython/
+```
+
+**One command, run with the oracle's Python**; any other version stops it, naming the one it
+needs.  It downloads the archive and refuses it unless the SHA-256 matches, extracts only the
+named path with Python's `data` filter - which refuses any member that would land outside the
+directory, by an absolute path, `..` or a link - and runs the oracle over every `.py` file.  It
+writes `refused.txt` beside the files, one line per refused file with the oracle's reason, and
+prints the counts and the refused files.  At `v3.14.8` that is 1150 files, 1146 accepted, and
+four refused, all encoding or tokenizer failures in `Lib/test/tokenizedata/`.  **Nothing is
+filtered out**: every file stays in the tree, and a refused one is listed, so a consumer must
+expect the oracle's refusal of exactly those files rather than skip them.
+
+The tree replaces an earlier one only once it is complete, and a source already fetched at the
+same SHA-256 is not fetched again.
+
+**The refused list is not committed.**  It can only change when the pin does, and it comes from
+running the oracle, so it is generated with the files rather than kept in step by hand.
+
+### In CI
+
+The **Real-world corpus** job reads the oracle's version from the manifest, installs that
+Python with `actions/setup-python`, restores `target/corpus` from a cache keyed on the manifest
+and the script, and runs `scripts/fetch-corpus`.  `crates/quaffed/tests/fetch_corpus.rs` tests the
+script itself in the ordinary run, against small archives it builds: only the path is
+extracted, a changed hash is refused, a member escaping the directory is refused, the floor
+fails saying how many it read, another Python is refused, and a completed fetch is reused.
+
+### Checklist: moving the pin to a new CPython release
+
+1. Change `tag`, `archive`, `root` and `oracle` in `corpus/real-world.toml` together.
+2. Download the new tarball, and set `sha256` from it.
+3. Run `scripts/fetch-corpus` with the new Python, and read the refused files it prints: each
+   should be a deliberate fixture, not a file the parser should handle.
+4. Raise `floor` if the release has many more files, keeping it below the count.
+5. Update the counts in this section in the same change.
 
 ## The tool manifest
 

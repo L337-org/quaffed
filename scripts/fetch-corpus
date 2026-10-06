@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""Fetch the real-world corpus and have the oracle say which of its files are valid Python.
+
+For each source in corpus/real-world.toml: download the pinned archive, refuse it unless its
+SHA-256 matches, extract only the named path, then run the oracle - CPython's own `ast.parse`,
+at the exact version the source names - over every .py file.  The files land in
+target/corpus/<source>/, beside `refused.txt`, which lists each file the oracle refuses and why.
+A source already fetched with the same pin is not fetched again.
+
+Usage: scripts/fetch-corpus [--manifest FILE] [--dest DIR]
+
+Run it with the oracle's Python - python3.14 for CPython 3.14.8 - or it stops, naming the
+version it needs.  architecture/verification.md describes the corpus.
+"""
+
+import argparse
+import ast
+import hashlib
+import os
+import pathlib
+import shutil
+import sys
+import tarfile
+import tempfile
+import tomllib
+import urllib.request
+
+# The archive is about 31 MB; anything near this means the URL serves something else.
+MAX_ARCHIVE_BYTES = 200 * 1024 * 1024
+DOWNLOAD_TIMEOUT_SECONDS = 120
+REQUIRED = ("archive", "sha256", "root", "path", "oracle", "floor")
+
+
+class FetchError(Exception):
+    """A source could not be fetched or judged; the message says which and why."""
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    repo = pathlib.Path(__file__).resolve().parent.parent
+    parser.add_argument("--manifest", type=pathlib.Path, default=repo / "corpus/real-world.toml")
+    parser.add_argument("--dest", type=pathlib.Path, default=repo / "target/corpus")
+    args = parser.parse_args(argv)
+    try:
+        sources = read_manifest(args.manifest)
+        for name, source in sources.items():
+            fetch(name, source, args.dest)
+    except FetchError as err:
+        print(f"fetch-corpus: {err}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def read_manifest(path):
+    """The sources the manifest names, each with every field it needs."""
+    try:
+        with open(path, "rb") as handle:
+            sources = tomllib.load(handle)
+    except OSError as err:
+        raise FetchError(f"reading the manifest {str(path)!r}: {err}") from err
+    except tomllib.TOMLDecodeError as err:
+        raise FetchError(f"the manifest {str(path)!r} is not valid TOML: {err}") from err
+    if not sources:
+        raise FetchError(f"the manifest {str(path)!r} names no source")
+    for name, source in sources.items():
+        missing = [field for field in REQUIRED if field not in source]
+        if missing:
+            raise FetchError(f"source {name!r} in {str(path)!r} has no {', '.join(missing)}")
+    return sources
+
+
+def fetch(name, source, dest):
+    """Fetch one source unless it is already fetched at this pin, then report what the oracle said."""
+    running = ".".join(str(part) for part in sys.version_info[:3])
+    if running != source["oracle"]:
+        raise FetchError(
+            f"source {name!r} is judged by CPython {source['oracle']}, but this is {running} at "
+            f"{sys.executable!r}; run this script with that Python, for example "
+            f"python{source['oracle'].rsplit('.', 1)[0]} scripts/fetch-corpus"
+        )
+    target = dest / name
+    stamp = target / ".fetched"
+    if stamp.is_file() and stamp.read_text() == source["sha256"]:
+        report(name, source, target)
+        return
+    dest.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=dest, prefix=f".{name}-") as scratch:
+        scratch = pathlib.Path(scratch)
+        archive = download(name, source, scratch / "archive")
+        staging = scratch / "tree"
+        extract(name, source, archive, staging)
+        judge(name, source, staging)
+        (staging / ".fetched").write_text(source["sha256"])
+        # The new tree replaces any old one only once it is complete, so an interrupted run
+        # never leaves a half-fetched corpus that looks finished.
+        if target.exists():
+            shutil.rmtree(target)
+        os.replace(staging, target)
+    report(name, source, target)
+
+
+def download(name, source, path):
+    """Download the source's archive to `path`, refusing it unless its SHA-256 matches."""
+    url = source["archive"]
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response:
+            with open(path, "wb") as out:
+                while chunk := response.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > MAX_ARCHIVE_BYTES:
+                        raise FetchError(
+                            f"the archive for {name!r} at {url!r} is over "
+                            f"{MAX_ARCHIVE_BYTES} bytes, so it is not the pinned release"
+                        )
+                    digest.update(chunk)
+                    out.write(chunk)
+    except OSError as err:
+        raise FetchError(f"downloading the archive for {name!r} from {url!r}: {err}") from err
+    if digest.hexdigest() != source["sha256"]:
+        raise FetchError(
+            f"the archive for {name!r} from {url!r} has SHA-256 {digest.hexdigest()}, not the "
+            f"pinned {source['sha256']}; nothing was extracted"
+        )
+    return path
+
+
+def extract(name, source, archive, staging):
+    """Extract only the source's path from `archive` into `staging`, keeping the path."""
+    prefix = f"{source['root']}/{source['path']}/"
+    try:
+        with tarfile.open(archive, "r:gz") as tar:
+            members = []
+            for member in tar.getmembers():
+                if member.name.startswith(prefix):
+                    member.name = member.name[len(source["root"]) + 1 :]
+                    members.append(member)
+            if not members:
+                raise FetchError(f"the archive for {name!r} has nothing under {prefix!r}")
+            # The data filter refuses members that would land outside staging - by an absolute
+            # path, by "..", or through a link - so a hostile archive cannot write elsewhere.
+            tar.extractall(staging, members=members, filter="data")
+    except (tarfile.TarError, OSError) as err:
+        raise FetchError(f"extracting {prefix!r} from the archive for {name!r}: {err}") from err
+
+
+def judge(name, source, staging):
+    """Run the oracle over every .py file, writing refused.txt, and enforce the floor."""
+    root = staging / source["path"]
+    files = sorted(root.rglob("*.py"))
+    if len(files) < source["floor"]:
+        raise FetchError(
+            f"read {len(files)} .py files for {name!r} under {source['path']!r}, fewer than the "
+            f"floor of {source['floor']}"
+        )
+    refused = []
+    for path in files:
+        relative = path.relative_to(staging).as_posix()
+        try:
+            ast.parse(path.read_bytes(), filename=relative)
+        except (SyntaxError, ValueError) as err:
+            reason = " ".join(f"{type(err).__name__}: {err}".split())
+            refused.append(f"{relative}\t{reason}")
+    lines = [
+        f"# {len(files)} files read; CPython {source['oracle']} accepts "
+        f"{len(files) - len(refused)} and refuses {len(refused)}.",
+        "# Generated by scripts/fetch-corpus; each line is a path, a tab, and the oracle's reason.",
+        *refused,
+    ]
+    (staging / "refused.txt").write_text("\n".join(lines) + "\n")
+
+
+def report(name, source, target):
+    """Print what the oracle said about the source, from its refused.txt."""
+    lines = (target / "refused.txt").read_text().splitlines()
+    refused = [line for line in lines if not line.startswith("#")]
+    print(f"{name} {source.get('tag', '')}: {lines[0].lstrip('# ')}")
+    print(f"  The refused files, with the oracle's reasons, are in {target / 'refused.txt'}:")
+    for line in refused:
+        print(f"  - {line.split(chr(9))[0]}")
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
