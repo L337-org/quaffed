@@ -56,8 +56,8 @@ cargo clippy --all-targets --locked -- -D warnings # lint, as CI runs it
 cargo fmt --all                                    # format
 cargo fmt --all -- --check                         # format check, as CI runs it
 scripts/install-tools --all                        # every verification tool, at its pinned version
-python3.14 scripts/fetch-corpus                    # the real-world corpus, into target/corpus/
-python3.14 scripts/check-synthetic                 # the oracle over the synthetic corpus
+python3.X scripts/fetch-corpus                     # the real-world corpus (3.X: the manifest's oracle)
+python3.X scripts/check-synthetic                  # the oracle over the synthetic corpus
 ```
 
 CI builds `--locked`, so a dependency change must commit `Cargo.lock` alongside `Cargo.toml`.

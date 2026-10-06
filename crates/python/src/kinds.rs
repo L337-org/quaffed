@@ -143,7 +143,7 @@ fn kinds_under(root: AnyNodeRef<'_>) -> BTreeSet<Kind> {
         fn enter_node(&mut self, node: AnyNodeRef<'a>) -> TraversalSignal {
             self.0.insert(kind_of(node.kind()));
             // Ruff's source-order walk visits a format spec's parts but never enters the spec
-            // itself (`InterpolatedElement::visit_source_order` at 0.0.16), so the node is in
+            // itself (`InterpolatedElement::visit_source_order`), so the node is in
             // the tree and invisible to the walk.  It is counted where it is attached.
             if let AnyNodeRef::InterpolatedElement(element) = node
                 && element.format_spec.is_some()
@@ -172,8 +172,8 @@ mod tests {
         let all = all_kinds();
         let unique: BTreeSet<_> = all.iter().collect();
         assert_eq!(unique.len(), all.len(), "a kind is listed twice");
-        // The count at ruff_python_ast 0.0.16; a Ruff upgrade that changes it is expected to
-        // change this line too, deliberately.
+        // The count of the pinned Ruff's enum; an upgrade that changes it changes this line too,
+        // deliberately.
         assert_eq!(all.len(), 94);
         assert_eq!(all[0].name(), "ModModule");
         assert_eq!(all[93].to_string(), "Identifier");
