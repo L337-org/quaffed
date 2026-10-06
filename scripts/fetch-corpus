@@ -104,9 +104,9 @@ def fetch(name, source, dest):
         # old tree is moved into the scratch directory, which is deleted with it, so no moment
         # leaves a partly deleted tree that still carries its stamp.
         previous = scratch / "previous"
-        if target.exists():
-            os.replace(target, previous)
         try:
+            if target.exists():
+                os.replace(target, previous)
             os.replace(staging, target)
         except OSError as err:
             # Put the previous tree back, so a failed refetch never loses it.
