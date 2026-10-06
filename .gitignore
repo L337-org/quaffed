@@ -3,6 +3,7 @@
 /.*
 !/.agents/
 !/.gitignore
+!/.gitattributes
 !/.github/
 !/.cursor/
 !/.vscode/

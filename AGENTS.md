@@ -41,6 +41,8 @@ fails on either.
 | `crates/quaffed/src/`: the command line, discovery, encodings, matching or output | [architecture/search.md](architecture/search.md) |
 | `crates/representation/`: what a program means, the checker, or its lint configuration | [architecture/representation.md](architecture/representation.md) |
 | `crates/script/`: the script language's operands, grammar, errors or locations | [architecture/script.md](architecture/script.md) |
+| `crates/python/`, or a `ruff_*` dependency or its version | [architecture/python.md](architecture/python.md) |
+| `corpus/`, `scripts/fetch-corpus` or `scripts/check-synthetic`, or adding Python to the synthetic corpus | the corpus sections of [architecture/verification.md](architecture/verification.md) |
 | `packaging/`, `scripts/build-deb`, the package or release workflows, or a dependency the binary links | [architecture/release.md](architecture/release.md) |
 
 ## Commands
@@ -54,6 +56,8 @@ cargo clippy --all-targets --locked -- -D warnings # lint, as CI runs it
 cargo fmt --all                                    # format
 cargo fmt --all -- --check                         # format check, as CI runs it
 scripts/install-tools --all                        # every verification tool, at its pinned version
+python3.14 scripts/fetch-corpus                    # the real-world corpus, into target/corpus/
+python3.14 scripts/check-synthetic                 # the oracle over the synthetic corpus
 ```
 
 CI builds `--locked`, so a dependency change must commit `Cargo.lock` alongside `Cargo.toml`.

@@ -2,8 +2,8 @@
 
 How the Cargo workspace is laid out, what pins what, and the conventions that are enforced
 mechanically.  What each member does is specified in its own note: textual search in
-`search.md`, the operation representation in `representation.md`, and the script language in
-`script.md`.  The rest of the engine -
+`search.md`, the operation representation in `representation.md`, the script language in
+`script.md`, and the Python adapter in `python.md`.  The rest of the engine -
 language modules, the journal - is not written here yet, because it is not built.
 
 ## Layout
@@ -19,22 +19,29 @@ language modules, the journal - is not written here yet, because it is not built
 ├── scripts/
 │   ├── install-tools     # installs from tools.toml, locally and in CI; see verification.md
 │   ├── build-deb         # builds the Linux package; see release.md
+│   ├── fetch-corpus      # fetches the real-world corpus and runs the oracle; see verification.md
+│   ├── check-synthetic   # the oracle over the synthetic corpus; see verification.md
 │   └── workspace-version # prints the declared version; see release.md
 ├── crates/
 │   ├── quaffed/          # builds the `quaff` binary
 │   │   ├── src/          # main.rs, and one module per concern; see search.md
 │   │   └── tests/        # integration tests, one file per concern
+│   ├── python/           # quaffed-python: the Python adapter, the only crate naming Ruff; see python.md
 │   ├── representation/   # quaffed-representation: what a program means; see representation.md
 │   └── script/           # quaffed-script: the script language, text to program; see script.md
+├── corpus/
+│   ├── synthetic/        # the synthetic Python corpus, checked in; see verification.md
+│   └── real-world.toml   # pins the fetched real-world corpus; see verification.md
 └── architecture/         # detail notes, each routed from AGENTS.md
 ```
 
 **The members.**  `quaffed` builds the `quaff` binary, matching the name decision.
 `quaffed-representation` is the operation representation, a crate of its own so that its
 lint configuration - no hash maps or sets - applies to it alone, and so that it can depend on
-no parser.  `quaffed-script` parses the script language into it.  `members = ["crates/*"]`
-picks up a new member without an edit, and it inherits the version, edition, licence and lints
-from `[workspace.package]` and `[workspace.lints]`.
+no parser.  `quaffed-script` parses the script language into it.  `quaffed-python` is the Python
+adapter, the one crate allowed to depend on a `ruff_*` crate, so that Ruff's API changes stop
+there.  `members = ["crates/*"]` picks up a new member without an edit, and it inherits the
+version, edition, licence and lints from `[workspace.package]` and `[workspace.lints]`.
 
 **`publish = false`** on every member.  Nothing is published until a release decides where and
 how, and an accidental `cargo publish` of a placeholder is not undoable.
@@ -104,6 +111,7 @@ files at all, so a broken walk cannot pass by checking nothing.
 | clippy | `cargo clippy --all-targets --locked -- -D warnings` |
 | Verification tools install | every cargo tool in `tools.toml` builds at its pin (cached; see `verification.md`) |
 | Test | `cargo test --workspace --locked`, then the snapshot check (see `verification.md`), on Linux and macOS |
+| Real-world corpus | with the oracle's Python, `scripts/check-synthetic`, then `scripts/fetch-corpus`: the synthetic corpus is valid Python, and the pinned archive fetches, matches its hash, and is judged file by file (see `verification.md`) |
 
 `.github/workflows/package.yaml` also runs on every pull request, building the Linux package for
 each architecture; `architecture/release.md` describes it and the release workflow.
