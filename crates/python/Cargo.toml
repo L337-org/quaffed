@@ -1,0 +1,20 @@
+[package]
+name = "quaffed-python"
+description = "The Python adapter: the only crate that names a parser's types"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+# Nothing is published until a release decides where and how.
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# Pinned exactly: Ruff says its Rust API "will have frequent breaking changes", so an
+# upgrade is a deliberate piece of work through this crate, never a lock-file refresh.
+ruff_python_ast = "=0.0.16"
+ruff_python_parser = "=0.0.16"

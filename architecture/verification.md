@@ -2,7 +2,7 @@
 
 How quaffed's own behaviour is verified, and how the verification tooling is pinned and
 installed.  This note grows as the verification infrastructure lands; for now it covers the
-end-to-end tests and the tool manifest.
+end-to-end tests, the synthetic Python corpus and the tool manifest.
 
 ## End-to-end tests and snapshots
 
@@ -50,6 +50,52 @@ CI runs `cargo insta test --workspace --check --unreferenced=reject` after
 deleted without its snapshot - also fails the run.  The `cargo test` step is the one that enforces
 `Cargo.lock`: `cargo insta test` passes arguments after `--` to the test binaries rather than to
 cargo, whatever its help says, so it cannot take `--locked`.
+
+## The synthetic corpus
+
+`corpus/synthetic/` is Python written to contain every construct quaff's Python front end must
+handle.  It is the primary input to the invariant harness, the budgets and the benchmarks as
+they land, and it is checked in, so it needs no fetching and carries no third-party licence.
+
+- **`modules/*.py`** are parsed as modules: a file's worth of statements.  Each file has a
+  theme - statements, expressions, strings, match patterns, type parameters, non-ASCII text,
+  pragmas, indentation, line endings, a byte-order mark - so that a gap points at a file.
+- **`expressions/*.pyexpr`** are parsed as a single expression, the only way to produce Ruff's
+  `ModExpression`, and the shape many structural patterns take.
+- **`ipython/*.ipy`** are parsed as `IPython` source: statements that may include its escape
+  commands - `%timeit`, `!ls`, `?len` - which IPython and Jupyter notebooks run before handing
+  the rest to Python.  They are not Python, so CPython refuses these files, and anything that
+  judges the corpus by CPython takes this directory as its own, without the oracle.  quaff will
+  need to edit notebooks; until it does, these files exist so that Ruff's two escape-command
+  kinds are covered like every other.
+
+**Its bytes are its point**, so `.gitattributes` marks it `-text`: git stores and checks out
+every file exactly, CRLF and lone-CR line endings and the byte-order mark included.
+
+`crates/python/tests/corpus.rs` checks it in the ordinary test run:
+
+- **Every kind of node in the grammar appears**, taken from the adapter's `all_kinds()` and so
+  held to Ruff's own enum (`python.md`).  It fails naming each kind no file produces; removing
+  `patterns.py` was shown to fail it with the twelve match-statement kinds.  There are no
+  exceptions: every kind Ruff lists comes from some file.
+- **Every layout form is there byte for byte**: a UTF-8 byte-order mark, LF, CRLF and a lone CR
+  in one file, tab and space indentation, non-ASCII text and a `# noqa` pragma.
+- **Every file parses**, and a file that does not fails the run naming it and Ruff's message.
+- **Fewer files than the floor fails**, saying how many it found, so an emptied or missing
+  directory cannot pass by checking nothing.
+
+Every module and expression file is also accepted by CPython 3.14's `ast.parse`, in the
+matching mode; the `IPython` files are not Python, so CPython refuses them.
+
+### Adding to the synthetic corpus
+
+1. Add the construct to the file whose theme it fits, or a new themed file under `modules/`,
+   `expressions/` for a single expression, or `ipython/` for an `IPython` escape command.
+2. Keep it valid Python: check it with `python3.14 -c "import ast,sys; ast.parse(open(sys.argv[1],'rb').read(), sys.argv[1])" FILE`,
+   adding `mode='eval'` for an expression.
+3. Run `cargo test -p quaffed-python --test corpus`.
+4. A file kept for its bytes - line endings, a byte-order mark, tabs - must be written with
+   those bytes, not through an editor that normalises them; check with `od -c`.
 
 ## The tool manifest
 
