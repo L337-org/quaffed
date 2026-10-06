@@ -127,11 +127,11 @@ python3.14 scripts/fetch-corpus     # into target/corpus/cpython/
 ```
 
 **One command, run with the oracle's Python**; any other version, or a Python that is not
-CPython, stops it, naming the one it needs.  It downloads the archive, within an overall time
-limit, and refuses it unless the SHA-256 matches.  It refuses any member with a `..` step, then
-extracts only the named path with Python's `data` filter, which also refuses any member that
-would land outside the directory by an absolute path or a link.  Then it runs the oracle over
-every `.py` file.  It writes `refused.txt` beside the files, one line per refused
+CPython, stops it, naming the one it needs.  It downloads the archive, stopping after about 10
+minutes in all, and refuses it unless the SHA-256 matches.  It refuses any member with a `..`
+step, then extracts only the named path with Python's `data` filter, which also refuses any
+member that would land outside the directory by an absolute path or a link.  Then it runs the
+oracle over every `.py` file.  It writes `refused.txt` beside the files, one line per refused
 file with the oracle's reason, and prints the counts and the refused files.  At `v3.14.8` that is
 1150 files, 1146 accepted, and four refused, all encoding or tokenizer failures in
 `Lib/test/tokenizedata/`.  **Nothing is filtered out**: every file stays in the tree, and a

@@ -34,8 +34,9 @@ import tomllib  # noqa: E402 - after the version check, so an old Python is told
 
 # The archive is about 31 MB; anything near this means the URL serves something else.
 MAX_ARCHIVE_BYTES = 200 * 1024 * 1024
-# Each read waits at most this long, and the whole download at most the next: a server that
-# trickles bytes within the first limit would otherwise never stop.
+# Each read waits at most this long, and the whole download stops once the next has passed: a
+# server that trickles bytes within the first limit would otherwise never stop.  The deadline is
+# checked between reads, so the worst case is the deadline plus one read's wait, 720 seconds.
 DOWNLOAD_TIMEOUT_SECONDS = 120
 DOWNLOAD_DEADLINE_SECONDS = 600
 REQUIRED = ("archive", "sha256", "root", "path", "oracle", "floor")
