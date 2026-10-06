@@ -24,7 +24,12 @@ fn workspace_root() -> PathBuf {
 /// `[...dependencies.ruff_*]` table, or renamed through `package = "ruff_*"`.
 fn depends_on_ruff(manifest: &str) -> bool {
     manifest.lines().map(str::trim).any(|line| {
-        let key = line.split(['=', ' ']).next().unwrap_or_default();
+        // Cargo accepts a key in quotes, so the quotes are not part of the name.
+        let key = line
+            .split(['=', ' '])
+            .next()
+            .unwrap_or_default()
+            .trim_matches(['"', '\'']);
         key.starts_with("ruff_")
             || (line.starts_with('[') && line.contains("dependencies.ruff_"))
             || line.replace(' ', "").contains("package=\"ruff_")
@@ -84,6 +89,12 @@ fn a_ruff_dependency_is_found_however_it_is_declared() {
     ));
     assert!(depends_on_ruff(
         "[dependencies]\nparser = { package = \"ruff_python_parser\" }\n"
+    ));
+    assert!(depends_on_ruff(
+        "[dependencies]\n\"ruff_python_ast\" = \"1\"\n"
+    ));
+    assert!(depends_on_ruff(
+        "[dependencies]\n'ruff_python_ast' = \"1\"\n"
     ));
     assert!(!depends_on_ruff(
         "[package]\nname = \"quaffed\"\n# ruff_ in a comment\n"
