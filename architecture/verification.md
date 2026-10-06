@@ -65,9 +65,8 @@ they land, and it is checked in, so it needs no fetching and carries no third-pa
 - **`ipython/*.ipy`** are parsed as `IPython` source: statements that may include its escape
   commands - `%timeit`, `!ls`, `?len` - which IPython and Jupyter notebooks run before handing
   the rest to Python.  They are not Python, so CPython refuses these files, and anything that
-  judges the corpus by CPython takes this directory as its own, without the oracle.  quaff will
-  need to edit notebooks; until it does, these files exist so that Ruff's two escape-command
-  kinds are covered like every other.
+  judges the corpus by CPython takes this directory as its own, without the oracle.  These files
+  cover Ruff's two escape-command kinds like every other kind.
 
 **Its bytes are its point**, so `.gitattributes` marks it `-text`: git stores and checks out
 every file exactly, CRLF and lone-CR line endings and the byte-order mark included.
@@ -75,9 +74,8 @@ every file exactly, CRLF and lone-CR line endings and the byte-order mark includ
 `crates/python/tests/corpus.rs` checks it in the ordinary test run:
 
 - **Every kind of node in the grammar appears**, taken from the adapter's `all_kinds()` and so
-  held to Ruff's own enum (`python.md`).  It fails naming each kind no file produces; removing
-  `patterns.py` was shown to fail it with the twelve match-statement kinds.  There are no
-  exceptions: every kind Ruff lists comes from some file.
+  held to Ruff's own enum (`python.md`).  It fails naming each kind no file produces.  There are
+  no exceptions: every kind Ruff lists comes from some file.
 - **Every layout form is there byte for byte**: a UTF-8 byte-order mark, LF, CRLF and a lone CR
   in one file, tab and space indentation, non-ASCII text and a `# noqa` pragma.
 - **Every file parses**, and a file that does not fails the run naming it and Ruff's message.
@@ -94,8 +92,8 @@ not judged, and the run says so.
 
 1. Add the construct to the file whose theme it fits, or a new themed file under `modules/`,
    `expressions/` for a single expression, or `ipython/` for an `IPython` escape command.
-2. Keep it valid Python: run `python3.14 scripts/check-synthetic`, with the oracle's Python.  CI
-   runs it too.
+2. Keep it valid Python: run `scripts/check-synthetic` with the oracle's Python, the CPython
+   release `corpus/real-world.toml` names.  CI runs it too.
 3. Run `cargo test -p quaffed-python`, which runs the coverage check and the docker-mcp exclusion
    below.
 4. A file kept for its bytes - line endings, a byte-order mark, tabs - must be written with
@@ -104,8 +102,8 @@ not judged, and the run says so.
 ## The real-world corpus
 
 Real Python, as a check on what the synthetic corpus did not think to write: **CPython's own
-`Lib/test` at the release tag matching the oracle**, `v3.14.8`, about 1150 files written to
-exercise the language.  It is **used for round-tripping only**, never by a gate, a budget or a
+`Lib/test` at the release tag matching the oracle**, a large body of Python written to exercise
+the language.  It is **used for round-tripping only**, never by a gate, a budget or a
 benchmark, so its contents cannot move one.  Nothing that gates reads `target/corpus/`.
 
 It is **fetched, not checked in**: it is CPython's code, under the PSF licence, and far larger
@@ -114,7 +112,7 @@ names it:
 
 - **the archive**, python.org's source tarball for the release, by URL and SHA-256.  Not
   GitHub's archive of the tag: GitHub generates those on request, and their bytes have changed
-  before.  The two hold identical `Lib/test` trees, checked when it was pinned;
+  before;
 - **the path** extracted from it, `Lib/test`, under the archive's top directory;
 - **the oracle**, by exact version: the CPython whose `ast.parse` says which files are valid
   Python.  Pinned to the release, never `main`, which carries syntax the release refuses;
@@ -123,18 +121,17 @@ names it:
 ### Fetching it
 
 ```bash
-python3.14 scripts/fetch-corpus     # into target/corpus/cpython/
+python3.X scripts/fetch-corpus      # 3.X: the oracle in corpus/real-world.toml
 ```
 
 **One command, run with the oracle's Python**; any other version, or a Python that is not
-CPython, stops it, naming the one it needs.  It downloads the archive, stopping after about 10
-minutes in all, and refuses it unless the SHA-256 matches.  It refuses any member with a `..`
+CPython, stops it, naming the one it needs.  It downloads the archive, within an overall
+deadline, and refuses it unless the SHA-256 matches.  It refuses any member with a `..`
 step, then extracts only the named path with Python's `data` filter, which also refuses any
 member that would land outside the directory by an absolute path or a link.  Then it runs the
 oracle over every `.py` file.  It writes `refused.txt` beside the files, one line per refused
-file with the oracle's reason, and prints the counts and the refused files.  At `v3.14.8` that is
-1150 files, 1146 accepted, and four refused, all encoding or tokenizer failures in
-`Lib/test/tokenizedata/`.  **Nothing is filtered out**: every file stays in the tree, and a
+file with the oracle's reason, and prints the counts and the refused files.  **Nothing is filtered
+out**: every file stays in the tree, and a
 refused one is listed, so a consumer must expect the oracle's refusal of exactly those files
 rather than skip them.
 
@@ -170,11 +167,8 @@ injection.
    should be a deliberate fixture, not a file the parser should handle.  Run
    `scripts/check-synthetic` with it too, since the oracle now judges the synthetic corpus as
    that release.
-4. Raise `floor` if the release has many more files, keeping it below the count, and update the
-   count in the comment beside it.
-5. Update the release everywhere else it is named, in the same change: the counts, the tag and
-   the `python3.X` command in this section, and the fetch command in `AGENTS.md`.  The script
-   names no release; its refusal says which Python it needs.
+4. Raise `floor` if the release has many more files, keeping it below the count the fetch
+   prints.
 
 ## docker-mcp is never in either corpus
 
@@ -190,8 +184,7 @@ Code reaches the corpora two ways, and `crates/python/tests/corpus_exclusion.rs`
 - **A file in the synthetic corpus**: it fails if any file's path or content names docker-mcp or
   its package, `docker_mcp`, which catches a file copied in from it.
 
-Each was shown to fail: a `[trial]` source pointing at docker-mcp failed the first, and a module
-importing `docker_mcp` failed the second.  The check matches those two names, so a source that
+The check matches those two names, so a source that
 reaches docker-mcp's code without them - a mirror or fork under another name, or an archive URL
 by repository ID - is not caught, and nor is code rewritten from it so that it no longer names
 it.  Those are beyond a mechanical check; the corpus is written, not copied, and a new source

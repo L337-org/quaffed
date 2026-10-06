@@ -5,13 +5,11 @@ terms.  **It is the only crate that may name a `ruff_*` type**, so that a Ruff u
 Ruff warns "will have frequent breaking changes", is absorbed here and reaches nothing else.
 `crates/quaffed/tests/ruff_containment.rs` fails naming any other member that depends on a
 `ruff_*` crate.
-Today it offers what the synthetic corpus's coverage check needs; structural search extends it
-with the node arena and the matcher.
 
 ## What it offers
 
 - **`all_kinds()`**: every kind of node in Python's grammar as the pinned Ruff knows it, each
-  once, in Ruff's order - 94 at `ruff_python_ast` 0.0.16.
+  once, in Ruff's order.  `every_kind_is_listed_once_by_ruffs_name` asserts how many.
 - **`kinds_in_module(source)`**, **`kinds_in_expression(source)`** and
   **`kinds_in_ipython(source)`**: the kinds of node a piece of source contains, parsed as a
   module, as a single expression, or as `IPython` source with its `%magic` and `!shell` escape
@@ -25,9 +23,8 @@ with the node arena and the matcher.
 Ruff's `NodeKind` offers no list of its variants, so the list is written once in
 `src/kinds.rs`, in a macro that builds both the list and a `match` from `NodeKind` with no
 catch-all arm.  The compiler then holds it to the enum: a kind Ruff adds is a non-exhaustive
-match until it is listed, and a name Ruff does not have fails to resolve.  Both were shown to
-fail the build when the slice landed.  The names are the same identifiers, so they are Ruff's
-own.
+match until it is listed, and a name Ruff does not have fails to resolve.  The names are the
+same identifiers, so they are Ruff's own.
 
 ## Ruff quirks it absorbs
 
