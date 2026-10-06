@@ -103,10 +103,10 @@ git push --force-with-lease
 
 CI (`.github/workflows/premerge.yaml`) runs on every pull request and every push to `main`, and
 every job must pass before merging: the repository hygiene check, the action-pin check, the
-sign-off check (pull requests only), rustfmt, clippy, the verification tools install, the
-tests on Linux and macOS, and the real-world corpus fetch.  `.github/workflows/package.yaml` also runs on every pull request and
-must pass: it builds the Linux package for amd64 and arm64 and checks it with lintian - see
-[architecture/release.md](architecture/release.md).
+sign-off check (pull requests only), rustfmt, clippy, the verification tools install, the tests
+on Linux and macOS, and the real-world corpus fetch.  `.github/workflows/package.yaml` also runs
+on every pull request and must pass: it builds the Linux package for amd64 and arm64 and checks
+it with lintian - see [architecture/release.md](architecture/release.md).
 
 Keep pull requests focused: one logical change per pull request is easier to review than a
 bundle of unrelated fixes.  A change that alters behaviour carries its tests and its

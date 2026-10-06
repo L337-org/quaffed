@@ -103,9 +103,18 @@ def fetch(name, source, dest):
         # The new tree replaces any old one only once it is complete, and by renames alone: the
         # old tree is moved into the scratch directory, which is deleted with it, so no moment
         # leaves a partly deleted tree that still carries its stamp.
+        previous = scratch / "previous"
         if target.exists():
-            os.replace(target, scratch / "previous")
-        os.replace(staging, target)
+            os.replace(target, previous)
+        try:
+            os.replace(staging, target)
+        except OSError as err:
+            # Put the previous tree back, so a failed refetch never loses it.
+            if previous.exists():
+                os.replace(previous, target)
+            raise FetchError(
+                f"moving the fetched tree for {name!r} into {str(target)!r}: {err}"
+            ) from err
     report(name, source, target)
 
 

@@ -123,14 +123,15 @@ python3.14 scripts/fetch-corpus     # into target/corpus/cpython/
 ```
 
 **One command, run with the oracle's Python**; any other version, or a Python that is not
-CPython, stops it, naming the one it needs.  It downloads the archive and refuses it unless the SHA-256 matches, extracts only the
-named path with Python's `data` filter - which refuses any member that would land outside the
-directory, by an absolute path, `..` or a link - and runs the oracle over every `.py` file.  It
-writes `refused.txt` beside the files, one line per refused file with the oracle's reason, and
-prints the counts and the refused files.  At `v3.14.8` that is 1150 files, 1146 accepted, and
-four refused, all encoding or tokenizer failures in `Lib/test/tokenizedata/`.  **Nothing is
-filtered out**: every file stays in the tree, and a refused one is listed, so a consumer must
-expect the oracle's refusal of exactly those files rather than skip them.
+CPython, stops it, naming the one it needs.  It downloads the archive and refuses it unless the
+SHA-256 matches, extracts only the named path with Python's `data` filter - which refuses any
+member that would land outside the directory, by an absolute path, `..` or a link - and runs the
+oracle over every `.py` file.  It writes `refused.txt` beside the files, one line per refused
+file with the oracle's reason, and prints the counts and the refused files.  At `v3.14.8` that is
+1150 files, 1146 accepted, and four refused, all encoding or tokenizer failures in
+`Lib/test/tokenizedata/`.  **Nothing is filtered out**: every file stays in the tree, and a
+refused one is listed, so a consumer must expect the oracle's refusal of exactly those files
+rather than skip them.
 
 The tree replaces an earlier one only once it is complete, by renames alone, so an interrupted
 run never leaves a partly replaced tree that looks finished; a failed refetch keeps the
