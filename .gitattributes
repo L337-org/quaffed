@@ -1,0 +1,3 @@
+# The synthetic corpus keeps its exact bytes: mixed line endings, a byte-order mark and tabs
+# are what it is there to test, so git must never normalise them.
+corpus/synthetic/** -text

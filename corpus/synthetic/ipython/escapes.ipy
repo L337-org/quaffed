@@ -1,0 +1,12 @@
+# IPython's escape commands, which are not Python: IPython and Jupyter notebooks run them before
+# handing the rest of the cell to Python.  Ruff parses them only in its IPython mode.
+%timeit sum(range(100))
+!pip list
+!!ls -la
+files = !ls
+?len
+len??
+%matplotlib inline
+current = %pwd
+/print "auto parentheses"
+value = sum(range(10))
