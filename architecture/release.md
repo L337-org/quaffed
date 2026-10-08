@@ -10,17 +10,17 @@ nothing else.  There is no man page.
 
 **The binary is static musl with mimalloc as its global allocator.**  A glibc build needs
 `GLIBC_2.34`, so it does not run on older distributions such as Debian 11 or Ubuntu 20.04, while a
-static musl build runs on all of them.  musl's own allocator makes parsing markedly slower than
+static musl build runs on those as well.  musl's own allocator makes parsing markedly slower than
 glibc's; mimalloc more than recovers that, at the cost of a higher peak memory.  mimalloc is a
 dependency only for musl targets, so macOS and glibc builds keep the platform allocator.
 
 **The `dist` profile** - release optimisation, thin LTO, one codegen unit, symbols stripped - is
-what the package is built with.  Those are the settings the measurements were taken with; they
-are a separate profile so that a developer's `--release` build stays quick to link.
+what the package is built with.  It is a separate profile so that a developer's `--release` build
+stays quick to link.
 
 **Building it needs a musl C compiler**, because mimalloc is C.  Without `musl-tools` the build
-fails with *"failed to find tool "x86_64-linux-musl-gcc""*.  The spike found Ruff's parser needs
-one too, through `stacker` and `psm`'s assembly, so the requirement stays when that arrives.
+fails with *"failed to find tool "x86_64-linux-musl-gcc""*.  Ruff's parser needs one as well,
+through `stacker` and `psm`'s assembly, so this stays a requirement whatever happens to mimalloc.
 
 **The copyright file is hand-written**, in Debian's machine-readable format, and names everything
 linked into the binary with its copyright and licence, because the binary distributes it.
