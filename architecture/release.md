@@ -43,14 +43,13 @@ scripts/build-deb arm64     # on an arm64 Linux machine
 ```
 
 Each architecture is built on a machine of that architecture; the script refuses otherwise.  The
-package lands in `target/deb/`, with lintian's full output beside it.  Package timestamps come
-from the commit, so two builds of one commit in the same environment give the same bytes - shown
-twice for each architecture in one container - and a re-run of a release relies on that to tell
-an identical asset from a different one.  **The environment is only partly pinned**: Rust is, by
-`rust-toolchain.toml`, but the C compiler that builds mimalloc comes from the runner image's
-`musl-tools` and gcc, which GitHub updates.  So a re-run after an image update can rebuild a
-package that differs from one already attached with nothing wrong; the attach step stops rather
-than replace it, and says so.
+package lands in `target/deb/`, with lintian's full output beside it.  Package timestamps come from
+the commit, so two builds of one commit in the same environment give the same bytes, and a re-run of
+a release relies on that to tell an identical asset from a different one.  **The environment is only
+partly pinned**: Rust is, by `rust-toolchain.toml`, but the C compiler that builds mimalloc comes
+from the runner image's `musl-tools` and gcc, which GitHub updates.  So a re-run after an image
+update can rebuild a package that differs from one already attached with nothing wrong; the attach
+step stops rather than replace it, and says so.
 
 **lintian is a gate.**  The script accepts exactly two findings and fails on any other, so a new
 one is seen rather than buried:
@@ -69,8 +68,8 @@ MVP: its package is for trying quaff out in a container, not held to Debian poli
 
 ## CI
 
-`.github/workflows/package.yaml` builds both packages on every pull request - `amd64` on
-`ubuntu-24.04`, `arm64` natively on `ubuntu-24.04-arm` - and keeps each package and its lintian
+`.github/workflows/package.yaml` builds both packages on every pull request, each natively
+on a runner of its own architecture, and keeps each package and its lintian
 output as a workflow artefact, so a change that breaks packaging fails where it is made.  Its jobs,
 *Debian package (amd64)* and *Debian package (arm64)*, are meant to be required status checks.
 
@@ -102,8 +101,5 @@ nothing.  It:
    preflight reads the pre-release flag from the release itself, so ticking it and re-running is
    enough.  If the cause is a defect, fix it and release a new version - a published package is
    never replaced.
-5. **At the first release**, change the README's *Installing* section, which says there is no
-   release yet, to point at the release's packages.
 
-**Not automated yet:** a failed release run reaches nobody except whoever is watching.  Reporting
-unattended failures to the project's chat channel is its own piece of work.
+**Accepted limitation:** a failed release run reaches nobody except whoever is watching.

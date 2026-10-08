@@ -2,7 +2,7 @@
 resolver = "3"
 members = ["crates/*"]
 
-# The one place the version is declared (NP.7.1).  Every member inherits it with
+# The one place the version is declared.  Every member inherits it with
 # `version.workspace = true`, so there is nothing to keep in agreement.
 [workspace.package]
 version = "0.1.0"

@@ -609,7 +609,7 @@ fn no_workflow_installs_a_tool_or_names_a_version() {
     let mut files = Vec::new();
     yaml_files_under(&root.join(".github/workflows"), &mut files);
     yaml_files_under(&root.join(".github/actions"), &mut files);
-    // Finding nothing would pass having checked nothing (VE.2.4).
+    // Finding nothing would pass having checked nothing.
     assert!(
         files.iter().any(|f| f.ends_with("premerge.yaml")),
         "the scan did not find .github/workflows/premerge.yaml, so it checked nothing"

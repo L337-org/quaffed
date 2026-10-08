@@ -3,8 +3,7 @@
 How the Cargo workspace is laid out, what pins what, and the conventions that are enforced
 mechanically.  What each member does is specified in its own note: textual search in
 `search.md`, the operation representation in `representation.md`, the script language in
-`script.md`, and the Python adapter in `python.md`.  The rest of the engine -
-language modules, the journal - is not written here yet, because it is not built.
+`script.md`, and the Python adapter in `python.md`.
 
 ## Layout
 
@@ -52,7 +51,7 @@ Declared once, in `[workspace.package]` in the root `Cargo.toml`.  Members read 
 `version.workspace = true`; code reads it with `env!("CARGO_PKG_VERSION")`.  Nothing else may
 state it.  It names the release the work in progress is for, not the last one shipped: it is
 bumped when work for a new release starts, so everything built along the way already carries
-the version it will ship as.  Nothing has been released yet.
+the version it will ship as.
 
 ## The toolchain
 
@@ -66,8 +65,8 @@ matches the pin and misleading once it does not, so contributors building withou
 should check `rustc --version` against the file after either one moves.
 
 `rust-version` in `[workspace.package]` is the minimum supported Rust version, which is a
-different claim from the pinned toolchain.  It is set to the pinned minor version and nothing
-tests an older one yet.
+different claim from the pinned toolchain.  It is the pinned minor version, because no older one
+is tested.
 
 ## Lints and formatting
 
@@ -100,18 +99,8 @@ files at all, so a broken walk cannot pass by checking nothing.
 
 ## CI
 
-`.github/workflows/premerge.yaml` runs on every pull request and every push to `main`:
-
-| job | checks |
-|---|---|
-| Repository hygiene | the organisation-wide conventions (shared) |
-| Action pins are immutable | every `uses:` names a full 40-hex commit SHA (shared) |
-| Commits are signed off | every non-merge commit has a `Signed-off-by` for its author, Dependabot's included (pull requests only) |
-| rustfmt | `cargo fmt --all -- --check` |
-| clippy | `cargo clippy --all-targets --locked -- -D warnings` |
-| Verification tools install | every cargo tool in `tools.toml` builds at its pin (cached; see `verification.md`) |
-| Test | `cargo test --workspace --locked`, then the snapshot check (see `verification.md`), on Linux and macOS |
-| Real-world corpus | with the oracle's Python, `scripts/check-synthetic`, then `scripts/fetch-corpus`: the synthetic corpus is valid Python, and the pinned archive fetches, matches its hash, and is judged file by file (see `verification.md`) |
+`.github/workflows/premerge.yaml` runs on every pull request and every push to `main`; each job's
+name and comments say what it checks.
 
 `.github/workflows/package.yaml` also runs on every pull request, building the Linux package for
 each architecture; `architecture/release.md` describes it and the release workflow.

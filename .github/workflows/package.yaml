@@ -29,8 +29,7 @@ jobs:
           - arch: arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
-    # A cold musl build with thin LTO took under a minute in a container locally; installing
-    # lintian takes longer than that.  Generous against both.
+    # Covers a cold musl build with thin LTO plus installing lintian, generously.
     timeout-minutes: 30
     steps:
       - name: Check out source repository

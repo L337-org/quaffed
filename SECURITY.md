@@ -9,7 +9,7 @@ than filing a public issue.  That keeps the discussion private until a fix is av
 
 ## Supported versions
 
-There is no release yet.  Once there is, fixes go into the latest release only.
+Fixes go into the latest release only.
 
 ## Scope
 

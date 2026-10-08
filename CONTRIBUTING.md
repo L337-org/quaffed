@@ -5,10 +5,8 @@ Contributions are welcome.  By participating, you are expected to uphold the
 
 ## Before you start
 
-**The design is not settled, and only textual search and textual scripts are implemented.**
-Until it settles, the most useful contribution is discussion rather than code: open an issue
-before starting anything beyond a small fix, so the approach can be agreed before you invest
-time in it.
+**Open an issue before starting anything beyond a small fix**, so the approach can be agreed
+before you invest time in it.
 
 `AGENTS.md` in the repository root is the always-loaded brief for every assistant, and the map
 of everything else: it carries the conventions and a table pointing at the deeper notes.  Those
@@ -101,12 +99,10 @@ git push --force-with-lease
 
 ## Submitting your change
 
-CI (`.github/workflows/premerge.yaml`) runs on every pull request and every push to `main`, and
-every job must pass before merging: the repository hygiene check, the action-pin check, the
-sign-off check (pull requests only), rustfmt, clippy, the verification tools install, the tests
-on Linux and macOS, and the real-world corpus fetch.  `.github/workflows/package.yaml` also runs
-on every pull request and must pass: it builds the Linux package for amd64 and arm64 and checks
-it with lintian - see [architecture/release.md](architecture/release.md).
+CI (`.github/workflows/premerge.yaml`) and `.github/workflows/package.yaml` run on every pull
+request, and every job in them must pass before merging - see
+[architecture/workspace.md](architecture/workspace.md) and
+[architecture/release.md](architecture/release.md).
 
 Keep pull requests focused: one logical change per pull request is easier to review than a
 bundle of unrelated fixes.  A change that alters behaviour carries its tests and its

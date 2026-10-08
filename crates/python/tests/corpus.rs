@@ -1,8 +1,8 @@
 //! The synthetic corpus covers Python's whole grammar, as the pinned Ruff knows it.
 //!
-//! The corpus, under `corpus/synthetic/` at the workspace root, is the input the invariant
-//! harness, the budgets and the benchmarks will measure, so a construct missing from it is a
-//! construct none of them checks.  This test parses every file - `modules/*.py` as modules,
+//! The corpus, under `corpus/synthetic/` at the workspace root, is the primary input
+//! to any invariant harness, budget or benchmark, so a construct missing from it is a construct
+//! none of them checks.  This test parses every file - `modules/*.py` as modules,
 //! `expressions/*.pyexpr` as single expressions, `ipython/*.ipy` as `IPython` source - and
 //! fails naming each kind of node that no file contains.  `architecture/verification.md` says
 //! how to add to the corpus.
@@ -81,7 +81,7 @@ fn parsed(path: &Path, parse: Parser) -> BTreeSet<Kind> {
     let text = String::from_utf8(bytes)
         .unwrap_or_else(|err| panic!("{} is not UTF-8: {err}", path.display()));
     // A byte-order mark is the file's encoding declaration, not source; CPython strips it before
-    // parsing, and so will the front end.
+    // parsing.
     let source = text.strip_prefix('\u{feff}').unwrap_or(&text);
     parse(source).unwrap_or_else(|err| panic!("parsing {}: {err}", path.display()))
 }
