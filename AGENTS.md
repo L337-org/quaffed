@@ -22,13 +22,11 @@ still being settled.
   its specification lands in `architecture/` in the same change as the code, and that is what
   to build against.
 
-## This repository will be public
+## This repository is public
 
-It is private today and will be made public before the first release, so everything
-committed now becomes public history.  **Treat it as public already:** no tracker issue key
-and no link into the internal wiki or tracker in code, documentation, a commit message or a
-pull request description.  Describe the work instead.  The shared hygiene check that CI runs
-fails on either.
+Everything committed becomes public history, so: no tracker issue key and no link into the internal
+wiki or tracker in code, documentation, a commit message or a pull request description.  Describe
+the work instead.  The shared hygiene check that CI runs fails on either.
 
 ## Read these before changing the matching area
 

@@ -1,8 +1,7 @@
 # Verification
 
 How quaffed's own behaviour is verified, and how the verification tooling is pinned and
-installed.  This note grows as the verification infrastructure lands; for now it covers the
-end-to-end tests, the two Python corpora and the tool manifest.
+installed.
 
 ## End-to-end tests and snapshots
 

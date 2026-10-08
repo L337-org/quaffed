@@ -1,22 +1,18 @@
 # The Linux package and releasing
 
-How the `.deb` is built, what is in it and why, and how a release is published.  For now the
-package is the only thing a release ships: a `.deb` for `amd64` and `arm64`, attached to a GitHub
-release marked as a pre-release, and in no APT repository.
+How the `.deb` is built, what is in it and why, and how a release is published.  A release ships
+a `.deb` for `amd64` and `arm64`, attached to a GitHub release and in no APT repository.
 
 ## What is in the package
 
 `quaffed_<version>_<arch>.deb` installs `/usr/bin/quaff`, a copyright file and a changelog, and
 nothing else.  There is no man page.
 
-**The binary is static musl with mimalloc as its global allocator.**  Measured on Debian 11, 12
-and 13 and Ubuntu 20.04, 22.04, 24.04 and 26.04 on both architectures, a glibc build did not run on
-Debian 11 or Ubuntu 20.04 - it needs `GLIBC_2.34` whether built on Debian 12 or 13 - while a
-static musl build ran on all seven.  On the static-linking spike's workload - Ruff's Python parser
-over CPython's test suite, which quaffed does not yet contain - musl's own allocator parsed 14%
-slower than glibc on arm64 and about 75% slower on amd64, and mimalloc parsed 14-17% faster than
-glibc on both, at the cost of peak memory (17-27 MB against 7-9 MB).  mimalloc is a dependency
-only for musl targets, so macOS and glibc builds keep the platform allocator.
+**The binary is static musl with mimalloc as its global allocator.**  A glibc build needs
+`GLIBC_2.34`, so it does not run on older distributions such as Debian 11 or Ubuntu 20.04, while a
+static musl build runs on all of them.  musl's own allocator makes parsing markedly slower than
+glibc's; mimalloc more than recovers that, at the cost of a higher peak memory.  mimalloc is a
+dependency only for musl targets, so macOS and glibc builds keep the platform allocator.
 
 **The `dist` profile** - release optimisation, thin LTO, one codegen unit, symbols stripped - is
 what the package is built with.  Those are the settings the measurements were taken with; they
@@ -64,13 +60,12 @@ one is seen rather than buried:
 | no man page | `W: no-manual-page` | `W: no-manual-page` |
 | the static binary | `W: shared-library-lacks-prerequisites` | `E: statically-linked-binary` |
 
-The static-binary finding differs because Rust builds a **static PIE** for `x86_64` musl - an ELF
-of type `DYN` with no `NEEDED` entries, which keeps address-space randomisation - and a non-PIE
-static executable, type `EXEC`, for `aarch64` musl.  lintian 2.122.0 (Debian 13) and 2.117.0
-(Ubuntu 24.04, as on the CI runners) both read the first as a shared library with no
+The static-binary finding differs because Rust builds a **static PIE** for `x86_64` musl - an ELF of
+type `DYN` with no `NEEDED` entries, which keeps address-space randomisation - and a non-PIE static
+executable, type `EXEC`, for `aarch64` musl.  lintian reads the first as a shared library with no
 prerequisites.  A non-PIE amd64 build draws `statically-linked-binary` like arm64's, but gives up
-address-space randomisation to do so.  Both findings, and the missing man page, are accepted for
-the MVP: its package is for trying quaff out in a container, not held to Debian policy.
+address-space randomisation to do so.  Both findings, and the missing man page, are accepted for the
+MVP: its package is for trying quaff out in a container, not held to Debian policy.
 
 ## CI
 
