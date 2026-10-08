@@ -1,8 +1,7 @@
 # Verification
 
 How quaffed's own behaviour is verified, and how the verification tooling is pinned and
-installed.  This note grows as the verification infrastructure lands; for now it covers the
-end-to-end tests, the two Python corpora and the tool manifest.
+installed.
 
 ## End-to-end tests and snapshots
 
@@ -54,8 +53,8 @@ cargo, whatever its help says, so it cannot take `--locked`.
 ## The synthetic corpus
 
 `corpus/synthetic/` is Python written to contain every construct quaff's Python front end must
-handle.  It is the primary input to the invariant harness, the budgets and the benchmarks as
-they land, and it is checked in, so it needs no fetching and carries no third-party licence.
+handle.  It is the primary input to any invariant harness, budget or benchmark, and it is
+checked in, so it needs no fetching and carries no third-party licence.
 
 - **`modules/*.py`** are parsed as modules: a file's worth of statements.  Each file has a
   theme - statements, expressions, strings, match patterns, type parameters, non-ASCII text,
@@ -145,10 +144,9 @@ running the oracle, so it is generated with the files rather than kept in step b
 
 ### In CI
 
-The **Real-world corpus** job reads the oracle's version from the manifest, installs that Python
-with `actions/setup-python`, runs `scripts/check-synthetic`, restores `target/corpus` from a
-cache keyed on the manifest and the script, and runs
-`scripts/fetch-corpus`.  `crates/quaffed/tests/fetch_corpus.rs` tests the fetch script itself in
+The **Real-world corpus** job in `premerge.yaml` runs `scripts/check-synthetic` and
+`scripts/fetch-corpus` with the oracle's Python, reusing a fetch whose manifest and script are
+unchanged.  `crates/quaffed/tests/fetch_corpus.rs` tests the fetch script itself in
 the ordinary run, against small archives it builds: only the path is extracted, a changed hash
 is refused, a member with a `..` step or a link escaping the directory is refused, the floor
 fails saying how many it read, another Python is refused, a completed fetch is reused, a changed
@@ -228,7 +226,7 @@ that provides `cargo flamegraph`.
   runner's or contributor's package manager.
 - **A nightly that can be scoped by directory** is pinned in that directory's
   `rust-toolchain.toml` and installed with `rustup toolchain install` run from there, so it has
-  one copy.  The fuzz targets' nightly is to be pinned that way, in `fuzz/rust-toolchain.toml`.
+  one copy.
   `[toolchain]` is for a nightly that cannot be scoped, such as coverage's, which instruments
   the whole workspace.
 
@@ -267,8 +265,8 @@ A job installs what it uses with the local action, and nothing else:
 
 The action installs cargo tools into `~/.quaffed-tools`, caches that directory and puts its
 `bin` on `PATH`.  The cache key carries a hash of `tools.toml`, so a changed pin misses and builds
-- from source, at one to two minutes a tool - while an unchanged tool is restored from an older
-entry and skipped.  Toolchains are not cached; rustup installs a nightly in about half a minute.
+from source, while an unchanged tool is restored from an older entry and skipped.  Toolchains are
+not cached; rustup installs a nightly quickly.
 
 The **Verification tools install** job in `premerge.yaml` installs every `[cargo-install]` entry
 that way on Linux and checks each pinned version against cargo's own record of the install.  It

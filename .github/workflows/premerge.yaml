@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 # Every Rust job installs the toolchain from rust-toolchain.toml with `rustup toolchain install`
-# and no arguments, so no version is named here (DS.2.2).  The explicit step matters: rustup
+# and no arguments, so no version is named here.  The explicit step matters: rustup
 # 1.28.0 stopped installing the active toolchain implicitly, and 1.28.1 restored it only as an
 # overridable default, so relying on the implicit install depends on the runner image.
 
@@ -27,7 +27,7 @@ jobs:
     # shared workflows repository at the commit pinned here.
     runs-on: [ubuntu-latest]
     name: Repository hygiene
-    # Seconds in the other repositories that carry it - a git listing, a YAML parse and regexes.
+    # A git listing, a YAML parse and regexes: no build and no network.
     timeout-minutes: 5
     steps:
       - name: Check out source repository
@@ -74,8 +74,7 @@ jobs:
         # The sign-off is matched on the author's email, ignoring case, as people type their
         # address both ways.  Dependabot is the one exception: it authors under its noreply
         # address but signs off as support@github.com, so for that author only, that sign-off
-        # is the one expected.  Seen on its pull requests in this organisation; without it every
-        # dependency update would fail here.
+        # is the one expected; without it every dependency update would fail here.
         # The pull request's commits are those not on the base branch as fetched now, as well as
         # not at base.sha: base.sha can predate an "Update branch" merge, and main's own squash
         # commits would then be counted, and fail for the reason above.  Each step
@@ -146,7 +145,7 @@ jobs:
     # them (--cargo).
     runs-on: [ubuntu-latest]
     name: Verification tools install
-    # About 80 s a tool from cold in a local Linux container; a handful of tools, with headroom.
+    # Enough for a cold build of every cargo tool in tools.toml, with headroom.
     timeout-minutes: 30
     steps:
       - name: Check out source repository

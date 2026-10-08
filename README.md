@@ -9,13 +9,11 @@ The binary is `quaff`, so you quaff a file, or quaff every file in a repository.
 
 ## Status
 
-**Pre-release.**  Textual search across a project is built, and so are scripts of textual
-searches and assertions; structural search and edits are not, and the design is still being
-settled.
+**Pre-release.**
 
 ## Installing
 
-There is no release yet.  Homebrew and APT packages for macOS and Linux are planned.
+Packages are attached to each [GitHub release](https://github.com/L337-org/quaffed/releases).
 
 ## Building from source
 

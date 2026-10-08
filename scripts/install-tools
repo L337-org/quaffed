@@ -73,7 +73,7 @@ install_cargo_tool() {
     local name="$1" version="$2"
     command -v cargo >/dev/null || die "installing $name $version needs cargo, which is not on PATH"
     printf 'install-tools: %s %s\n' "$name" "$version" >&2
-    # --locked builds with the crate's own lock file, as the spikes measured it.  An exact
+    # --locked builds with the crate's own lock file, as its authors tested it.  An exact
     # requirement, because a bare version is a caret requirement to cargo install.  cargo skips
     # a crate already installed at that version, so a warm cache costs an index lookup.
     local status=0

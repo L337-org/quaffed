@@ -2,11 +2,11 @@ name: 'Install verification tools'
 description: 'Install tools pinned in tools.toml through scripts/install-tools, with the cargo-installed ones cached.'
 
 # A job that needs a tool installs it with this action and nothing else, so the version comes from
-# tools.toml.  Cargo tools build from source, at one to two minutes each, so they are installed
+# tools.toml.  Cargo tools build from source, so they are installed
 # into a directory of their own and cached; the key carries a hash of tools.toml, so a changed pin
 # misses the cache and builds.  The prefix restore lets an unchanged tool come back from an older
 # entry, and `cargo install` skips a crate already installed at the pinned version.  Nightly
-# toolchains are not cached: rustup installs one in about half a minute.
+# toolchains are not cached: rustup installs one quickly.
 inputs:
   tools:
     description: 'Arguments for scripts/install-tools: names from tools.toml, or --cargo, or --all.'

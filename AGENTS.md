@@ -10,25 +10,20 @@ It is written in Rust and licensed GPL-3.0-or-later.
 
 ## Status
 
-**Textual search and textual scripts are built; nothing else is yet.**  `quaff TEXT [PATH]`,
-`-s TEXT`, and scripts from `-e` and `-f` of `find` statements, with or without an `expect`,
-search a project.  `architecture/search.md` specifies the command line, the search and the exit
-codes as built; `architecture/representation.md` the operation representation scripts are
-parsed into; `architecture/script.md` the script language.  Structural search, the `in` and
-`where` clauses, and edits parse but are refused as not built yet, and the rest of the design is
-still being settled.
+What is built is specified in `architecture/`: `architecture/search.md` the command line, the
+search and the exit codes; `architecture/representation.md` the operation representation scripts
+are parsed into; `architecture/script.md` the script language.  A construct that parses but is
+not built is refused with exit 5, and those pages list which.
 
 - **Do not implement features from a recollection of the design.**  When a piece of it settles,
   its specification lands in `architecture/` in the same change as the code, and that is what
   to build against.
 
-## This repository will be public
+## This repository is public
 
-It is private today and will be made public before the first release, so everything
-committed now becomes public history.  **Treat it as public already:** no tracker issue key
-and no link into the internal wiki or tracker in code, documentation, a commit message or a
-pull request description.  Describe the work instead.  The shared hygiene check that CI runs
-fails on either.
+Everything committed becomes public history, so: no tracker issue key and no link into the internal
+wiki or tracker in code, documentation, a commit message or a pull request description.  Describe
+the work instead.  The shared hygiene check that CI runs fails on either.
 
 ## Read these before changing the matching area
 

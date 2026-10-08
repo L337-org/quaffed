@@ -1,4 +1,4 @@
-//! Every product source file opens with the licence header (CS.9.1, CS.9.5).
+//! Every product source file opens with the licence header.
 //!
 //! Product code means every `.rs` file under a member's `src/`.  Tests, benches and build
 //! scripts are exempt, because the header convention is "product code, not test code" and the
@@ -51,7 +51,7 @@ fn every_product_source_file_carries_the_licence_header() {
         }
     }
 
-    // A scan that found nothing would pass having checked nothing (VE.2.4).  The binary's
+    // A scan that found nothing would pass having checked nothing.  The binary's
     // own main.rs always exists, so zero means the walk is broken, not that the tree is clean.
     assert!(
         !sources.is_empty(),

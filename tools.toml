@@ -16,7 +16,7 @@ flamegraph = "0.6.14"
 cargo-fuzz = "0.13.2"
 
 # Nightly toolchains, each pinned by date and named for the one job that needs it, so no other
-# job installs it.  A nightly that can be scoped by directory, as the fuzz targets' can, is
+# job installs it.  A nightly that can be scoped by directory is
 # pinned in that directory's rust-toolchain.toml instead.
 [toolchain]
 nightly-coverage = "nightly-2026-10-01"

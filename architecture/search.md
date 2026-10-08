@@ -2,8 +2,8 @@
 
 What `quaff TEXT [PATH]`, `quaff -s TEXT [PATH]` and a script's textual `find` do, as built.
 This page also carries the command line and the exit codes as far as they exist; the script
-language itself is `script.md`.  Structural search and edits are not built; when they land,
-their specifications join this one rather than replacing it.
+language itself is `script.md`.  Specifications of further kinds of search join this page rather
+than replacing it.
 
 ## The command line
 
@@ -109,12 +109,11 @@ a CRLF file as it answers the same file with LF endings.
 **Memory.**  A file is read whole, and positions are worked out in one pass over its
 characters that keeps only the current line and column and stops at the last match, so a search
 needs about the size of the largest file it reads.  No size limit is applied.  Python's
-encoding declarations are not read yet; when the Python front end decodes them, textual search
-should take a Python file's encoding from there too.
+encoding declarations are not read.
 
 ## Output
 
-One line per match on standard output, textual and structural alike when structural arrives:
+One line per match on standard output:
 
 ```
 src/app.py:12:5-12:22: def connect(self):
@@ -166,7 +165,7 @@ run stops after the block, exit 2, and nothing after it runs.
 
 **An assertion whose scope holds a file its query could not be searched in** is decided only
 where no number of matches in those files could change it, since they can only add matches.
-Today that is a non-ASCII query and a file in an unknown 8-bit encoding.
+That is the case for a non-ASCII query and a file in an unknown 8-bit encoding.
 - **Settled by what was found, held:** `at least N` with N already found, or `any`.  It passes,
   and a note names the unsearched files.
 - **Settled by what was found, failed:** `none`, `at most N`, `exactly N` or `N or none` with

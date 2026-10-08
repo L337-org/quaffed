@@ -32,8 +32,8 @@ cd "$root"
 for tool in cargo dpkg dpkg-deb lintian readelf gzip; do
     command -v "$tool" >/dev/null || die "$tool is not on PATH; see architecture/release.md for what a package build needs"
 done
-# Building natively is what was measured, and it means the same script runs on a contributor's
-# machine as on the runner; a cross build would need a second toolchain nobody has tested.
+# Building natively means the same script runs on a contributor's machine as on the runner; a
+# cross build would need a second toolchain.
 host="$(dpkg --print-architecture)"
 [[ "$host" == "$arch" ]] || die "building $arch on a $host host; build each architecture on its own (arm64 on an arm64 machine)"
 command -v musl-gcc >/dev/null ||
@@ -102,9 +102,9 @@ dpkg-deb --root-owner-group --build "$tree" "$out/$name.deb" >&2
 # anything else, so a new finding is seen rather than buried.  no-manual-page: the man page is
 # out of scope.  The second describes the static binary, and depends on the architecture,
 # because Rust builds a static PIE (ELF type DYN, keeping address-space randomisation) for
-# x86_64 musl but a non-PIE static executable (type EXEC) for aarch64 musl.  lintian 2.122 calls
-# the first shared-library-lacks-prerequisites and the second statically-linked-binary, which is
-# the finding the static-linking spike recorded, on arm64.  architecture/release.md has more.
+# x86_64 musl but a non-PIE static executable (type EXEC) for aarch64 musl.  lintian calls
+# the first shared-library-lacks-prerequisites and the second statically-linked-binary.
+# architecture/release.md has more.
 case "$arch" in
     amd64) static_finding=shared-library-lacks-prerequisites ;;
     arm64) static_finding=statically-linked-binary ;;
