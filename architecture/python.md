@@ -18,6 +18,9 @@ Ruff warns "will have frequent breaking changes", is absorbed here and reaches n
 - **`Kind`**: a kind, by the name Ruff gives it - `StmtFunctionDef`, `ExprCall` - so nothing
   outside the adapter sees Ruff's own enum.
 
+It takes source as text.  Decoding a file is `quaffed-encoding`'s (`encoding.md`), so that the
+adapter and a textual search read a file's bytes the same way, as CPython does.
+
 ## The kind list is held to Ruff's enum by the compiler
 
 Ruff's `NodeKind` offers no list of its variants, so the list is written once in

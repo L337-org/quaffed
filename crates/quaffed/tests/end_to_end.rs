@@ -521,6 +521,48 @@ fn files_are_searched_in_their_own_encoding() {
 }
 
 #[test]
+fn python_files_are_searched_in_the_encoding_they_declare() {
+    let mut project = Project::new(&[(".git/HEAD", "")]);
+    project.add_bytes(
+        "latin1.py",
+        b"# -*- coding: latin-1 -*-\nname = 'caf\xe9'\n",
+    );
+    // The same bytes, but not Python: nothing is declared, so an unknown 8-bit encoding.
+    project.add_bytes(
+        "latin1.txt",
+        b"# -*- coding: latin-1 -*-\nname = 'caf\xe9'\n",
+    );
+    // Declared on the second line, after a blank or comment first line, as Python allows.
+    project.add_bytes(
+        "koi8.py",
+        b"#!/usr/bin/env python\n# coding: koi8-r\ngreeting = '\xd0\xd2\xc9\xd7\xc5\xd4'\n",
+    );
+    // mac_arabic spells the space two ways, so a query with a space has no one spelling there.
+    project.add_bytes("arabic.py", b"# coding: mac-arabic\nx = 1\n");
+    assert_quaff_snapshot!(project.quaff(&["caf\u{e9}"]));
+    assert_quaff_snapshot!(project.quaff(&["\u{43f}\u{440}\u{438}\u{432}\u{435}\u{442}"]));
+    assert_quaff_snapshot!(project.quaff(&["x = 1"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_python_file_python_would_not_read_is_not_searched_and_the_run_says_so() {
+    let mut project = Project::new(&[(".git/HEAD", ""), ("good.py", "# TODO\n")]);
+    // An encoding Python does not know, as in CPython's tokenizedata/bad_coding.py.
+    project.add_bytes("unknown.py", b"# -*- coding: uft-8 -*-\n# TODO\n");
+    // A byte-order mark and a declaration of anything but UTF-8, as in bad_coding2.py.
+    project.add_bytes("marked.py", b"\xef\xbb\xbf# coding: latin-1\n# TODO\n");
+    // An encoding Python reads and quaff does not yet.
+    project.add_bytes("japanese.py", b"# coding: shift_jis\n# TODO\n");
+    assert_quaff_snapshot!(project.quaff(&["TODO"]));
+    // Unread files could hold more, so a count they could change cannot be checked.
+    assert_quaff_snapshot!(project.quaff(&["-e", "find \"TODO\" expect 1"]));
+    // One already found settles `at least 1` whatever they hold.
+    assert_quaff_snapshot!(project.quaff(&["-e", "find \"TODO\" expect at least 1"]));
+    project.assert_unchanged();
+}
+
+#[test]
 fn symbolic_links_are_not_followed_and_the_run_says_so() {
     let mut project = Project::new(PROJECT);
     std::os::unix::fs::symlink("app.py", project.dir.join("link.py")).expect("making a link");

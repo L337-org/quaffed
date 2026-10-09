@@ -1,0 +1,17 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+assertion_line: 557
+info:
+  program: quaff
+  args:
+    - TODO
+---
+success: true
+exit_code: 0
+----- stdout -----
+good.py:1:3-1:6: TODO
+
+----- stderr -----
+quaff: "japanese.py" not searched: line 1 declares the encoding "shift_jis", which Python reads but quaff does not yet: quaff reads UTF-8 and single-byte encodings
+quaff: "marked.py" not searched: it starts with a UTF-8 byte-order mark, but line 1 declares the encoding "latin-1"; with a mark, Python accepts only a declaration of "utf-8"
+quaff: "unknown.py" not searched: line 1 declares the encoding "uft-8", which Python does not know

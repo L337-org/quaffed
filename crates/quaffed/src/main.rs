@@ -10,7 +10,6 @@
 
 mod cli;
 mod discover;
-mod encoding;
 mod output;
 mod project;
 mod run;

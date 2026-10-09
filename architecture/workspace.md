@@ -2,8 +2,8 @@
 
 How the Cargo workspace is laid out, what pins what, and the conventions that are enforced
 mechanically.  What each member does is specified in its own note: textual search in
-`search.md`, the operation representation in `representation.md`, the script language in
-`script.md`, and the Python adapter in `python.md`.
+`search.md`, encodings in `encoding.md`, the operation representation in `representation.md`,
+the script language in `script.md`, and the Python adapter in `python.md`.
 
 ## Layout
 
@@ -20,11 +20,13 @@ mechanically.  What each member does is specified in its own note: textual searc
 │   ├── build-deb         # builds the Linux package; see release.md
 │   ├── fetch-corpus      # fetches the real-world corpus and runs the oracle; see verification.md
 │   ├── check-synthetic   # the oracle over the synthetic corpus; see verification.md
+│   ├── generate-codecs   # the codec tables, from the oracle's own codecs; see encoding.md
 │   └── workspace-version # prints the declared version; see release.md
 ├── crates/
 │   ├── quaffed/          # builds the `quaff` binary
 │   │   ├── src/          # main.rs, and one module per concern; see search.md
 │   │   └── tests/        # integration tests, one file per concern
+│   ├── encoding/         # quaffed-encoding: what a file's bytes are, Python's declared encodings; see encoding.md
 │   ├── python/           # quaffed-python: the Python adapter, the only crate naming Ruff; see python.md
 │   ├── representation/   # quaffed-representation: what a program means; see representation.md
 │   └── script/           # quaffed-script: the script language, text to program; see script.md
@@ -35,7 +37,10 @@ mechanically.  What each member does is specified in its own note: textual searc
 ```
 
 **The members.**  `quaffed` builds the `quaff` binary, matching the name decision.
-`quaffed-representation` is the operation representation, a crate of its own so that its
+`quaffed-encoding` decides what a file's bytes are and reads Python's declared encodings, a
+crate of its own so that the binary can read them without linking the Python adapter, and Ruff
+with it, and the adapter can take text decoded the same way.  `quaffed-representation` is the
+operation representation, a crate of its own so that its
 lint configuration - no hash maps or sets - applies to it alone, and so that it can depend on
 no parser.  `quaffed-script` parses the script language into it.  `quaffed-python` is the Python
 adapter, the one crate allowed to depend on a `ruff_*` crate, so that Ruff's API changes stop

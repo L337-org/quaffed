@@ -30,5 +30,6 @@ mimalloc = "=0.1.52"
 [dependencies]
 ignore = "=0.4.33"
 memchr = "=2.8.3"
+quaffed-encoding = { path = "../encoding" }
 quaffed-representation = { path = "../representation" }
 quaffed-script = { path = "../script" }
