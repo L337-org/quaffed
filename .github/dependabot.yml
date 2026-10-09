@@ -1,9 +1,16 @@
+# Each ecosystem's updates come as one pull request a week rather than one per dependency:
+# separate pull requests each need a rebase and a full CI run after the one before merges, and
+# a grouped one that fails is cheaper to bisect than that queue is to work through.
 version: 2
 updates:
   - package-ecosystem: "cargo"
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      cargo:
+        patterns:
+          - "*"
 
   - package-ecosystem: "github-actions"
     # "/" covers .github/workflows and a root action.yml only; the repository's own composite
