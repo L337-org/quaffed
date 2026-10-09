@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Gavin Lucas
 
+
+
 //! `quaff`, the command-line entry point.
 //!
 //! It runs textual search and the script language's textual subset:
