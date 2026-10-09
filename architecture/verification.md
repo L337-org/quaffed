@@ -194,7 +194,7 @@ When a gate flags a regression, a flamegraph shows where the time goes.  The `pr
 profile is the shipped `dist` build - thin LTO, one codegen unit - with full debug information
 and nothing stripped, so that every frame is named, inlined ones included.  It builds for the
 host, so on Linux it uses the platform allocator rather than the package's mimalloc
-(`release.md`).
+(`release.md`), unless the package's own target is given, as below.
 
 ```bash
 scripts/install-tools flamegraph    # once: cargo-flamegraph, at the manifest's version
@@ -206,6 +206,12 @@ cargo flamegraph --profile profiling --bin quaff -o target/flamegraph.svg \
   package, matching the running kernel - and Debian refuses `perf` to anyone but root by default
   (`kernel.perf_event_paranoid` is 3).  `--root` runs `perf` under `sudo` for that one recording
   and changes nothing on the machine.  Inside a container, `perf` also needs `--privileged`.
+- **To profile the package's own build** - musl, with mimalloc - add `--target
+  x86_64-unknown-linux-musl` and leave out `--bin quaff`, which `cargo flamegraph` refuses
+  alongside `--target`; the workspace has one binary, so it needs no naming.  The target needs
+  `rustup target add x86_64-unknown-linux-musl` and `musl-tools`, as the package build does.
+  mimalloc's own frames, `mi_*`, then appear, and a sample or two may be `[unknown]` directly
+  under the process rather than inside `quaff`'s code.
 - **On macOS** it records with Xcode's Time Profiler, through `xctrace`, so it needs Xcode, and
   no `sudo`.  `xctrace` has been seen to fail now and then with *"Failed stoping ktrace
   session"*, writing no SVG; it said nothing more, and the same run succeeded when repeated, so
