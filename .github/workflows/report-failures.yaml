@@ -7,6 +7,8 @@ on:
   workflow_run:
     workflows:
       - 'Check inbound changes'
+      - 'Code review'
+      - 'Package'
       - 'Release'
       - 'Deliberate scheduled failure'
     types: [completed]
@@ -20,8 +22,8 @@ permissions:
 jobs:
   slack:
     name: Report to Slack
-    uses: L337-org/github-workflows/.github/workflows/slack-on-failure.yaml@c406e0fddc7d1212c17979cfb667c7cb5d97a6a5 # v1.3.0
+    uses: L337-org/github-workflows/.github/workflows/slack-on-failure.yaml@fd692a603b2f6bb8bc73aaeaefa46c24b409705b # v1.3.1
     with:
-      events: '["schedule", "push", "release"]'
+      events: '["schedule", "push", "release", "pull_request"]'
     secrets:
       SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}

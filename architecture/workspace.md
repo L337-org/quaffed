@@ -110,9 +110,9 @@ name and comments say what it checks.
 `.github/workflows/package.yaml` also runs on every pull request, building the Linux package for
 each architecture; `architecture/release.md` describes it and the release workflow.
 
-`.github/workflows/report-failures.yaml` posts the failure of a run nobody is watching to Slack.
-Adding a workflow that runs on a schedule, a push or a release means adding it there: the
-checklist is in `architecture/verification.md`, under failed runs nobody is watching.
+`.github/workflows/report-failures.yaml` posts a failed run to Slack.  Adding a workflow that
+runs on a schedule, a push, a release or a pull request means adding it there: the checklist is
+in `architecture/verification.md`, under failed runs are posted to Slack.
 
 **Every job here is meant to be a required status check.**  Adding, renaming or removing one
 means updating the branch ruleset in the same change, or the branch waits on a check that never
