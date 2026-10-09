@@ -62,16 +62,17 @@ back the same way, mark first, so a file's own decoded text encodes to its exact
 **For a reader that tolerates bad bytes**, `declared_encoding` resolves the declaration alone and
 refuses only what no content could make readable: an unknown name, a codec not of text,
 `undefined`, an encoding quaff does not read, or a conflict with a mark.  `classify_python` uses
-it: a UTF-16 or UTF-32 mark, or a NUL in the first 8000 bytes, decides as for any file; otherwise a declaration decides,
-trusted as a byte-order mark is, so bytes it does not decode count as one character each; with
-none, the file is classified as any other.  An undeclared Python file that is not valid UTF-8
+it: a UTF-16 or UTF-32 mark, or a NUL in the first 8000 bytes, decides as for any file;
+otherwise a declaration decides, trusted as a byte-order mark is, so bytes it does not decode
+count as one character each; with none, the file is classified as any other.  An undeclared Python file that is not valid UTF-8
 stays an unknown 8-bit encoding there rather than being read as UTF-8, so that a non-ASCII query
 is reported as not searched rather than silently matching nothing.
 
 ## CPython's codecs
 
-`src/codecs.rs` is generated from the oracle by `scripts/generate-codecs`, never edited.  It
-lists every codec module of CPython's `encodings` package with its kind, every alias, and for
+`src/codecs.rs` is generated from the oracle by `scripts/generate-codecs`, never edited.  It is
+derived from CPython's own codecs, under the PSF License Version 2, which the package's copyright
+file attributes and carries.  It lists every codec module of CPython's `encodings` package with its kind, every alias, and for
 each single-byte codec what each byte decodes to.  A codec is single-byte if CPython decodes it
 from a table, or it is `ascii`, `latin_1` or `charmap`; the generator checks every such codec
 byte by byte against CPython's own decoder and refuses to write one that is not single-byte
@@ -91,8 +92,8 @@ encoding tables.
   are unknown, as they are to CPython anywhere but Windows.
 - **A few single-byte codecs spell a character more than one way**: `mac_arabic`, for
   instance, gives the space and ASCII punctuation a second byte; `src/codecs.rs` shows which by
-  a character appearing twice in a table.  Such text has no one spelling, so a search for it does not search those files
-  and says so, and `Source::encode` refuses to write it.
+  a character appearing twice in a table.  Such text has no one spelling, so a search for it
+  does not search those files and says so, and `Source::encode` refuses to write it.
 - **EBCDIC codecs** such as `cp037` decode as CPython does, which means a file declaring one is
   decoded whole in EBCDIC, its ASCII declaration line included.  CPython then fails to parse
   it, and quaff reads it as the same nonsense.
@@ -108,7 +109,9 @@ To read a new single-byte codec, or to follow a CPython release that changed one
 3. Run `cargo test -p quaffed-encoding`.  The tables must stay sorted, and every single-byte
    codec must spell CR and LF one way each, which a textual search relies on to find line
    endings.
-4. Update this page in the same change.
+4. If the tables now come from another CPython release, name it in the attribution in
+   `packaging/deb/copyright`.
+5. Update this page in the same change.
 
 ### Checklist: reading a multi-byte encoding
 
