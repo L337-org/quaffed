@@ -106,4 +106,4 @@ nothing.  It:
    enough.  If the cause is a defect, fix it and release a new version - a published package is
    never replaced.
 
-A failed release run is posted to `#quaffed` (`verification.md`, failed runs nobody is watching).
+A failed release run is posted to Slack (`verification.md`, failed runs nobody is watching).

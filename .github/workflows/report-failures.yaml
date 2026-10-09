@@ -1,8 +1,8 @@
 name: 'Report failures'
 
-# Posts a failed run of a workflow named below, started by one of the events below, to #quaffed,
-# through the shared reporter pinned here (architecture/verification.md).  GitHub reads this
-# trigger only from the default branch.
+# Posts a failed run of a workflow named below, started by one of the events below, to the Slack
+# channel of the webhook in SLACK_WEBHOOK, through the shared reporter pinned here
+# (architecture/verification.md).  GitHub reads this trigger only from the default branch.
 on:
   workflow_run:
     workflows:

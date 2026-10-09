@@ -234,23 +234,21 @@ cargo flamegraph --profile profiling --bin quaff -o target/flamegraph.svg \
 ## Failed runs nobody is watching
 
 A run started by a schedule, a push to `main` or a release has no pull request to show its
-failure on, so its failure is posted to `#quaffed`.  `.github/workflows/report-failures.yaml`
-watches the workflows it names and calls the shared Slack reporter from `github-workflows`,
-whose README says what it posts and when.  To add such a workflow, such as a scheduled one:
+failure on, so its failure is posted to the project's Slack channel instead.
+`.github/workflows/report-failures.yaml` names the workflows to report and calls the shared Slack
+reporter from `github-workflows`, whose README at the pinned commit says what it posts, when,
+and to where.  Pull request runs and runs started by hand are left out on purpose, because
+someone is watching each.  To add a workflow that runs on a schedule, a push or a release:
 
 1. Give it a `name:`, and give every job a `timeout-minutes:`, so a hang ends as a failure
    instead of running for six hours.
 2. Add its `name:` to the `workflows:` list in `report-failures.yaml`, exactly as written,
-   since GitHub matches on it.  The repository hygiene check fails on a workflow triggered by
-   `schedule`, `push` or `release` missing from the list, and on a listed name no workflow has,
-   so a rename that leaves the list behind fails too.
-3. Nothing else: a run started by one of those triggers that ends in anything but success,
-   skipped or neutral is posted, naming the workflow, its failed jobs and the run.  A pull
-   request's run and a run started by hand are not, because someone is watching each.
+   since GitHub matches on it.  The repository hygiene check enforces the list.
 
-The post goes to the webhook in the repository's `SLACK_WEBHOOK` secret, which is for
-`#quaffed` and overrides the organisation's secret of the same name.  If the post fails, the
-*Report failures* run fails, with Slack's answer in its log.
+The post goes to the channel of the webhook in the `SLACK_WEBHOOK` secret; a repository secret
+of that name overrides an organisation one.  **Accepted limitation:** a post that fails is seen
+only as a failed *Report failures* run, which is itself a run nobody is watching, so a webhook
+that stops working is noticed by the absence of posts.
 
 ## The tool manifest
 

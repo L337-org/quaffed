@@ -1,9 +1,9 @@
 name: 'Deliberate scheduled failure'
 
-# Fails on every run, to show that a failed scheduled run reaches #quaffed through
-# report-failures.yaml, which only GitHub's own scheduler on the default branch can show.
-# Removed once it has posted.  A manual run fails too, and is not posted, which shows that a
-# run someone started by hand is left to them.
+# Fails on every run, to show that a failed scheduled run reaches Slack through
+# report-failures.yaml, which only GitHub's own scheduler on the default branch can show.  A
+# manual run fails too, and is not posted, which shows that a run someone started by hand is
+# left to them.
 on:
   schedule:
     - cron: '23 * * * *'
