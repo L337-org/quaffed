@@ -183,8 +183,8 @@ impl fmt::Display for Refusal {
             ),
             Refusal::Unread { name, line, .. } => write!(
                 f,
-                "line {line} declares the encoding {name:?}, which Python reads but quaff does \
-                 not yet: quaff reads UTF-8 and single-byte encodings"
+                "line {line} declares the encoding {name:?}, which Python reads and quaff does \
+                 not: quaff reads UTF-8 and single-byte encodings"
             ),
             Refusal::MarkConflict { name, line } => write!(
                 f,
@@ -270,7 +270,7 @@ impl Source {
     /// Returns the [`Refusal`] `CPython`'s own refusal corresponds to: a NUL byte, a declared
     /// encoding that is unknown, not of text or the `undefined` codec, a byte-order mark with a
     /// declaration of anything but UTF-8, or a byte invalid in the encoding.  Also a declared
-    /// encoding `CPython` reads and quaff does not yet, [`Refusal::Unread`], which is quaff's own
+    /// encoding `CPython` reads and quaff does not, [`Refusal::Unread`], which is quaff's own
     /// limit.  Nothing partial is returned.
     pub fn decode(bytes: &[u8]) -> Result<Source, Refusal> {
         // CPython refuses a NUL before it looks at anything else.
@@ -445,7 +445,7 @@ struct Declaration<'a> {
 /// second line is read only if the first is blank or nothing but a comment.
 fn declaration(body: &[u8]) -> Option<Declaration<'_>> {
     let (first, rest) = split_line(body)?;
-    if let Some(name) = coding_spec(first, 0) {
+    if let Some(name) = coding_spec(first) {
         return Some(Declaration { name, line: 1 });
     }
     // Only whitespace, then a comment or the end, keeps CPython looking.
@@ -457,9 +457,7 @@ fn declaration(body: &[u8]) -> Option<Declaration<'_>> {
         return None;
     }
     let (second, _) = split_line(rest)?;
-    // CPython measures the second line with its line ending and the first without, so its
-    // search runs one byte further on the second.
-    coding_spec(second, 1).map(|name| Declaration { name, line: 2 })
+    coding_spec(second).map(|name| Declaration { name, line: 2 })
 }
 
 /// The first line of `bytes` without its ending, and the bytes after the ending, or `None` if
@@ -481,23 +479,22 @@ fn split_line(bytes: &[u8]) -> Option<(&[u8], &[u8])> {
     })
 }
 
-/// The name in a line's coding spec: `CPython`'s `get_coding_spec`, quirks and all.
+/// The name in a line's coding spec: `CPython`'s `get_coding_spec`.
 ///
 /// The spec must be in a comment with only spaces, tabs and form feeds before it, and is the
 /// first `coding:` or `coding=` followed, after any spaces or tabs, by a name of ASCII letters,
-/// digits, `-`, `_` and `.`.  `CPython` searches only while at least seven bytes of the line, as
-/// it measures it, remain: `extra` is how many bytes of line ending it counts.
-fn coding_spec(line: &[u8], extra: usize) -> Option<&str> {
-    let limit = (line.len() + extra).saturating_sub(6);
+/// digits, `-`, `_` and `.`.  `CPython` stops searching seven bytes before the end of the line,
+/// which changes nothing: a spec with a name needs at least eight.
+fn coding_spec(line: &[u8]) -> Option<&str> {
     let mut i = 0;
-    while i < limit {
+    while i < line.len() {
         match line[i] {
             b'#' => break,
             b' ' | b'\t' | 0x0C => i += 1,
             _ => return None,
         }
     }
-    while i < limit {
+    while i < line.len() {
         if line[i..].starts_with(b"coding") && matches!(line.get(i + 6), Some(b':' | b'=')) {
             let mut begin = i + 7;
             while matches!(line.get(begin), Some(b' ' | b'\t')) {
@@ -695,19 +692,11 @@ mod tests {
     }
 
     #[test]
-    fn the_search_stops_seven_bytes_short_of_the_end_as_cpythons_does() {
-        // Eight bytes: "coding" starts at 1, before the limit of 2.
+    fn a_name_running_to_the_end_of_the_line_is_read() {
         assert_eq!(declared(b"#coding:a"), Some(("a", 1)));
-        // Seven bytes from the "#" to the end: the limit is 1, so "coding" at 1 is past it.
         assert_eq!(declared(b"#coding:"), None);
-        assert_eq!(declared(b" #coding:a"), Some(("a", 1)));
-        // The second line is measured with its ending, one byte longer: ten bytes and an
-        // ending give a limit of 5, so "coding" at 4 is searched there and would not be on the
-        // first line.
-        assert_eq!(declared(b"    #codingx\n"), None);
-        assert_eq!(declared(b"\n   #coding:\n"), None);
         assert_eq!(declared(b"\n   #coding:a\n"), Some(("a", 2)));
-        assert_eq!(declared(b"   #coding:a\n"), Some(("a", 1)));
+        assert_eq!(declared(b"\n   #coding:\n"), None);
     }
 
     #[test]
@@ -858,8 +847,8 @@ mod tests {
         assert_eq!(
             decoded(b"# coding: sjis\n"),
             Err(
-                "line 1 declares the encoding \"sjis\", which Python reads but quaff does not \
-                 yet: quaff reads UTF-8 and single-byte encodings"
+                "line 1 declares the encoding \"sjis\", which Python reads and quaff does \
+                 not: quaff reads UTF-8 and single-byte encodings"
                     .into()
             )
         );

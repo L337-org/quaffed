@@ -545,6 +545,8 @@ fn python_files_are_searched_in_the_encoding_they_declare() {
     assert_quaff_snapshot!(project.quaff(&["caf\u{e9}"]));
     assert_quaff_snapshot!(project.quaff(&["\u{43f}\u{440}\u{438}\u{432}\u{435}\u{442}"]));
     assert_quaff_snapshot!(project.quaff(&["x = 1"]));
+    // An assertion cannot be checked over it, and its failure names the file and why.
+    assert_quaff_snapshot!(project.quaff(&["-e", "find \"x = 1\" expect 1"]));
     project.assert_unchanged();
 }
 
@@ -555,7 +557,7 @@ fn a_python_file_python_would_not_read_is_not_searched_and_the_run_says_so() {
     project.add_bytes("unknown.py", b"# -*- coding: uft-8 -*-\n# TODO\n");
     // A byte-order mark and a declaration of anything but UTF-8, as in bad_coding2.py.
     project.add_bytes("marked.py", b"\xef\xbb\xbf# coding: latin-1\n# TODO\n");
-    // An encoding Python reads and quaff does not yet.
+    // An encoding Python reads and quaff does not.
     project.add_bytes("japanese.py", b"# coding: shift_jis\n# TODO\n");
     assert_quaff_snapshot!(project.quaff(&["TODO"]));
     // Unread files could hold more, so a count they could change cannot be checked.

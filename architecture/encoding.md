@@ -30,9 +30,8 @@ misreads.  The sources, at the oracle's release: `Parser/tokenizer/helpers.c` an
   or `coding=` followed, after any spaces or tabs, by a name of ASCII letters, digits, `-`, `_`
   and `.`.  The first such `coding` with a name wins: `# -*- coding: latin-1 -*-` and
   `# vim: set fileencoding=koi8-r :` both declare.
-- CPython searches a line only while at least seven bytes of it remain, and it measures the
-  second line with its line ending and the first without, so the second line's search runs one
-  byte further.  The tests pin both.
+- CPython stops searching a line seven bytes before its end, which changes nothing, since a
+  declaration with a name needs at least eight bytes, so quaff does not copy the bound.
 
 **Resolving the name** (`normal_name`, `resolve`):
 
@@ -63,7 +62,7 @@ back the same way, mark first, so a file's own decoded text encodes to its exact
 **For a reader that tolerates bad bytes**, `declared_encoding` resolves the declaration alone and
 refuses only what no content could make readable: an unknown name, a codec not of text,
 `undefined`, an encoding quaff does not read, or a conflict with a mark.  `classify_python` uses
-it: a UTF-16 or UTF-32 mark, or a NUL, decides as for any file; otherwise a declaration decides,
+it: a UTF-16 or UTF-32 mark, or a NUL in the first 8000 bytes, decides as for any file; otherwise a declaration decides,
 trusted as a byte-order mark is, so bytes it does not decode count as one character each; with
 none, the file is classified as any other.  An undeclared Python file that is not valid UTF-8
 stays an unknown 8-bit encoding there rather than being read as UTF-8, so that a non-ASCII query
@@ -82,17 +81,17 @@ encoding tables.
 
 **Accepted limitations:**
 
-- **Multi-byte and stateful encodings are not read**: Shift-JIS, the GB and Big5 families,
-  EUC-*, ISO-2022-*, UTF-7, and UTF-16 or UTF-32 declared by name.  Such a file is refused by
-  name with the reason.  The tables already list these codecs as `Unread`, so reading one
-  means giving its kind a decoder, not changing how names resolve.  Searching one honestly
+- **Multi-byte, stateful and escape-based encodings are not read**: Shift-JIS, for instance,
+  or UTF-16 declared by name.  `src/codecs.rs` lists every such codec as `Unread`.  Such a file
+  is refused by name with the reason.  Reading one means giving its kind a decoder, not
+  changing how names resolve.  Searching one honestly
   needs more than spelling the query in its bytes: in Shift-JIS and Big5 the second byte of a
   character can be an ASCII byte, so a byte search would find matches inside characters.
 - **Windows-only codecs** - `mbcs`, `oem` and the `cpNNN` code pages Windows looks up itself -
   are unknown, as they are to CPython anywhere but Windows.
-- **A few codecs spell a character more than one way**: `mac_arabic` and `mac_farsi` give ASCII
-  punctuation and the space a second byte, and `cp875` and `cp1006` each have one character at
-  several bytes.  Such text has no one spelling, so a search for it does not search those files
+- **A few single-byte codecs spell a character more than one way**: `mac_arabic`, for
+  instance, gives the space and ASCII punctuation a second byte; `src/codecs.rs` shows which by
+  a character appearing twice in a table.  Such text has no one spelling, so a search for it does not search those files
   and says so, and `Source::encode` refuses to write it.
 - **EBCDIC codecs** such as `cp037` decode as CPython does, which means a file declaring one is
   decoded whole in EBCDIC, its ASCII declaration line included.  CPython then fails to parse

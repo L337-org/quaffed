@@ -12,7 +12,7 @@ writes crates/encoding/src/codecs.rs:
 - for each single-byte codec, the character each byte decodes to, or none.
 
 It is run by hand, when a codec is added or the tables need to follow a new CPython, and its
-output is committed.  Nothing in CI runs it.
+output is committed.
 
 Usage: scripts/generate-codecs [--manifest FILE] [--output FILE]
 

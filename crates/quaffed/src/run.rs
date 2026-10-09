@@ -10,6 +10,7 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
+use quaffed_encoding::{self as encoding, Content, Encoding, Refusal};
 use quaffed_representation::check;
 use quaffed_representation::program::{
     ActionKind, Count, Counted, Expectation, Operand, Program, Query, Statement, TextPart,
@@ -23,7 +24,6 @@ use crate::discover;
 use crate::output;
 use crate::project;
 use crate::search::{self, Match};
-use quaffed_encoding::{self as encoding, Content, Encoding, Refusal};
 
 /// Why a run could not give an answer.  Each kind maps to one exit code, because each asks the
 /// caller for a different action.
