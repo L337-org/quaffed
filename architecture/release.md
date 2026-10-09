@@ -16,7 +16,8 @@ dependency only for musl targets, so macOS and glibc builds keep the platform al
 
 **The `dist` profile** - release optimisation, thin LTO, one codegen unit, symbols stripped - is
 what the package is built with.  It is a separate profile so that a developer's `--release` build
-stays quick to link.
+stays quick to link.  The `profiling` profile inherits it, keeping debug information and
+symbols, for flamegraphs (`verification.md`).
 
 **Building it needs a musl C compiler**, because mimalloc is C.  Without `musl-tools` the build
 fails with *"failed to find tool "x86_64-linux-musl-gcc""*.  Ruff's parser needs one as well,
