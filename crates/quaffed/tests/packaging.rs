@@ -5,7 +5,7 @@
 //! `packaging/deb/copyright` is written by hand, so this test reads the binary's real dependency
 //! graph for each packaged target and fails naming any crate the file does not mention.  It also
 //! checks the attribution of the codec tables, which are data in the source tree rather than a
-//! crate, against the CPython release they were generated from.
+//! crate, against the `CPython` release they were generated from.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -130,7 +130,7 @@ fn the_package_copyright_file_names_every_linked_crate() {
     );
 }
 
-/// The CPython release the generated codec tables say they were read from, by the first line of
+/// The `CPython` release the generated codec tables say they were read from, by the first line of
 /// their module comment, `` //! `CPython` 3.14.8's codecs, ... ``.
 fn codec_tables_release() -> String {
     let path = workspace_root().join("crates/encoding/src/codecs.rs");
@@ -140,14 +140,16 @@ fn codec_tables_release() -> String {
         .lines()
         .find_map(|line| line.strip_prefix("//! `CPython` "))
         .and_then(|rest| rest.split_once("'s codecs"))
-        .map(|(release, _)| release.to_owned())
-        .unwrap_or_else(|| {
-            panic!(
-                "{} has no line \"//! `CPython` <release>'s codecs\" naming the release its \
+        .map_or_else(
+            || {
+                panic!(
+                    "{} has no line \"//! `CPython` <release>'s codecs\" naming the release its \
                  tables come from",
-                path.display()
-            )
-        })
+                    path.display()
+                )
+            },
+            |(release, _)| release.to_owned(),
+        )
 }
 
 #[test]
