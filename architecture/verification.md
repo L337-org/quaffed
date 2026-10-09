@@ -231,6 +231,25 @@ cargo flamegraph --profile profiling --bin quaff -o target/flamegraph.svg \
   leaves it after a failed one, so remove it with `rm -rf cargo-flamegraph.trace`.
   `.gitignore` covers all three wherever they are written, so a leftover cannot be committed.
 
+## Failed runs nobody is watching
+
+A run started by a schedule, a push to `main` or a release has no pull request to show its
+failure on, so its failure is posted to the project's Slack channel instead.
+`.github/workflows/report-failures.yaml` names the workflows to report and calls the shared Slack
+reporter from `github-workflows`, whose README at the pinned commit says what it posts, when,
+and to where.  Pull request runs and runs started by hand are left out on purpose, because
+someone is watching each.  To add a workflow that runs on a schedule, a push or a release:
+
+1. Give it a `name:`, and give every job a `timeout-minutes:`, so a hang ends as a failure
+   instead of running for six hours.
+2. Add its `name:` to the `workflows:` list in `report-failures.yaml`, exactly as written,
+   since GitHub matches on it.  The repository hygiene check enforces the list.
+
+The post goes to the channel of the webhook in the `SLACK_WEBHOOK` secret; a repository secret
+of that name overrides an organisation one.  **Accepted limitation:** a post that fails is seen
+only as a failed *Report failures* run, which is itself a run nobody is watching, so a webhook
+that stops working is noticed by the absence of posts.
+
 ## The tool manifest
 
 Most verification tools are binaries installed with `cargo install`, not crate dependencies,
