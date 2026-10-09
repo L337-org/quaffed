@@ -1,6 +1,6 @@
 ---
 source: crates/quaffed/tests/end_to_end.rs
-assertion_line: 542
+assertion_line: 545
 info:
   program: quaff
   args:
@@ -10,6 +10,8 @@ success: true
 exit_code: 0
 ----- stdout -----
 latin1.py:2:9-2:12: café
+latin1.pyi:2:8-2:11: café
+latin1.pyw:2:9-2:12: café
 
 ----- stderr -----
 quaff: 1 file in an unknown 8-bit encoding not searched for "café", which is not ASCII and so has no one spelling there

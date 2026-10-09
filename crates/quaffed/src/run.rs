@@ -531,7 +531,10 @@ fn search_files(
         })?;
         // Classified once, whatever the number of patterns.  A Python file is read by the
         // encoding it declares, as Python reads it.
-        let content = if file.extension().is_some_and(|e| e == "py") {
+        let content = if file
+            .extension()
+            .is_some_and(|e| e == "py" || e == "pyi" || e == "pyw")
+        {
             encoding::classify_python(&bytes)
         } else {
             Ok(encoding::classify(&bytes))

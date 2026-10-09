@@ -1,6 +1,6 @@
 ---
 source: crates/quaffed/tests/end_to_end.rs
-assertion_line: 544
+assertion_line: 547
 info:
   program: quaff
   args:

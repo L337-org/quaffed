@@ -537,6 +537,9 @@ fn python_files_are_searched_in_the_encoding_they_declare() {
         "koi8.py",
         b"#!/usr/bin/env python\n# coding: koi8-r\ngreeting = '\xd0\xd2\xc9\xd7\xc5\xd4'\n",
     );
+    // Stubs and windowed scripts are Python too.
+    project.add_bytes("latin1.pyi", b"# coding: latin-1\nname: 'caf\xe9'\n");
+    project.add_bytes("latin1.pyw", b"# coding: latin-1\nname = 'caf\xe9'\n");
     // mac_arabic spells the space two ways, so a query with a space has no one spelling there.
     project.add_bytes("arabic.py", b"# coding: mac-arabic\nx = 1\n");
     assert_quaff_snapshot!(project.quaff(&["caf\u{e9}"]));
