@@ -102,8 +102,9 @@ not judged, and the run says so.
 
 Real Python, as a check on what the synthetic corpus did not think to write: **CPython's own
 `Lib/test` at the release tag matching the oracle**, a large body of Python written to exercise
-the language.  It is **used for round-tripping only**, never by a gate, a budget or a
-benchmark, so its contents cannot move one.  Nothing that gates reads `target/corpus/`.
+the language.  It is **used for round-tripping, and as input when profiling by hand**, never by
+a gate, a budget or a benchmark, so its contents cannot move one.  Nothing that gates reads
+`target/corpus/`.
 
 It is **fetched, not checked in**: it is CPython's code, under the PSF licence, and far larger
 than the rest of the repository.  `corpus/real-world.toml` pins it, and is the one place that
@@ -191,10 +192,10 @@ in the manifest is reviewed.
 ## Profiling
 
 When a gate flags a regression, a flamegraph shows where the time goes.  The `profiling` Cargo
-profile is the shipped `dist` build - thin LTO, one codegen unit - with full debug information
-and nothing stripped, so that every frame is named, inlined ones included.  It builds for the
-host, so on Linux it uses the platform allocator rather than the package's mimalloc
-(`release.md`), unless the package's own target is given, as below.
+profile is the shipped `dist` build (`Cargo.toml`) with full debug information and nothing
+stripped, so that every frame is named, inlined ones included.  It builds for the host, so on
+Linux it uses the platform allocator rather than the package's mimalloc (`release.md`), unless
+the package's own target is given, as below.
 
 ```bash
 scripts/install-tools flamegraph    # once: cargo-flamegraph, at the manifest's version
@@ -202,32 +203,33 @@ cargo flamegraph --profile profiling --bin quaff -o target/flamegraph.svg \
     -- 'def ' target/corpus/cpython/Lib/test > target/flamegraph.out
 ```
 
-- **On Linux, add `--root`.**  `cargo flamegraph` records with `perf` - Debian's `linux-perf`
-  package, matching the running kernel - and Debian refuses `perf` to anyone but root by default
-  (`kernel.perf_event_paranoid` is 3).  `--root` runs `perf` under `sudo` for that one recording
-  and changes nothing on the machine.  Inside a container, `perf` also needs `--privileged`.
-- **To profile the package's own build** - musl, with mimalloc - add `--target
-  x86_64-unknown-linux-musl` and leave out `--bin quaff`, which `cargo flamegraph` refuses
-  alongside `--target`; the workspace has one binary, so it needs no naming.  The target needs
-  `rustup target add x86_64-unknown-linux-musl` and `musl-tools`, as the package build does.
-  mimalloc's own frames, `mi_*`, then appear, and a sample or two may be `[unknown]` directly
-  under the process rather than inside `quaff`'s code.
+- **On Linux**, `cargo flamegraph` records with `perf`, from Debian's `linux-perf` package
+  matching the running kernel.  Add `--root` where `perf` refuses an unprivileged user
+  (`sysctl kernel.perf_event_paranoid`; Debian's default does): it runs `perf` under `sudo` for
+  that one recording and changes nothing on the machine.  Inside a container, `perf` also needs
+  `--privileged`.
+- **To profile the package's own build** - musl, with mimalloc - add `--target` with the
+  package's triple for the host, `x86_64-unknown-linux-musl` or `aarch64-unknown-linux-musl` as
+  `scripts/build-deb` picks it, and leave out `--bin quaff`.  `cargo flamegraph` refuses `--bin`
+  alongside `--target`, so this works only while `quaff` is the workspace's sole binary.  The
+  target needs `rustup target add` and `musl-tools`, as the package build does.  mimalloc's own
+  frames, `mi_*`, then appear, and an `[unknown]` frame may sit directly under the process
+  rather than inside `quaff`'s code.
 - **On macOS** it records with Xcode's Time Profiler, through `xctrace`, so it needs Xcode, and
-  no `sudo`.  `xctrace` has been seen to fail now and then with *"Failed stoping ktrace
-  session"*, writing no SVG; it said nothing more, and the same run succeeded when repeated, so
-  repeat it.
+  no `sudo`.  If `xctrace` fails with *"Failed stoping ktrace session"* and writes no SVG,
+  repeat the run.
 - **Profile a real run**: everything after `--` is `quaff`'s own arguments, here a search of the
   fetched corpus (`scripts/fetch-corpus`), or the run being investigated.  Standard output goes
   to a file, as a user's pipe would take it, rather than to the terminal, whose speed is not
-  `quaff`'s.  A sub-second run gives a few hundred samples; a larger scope gives more.
-- **Check it**: open the SVG in a browser.  Frames are named - `quaff::run::search_files`,
-  `quaffed_encoding::...`, `ignore::...` - and an `[unknown]` frame means debug information is
-  missing, so check that the build used `--profile profiling`.
-- **Clean up**: on Linux, `perf` leaves `perf.data` in the current directory, owned by root under
-  `--root`, so remove it with `sudo rm perf.data`.  On macOS `cargo flamegraph` removes its
-  `cargo-flamegraph.trace` directory after a successful run, and leaves it after a failed one,
-  so remove it with `rm -r cargo-flamegraph.trace`.  `.gitignore` covers both, so a leftover
-  cannot be committed.
+  `quaff`'s.  A larger scope gives more samples.
+- **Check it**: open the SVG in a browser.  Frames are named after `quaff`'s modules and its
+  dependencies' crates, and an `[unknown]` frame inside them means debug information is missing,
+  so check that the build used `--profile profiling`.
+- **Clean up**: on Linux, `perf` leaves `perf.data`, and `perf.data.old` from a second run, owned
+  by root under `--root`, so remove them with `sudo rm -f perf.data perf.data.old`.  On macOS
+  `cargo flamegraph` removes its `cargo-flamegraph.trace` directory after a successful run and
+  leaves it after a failed one, so remove it with `rm -rf cargo-flamegraph.trace`.
+  `.gitignore` covers all three wherever they are written, so a leftover cannot be committed.
 
 ## The tool manifest
 

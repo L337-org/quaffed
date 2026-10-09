@@ -14,10 +14,10 @@
 /target/
 **/*.rs.bk
 
-# What cargo flamegraph records into the current directory; architecture/verification.md.
-/perf.data
-/perf.data.old
-/cargo-flamegraph.trace
+# What cargo flamegraph records into the directory it runs in; architecture/verification.md.
+perf.data
+perf.data.old
+cargo-flamegraph.trace
 
 # JetBrains
 /.idea/
