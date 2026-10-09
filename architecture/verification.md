@@ -233,15 +233,17 @@ cargo flamegraph --profile profiling --bin quaff -o target/flamegraph.svg \
 
 ## Failed runs are posted to Slack
 
-A failed run is otherwise one red entry in a list nobody opens, so a failure started by a
-schedule, a push to `main`, a release or a pull request is posted to the project's Slack channel.
-`.github/workflows/report-failures.yaml` names the workflows to report and calls the shared Slack
-reporter from `github-workflows`, whose README at the pinned commit says what it posts, when,
-and to where.  Runs started by hand are left out on purpose, because whoever started one is
-watching.  To add a workflow that runs on a schedule, a push, a release or a pull request:
+A failed run is otherwise one red entry in a list nobody opens, so failures are posted to the
+project's Slack channel.  `.github/workflows/report-failures.yaml` names the workflows to report
+and the triggers to report them for - a schedule, a push, a release and a pull request - and
+calls the shared Slack reporter from `github-workflows`, whose README at the pinned commit says
+which of those runs it posts, when, and to where.  A run started by hand, or a review asked for
+by comment, is left out on purpose, because whoever started it is watching.  To add a workflow
+that runs on a schedule, a push, a release or a pull request:
 
 1. Give it a `name:`, and give every job a `timeout-minutes:`, so a hang ends as a failure
-   instead of running for six hours.
+   instead of running for six hours.  A job that calls a reusable workflow cannot take one; it
+   is bounded by the jobs of the workflow it calls.
 2. Add its `name:` to the `workflows:` list in `report-failures.yaml`, exactly as written,
    since GitHub matches on it.  The repository hygiene check enforces the list.
 
