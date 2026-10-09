@@ -10,6 +10,7 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
+use quaffed_encoding::{self as encoding, Content, Encoding, Refusal};
 use quaffed_representation::check;
 use quaffed_representation::program::{
     ActionKind, Count, Counted, Expectation, Operand, Program, Query, Statement, TextPart,
@@ -20,7 +21,6 @@ use quaffed_script::{ErrorKind, location, parse_source};
 
 use crate::cli::{self, SourceArg, UsageError};
 use crate::discover;
-use crate::encoding::{self, Content};
 use crate::output;
 use crate::project;
 use crate::search::{self, Match};
@@ -499,9 +499,13 @@ fn resolve_scope(scope: Option<&Path>, cwd: &Path) -> Result<PathBuf, Failure> {
 struct Searched {
     /// For each pattern, the files with matches, in discovery order.
     matches: Vec<Vec<(PathBuf, Vec<Match>)>>,
-    /// For each pattern, the files in an unknown 8-bit encoding it has no spelling in, by the
-    /// paths a message shows.
-    unknown_encoding: Vec<Vec<PathBuf>>,
+    /// For each pattern, the files whose encoding it has no one spelling in, by the paths a
+    /// message shows, with the encoding: an unknown 8-bit one, or a single-byte one that spells
+    /// a character of it several ways.
+    unspelled: Vec<Vec<(PathBuf, Encoding)>>,
+    /// Python files whose declared encoding cannot be honoured, so are searched for nothing, by
+    /// the paths a message shows, with why.
+    unreadable: Vec<(PathBuf, Refusal)>,
     /// Binary files, counted once whatever the number of patterns.
     binary: usize,
 }
@@ -514,7 +518,8 @@ fn search_files(
 ) -> Result<Searched, Failure> {
     let mut searched = Searched {
         matches: vec![Vec::new(); patterns.len()],
-        unknown_encoding: vec![Vec::new(); patterns.len()],
+        unspelled: vec![Vec::new(); patterns.len()],
+        unreadable: Vec::new(),
         binary: 0,
     };
     for file in files {
@@ -524,17 +529,30 @@ fn search_files(
             path: shown.clone(),
             cause,
         })?;
-        // Classified once, whatever the number of patterns.
-        let (encoding, body) = match encoding::classify(&bytes) {
-            Content::Binary => {
+        // Classified once, whatever the number of patterns.  A Python file is read by the
+        // encoding it declares, as Python reads it.
+        let content = if file
+            .extension()
+            .is_some_and(|e| e == "py" || e == "pyi" || e == "pyw")
+        {
+            encoding::classify_python(&bytes)
+        } else {
+            Ok(encoding::classify(&bytes))
+        };
+        let (encoding, body) = match content {
+            Ok(Content::Binary) => {
                 searched.binary += 1;
                 continue;
             }
-            Content::Text { encoding, body } => (encoding, body),
+            Ok(Content::Text { encoding, body }) => (encoding, body),
+            Err(refusal) => {
+                searched.unreadable.push((shown, refusal));
+                continue;
+            }
         };
         for (i, pattern) in patterns.iter().enumerate() {
             match search::search(&bytes[body..], encoding, pattern) {
-                None => searched.unknown_encoding[i].push(shown.clone()),
+                None => searched.unspelled[i].push((shown.clone(), encoding)),
                 Some(in_file) if in_file.is_empty() => {}
                 Some(in_file) => searched.matches[i].push((shown.clone(), in_file)),
             }
@@ -577,12 +595,13 @@ impl Evaluation<'_> {
                     asserted = true;
                     let mut failed = Vec::new();
                     for assertion in block {
-                        let unsearched = &self.searched.unknown_encoding[self.next];
+                        let unspelled = &self.searched.unspelled[self.next];
+                        let unreadable = &self.searched.unreadable;
                         let found = self.print_matches(assertion.pattern, out)?;
                         let location = built.locate(assertion.span, assertion.span.start);
                         let wanted = expected(assertion.count);
                         let pattern = quoted(assertion.pattern);
-                        if unsearched.is_empty() {
+                        if unspelled.is_empty() && unreadable.is_empty() {
                             if !assertion.count.holds(found) {
                                 failed.push(format!(
                                     "{location}: expected {wanted} of {pattern}, found {found}"
@@ -594,16 +613,8 @@ impl Evaluation<'_> {
                         // them only where no number of further matches could change it.
                         // Otherwise a count over fewer files than the scope holds is not a
                         // passed assertion.
-                        let one = unsearched.len() == 1;
-                        let listed: Vec<String> =
-                            unsearched.iter().map(|path| format!("{path:?}")).collect();
-                        let files = format!(
-                            "{} in an unknown 8-bit encoding, which a non-ASCII query has no one \
-                             spelling in, {} not searched - {}",
-                            count(unsearched.len(), "file", "files"),
-                            if one { "was" } else { "were" },
-                            listed.join(", ")
-                        );
+                        let one = unspelled.len() + unreadable.len() == 1;
+                        let files = unsearched(unspelled, unreadable);
                         match settled(assertion.count, found) {
                             Some(true) => self.notes.push(format!(
                                 "{location}: found {found} of {pattern}, enough for {wanted} \
@@ -616,8 +627,15 @@ impl Evaluation<'_> {
                             None => failed.push(format!(
                                 "{location}: cannot check for {wanted} of {pattern}: {files}.  \
                                  Found {found} in the files that were searched.  To check it, \
-                                 re-encode {} as UTF-8, or leave {} out with the scope or an \
-                                 ignore file",
+                                 {} {} as UTF-8, or leave {} out with the scope or an ignore \
+                                 file",
+                                // A declaration Python refuses may be a mistake to correct
+                                // rather than an encoding to change.
+                                if unreadable.is_empty() {
+                                    "re-encode"
+                                } else {
+                                    "correct the encoding each declares, or re-encode"
+                                },
                                 if one { "the file" } else { "the files" },
                                 if one { "it" } else { "them" }
                             )),
@@ -715,24 +733,78 @@ fn expected(count: Count) -> String {
     }
 }
 
+/// What an assertion's unsearched files are and why, for its message: the files in an unknown
+/// 8-bit encoding together, as they are the common case, then each of the rest with its reason.
+fn unsearched(unspelled: &[(PathBuf, Encoding)], unreadable: &[(PathBuf, Refusal)]) -> String {
+    let mut parts = Vec::new();
+    let unknown: Vec<String> = unspelled
+        .iter()
+        .filter(|(_, encoding)| *encoding == Encoding::Unknown8Bit)
+        .map(|(path, _)| format!("{path:?}"))
+        .collect();
+    if !unknown.is_empty() {
+        parts.push(format!(
+            "{} in an unknown 8-bit encoding, which a non-ASCII query has no one spelling in, {} \
+             not searched - {}",
+            count(unknown.len(), "file", "files"),
+            if unknown.len() == 1 { "was" } else { "were" },
+            unknown.join(", ")
+        ));
+    }
+    for (path, encoding) in unspelled {
+        if let Encoding::SingleByte(codec) = encoding {
+            parts.push(format!(
+                "{path:?}, in {:?}, which spells a character of the query more than one way, was \
+                 not searched",
+                codec.name()
+            ));
+        }
+    }
+    for (path, refusal) in unreadable {
+        parts.push(format!("{path:?} was not searched: {refusal}"));
+    }
+    parts.join("; ")
+}
+
 /// A note for everything not looked at, so that nothing is silently left out: per `find`
-/// evaluated, the files it had no spelling in, then what discovery and classification passed
-/// over.  An assertion's unsearched files are not noted: they failed it, and its failure names
-/// them.
+/// evaluated, the files it had no one spelling in, then the Python files whose declared encoding
+/// cannot be honoured, then what discovery and classification passed over.  An assertion's
+/// unsearched files are not noted: its failure or its note names them.
 fn skipped(searched: &Searched, evaluated: &[Searching], found: &discover::Found) -> Vec<String> {
     let mut notes = Vec::new();
-    for (Searching { pattern, .. }, unknown) in evaluated
+    for (Searching { pattern, .. }, unspelled) in evaluated
         .iter()
-        .zip(&searched.unknown_encoding)
+        .zip(&searched.unspelled)
         .filter(|(searching, _)| !searching.asserted)
     {
-        if !unknown.is_empty() {
+        let unknown = unspelled
+            .iter()
+            .filter(|(_, encoding)| *encoding == Encoding::Unknown8Bit)
+            .count();
+        if unknown > 0 {
             notes.push(format!(
                 "{} in an unknown 8-bit encoding not searched for {}, which is not ASCII and so \
                  has no one spelling there",
-                count(unknown.len(), "file", "files"),
+                count(unknown, "file", "files"),
                 quoted(pattern)
             ));
+        }
+        for (path, encoding) in unspelled {
+            if let Encoding::SingleByte(codec) = encoding {
+                notes.push(format!(
+                    "{path:?} not searched for {}: it is in {:?}, which spells a character of it \
+                     more than one way",
+                    quoted(pattern),
+                    codec.name()
+                ));
+            }
+        }
+    }
+    // Every pattern skipped them, so an assertion's failure or note has named them already
+    // unless a `find` was evaluated too.
+    if evaluated.iter().any(|searching| !searching.asserted) {
+        for (path, refusal) in &searched.unreadable {
+            notes.push(format!("{path:?} not searched: {refusal}"));
         }
     }
     if searched.binary > 0 {

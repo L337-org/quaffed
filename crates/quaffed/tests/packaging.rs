@@ -3,7 +3,9 @@
 //! The package ships a static binary, so every crate it links is distributed with it, and the
 //! permissive licences most of them use require their notices to go along.  The list in
 //! `packaging/deb/copyright` is written by hand, so this test reads the binary's real dependency
-//! graph for each packaged target and fails naming any crate the file does not mention.
+//! graph for each packaged target and fails naming any crate the file does not mention.  It also
+//! checks the attribution of the codec tables, which are data in the source tree rather than a
+//! crate, against the `CPython` release they were generated from.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -125,5 +127,45 @@ fn the_package_copyright_file_names_every_linked_crate() {
          its copyright and licence, to the Comment and to the Copyright and License fields",
         path.display(),
         missing.join(", ")
+    );
+}
+
+/// The `CPython` release the generated codec tables say they were read from, by the first line of
+/// their module comment, `` //! `CPython` 3.14.8's codecs, ... ``.
+fn codec_tables_release() -> String {
+    let path = workspace_root().join("crates/encoding/src/codecs.rs");
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("reading {}: {err}", path.display()));
+    source
+        .lines()
+        .find_map(|line| line.strip_prefix("//! `CPython` "))
+        .and_then(|rest| rest.split_once("'s codecs"))
+        .map_or_else(
+            || {
+                panic!(
+                    "{} has no line \"//! `CPython` <release>'s codecs\" naming the release its \
+                 tables come from",
+                    path.display()
+                )
+            },
+            |(release, _)| release.to_owned(),
+        )
+}
+
+#[test]
+fn the_copyright_file_attributes_the_codec_tables_to_their_cpython_release() {
+    // The tables are data in the source tree, not a crate, so the dependency graph above cannot
+    // see them; their attribution names the release they were generated from.
+    let path = workspace_root().join("packaging/deb/copyright");
+    let copyright = std::fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("reading {}: {err}", path.display()));
+    let folded = copyright.split_whitespace().collect::<Vec<_>>().join(" ");
+    let release = codec_tables_release();
+    assert!(
+        names(&folded, &format!("Python {release}")),
+        "{} does not attribute the codec tables to Python {release}, the release \
+         crates/encoding/src/codecs.rs was generated from.  Name it in the paragraph on the \
+         character-mapping tables",
+        path.display()
     );
 }

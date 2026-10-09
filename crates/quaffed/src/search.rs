@@ -5,7 +5,7 @@
 
 use quaffed_representation::program::{TextPart, TextPattern};
 
-use crate::encoding::Encoding;
+use quaffed_encoding::{Encoding, Spelling};
 
 /// A line and column, both counted from 1, the column in characters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,11 +36,16 @@ pub struct Match {
 /// An empty pattern matches nothing: every position would otherwise be a match, and the
 /// command line and the parser both refuse one before it gets here.
 ///
-/// Returns `None` when the pattern's text has no honest spelling in the encoding - non-ASCII
-/// text in an unknown 8-bit encoding - so that the caller reports the file as not searched
-/// rather than as holding no matches.
+/// Returns `None` when the pattern's text has no one spelling in the encoding, so that the
+/// caller reports the file as not searched rather than as holding no matches: non-ASCII text in
+/// an unknown 8-bit encoding, or a character a single-byte encoding spells more than one way.  A
+/// character the encoding cannot hold at all is no matches, since the text cannot occur there.
 pub fn search(text: &[u8], encoding: Encoding, pattern: &TextPattern) -> Option<Vec<Match>> {
-    let compiled = Compiled::new(pattern, encoding)?;
+    let compiled = match Compiled::new(pattern, encoding) {
+        Ok(compiled) => compiled,
+        Err(Unspelled::Impossible) => return Some(Vec::new()),
+        Err(Unspelled::Ambiguous) => return None,
+    };
     if compiled.parts.is_empty() {
         return Some(Vec::new());
     }
@@ -59,6 +64,14 @@ enum Part {
     LineBreak,
 }
 
+/// Why a pattern has no one run of bytes in an encoding.
+enum Unspelled {
+    /// A character in it is one the encoding cannot hold.
+    Impossible,
+    /// The encoding is unknown, or spells a character in it more than one way.
+    Ambiguous,
+}
+
 /// A pattern spelled in one file's encoding.
 struct Compiled {
     parts: Vec<Part>,
@@ -70,23 +83,43 @@ struct Compiled {
 }
 
 impl Compiled {
-    fn new(pattern: &TextPattern, encoding: Encoding) -> Option<Self> {
+    /// Spells `pattern` in `encoding`.  A literal that cannot occur settles it whatever the
+    /// others are, so one that is ambiguous does not stop the rest being spelled.
+    fn new(pattern: &TextPattern, encoding: Encoding) -> Result<Self, Unspelled> {
         let mut parts = Vec::new();
+        let mut ambiguous = false;
         for part in pattern.parts() {
             parts.push(match part {
-                TextPart::Literal(text) => Part::Literal(encoding.encode(text)?),
+                TextPart::Literal(text) => match encoding.encode(text) {
+                    Spelling::Bytes(bytes) => Part::Literal(bytes),
+                    Spelling::Impossible => return Err(Unspelled::Impossible),
+                    Spelling::Ambiguous => {
+                        ambiguous = true;
+                        continue;
+                    }
+                },
                 TextPart::LineBreak => Part::LineBreak,
                 // A part this build cannot match is never produced for it: the parser refuses
                 // textual capture as an unknown construct.
-                _ => return None,
+                _ => return Err(Unspelled::Ambiguous),
             });
         }
-        Some(Compiled {
+        // Every encoding spells CR and LF one way, which the encoding crate's tests hold every
+        // codec to, so an ambiguous line ending would be a codec this search was never given.
+        let (Spelling::Bytes(cr), Spelling::Bytes(lf)) =
+            (encoding.encode("\r"), encoding.encode("\n"))
+        else {
+            return Err(Unspelled::Ambiguous);
+        };
+        if ambiguous {
+            return Err(Unspelled::Ambiguous);
+        }
+        Ok(Compiled {
             parts,
             start_anchor: pattern.start_anchor,
             end_anchor: pattern.end_anchor,
-            cr: encoding.encode("\r")?,
-            lf: encoding.encode("\n")?,
+            cr,
+            lf,
             unit: encoding.unit(),
         })
     }
@@ -235,7 +268,7 @@ mod tests {
         Position { line, column }
     }
 
-    use crate::encoding::{Content, classify};
+    use quaffed_encoding::{Content, classify};
 
     /// What the run makes of a whole file's bytes: classified first, then searched.
     #[derive(Debug, PartialEq, Eq)]
@@ -455,6 +488,39 @@ mod tests {
     fn an_unknown_8bit_file_is_searched_for_ascii_and_not_otherwise() {
         assert_eq!(found(b"caf\xE9 TODO", "TODO"), vec![(pos(1, 6), pos(1, 9))]);
         assert_eq!(outcome(b"caf\xE9", "café"), Outcome::NoSpelling);
+    }
+
+    fn found_in(codec: &str, bytes: &[u8], query: &str) -> Option<Vec<(Position, Position)>> {
+        let encoding = Encoding::SingleByte(quaffed_encoding::Codec::named(codec).unwrap());
+        search(bytes, encoding, &TextPattern::literal(query))
+            .map(|matches| matches.iter().map(|m| (m.start, m.end)).collect())
+    }
+
+    #[test]
+    fn a_single_byte_file_is_searched_in_its_own_bytes_one_column_a_byte() {
+        // "x = 'да'" in KOI8-R, then the same on a CRLF line.
+        let file = b"x = '\xc4\xc1'\r\ny = '\xc4\xc1'";
+        assert_eq!(
+            found_in("koi8_r", file, "да"),
+            Some(vec![(pos(1, 6), pos(1, 7)), (pos(2, 6), pos(2, 7))])
+        );
+        // A byte the codec decodes to nothing is one column.
+        assert_eq!(
+            found_in("cp1252", b"\x81 TODO", "TODO"),
+            Some(vec![(pos(1, 3), pos(1, 6))])
+        );
+    }
+
+    #[test]
+    fn text_a_single_byte_encoding_cannot_hold_is_no_matches_and_ambiguous_text_is_unsearched() {
+        // KOI8-R has no "é", so it cannot be in the file: an answer, not a skipped file.
+        assert_eq!(found_in("koi8_r", b"caf\xc5", "café"), Some(vec![]));
+        // mac_arabic spells the space two ways, so "a b" has no one spelling to search for.
+        assert_eq!(found_in("mac_arabic", b"a b", "a b"), None);
+        assert_eq!(
+            found_in("mac_arabic", b"a b", "b"),
+            Some(vec![(pos(1, 3), pos(1, 3))])
+        );
     }
 
     #[test]

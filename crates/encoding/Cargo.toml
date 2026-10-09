@@ -1,0 +1,17 @@
+[package]
+name = "quaffed-encoding"
+description = "What a file's bytes are: byte-order marks, Python's encoding declarations, CPython's codecs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+# Nothing is published until a release decides where and how.
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+memchr = "=2.8.3"

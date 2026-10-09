@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""Generate the codec tables quaff reads a Python file's declared encoding with.
+
+A Python file may declare its encoding (PEP 263), and quaff reads it the way CPython does, so
+the names CPython accepts and what each single-byte codec decodes every byte to are CPython's
+own.  This reads them from the oracle - the CPython release corpus/real-world.toml names - and
+writes crates/encoding/src/codecs.rs:
+
+- every codec module in CPython's `encodings` package, and what kind it is: single-byte, UTF-8,
+  another text encoding quaff does not read, not a text encoding, or the `undefined` codec;
+- every alias in `encodings.aliases`;
+- for each single-byte codec, the character each byte decodes to, or none.
+
+It is run by hand, when a codec is added or the tables need to follow a new CPython, and its
+output is committed.
+
+Usage: scripts/generate-codecs [--manifest FILE] [--output FILE]
+
+Run it with the oracle's Python, or it stops, naming the version it needs.
+architecture/encoding.md describes how the tables are used, and the checklist for regenerating.
+"""
+
+import argparse
+import codecs
+import encodings
+import encodings.aliases
+import importlib
+import pathlib
+import pkgutil
+import sys
+
+if sys.version_info < (3, 11):
+    sys.exit(f"generate-codecs: needs Python 3.11 or later; this is {sys.version}")
+
+import tomllib  # noqa: E402 - after the version check, so an old Python is told why
+
+# Codecs whose decoder is not table-driven but which decode one byte to at most one character,
+# checked byte by byte below like every other.  `charmap` with no table decodes as Latin-1.
+SINGLE_BYTE_WITHOUT_TABLE = ("ascii", "latin_1", "charmap")
+
+# Codecs that decode as UTF-8.  `utf_8_sig` also drops a leading byte-order mark, which a file
+# that declares it cannot have: CPython refuses any declaration but `utf-8` after a mark.
+UTF8 = ("utf_8", "utf_8_sig")
+
+# CPython's marker, in its own tables, for a byte that decodes to nothing.  U+FFFE is a
+# noncharacter, so no codec maps a byte to it.
+UNDEFINED = 0xFFFE
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    repo = pathlib.Path(__file__).resolve().parent.parent
+    parser.add_argument("--manifest", type=pathlib.Path, default=repo / "corpus/real-world.toml")
+    parser.add_argument(
+        "--output", type=pathlib.Path, default=repo / "crates/encoding/src/codecs.rs"
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        with open(args.manifest, "rb") as handle:
+            oracle = tomllib.load(handle)["cpython"]["oracle"]
+    except (OSError, tomllib.TOMLDecodeError, KeyError) as err:
+        return fail(f"reading the oracle's version from {str(args.manifest)!r}: {err!r}")
+    running = ".".join(str(part) for part in sys.version_info[:3])
+    if sys.implementation.name != "cpython" or running != oracle:
+        return fail(
+            f"the oracle is CPython {oracle}, but this is {sys.implementation.name} {running} at "
+            f"{sys.executable!r}; run this script with that Python"
+        )
+
+    modules = []
+    tables = []
+    for name in sorted(info.name for info in pkgutil.iter_modules(encodings.__path__)):
+        if name.startswith("_") or name == "aliases":
+            continue
+        try:
+            module = importlib.import_module(f"encodings.{name}")
+            entry = module.getregentry()
+        except (ImportError, AttributeError) as err:
+            # A codec only one platform has, such as Windows' `mbcs`: elsewhere CPython says it
+            # does not know it, and so does quaff.
+            print(f"generate-codecs: leaving out {name!r}, which this CPython cannot load: {err}")
+            continue
+        if name == "undefined":
+            kind = "Undefined"
+        elif not entry._is_text_encoding:
+            kind = "NotText"
+        elif name in UTF8:
+            kind = "Utf8"
+        elif hasattr(module, "decoding_table") or name in SINGLE_BYTE_WITHOUT_TABLE:
+            try:
+                table = single_byte_table(name, module)
+            except ValueError as err:
+                return fail(str(err))
+            kind = f"SingleByte({len(tables)})"
+            tables.append((name, table))
+        else:
+            kind = "Unread"
+        modules.append((name, kind))
+
+    aliases = sorted(encodings.aliases.aliases.items())
+    args.output.write_text(render(oracle, modules, tables, aliases), encoding="utf-8")
+    print(
+        f"generate-codecs: wrote {str(args.output)!r} from CPython {oracle}: {len(modules)} "
+        f"codecs, {len(tables)} of them single-byte, and {len(aliases)} aliases"
+    )
+    return 0
+
+
+def single_byte_table(name, module):
+    """What each byte decodes to alone, by CPython's own decoder, or UNDEFINED.
+
+    Raises ValueError if the codec is not single-byte after all - a byte decoding to more than
+    one character, or a run of bytes decoding differently from the bytes one at a time - or if
+    it disagrees with its own table, or reaches past the Basic Multilingual Plane, which the
+    generated u16 tables cannot hold.
+    """
+    table = []
+    for byte in range(256):
+        try:
+            decoded = bytes([byte]).decode(name)
+        except UnicodeDecodeError:
+            table.append(UNDEFINED)
+            continue
+        if len(decoded) != 1 or ord(decoded) > 0xFFFF or ord(decoded) == UNDEFINED:
+            raise ValueError(f"{name!r} decodes byte {byte:#04x} to {decoded!r}")
+        table.append(ord(decoded))
+    own = getattr(module, "decoding_table", None)
+    if own is not None and [ord(c) for c in own] != table:
+        raise ValueError(f"{name!r} decodes bytes one at a time differently from its table")
+    defined = bytes(b for b in range(256) if table[b] != UNDEFINED)
+    if defined.decode(name) != "".join(chr(table[b]) for b in defined):
+        raise ValueError(f"{name!r} decodes a run of bytes differently from one at a time")
+    return table
+
+
+def render(oracle, modules, tables, aliases):
+    lines = [
+        "// SPDX-License-Identifier: GPL-3.0-or-later",
+        "// SPDX-FileCopyrightText: 2026 Gavin Lucas",
+        "",
+        f"//! `CPython` {oracle}'s codecs, as a Python file's declared encoding is read.",
+        "//!",
+        "//! Generated by `scripts/generate-codecs` from the oracle's own `encodings` package;",
+        "//! regenerate with that script rather than editing, as `architecture/encoding.md` says.",
+        "//! Derived from `CPython`'s codecs, Copyright (c) 2001 Python Software Foundation; All Rights",
+        "//! Reserved, under the PSF License Version 2, which `packaging/deb/copyright` carries.",
+        "",
+        "use crate::python::Module;",
+        "",
+        "/// The marker for a byte that decodes to nothing, as `CPython`'s own tables mark it.",
+        f"pub(crate) const UNDEFINED: u16 = 0x{UNDEFINED:04X};",
+        "",
+        "/// Every codec module `CPython` has on this platform, by name, sorted, and its kind.",
+        "pub(crate) static MODULES: &[(&str, Module)] = &[",
+    ]
+    lines += [f'    ("{name}", Module::{kind}),' for name, kind in modules]
+    lines += [
+        "];",
+        "",
+        "/// Every alias `CPython`'s `encodings.aliases` lists, sorted, and the module it names.",
+        "pub(crate) static ALIASES: &[(&str, &str)] = &[",
+    ]
+    lines += [f'    ("{alias}", "{module}"),' for alias, module in aliases]
+    lines += [
+        "];",
+        "",
+        "/// Each single-byte codec's name, and what each byte decodes to, `UNDEFINED` for none.",
+        "pub(crate) static SINGLE_BYTE: &[(&str, [u16; 256])] = &[",
+    ]
+    for name, table in tables:
+        lines.append(f'    ("{name}", [')
+        for row in range(0, 256, 8):
+            values = ", ".join(f"0x{value:04X}" for value in table[row : row + 8])
+            lines.append(f"        {values},")
+        lines.append("    ]),")
+    lines += ["];", ""]
+    return "\n".join(lines)
+
+
+def fail(message):
+    print(f"generate-codecs: {message}", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

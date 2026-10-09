@@ -81,13 +81,15 @@ than replacing it.
 ## Matching, in the file's own encoding
 
 A query is matched in each file's encoding by encoding the query the way the file is, rather
-than decoding the file (`src/encoding.rs`, `src/search.rs`).  The encoding is taken from what
-the file declares, never guessed from statistics:
+than decoding the file (`crates/encoding`, specified in `encoding.md`, and `src/search.rs`).  The
+encoding is taken from what the file declares, never guessed from statistics:
 
 | the file | is | a query is matched |
 |---|---|---|
 | starts with a byte-order mark | UTF-8, UTF-16 or UTF-32, as the mark says | encoded to match; a match must start on a code unit |
 | no mark, and a NUL in its first 8000 bytes | binary, by git's own test | not at all: the run says how many binary files it skipped |
+| a Python file - `.py`, `.pyi` or `.pyw` - with no UTF-16 or UTF-32 mark and no NUL in its first 8000 bytes, declaring an encoding on its first or second line | that encoding, as CPython reads the declaration (`encoding.md`); bytes it does not decode count as one character each | as its bytes in that encoding; a character the encoding cannot hold matches nothing, and one it spells more than one way leaves the file not searched for that query, noted or failing an assertion as below |
+| a Python file whose declaration cannot be honoured: an encoding Python does not know, a codec not of text, the `undefined` codec, one quaff does not read, or a declaration contradicting a UTF-8 mark | not read | not at all, for any query: a note names it and says why, and an assertion treats it as not searched (see *Exit codes*) |
 | no mark, valid UTF-8 | UTF-8 | as its UTF-8 bytes |
 | anything else | an unknown 8-bit encoding | if ASCII, as its bytes, which are the same in every ASCII-compatible encoding; otherwise not at all: a `find` notes how many files it skipped, and an assertion fails naming them (see *Exit codes*) |
 
@@ -108,8 +110,7 @@ a CRLF file as it answers the same file with LF endings.
 
 **Memory.**  A file is read whole, and positions are worked out in one pass over its
 characters that keeps only the current line and column and stops at the last match, so a search
-needs about the size of the largest file it reads.  No size limit is applied.  Python's
-encoding declarations are not read.
+needs about the size of the largest file it reads.  No size limit is applied.
 
 ## Output
 
@@ -134,8 +135,9 @@ src/app.py:12:5-12:22: def connect(self):
   whatever the number of queries.
 - **Notes go to standard error**, prefixed `quaff:`: no matches for a `find` without an
   `expect`, binary files not searched, files in an unknown encoding not searched for a
-  non-ASCII query, ignore file lines skipped, special files not read, symbolic links not
-  followed.  Anything not looked at is said, never silently left out.
+  non-ASCII query, a file not searched for a query its encoding spells more than one way, a
+  Python file whose declared encoding cannot be read and why, ignore file lines skipped, special
+  files not read, symbolic links not followed.  Anything not looked at is said, never silently left out.
 - **A failed assertion** goes to standard error before the notes, as where it was written, the
   count expected and the count found:
   `quaff: checks.quaff:3:1: expected exactly 2 matches of "TODO", found 1`.  One whose scope
@@ -165,7 +167,9 @@ run stops after the block, exit 2, and nothing after it runs.
 
 **An assertion whose scope holds a file its query could not be searched in** is decided only
 where no number of matches in those files could change it, since they can only add matches.
-That is the case for a non-ASCII query and a file in an unknown 8-bit encoding.
+That is the case for a non-ASCII query and a file in an unknown 8-bit encoding, for a query
+with a character a file's single-byte encoding spells more than one way, and for every query
+and a Python file whose declared encoding cannot be read.
 - **Settled by what was found, held:** `at least N` with N already found, or `any`.  It passes,
   and a note names the unsearched files.
 - **Settled by what was found, failed:** `none`, `at most N`, `exactly N` or `N or none` with
@@ -176,7 +180,7 @@ That is the case for a non-ASCII query and a file in an unknown 8-bit encoding.
   checkable.
 
 An assertion's unsearched files get no separate note.  A `find` without `expect` notes them
-instead.  Binary files never fail an assertion: they are not text, so skipping them leaves no
+instead, and a Python file whose declared encoding cannot be read is noted whenever one ran.  Binary files never fail an assertion: they are not text, so skipping them leaves no
 question unanswered.
 
 **Every source is read and parsed, and the whole program checked, before any file is looked
