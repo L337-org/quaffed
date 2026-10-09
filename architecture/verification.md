@@ -231,14 +231,14 @@ cargo flamegraph --profile profiling --bin quaff -o target/flamegraph.svg \
   leaves it after a failed one, so remove it with `rm -rf cargo-flamegraph.trace`.
   `.gitignore` covers all three wherever they are written, so a leftover cannot be committed.
 
-## Failed runs nobody is watching
+## Failed runs are posted to Slack
 
-A run started by a schedule, a push to `main` or a release has no pull request to show its
-failure on, so its failure is posted to the project's Slack channel instead.
+A failed run is otherwise one red entry in a list nobody opens, so a failure started by a
+schedule, a push to `main`, a release or a pull request is posted to the project's Slack channel.
 `.github/workflows/report-failures.yaml` names the workflows to report and calls the shared Slack
 reporter from `github-workflows`, whose README at the pinned commit says what it posts, when,
-and to where.  Pull request runs and runs started by hand are left out on purpose, because
-someone is watching each.  To add a workflow that runs on a schedule, a push or a release:
+and to where.  Runs started by hand are left out on purpose, because whoever started one is
+watching.  To add a workflow that runs on a schedule, a push, a release or a pull request:
 
 1. Give it a `name:`, and give every job a `timeout-minutes:`, so a hang ends as a failure
    instead of running for six hours.
