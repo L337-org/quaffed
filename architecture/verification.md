@@ -188,6 +188,41 @@ by repository ID - is not caught, and nor is code rewritten from it so that it n
 it.  Those are beyond a mechanical check; the corpus is written, not copied, and a new source
 in the manifest is reviewed.
 
+## Profiling
+
+When a gate flags a regression, a flamegraph shows where the time goes.  The `profiling` Cargo
+profile is the shipped `dist` build - thin LTO, one codegen unit - with full debug information
+and nothing stripped, so that every frame is named, inlined ones included.  It builds for the
+host, so on Linux it uses the platform allocator rather than the package's mimalloc
+(`release.md`).
+
+```bash
+scripts/install-tools flamegraph    # once: cargo-flamegraph, at the manifest's version
+cargo flamegraph --profile profiling --bin quaff -o target/flamegraph.svg \
+    -- 'def ' target/corpus/cpython/Lib/test > target/flamegraph.out
+```
+
+- **On Linux, add `--root`.**  `cargo flamegraph` records with `perf` - Debian's `linux-perf`
+  package, matching the running kernel - and Debian refuses `perf` to anyone but root by default
+  (`kernel.perf_event_paranoid` is 3).  `--root` runs `perf` under `sudo` for that one recording
+  and changes nothing on the machine.  Inside a container, `perf` also needs `--privileged`.
+- **On macOS** it records with Xcode's Time Profiler, through `xctrace`, so it needs Xcode, and
+  no `sudo`.  `xctrace` has been seen to fail now and then with *"Failed stoping ktrace
+  session"*, writing no SVG; it said nothing more, and the same run succeeded when repeated, so
+  repeat it.
+- **Profile a real run**: everything after `--` is `quaff`'s own arguments, here a search of the
+  fetched corpus (`scripts/fetch-corpus`), or the run being investigated.  Standard output goes
+  to a file, as a user's pipe would take it, rather than to the terminal, whose speed is not
+  `quaff`'s.  A sub-second run gives a few hundred samples; a larger scope gives more.
+- **Check it**: open the SVG in a browser.  Frames are named - `quaff::run::search_files`,
+  `quaffed_encoding::...`, `ignore::...` - and an `[unknown]` frame means debug information is
+  missing, so check that the build used `--profile profiling`.
+- **Clean up**: on Linux, `perf` leaves `perf.data` in the current directory, owned by root under
+  `--root`, so remove it with `sudo rm perf.data`.  On macOS `cargo flamegraph` removes its
+  `cargo-flamegraph.trace` directory after a successful run, and leaves it after a failed one,
+  so remove it with `rm -r cargo-flamegraph.trace`.  `.gitignore` covers both, so a leftover
+  cannot be committed.
+
 ## The tool manifest
 
 Most verification tools are binaries installed with `cargo install`, not crate dependencies,
