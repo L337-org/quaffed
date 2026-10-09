@@ -1,0 +1,23 @@
+name: 'Deliberate scheduled failure'
+
+# Fails on every run, to show that a failed scheduled run reaches #quaffed through
+# report-failures.yaml, which only GitHub's own scheduler on the default branch can show.
+# Removed once it has posted.  A manual run fails too, and is not posted, which shows that a
+# run someone started by hand is left to them.
+on:
+  schedule:
+    - cron: '23 * * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  fail:
+    runs-on: [ubuntu-latest]
+    name: Fail on purpose
+    timeout-minutes: 2
+    steps:
+      - name: Fail
+        run: |
+          echo "::error::This workflow fails on purpose, to test that a failed scheduled run is posted to Slack."
+          exit 1
