@@ -10,7 +10,6 @@ on:
       - 'Code review'
       - 'Package'
       - 'Release'
-      - 'Deliberate scheduled failure'
     types: [completed]
 
 permissions:
