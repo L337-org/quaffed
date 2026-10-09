@@ -1,4 +1,4 @@
-# Each ecosystem's updates come as one pull request a week rather than one per dependency:
+# Each ecosystem's version updates come as one pull request a week rather than one per dependency:
 # separate pull requests each need a rebase and a full CI run after the one before merges, and
 # a grouped one that fails is cheaper to bisect than that queue is to work through.
 version: 2
@@ -11,6 +11,11 @@ updates:
       cargo:
         patterns:
           - "*"
+        # Ruff's crates stay out and come on their own: upgrading them is deliberate work with its
+        # own checklist (architecture/python.md), and a Ruff release that breaks the build would
+        # otherwise hold back every other update in the group.
+        exclude-patterns:
+          - "ruff_*"
 
   - package-ecosystem: "github-actions"
     # "/" covers .github/workflows and a root action.yml only; the repository's own composite
