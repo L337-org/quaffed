@@ -193,9 +193,9 @@ in the manifest is reviewed.
 
 ## The coverage ratchet
 
-A pull request that lowers line or region coverage against main fails the **Coverage ratchet**,
-in `.github/workflows/coverage.yaml`.  It is a floor, not a target: no percentage is set, and a
-pull request only has to add no untested code, in the sense the gated metrics below define.
+A pull request that lowers line or region coverage against main, with more of it uncovered than
+on main, fails the **Coverage ratchet**, in `.github/workflows/coverage.yaml`.  It is a floor,
+not a target: no percentage is set.
 
 - **Both sides are measured in the same run.**  The pull request's side is the pull request
   merged into main's tip, which is what would land; main's side is that merge's first parent,

@@ -2,7 +2,8 @@ name: 'Coverage'
 permissions:
   contents: read
 
-# A pull request that lowers line or region coverage against main fails the Coverage ratchet;
+# A pull request that lowers line or region coverage against main, with more of it uncovered than
+# on main, fails the Coverage ratchet;
 # condition coverage is measured alongside and reported, never failing it.  Main is measured in
 # the same run as the pull request, at the tip the pull request would merge into, so the two
 # sides share a runner image, toolchain and tool versions and no figure is stored between runs.

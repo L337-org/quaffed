@@ -1,6 +1,6 @@
-//! `scripts/coverage-ratchet` fails when a gated metric falls against main, names the files where
-//! it fell, reports condition coverage without failing on it, and fails rather than passes when
-//! it has nothing to compare.
+//! `scripts/coverage-ratchet` fails when a gated metric falls against main with more uncovered,
+//! names the files where it fell, reports condition coverage without failing on it, and fails
+//! rather than passes when it has nothing to compare.
 //!
 //! Each test writes llvm-cov summaries in the shape `scripts/coverage` produces and runs the script
 //! with `python3`.  The measurement itself runs in CI's **Coverage** workflow;
@@ -157,7 +157,7 @@ fn unchanged_coverage_passes_and_shows_every_metric() {
     let text = stdout(&out);
     assert!(text.starts_with("## Coverage\n"), "{text}");
     assert!(
-        text.contains("No gated metric fell against main."),
+        text.contains("No gated metric fell with more uncovered than on main."),
         "{text}"
     );
     assert!(
@@ -262,7 +262,7 @@ fn a_drop_in_condition_coverage_is_reported_without_failing() {
         "{text}"
     );
     assert!(
-        text.contains("No gated metric fell against main."),
+        text.contains("No gated metric fell with more uncovered than on main."),
         "{text}"
     );
 }
@@ -553,7 +553,7 @@ fn a_fall_from_covered_code_removed_passes_and_says_why() {
     );
     let text = stdout(&out);
     assert!(
-        text.contains("No gated metric fell against main."),
+        text.contains("No gated metric fell with more uncovered than on main."),
         "{text}"
     );
     assert!(
@@ -586,7 +586,7 @@ fn more_uncovered_with_a_rising_share_passes() {
         stderr(&out)
     );
     assert!(
-        stdout(&out).contains("No gated metric fell against main."),
+        stdout(&out).contains("No gated metric fell with more uncovered than on main."),
         "{}",
         stdout(&out)
     );

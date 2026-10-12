@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare a pull request's coverage with main's, failing if a gated metric fell.
+"""Compare a pull request's coverage with main's, failing if a gated metric fell with more uncovered.
 
 Reads the summaries `scripts/coverage` writes - one from the pinned stable toolchain, one from the
 condition-coverage nightly - for main and for the pull request, and writes a Markdown section
@@ -21,8 +21,8 @@ than the code - test order, timing, a random input - and the comparison with mai
 so the run fails naming the files that differed.  Without it, the summary says determinism was
 not checked.
 
-Exit status: 0 when no gated metric fell, 1 when one did, 2 when a gated metric could not be
-compared or the measurement was not deterministic.  The summary is written in every case, so the
+Exit status: 0 when no gated metric fell with more uncovered, 1 when one did, 2 when a gated
+metric could not be compared or the measurement was not deterministic.  The summary is written in every case, so the
 job page says which.
 """
 
@@ -202,7 +202,7 @@ def render(rows, fell, unevaluated, details, removed, determinism):
     elif fell:
         out.append(f"**Coverage fell against main: {', '.join(fell)}.**")
     else:
-        out.append("No gated metric fell against main.")
+        out.append("No gated metric fell with more uncovered than on main.")
     for metric in removed:
         out.append(f"The share of {metric} covered fell, but no more of it is uncovered than on main: "
                    "covered code was removed or shrunk, so this does not fail the ratchet.")
