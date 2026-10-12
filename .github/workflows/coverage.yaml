@@ -27,6 +27,11 @@ jobs:
       matrix:
         side: [base, head]
         kind: [stable, condition]
+        # The pull request's stable coverage a second time, on another runner: if it differs
+        # from the first, coverage depends on more than the code and the ratchet says so.
+        include:
+          - side: head-repeat
+            kind: stable
     steps:
       - name: Check out source repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -118,6 +123,7 @@ jobs:
           scripts/coverage-ratchet \
             --base-stable summaries/coverage-base-stable.json \
             --head-stable summaries/coverage-head-stable.json \
+            --head-stable-repeat summaries/coverage-head-repeat-stable.json \
             --base-condition summaries/coverage-base-condition.json \
             --head-condition summaries/coverage-head-condition.json \
             --summary "$GITHUB_STEP_SUMMARY"

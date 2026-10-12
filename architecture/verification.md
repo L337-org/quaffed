@@ -217,6 +217,11 @@ pull request only has to leave coverage no worse than it found it.
   property tests exercise the same inputs on both sides and coverage differs only where the
   code does.  With a random seed, two runs of the same code can cover different regions,
   which the ratchet would fail on at random.  The Test job keeps the random seed, so it still explores.
+- **Determinism is checked on every run.**  The pull request's stable coverage is measured twice,
+  on separate runners, and `scripts/coverage-ratchet` fails if the two differ, naming each file
+  that differed and both its figures.  A difference means coverage depends on something other
+  than the code - test order, timing, an input not fixed - so the comparison with main would
+  be noise; the file named is where to look, and what fixes it is a deterministic test.
 - **No figure fails rather than passes.**  A missing or unreadable summary, or a gated metric
   that counts nothing, is reported as *no data* or *no baseline*, and the job fails.  A failing
   test fails its measurement and leaves no summary, so a broken build is never compared.

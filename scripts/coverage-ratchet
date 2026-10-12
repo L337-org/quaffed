@@ -5,7 +5,7 @@ Reads the summaries `scripts/coverage` writes - one from the pinned stable toolc
 condition-coverage nightly - for main and for the pull request, and writes a Markdown section
 for the pull request's job summary.  architecture/verification.md has the reasoning.
 
-    scripts/coverage-ratchet --base-stable F --head-stable F
+    scripts/coverage-ratchet --base-stable F --head-stable F [--head-stable-repeat F]
                              [--base-condition F] [--head-condition F] [--summary F]
 
 A metric is a covered/total pair.  A gated metric fails the run when its share covered on the
@@ -13,8 +13,15 @@ pull request is below main's; the others are reported and never fail it.  A metr
 figure on one side - its summary missing, unreadable, or counting nothing - is reported as
 such, and fails the run if it is gated, because a ratchet that cannot compare has not passed.
 
+A second stable measurement of the pull request, given with --head-stable-repeat, must match the
+first file for file and metric for metric.  If it does not, coverage depends on something other
+than the code - test order, timing, a random input - and the comparison with main means nothing,
+so the run fails naming the files that differed.  Without it, the summary says determinism was
+not checked.
+
 Exit status: 0 when no gated metric fell, 1 when one did, 2 when a gated metric could not be
-compared.  The summary is written in every case, so the job page says which.
+compared or the measurement was not deterministic.  The summary is written in every case, so the
+job page says which.
 """
 
 import argparse
@@ -154,7 +161,29 @@ def compare(sides):
     return rows, fell, unevaluated, details
 
 
-def render(rows, fell, unevaluated, details):
+def undeterministic(first, repeat):
+    """Files whose figures differ between two measurements of the same code, with both figures.
+
+    Returns:
+        list: `(file, first, repeat)` per file that differs, where each figure is that file's
+        `{field: (covered, count)}`, or None when the file is absent from that measurement.
+    """
+    differ = []
+    for name in sorted(set(first["files"]) | set(repeat["files"])):
+        a, b = first["files"].get(name), repeat["files"].get(name)
+        if a != b:
+            differ.append((name, a, b))
+    return differ
+
+
+def describe(figures):
+    if figures is None:
+        return "absent"
+    return ", ".join(f"{field} {covered}/{count}" for field, (covered, count) in sorted(figures.items())
+                     if field in ("lines", "regions"))
+
+
+def render(rows, fell, unevaluated, details, determinism):
     out = ["## Coverage", ""]
     if unevaluated:
         out.append("**Not evaluated, so the ratchet fails:**")
@@ -163,6 +192,12 @@ def render(rows, fell, unevaluated, details):
         out.append(f"**Coverage fell against main: {', '.join(fell)}.**")
     else:
         out.append("No gated metric fell against main.")
+    status, differ = determinism
+    out += ["", f"**Determinism:** {status}"]
+    for name, a, b in differ[:MAX_FILES]:
+        out.append(f"- `{name}`: {describe(a)} in one measurement, {describe(b)} in the other")
+    if len(differ) > MAX_FILES:
+        out.append(f"- and {len(differ) - MAX_FILES} more")
     out += ["", "| Metric | main | this pull request | change (points) | |",
             "| --- | --- | --- | --- | --- |"]
     for metric, gated, base, head, change in rows:
@@ -183,6 +218,8 @@ def main(argv):
     for side in ("base", "head"):
         for source in ("stable", "condition"):
             parser.add_argument(f"--{side}-{source}", metavar="FILE")
+    parser.add_argument("--head-stable-repeat", metavar="FILE",
+                        help="a second stable measurement of the pull request, to check it matches the first")
     parser.add_argument("--summary", metavar="FILE",
                         help="append the Markdown section here (the job summary); default stdout only")
     args = parser.parse_args(argv)
@@ -196,7 +233,29 @@ def main(argv):
                 sides[(side, source)] = exc
 
     rows, fell, unevaluated, details = compare(sides)
-    text = render(rows, fell, unevaluated, details)
+
+    differ = []
+    if args.head_stable_repeat is None:
+        determinism = "not checked: no second measurement of the pull request was given."
+    else:
+        first = sides[("head", "stable")]
+        try:
+            repeat = load(args.head_stable_repeat)
+        except NoFigure as exc:
+            determinism = f"not established: the second measurement has no figure ({exc})."
+            unevaluated.append(f"determinism: the second measurement of the pull request has no figure ({exc})")
+        else:
+            if isinstance(first, NoFigure):
+                determinism = "not established: the first measurement has no figure."
+            else:
+                differ = undeterministic(first, repeat)
+                if differ:
+                    determinism = (f"**two measurements of the same code differ in {len(differ)} file(s)**, so "
+                                   "coverage depends on more than the code and the comparison means nothing:")
+                    unevaluated.append(f"determinism: two measurements of the same code differ in {len(differ)} file(s)")
+                else:
+                    determinism = "two measurements of the pull request matched in every file."
+    text = render(rows, fell, unevaluated, details, (determinism, differ))
     sys.stdout.write(text)
     if args.summary:
         with open(args.summary, "a", encoding="utf-8") as f:

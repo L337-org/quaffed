@@ -397,3 +397,91 @@ fn the_summary_is_appended_to_the_named_file() {
     );
     assert_eq!(&written["earlier section\n".len()..], stdout(&out));
 }
+
+#[test]
+fn without_a_second_measurement_the_summary_says_determinism_was_not_checked() {
+    let scratch = Scratch::new();
+    let out = run(&unchanged(&scratch));
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert!(
+        stdout(&out).contains("**Determinism:** not checked: no second measurement"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn a_second_measurement_that_matches_passes() {
+    let scratch = Scratch::new();
+    let mut sides = unchanged(&scratch).to_vec();
+    sides.push((
+        "head-stable-repeat",
+        scratch.summary("repeat.json", &[("src/a.rs", SAME)]),
+    ));
+    let out = run(&sides);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}{}",
+        stdout(&out),
+        stderr(&out)
+    );
+    assert!(
+        stdout(&out).contains(
+            "**Determinism:** two measurements of the pull request matched in every file."
+        ),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn a_second_measurement_that_differs_fails_naming_the_file_and_both_figures() {
+    let scratch = Scratch::new();
+    let mut sides = unchanged(&scratch).to_vec();
+    sides.push((
+        "head-stable-repeat",
+        scratch.summary(
+            "repeat.json",
+            &[("src/a.rs", &[("lines", 90, 100), ("regions", 44, 50)])],
+        ),
+    ));
+    let out = run(&sides);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "{}{}",
+        stdout(&out),
+        stderr(&out)
+    );
+    let text = stdout(&out);
+    assert!(
+        text.contains("**two measurements of the same code differ in 1 file(s)**"),
+        "{text}"
+    );
+    assert!(
+        text.contains("- `src/a.rs`: lines 90/100, regions 45/50 in one measurement, lines 90/100, regions 44/50 in the other"),
+        "{text}"
+    );
+    assert!(
+        stderr(&out)
+            .contains("not evaluated - determinism: two measurements of the same code differ"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn a_second_measurement_that_is_missing_fails() {
+    let scratch = Scratch::new();
+    let mut sides = unchanged(&scratch).to_vec();
+    sides.push(("head-stable-repeat", scratch.path("absent.json")));
+    let out = run(&sides);
+    assert_eq!(out.status.code(), Some(2), "{}", stdout(&out));
+    assert!(
+        stdout(&out)
+            .contains("determinism: the second measurement of the pull request has no figure"),
+        "{}",
+        stdout(&out)
+    );
+}
