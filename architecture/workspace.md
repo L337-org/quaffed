@@ -73,6 +73,32 @@ should check `rustc --version` against the file after either one moves.
 different claim from the pinned toolchain.  It is the pinned minor version, because no older one
 is tested.
 
+### Checklist: upgrading the toolchain
+
+1. Change `channel` in `rust-toolchain.toml` and `rust-version` in the root `Cargo.toml`
+   together, then build, test and run clippy.  New lints are fixed or allowed, with a reason, in
+   `[workspace.lints]`.
+2. **Check whether the new stable accepts condition coverage.**  The release notes say when the
+   nightly's `-Z coverage-options` is stabilised and under what name; the stable form is expected
+   to be `-C coverage-options`, which an older stable rejects as *unknown codegen option*.  Try it
+   on the new toolchain:
+
+   ```bash
+   RUSTFLAGS=-Ccoverage-options=condition cargo llvm-cov --workspace --no-report
+   ```
+
+   If it builds, condition coverage moves into the gate (`verification.md`, the coverage
+   ratchet):
+   1. in `scripts/coverage`, build the `stable` run with that flag and report it with
+      `--branch`, and remove the `condition` mode;
+   2. in `scripts/coverage-ratchet`, read `conditions` from the stable summary and add it to
+      `GATED`;
+   3. in `.github/workflows/coverage.yaml`, remove `condition` from the matrix and its install
+      step;
+   4. remove `nightly-coverage` from `tools.toml`;
+   5. update the coverage ratchet section of `verification.md`.
+3. Update this page and anything else that names the old version.
+
 ## Lints and formatting
 
 - **`unsafe_code = "forbid"`** across the workspace.  Relaxing it is a decision to record, not

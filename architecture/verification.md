@@ -191,6 +191,44 @@ by repository ID - is not caught, and nor is code rewritten from it so that it n
 it.  Those are beyond a mechanical check; the corpus is written, not copied, and a new source
 in the manifest is reviewed.
 
+## The coverage ratchet
+
+A pull request that lowers line or region coverage against main fails the **Coverage ratchet**,
+in `.github/workflows/coverage.yaml`.  It is a floor, not a target: no percentage is set, and a
+pull request only has to leave coverage no worse than it found it.
+
+- **Both sides are measured in the same run.**  Main's side is the commit the pull request
+  branched from, measured from a second worktree with the pull request's own
+  `scripts/coverage`, so both are measured the same way, on the same runner image and tools.  No
+  figure is stored between runs, so none can drift.
+- **What is compared.**  `scripts/coverage-ratchet` reads the four summaries and writes a
+  *Coverage* section in the job summary, giving each metric on both sides and the change.  A
+  metric is compared as an exact fraction covered, so rounding cannot hide a fall or invent one.
+- **The gated metrics are the `GATED` list in `scripts/coverage-ratchet`**, lines and regions.
+  When one falls, the job fails and the summary names the files with more uncovered than on main.
+- **Condition coverage is reported only.**  It is the nightly's `branches` figure, built with
+  `-Zcoverage-options=condition`: llvm-cov counts each condition of a boolean expression as a
+  branch, which catches an untested right-hand side of `&&` that line and region coverage count
+  as covered.  It needs an unstable flag, so it runs on the nightly `tools.toml` pins and never
+  fails the job; it joins `GATED` when the flag reaches stable, which the toolchain-upgrade
+  checklist in `workspace.md` checks.  `--branch` is passed only when reporting, because at
+  build time it sets its own coverage level after this one and the last level wins.
+- **No figure fails rather than passes.**  A missing or unreadable summary, or a gated metric
+  that counts nothing, is reported as *no data* or *no baseline*, and the job fails.  A failing
+  test fails its measurement and leaves no summary, so a broken build is never compared.
+
+To measure locally, with rustup, from the root of the checkout:
+
+```bash
+scripts/install-tools cargo-llvm-cov nightly-coverage   # once
+scripts/coverage stable target/coverage-stable.json
+scripts/coverage condition target/coverage-condition.json
+```
+
+`scripts/coverage` adds the `llvm-tools` component to the pinned toolchain if it is missing.  To
+compare against another checkout, measure it the same way, giving its path as the third argument,
+and pass both to `scripts/coverage-ratchet`.
+
 ## Profiling
 
 When a gate flags a regression, a flamegraph shows where the time goes.  The `profiling` Cargo
