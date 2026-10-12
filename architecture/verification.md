@@ -213,6 +213,10 @@ pull request only has to leave coverage no worse than it found it.
   fails the job; it joins `GATED` when the flag reaches stable, which the toolchain-upgrade
   checklist in `workspace.md` checks.  `--branch` is passed only when reporting, because at
   build time it sets its own coverage level after this one and the last level wins.
+- **The measurement is deterministic.**  `scripts/coverage` fixes proptest's seed, so the
+  property tests exercise the same inputs on both sides and coverage differs only where the
+  code does.  With a random seed, two runs of the same code can cover different regions,
+  which the ratchet would fail on at random.  The Test job keeps the random seed, so it still explores.
 - **No figure fails rather than passes.**  A missing or unreadable summary, or a gated metric
   that counts nothing, is reported as *no data* or *no baseline*, and the job fails.  A failing
   test fails its measurement and leaves no summary, so a broken build is never compared.
