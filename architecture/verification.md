@@ -202,12 +202,15 @@ pull request only has to leave coverage no worse than it found it.
   so the comparison covers exactly what the pull request adds.  Main is measured from a second
   worktree with the pull request's own `scripts/coverage`, so both are measured the same way, on
   the same runner image and tools.  No figure is stored between runs, so none can drift.
-- **What is compared.**  `scripts/coverage-ratchet` reads the summaries the workflow passes it and writes a
-  *Coverage* section in the job summary, giving each metric on both sides and the change.  A
-  metric is compared as an exact fraction covered, so rounding cannot hide a fall or invent one.
+- **What is compared.**  `scripts/coverage-ratchet` reads the summaries the workflow passes it
+  and writes a *Coverage* section in the job summary, giving each metric on both sides and the
+  change.  A metric is compared as an exact fraction covered, so rounding cannot hide a fall or
+  invent one.
 - **The gated metrics are the `GATED` list in `scripts/coverage-ratchet`**, lines and regions.
-  When one falls, the job fails and the summary names the files with more uncovered than on main;
-  when none has, the fall came from covered code removed or shrunk, and the summary says so.
+  One fails the job when its share covered falls and more of it is uncovered than on main, and
+  the summary names the files with more uncovered.  A share that falls with no more uncovered
+  comes from covered code removed or shrunk, such as deleting a well-tested feature; it is
+  reported and passes, because its only remedy would be tests for unrelated code.
 - **Condition coverage is reported only.**  It is the nightly's `branches` figure, built with
   `-Zcoverage-options=condition`: llvm-cov counts each condition of a boolean expression as a
   branch, which catches an untested right-hand side of `&&` that line and region coverage count

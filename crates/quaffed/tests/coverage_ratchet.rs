@@ -533,7 +533,7 @@ fn a_difference_outside_lines_and_regions_is_named_by_the_field_that_differs() {
 }
 
 #[test]
-fn a_fall_from_covered_code_removed_says_so_when_no_file_is_named() {
+fn a_fall_from_covered_code_removed_passes_and_says_why() {
     let scratch = Scratch::new();
     let mut sides = unchanged(&scratch);
     sides[0].1 = scratch.summary(
@@ -544,15 +544,50 @@ fn a_fall_from_covered_code_removed_says_so_when_no_file_is_named() {
         ],
     );
     let out = run(&sides);
-    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}{}",
+        stdout(&out),
+        stderr(&out)
+    );
     let text = stdout(&out);
     assert!(
-        text.contains("**Coverage fell against main: lines, regions.**"),
+        text.contains("No gated metric fell against main."),
         "{text}"
     );
     assert!(
-        text.contains("No file has more uncovered lines than on main, so the fall in lines comes from covered code removed or shrunk"),
+        text.contains("The share of lines covered fell, but no more of it is uncovered than on main: covered code was removed or shrunk, so this does not fail the ratchet."),
         "{text}"
     );
-    assert!(!text.contains("**Where it fell"), "{text}");
+    assert!(
+        text.contains("| lines | 95.00% (190/200) | 90.00% (90/100) | -5.00 | gated |"),
+        "{text}"
+    );
+}
+
+#[test]
+fn more_uncovered_with_a_rising_share_passes() {
+    let scratch = Scratch::new();
+    let mut sides = unchanged(&scratch);
+    sides[1].1 = scratch.summary(
+        "head-stable.json",
+        &[
+            ("src/a.rs", SAME),
+            ("src/new.rs", &[("lines", 99, 100), ("regions", 50, 50)]),
+        ],
+    );
+    let out = run(&sides);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}{}",
+        stdout(&out),
+        stderr(&out)
+    );
+    assert!(
+        stdout(&out).contains("No gated metric fell against main."),
+        "{}",
+        stdout(&out)
+    );
 }

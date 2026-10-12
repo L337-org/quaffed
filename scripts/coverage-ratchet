@@ -9,7 +9,9 @@ for the pull request's job summary.  architecture/verification.md has the reason
                              [--base-condition F] [--head-condition F] [--summary F]
 
 A metric is a covered/total pair.  A gated metric fails the run when its share covered on the
-pull request is below main's; the others are reported and never fail it.  A metric with no
+pull request is below main's and more of it is uncovered than on main; the others are reported
+and never fail it.  A share that falls with no more uncovered - covered code removed or shrunk -
+is reported and passes, since the only remedy would be tests for unrelated code.  A metric with no
 figure on one side - its summary missing, unreadable, or counting nothing - is reported as
 such, and fails the run if it is gated, because a ratchet that cannot compare has not passed.
 
@@ -121,8 +123,13 @@ def files_that_fell(base, head, field):
 
 
 def compare(sides):
-    """Compare every metric.  Returns (rows, fell, unevaluated, details) for the summary."""
-    rows, fell, unevaluated, details = [], [], [], []
+    """Compare every metric.
+
+    Returns:
+        tuple: (rows, fell, unevaluated, details, removed) for the summary, where `removed` holds
+        the gated metrics whose share fell with no more uncovered than on main.
+    """
+    rows, fell, unevaluated, details, removed = [], [], [], [], []
     for metric, (source, field) in METRICS.items():
         gated = metric in GATED
         base, head = sides[("base", source)], sides[("head", source)]
@@ -153,12 +160,16 @@ def compare(sides):
                      f"{percent(head_covered, head_count)} ({head_covered}/{head_count})",
                      f"{change:+.2f}"))
         if head_share < base_share:
+            more_uncovered = head_count - head_covered > base_count - base_covered
+            if gated and not more_uncovered:
+                removed.append(metric)
+                continue
             if gated:
                 fell.append(metric)
             worst = files_that_fell(base, head, field)
             if worst:
                 details.append((metric, gated, worst))
-    return rows, fell, unevaluated, details
+    return rows, fell, unevaluated, details, removed
 
 
 def undeterministic(first, repeat):
@@ -183,20 +194,18 @@ def describe(figures, fields):
                      if field in fields)
 
 
-def render(rows, fell, unevaluated, details, determinism):
+def render(rows, fell, unevaluated, details, removed, determinism):
     out = ["## Coverage", ""]
     if unevaluated:
         out.append("**Not evaluated, so the ratchet fails:**")
         out += [f"- {line}" for line in unevaluated]
     elif fell:
         out.append(f"**Coverage fell against main: {', '.join(fell)}.**")
-        named = {metric for metric, _gated, _worst in details}
-        for metric in fell:
-            if metric not in named:
-                out.append(f"No file has more uncovered {metric} than on main, so the fall in {metric} "
-                           "comes from covered code removed or shrunk, not from new uncovered code.")
     else:
         out.append("No gated metric fell against main.")
+    for metric in removed:
+        out.append(f"The share of {metric} covered fell, but no more of it is uncovered than on main: "
+                   "covered code was removed or shrunk, so this does not fail the ratchet.")
     status, differ = determinism
     out += ["", f"**Determinism:** {status}"]
     for name, a, b in differ[:MAX_FILES]:
@@ -240,7 +249,7 @@ def main(argv):
             except NoFigure as exc:
                 sides[(side, source)] = exc
 
-    rows, fell, unevaluated, details = compare(sides)
+    rows, fell, unevaluated, details, removed = compare(sides)
 
     differ = []
     if args.head_stable_repeat is None:
@@ -263,7 +272,7 @@ def main(argv):
                     unevaluated.append(f"determinism: two measurements of the same code differ in {len(differ)} file(s)")
                 else:
                     determinism = "two measurements of the pull request matched in every file."
-    text = render(rows, fell, unevaluated, details, (determinism, differ))
+    text = render(rows, fell, unevaluated, details, removed, (determinism, differ))
     sys.stdout.write(text)
     if args.summary:
         with open(args.summary, "a", encoding="utf-8") as f:
