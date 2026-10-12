@@ -40,9 +40,22 @@ pub fn parse_source(program: &mut Program, source: Source, text: &str) -> Result
     parser::parse(&tokens, index, program)
 }
 
+/// Whether `found` lies in `lo..=hi`.  Throwaway, to show condition coverage: the test below makes
+/// the left side of `&&` false but never the right.
+#[must_use]
+pub fn in_range(found: usize, lo: usize, hi: usize) -> bool {
+    found >= lo && found <= hi
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn in_range_is_tested_on_one_side_only() {
+        assert!(in_range(5, 1, 10));
+        assert!(!in_range(0, 1, 10));
+    }
     use quaffed_representation::program::Statement;
 
     #[test]

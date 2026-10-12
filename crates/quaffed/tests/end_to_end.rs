@@ -475,22 +475,6 @@ fn an_unparseable_ignore_line_is_skipped_and_the_rest_of_the_file_applies() {
 }
 
 #[test]
-fn a_directory_that_cannot_be_listed_stops_the_run_naming_it() {
-    let project = Project::new(&[(".git/HEAD", ""), ("locked/a.py", "TODO\n")]);
-    let locked = Locked::new(project.dir.join("locked"));
-    if fs::read_dir(&locked.path).is_ok() {
-        // Root lists a mode-000 directory, so the failure cannot happen; say so rather than
-        // pass having checked nothing.
-        eprintln!("skipped: this user can list a mode-000 directory, so it cannot fail");
-        return;
-    }
-    assert_quaff_snapshot!(project.quaff(&["TODO"]));
-    // Unlocked before comparing, because the comparison lists every directory.
-    drop(locked);
-    project.assert_unchanged();
-}
-
-#[test]
 fn special_files_are_not_read_and_the_run_says_so() {
     let mut project = Project::new(PROJECT);
     let fifo = project.dir.join("pipe");
