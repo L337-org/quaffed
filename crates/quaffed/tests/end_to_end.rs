@@ -147,8 +147,8 @@ impl Project {
     /// Returns a command that runs `quaff` with `args` from the project's root.
     ///
     /// The environment is cleared, so nothing from the machine running the tests reaches the
-    /// binary or the snapshot.  Arguments should be relative to the project, because the
-    /// snapshot records them.
+    /// binary's output or the snapshot, save the coverage profile path below.  Arguments should
+    /// be relative to the project, because the snapshot records them.
     ///
     /// `LLVM_PROFILE_FILE` alone is passed through, when the tests run under coverage: without
     /// it, the instrumented binary writes its profile into the project it runs in, which
