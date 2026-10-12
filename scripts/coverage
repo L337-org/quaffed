@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# Run the workspace's tests under coverage and write llvm-cov's summary as JSON.
+#
+#   scripts/coverage stable OUTPUT [TREE]       lines and regions, on the pinned toolchain
+#   scripts/coverage condition OUTPUT [TREE]    condition coverage, on the nightly tools.toml pins
+#
+# TREE is the checkout to measure, by default this one.  The ratchet measures main from a second
+# worktree with the pull request's copy of this script, so both sides are measured the same way.
+# File names in the summary are made relative to TREE, so the two sides can be compared file by
+# file.  scripts/coverage-ratchet compares them; architecture/verification.md has the reasoning.
+#
+# Needs cargo-llvm-cov from tools.toml (scripts/install-tools cargo-llvm-cov) and, for
+# `condition`, the nightly it pins (scripts/install-tools nightly-coverage).  A `stable` run adds
+# the llvm-tools component to the pinned toolchain when it is missing, because cargo-llvm-cov
+# cannot read coverage without it.
+#
+# A failing test fails the run and writes no summary, so the ratchet reports no data rather than
+# comparing the coverage of a broken build.
+
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+die() {
+    printf 'coverage: %s\n' "$*" >&2
+    exit 1
+}
+
+[[ $# -ge 2 && $# -le 3 ]] || die "usage: scripts/coverage stable|condition OUTPUT [TREE]"
+mode="$1"
+output="$2"
+tree="$(cd "${3:-$root}" && pwd)" || die "the tree to measure, ${3:-$root}, does not exist"
+[[ -f "$tree/Cargo.toml" ]] || die "$tree is not the workspace: it has no Cargo.toml"
+case "$output" in
+    /*) ;;
+    *) output="$PWD/$output" ;;
+esac
+raw="$(mktemp)"
+trap 'rm -f "$raw"' EXIT
+
+# The property tests draw random inputs, so with proptest's default random seed two runs of the
+# same code cover slightly different paths, and the ratchet would compare noise.  A fixed seed
+# makes a measurement depend only on the code: both sides then exercise the same inputs.
+export PROPTEST_RNG_SEED=0
+
+cd "$tree"
+case "$mode" in
+    stable)
+        # rustup reads rust-toolchain.toml in TREE, so this is the pinned toolchain, unnamed here.
+        rustup component add llvm-tools >&2 \
+            || die "adding the llvm-tools component to the pinned toolchain failed; rustup's output is above"
+        cargo llvm-cov clean --workspace
+        cargo llvm-cov --workspace --locked --json --summary-only --output-path "$raw" \
+            || die "the tests failed under stable coverage, so there is no summary; cargo's output is above"
+        ;;
+    condition)
+        nightly="$("$root/scripts/install-tools" --list | awk '$1 == "toolchain" && $2 == "nightly-coverage" { print $3 }')"
+        [[ -n "$nightly" ]] || die "tools.toml pins no nightly-coverage toolchain"
+        # The level goes in RUSTFLAGS, and --branch is used only when reporting: passed to the
+        # build, --branch adds its own coverage level after this one, and the last level wins.
+        cargo "+$nightly" llvm-cov clean --workspace
+        RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Zcoverage-options=condition" \
+            cargo "+$nightly" llvm-cov --workspace --locked --no-report \
+            || die "the tests failed under condition coverage on $nightly, so there is no summary; cargo's output is above"
+        cargo "+$nightly" llvm-cov report --branch --json --summary-only --output-path "$raw" \
+            || die "reporting condition coverage on $nightly failed; cargo's output is above"
+        ;;
+    *)
+        die "unknown mode $(printf %q "$mode"): use stable or condition"
+        ;;
+esac
+
+python3 - "$raw" "$output" "$tree" <<'EOF' || die "rewriting the summary's file names relative to $tree failed"
+import json, sys
+raw, output, tree = sys.argv[1:]
+with open(raw, encoding="utf-8") as f:
+    document = json.load(f)
+prefix = tree.rstrip("/") + "/"
+for export in document["data"]:
+    for entry in export["files"]:
+        if entry["filename"].startswith(prefix):
+            entry["filename"] = entry["filename"][len(prefix):]
+with open(output, "w", encoding="utf-8") as f:
+    json.dump(document, f)
+EOF
+printf 'coverage: wrote the %s summary of %s to %s\n' "$mode" "$tree" "$output" >&2

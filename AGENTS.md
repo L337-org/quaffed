@@ -33,6 +33,7 @@ the work instead.  The shared hygiene check that CI runs fails on either.
 | `Cargo.toml`, `rust-toolchain.toml`, `rustfmt.toml`, anything under `crates/` structurally, or `.github/workflows/` | [architecture/workspace.md](architecture/workspace.md) |
 | adding a workspace member | the checklist in [architecture/workspace.md](architecture/workspace.md) |
 | `tools.toml`, `scripts/install-tools` or `.github/actions/install-tools`, or adding a verification tool | [architecture/verification.md](architecture/verification.md) |
+| `scripts/coverage`, `scripts/coverage-ratchet` or `.github/workflows/coverage.yaml` | the coverage ratchet section of [architecture/verification.md](architecture/verification.md) |
 | an end-to-end test, or anything that changes what `quaff` prints or how it exits | the snapshot sections of [architecture/verification.md](architecture/verification.md) |
 | `crates/quaffed/src/`: the command line, discovery, matching or output | [architecture/search.md](architecture/search.md) |
 | `crates/encoding/`: what a file's bytes are, Python's declared encodings or the codec tables, or `scripts/generate-codecs` | [architecture/encoding.md](architecture/encoding.md) |

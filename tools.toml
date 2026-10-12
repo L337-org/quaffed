@@ -21,6 +21,8 @@ cargo-fuzz = "0.13.2"
 [toolchain]
 nightly-coverage = "nightly-2026-10-01"
 
-# Components for a toolchain above, space-separated.
+# Components for a toolchain above, space-separated.  The coverage nightly runs the whole test
+# suite, which runs `cargo clippy` (crates/representation/tests/disallowed_types.rs), so it
+# needs clippy as well as llvm-tools.
 [toolchain-components]
-nightly-coverage = "llvm-tools-preview"
+nightly-coverage = "llvm-tools-preview clippy"
