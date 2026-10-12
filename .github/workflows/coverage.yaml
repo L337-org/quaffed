@@ -118,7 +118,7 @@ jobs:
           path: summaries
           merge-multiple: true
 
-      - name: Coverage did not fall against main
+      - name: No gated metric fell with more uncovered than on main
         run: |
           scripts/coverage-ratchet \
             --base-stable summaries/coverage-base-stable.json \
