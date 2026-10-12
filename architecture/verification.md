@@ -20,8 +20,10 @@ place and a snapshot recording it would be a second copy every version bump had 
 **The binary is `CARGO_BIN_EXE_quaff`**, which cargo sets only when the crate has that binary, so
 a missing binary fails to compile rather than skipping; if the file is gone at run time the
 harness fails naming the path.  **The command's environment is cleared** and it runs from the
-project's root, so nothing from the machine running the tests reaches the binary, and arguments
-should be relative paths: the snapshot records them.
+project's root, so nothing from the machine running the tests reaches the binary's output, and
+arguments should be relative paths: the snapshot records them.  The one exception is
+`LLVM_PROFILE_FILE`, passed through when set, so that under coverage the instrumented binary
+writes its profile where the coverage tool reads it rather than into the project.
 
 ### Adding an end-to-end test
 

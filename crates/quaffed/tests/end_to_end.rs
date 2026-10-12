@@ -147,11 +147,19 @@ impl Project {
     /// Returns a command that runs `quaff` with `args` from the project's root.
     ///
     /// The environment is cleared, so nothing from the machine running the tests reaches the
-    /// binary or the snapshot.  Arguments should be relative to the project, because the
-    /// snapshot records them.
+    /// binary's output or the snapshot, save the coverage profile path below.  Arguments should
+    /// be relative to the project, because the snapshot records them.
+    ///
+    /// `LLVM_PROFILE_FILE` alone is passed through, when the tests run under coverage: without
+    /// it, the instrumented binary writes its profile into the project it runs in, which
+    /// `assert_unchanged` reports as a change, and the coverage it measured is lost.  It reaches
+    /// the snapshot's metadata, which insta does not compare, and never its output.
     fn quaff(&self, args: &[&str]) -> Command {
         let mut command = Command::new(quaff_binary());
         command.args(args).current_dir(&self.dir).env_clear();
+        if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+            command.env("LLVM_PROFILE_FILE", profile);
+        }
         command
     }
 
