@@ -460,7 +460,7 @@ fn a_second_measurement_that_differs_fails_naming_the_file_and_both_figures() {
         "{text}"
     );
     assert!(
-        text.contains("- `src/a.rs`: lines 90/100, regions 45/50 in one measurement, lines 90/100, regions 44/50 in the other"),
+        text.contains("- `src/a.rs`: regions 45/50 in one measurement, regions 44/50 in the other"),
         "{text}"
     );
     assert!(
@@ -484,4 +484,75 @@ fn a_second_measurement_that_is_missing_fails() {
         "{}",
         stdout(&out)
     );
+}
+
+#[test]
+fn a_difference_outside_lines_and_regions_is_named_by_the_field_that_differs() {
+    let scratch = Scratch::new();
+    let mut sides = unchanged(&scratch).to_vec();
+    sides[1].1 = scratch.summary(
+        "head-stable.json",
+        &[(
+            "src/a.rs",
+            &[
+                ("lines", 90, 100),
+                ("regions", 45, 50),
+                ("instantiations", 3, 4),
+            ],
+        )],
+    );
+    sides.push((
+        "head-stable-repeat",
+        scratch.summary(
+            "repeat.json",
+            &[(
+                "src/a.rs",
+                &[
+                    ("lines", 90, 100),
+                    ("regions", 45, 50),
+                    ("instantiations", 4, 4),
+                ],
+            )],
+        ),
+    ));
+    let out = run(&sides);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "{}{}",
+        stdout(&out),
+        stderr(&out)
+    );
+    assert!(
+        stdout(&out).contains(
+            "- `src/a.rs`: instantiations 3/4 in one measurement, instantiations 4/4 in the other"
+        ),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn a_fall_from_covered_code_removed_says_so_when_no_file_is_named() {
+    let scratch = Scratch::new();
+    let mut sides = unchanged(&scratch);
+    sides[0].1 = scratch.summary(
+        "base-stable.json",
+        &[
+            ("src/a.rs", SAME),
+            ("src/b.rs", &[("lines", 100, 100), ("regions", 50, 50)]),
+        ],
+    );
+    let out = run(&sides);
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains("**Coverage fell against main: lines, regions.**"),
+        "{text}"
+    );
+    assert!(
+        text.contains("No file has more uncovered lines than on main, so the fall in lines comes from covered code removed or shrunk"),
+        "{text}"
+    );
+    assert!(!text.contains("**Where it fell"), "{text}");
 }

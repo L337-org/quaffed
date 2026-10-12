@@ -4,7 +4,7 @@ permissions:
 
 # A pull request that lowers line or region coverage against main fails the Coverage ratchet;
 # condition coverage is measured alongside and reported, never failing it.  Main is measured in
-# the same run as the pull request, from the commit the pull request branched from, so the two
+# the same run as the pull request, at the tip the pull request would merge into, so the two
 # sides share a runner image, toolchain and tool versions and no figure is stored between runs.
 # architecture/verification.md has the reasoning; scripts/coverage measures and
 # scripts/coverage-ratchet compares.
@@ -36,25 +36,24 @@ jobs:
       - name: Check out source repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # The history back to the merge base, to check main's side out beside this one.
-          fetch-depth: 0
+          # The merge and its parents, to check main's side out beside this one.
+          fetch-depth: 2
           persist-credentials: false
 
-      # Main's side is the merge base, so commits that reached main after the pull request
-      # branched are not counted against it.  It is measured with this pull request's scripts,
-      # in a second worktree, so the two sides are measured the same way.
+      # The checkout is the pull request merged into main's tip, which is what would land, so
+      # main's side is that merge's first parent: the comparison then covers exactly what the
+      # pull request adds, whatever has reached main since it branched.  It is measured with this
+      # pull request's scripts, in a second worktree, so the two sides are measured the same way.
       - name: Choose the tree to measure
         id: tree
         env:
           SIDE: ${{ matrix.side }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           if [ "$SIDE" = base ]; then
-            base="$(git merge-base "$BASE_SHA" "$HEAD_SHA")"
+            base="$(git rev-parse HEAD^1)"
             git worktree add --detach "$RUNNER_TEMP/base" "$base"
             echo "dir=$RUNNER_TEMP/base" >> "$GITHUB_OUTPUT"
-            echo "Measuring main at the merge base, $base."
+            echo "Measuring main at $base, the first parent of the merge being measured."
           else
             echo "dir=$GITHUB_WORKSPACE" >> "$GITHUB_OUTPUT"
           fi
@@ -98,8 +97,9 @@ jobs:
     name: Coverage ratchet
     needs: measure
     # Runs when a measurement failed too, so a missing summary is reported as no data and fails
-    # here, rather than the ratchet being skipped and read as nothing to say.
-    if: always()
+    # here, rather than the ratchet being skipped and read as nothing to say.  Not when the run
+    # was cancelled, which a newer push does, since it has nothing to report.
+    if: ${{ !cancelled() }}
     runs-on: [ubuntu-latest]
     timeout-minutes: 5
     steps:

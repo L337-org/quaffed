@@ -176,11 +176,11 @@ def undeterministic(first, repeat):
     return differ
 
 
-def describe(figures):
+def describe(figures, fields):
     if figures is None:
         return "absent"
     return ", ".join(f"{field} {covered}/{count}" for field, (covered, count) in sorted(figures.items())
-                     if field in ("lines", "regions"))
+                     if field in fields)
 
 
 def render(rows, fell, unevaluated, details, determinism):
@@ -190,12 +190,20 @@ def render(rows, fell, unevaluated, details, determinism):
         out += [f"- {line}" for line in unevaluated]
     elif fell:
         out.append(f"**Coverage fell against main: {', '.join(fell)}.**")
+        named = {metric for metric, _gated, _worst in details}
+        for metric in fell:
+            if metric not in named:
+                out.append(f"No file has more uncovered {metric} than on main, so the fall in {metric} "
+                           "comes from covered code removed or shrunk, not from new uncovered code.")
     else:
         out.append("No gated metric fell against main.")
     status, differ = determinism
     out += ["", f"**Determinism:** {status}"]
     for name, a, b in differ[:MAX_FILES]:
-        out.append(f"- `{name}`: {describe(a)} in one measurement, {describe(b)} in the other")
+        # The fields that differ, whichever they are: a file can differ in functions or
+        # instantiations with its lines and regions the same.
+        fields = {f for f in set(a or {}) | set(b or {}) if (a or {}).get(f) != (b or {}).get(f)} or set(a or b)
+        out.append(f"- `{name}`: {describe(a, fields)} in one measurement, {describe(b, fields)} in the other")
     if len(differ) > MAX_FILES:
         out.append(f"- and {len(differ) - MAX_FILES} more")
     out += ["", "| Metric | main | this pull request | change (points) | |",

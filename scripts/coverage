@@ -40,8 +40,7 @@ trap 'rm -f "$raw"' EXIT
 
 # The property tests draw random inputs, so with proptest's default random seed two runs of the
 # same code cover slightly different paths, and the ratchet would compare noise.  A fixed seed
-# makes a measurement depend only on the code: both sides then exercise the same inputs.  The
-# ordinary test job keeps the random seed, so exploration is not lost.
+# makes a measurement depend only on the code: both sides then exercise the same inputs.
 export PROPTEST_RNG_SEED=0
 
 cd "$tree"

@@ -197,15 +197,17 @@ A pull request that lowers line or region coverage against main fails the **Cove
 in `.github/workflows/coverage.yaml`.  It is a floor, not a target: no percentage is set, and a
 pull request only has to leave coverage no worse than it found it.
 
-- **Both sides are measured in the same run.**  Main's side is the commit the pull request
-  branched from, measured from a second worktree with the pull request's own
-  `scripts/coverage`, so both are measured the same way, on the same runner image and tools.  No
-  figure is stored between runs, so none can drift.
-- **What is compared.**  `scripts/coverage-ratchet` reads the four summaries and writes a
+- **Both sides are measured in the same run.**  The pull request's side is the pull request
+  merged into main's tip, which is what would land; main's side is that merge's first parent,
+  so the comparison covers exactly what the pull request adds.  Main is measured from a second
+  worktree with the pull request's own `scripts/coverage`, so both are measured the same way, on
+  the same runner image and tools.  No figure is stored between runs, so none can drift.
+- **What is compared.**  `scripts/coverage-ratchet` reads the summaries the workflow passes it and writes a
   *Coverage* section in the job summary, giving each metric on both sides and the change.  A
   metric is compared as an exact fraction covered, so rounding cannot hide a fall or invent one.
 - **The gated metrics are the `GATED` list in `scripts/coverage-ratchet`**, lines and regions.
-  When one falls, the job fails and the summary names the files with more uncovered than on main.
+  When one falls, the job fails and the summary names the files with more uncovered than on main;
+  when none has, the fall came from covered code removed or shrunk, and the summary says so.
 - **Condition coverage is reported only.**  It is the nightly's `branches` figure, built with
   `-Zcoverage-options=condition`: llvm-cov counts each condition of a boolean expression as a
   branch, which catches an untested right-hand side of `&&` that line and region coverage count
@@ -216,7 +218,7 @@ pull request only has to leave coverage no worse than it found it.
 - **The measurement is deterministic.**  `scripts/coverage` fixes proptest's seed, so the
   property tests exercise the same inputs on both sides and coverage differs only where the
   code does.  With a random seed, two runs of the same code can cover different regions,
-  which the ratchet would fail on at random.  The Test job keeps the random seed, so it still explores.
+  which the ratchet would fail on at random.
 - **Determinism is checked on every run.**  The pull request's stable coverage is measured twice,
   on separate runners, and `scripts/coverage-ratchet` fails if the two differ, naming each file
   that differed and both its figures.  A difference means coverage depends on something other
