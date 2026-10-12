@@ -1,0 +1,123 @@
+name: 'Coverage'
+permissions:
+  contents: read
+
+# A pull request that lowers line or region coverage against main fails the Coverage ratchet;
+# condition coverage is measured alongside and reported, never failing it.  Main is measured in
+# the same run as the pull request, from the commit the pull request branched from, so the two
+# sides share a runner image, toolchain and tool versions and no figure is stored between runs.
+# architecture/verification.md has the reasoning; scripts/coverage measures and
+# scripts/coverage-ratchet compares.
+on:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+
+  measure:
+    name: Measure (${{ matrix.side }}, ${{ matrix.kind }})
+    runs-on: [ubuntu-latest]
+    # The whole test suite, instrumented, after building the workspace once more for coverage.
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        side: [base, head]
+        kind: [stable, condition]
+    steps:
+      - name: Check out source repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The history back to the merge base, to check main's side out beside this one.
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Main's side is the merge base, so commits that reached main after the pull request
+      # branched are not counted against it.  It is measured with this pull request's scripts,
+      # in a second worktree, so the two sides are measured the same way.
+      - name: Choose the tree to measure
+        id: tree
+        env:
+          SIDE: ${{ matrix.side }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$SIDE" = base ]; then
+            base="$(git merge-base "$BASE_SHA" "$HEAD_SHA")"
+            git worktree add --detach "$RUNNER_TEMP/base" "$base"
+            echo "dir=$RUNNER_TEMP/base" >> "$GITHUB_OUTPUT"
+            echo "Measuring main at the merge base, $base."
+          else
+            echo "dir=$GITHUB_WORKSPACE" >> "$GITHUB_OUTPUT"
+          fi
+
+      # This checkout's toolchain builds the tools; the measured tree's builds what is measured.
+      # They are the same unless the pull request moves the pin.
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+
+      - name: Install main's pinned toolchain
+        if: matrix.side == 'base'
+        working-directory: ${{ steps.tree.outputs.dir }}
+        run: rustup toolchain install
+
+      - name: Install cargo-llvm-cov from tools.toml
+        uses: ./.github/actions/install-tools
+        with:
+          tools: cargo-llvm-cov
+
+      - name: Install the condition-coverage nightly from tools.toml
+        if: matrix.kind == 'condition'
+        uses: ./.github/actions/install-tools
+        with:
+          tools: nightly-coverage
+
+      - name: Measure coverage
+        env:
+          KIND: ${{ matrix.kind }}
+          SIDE: ${{ matrix.side }}
+          TREE: ${{ steps.tree.outputs.dir }}
+        run: scripts/coverage "$KIND" "coverage-$SIDE-$KIND.json" "$TREE"
+
+      - name: Keep the summary for the ratchet
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-${{ matrix.side }}-${{ matrix.kind }}
+          path: coverage-${{ matrix.side }}-${{ matrix.kind }}.json
+          if-no-files-found: error
+
+  ratchet:
+    name: Coverage ratchet
+    needs: measure
+    # Runs when a measurement failed too, so a missing summary is reported as no data and fails
+    # here, rather than the ratchet being skipped and read as nothing to say.
+    if: always()
+    runs-on: [ubuntu-latest]
+    timeout-minutes: 5
+    steps:
+      - name: Check out source repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Allowed to fail, when no measurement produced a summary: the next step then finds no file
+      # and fails, saying which, rather than this step failing with nothing about coverage.
+      - name: Fetch the summaries
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: coverage-*
+          path: summaries
+          merge-multiple: true
+
+      - name: Coverage did not fall against main
+        run: |
+          scripts/coverage-ratchet \
+            --base-stable summaries/coverage-base-stable.json \
+            --head-stable summaries/coverage-head-stable.json \
+            --base-condition summaries/coverage-base-condition.json \
+            --head-condition summaries/coverage-head-condition.json \
+            --summary "$GITHUB_STEP_SUMMARY"

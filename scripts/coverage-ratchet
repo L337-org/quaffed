@@ -1,0 +1,215 @@
+#!/usr/bin/env python3
+"""Compare a pull request's coverage with main's, failing if a gated metric fell.
+
+Reads the summaries `scripts/coverage` writes - one from the pinned stable toolchain, one from the
+condition-coverage nightly - for main and for the pull request, and writes a Markdown section
+for the pull request's job summary.  architecture/verification.md has the reasoning.
+
+    scripts/coverage-ratchet --base-stable F --head-stable F
+                             [--base-condition F] [--head-condition F] [--summary F]
+
+A metric is a covered/total pair.  A gated metric fails the run when its share covered on the
+pull request is below main's; the others are reported and never fail it.  A metric with no
+figure on one side - its summary missing, unreadable, or counting nothing - is reported as
+such, and fails the run if it is gated, because a ratchet that cannot compare has not passed.
+
+Exit status: 0 when no gated metric fell, 1 when one did, 2 when a gated metric could not be
+compared.  The summary is written in every case, so the job page says which.
+"""
+
+import argparse
+import json
+import sys
+from fractions import Fraction
+
+# Each metric: the summary it is read from, and the field of an llvm-cov summary that holds it.
+# Condition coverage is the `branches` field of the nightly's summary: built with
+# `-Zcoverage-options=condition`, llvm-cov counts each condition of a boolean expression as a
+# branch.
+METRICS = {
+    "lines": ("stable", "lines"),
+    "regions": ("stable", "regions"),
+    "conditions": ("condition", "branches"),
+}
+
+# The metrics that fail the run when they fall.  Condition coverage joins this list when its
+# compiler flag reaches stable, and the nightly is then dropped.
+GATED = ("lines", "regions")
+
+# How many files to name under a metric that fell.
+MAX_FILES = 15
+
+
+class NoFigure(Exception):
+    """A summary that cannot be read or counts nothing, with the reason."""
+
+
+def load(path):
+    """Read one `scripts/coverage` summary.
+
+    Returns:
+        dict: `{"totals": {field: (covered, count)}, "files": {path: {field: (covered, count)}}}`.
+
+    Raises:
+        NoFigure: The file is absent, not JSON, not an llvm-cov summary, or counts no files.
+    """
+    if path is None:
+        raise NoFigure("not measured")
+    try:
+        with open(path, encoding="utf-8") as f:
+            document = json.load(f)
+    except FileNotFoundError:
+        raise NoFigure(f"no summary at {path!r}") from None
+    except (OSError, ValueError) as exc:
+        raise NoFigure(f"{path!r} could not be read as JSON: {exc}") from exc
+    try:
+        export = document["data"][0]
+        files = export["files"]
+        totals = export["totals"]
+    except (KeyError, IndexError, TypeError):
+        raise NoFigure(f"{path!r} is not an llvm-cov summary (no data[0].files and totals)") from None
+    if not files:
+        raise NoFigure(f"{path!r} covers no files, so the tests produced no coverage data")
+
+    def pairs(summary):
+        out = {}
+        for field, value in summary.items():
+            if isinstance(value, dict) and "count" in value and "covered" in value:
+                out[field] = (int(value["covered"]), int(value["count"]))
+        return out
+
+    return {
+        "totals": pairs(totals),
+        "files": {f["filename"]: pairs(f["summary"]) for f in files},
+    }
+
+
+def figure(summary, field):
+    """A metric's (covered, count) from a loaded summary.
+
+    Raises:
+        NoFigure: The summary has no such field, or it counts nothing.
+    """
+    covered, count = summary["totals"].get(field, (0, 0))
+    if count == 0:
+        raise NoFigure(f"nothing counted for {field}")
+    return covered, count
+
+
+def percent(covered, count):
+    return f"{100 * covered / count:.2f}%"
+
+
+def files_that_fell(base, head, field):
+    """Files with more uncovered items in `field` on the pull request than on main, worst first."""
+    rows = []
+    for name, pairs in head["files"].items():
+        covered, count = pairs.get(field, (0, 0))
+        base_covered, base_count = base["files"].get(name, {}).get(field, (0, 0))
+        grew = (count - covered) - (base_count - base_covered)
+        if grew > 0:
+            rows.append((grew, name, covered, count))
+    rows.sort(key=lambda row: (-row[0], row[1]))
+    return rows
+
+
+def compare(sides):
+    """Compare every metric.  Returns (rows, fell, unevaluated, details) for the summary."""
+    rows, fell, unevaluated, details = [], [], [], []
+    for metric, (source, field) in METRICS.items():
+        gated = metric in GATED
+        base, head = sides[("base", source)], sides[("head", source)]
+        try:
+            if isinstance(head, NoFigure):
+                raise head
+            head_covered, head_count = figure(head, field)
+        except NoFigure as exc:
+            rows.append((metric, gated, "-", f"no data: {exc}", "-"))
+            if gated:
+                unevaluated.append(f"{metric}: the pull request has no figure ({exc})")
+            continue
+        try:
+            if isinstance(base, NoFigure):
+                raise base
+            base_covered, base_count = figure(base, field)
+        except NoFigure as exc:
+            rows.append((metric, gated, f"no baseline: {exc}",
+                         f"{percent(head_covered, head_count)} ({head_covered}/{head_count})", "-"))
+            if gated:
+                unevaluated.append(f"{metric}: main has no figure to compare with ({exc})")
+            continue
+        base_share = Fraction(base_covered, base_count)
+        head_share = Fraction(head_covered, head_count)
+        change = float(head_share - base_share) * 100
+        rows.append((metric, gated,
+                     f"{percent(base_covered, base_count)} ({base_covered}/{base_count})",
+                     f"{percent(head_covered, head_count)} ({head_covered}/{head_count})",
+                     f"{change:+.2f}"))
+        if head_share < base_share:
+            if gated:
+                fell.append(metric)
+            worst = files_that_fell(base, head, field)
+            if worst:
+                details.append((metric, gated, worst))
+    return rows, fell, unevaluated, details
+
+
+def render(rows, fell, unevaluated, details):
+    out = ["## Coverage", ""]
+    if unevaluated:
+        out.append("**Not evaluated, so the ratchet fails:**")
+        out += [f"- {line}" for line in unevaluated]
+    elif fell:
+        out.append(f"**Coverage fell against main: {', '.join(fell)}.**")
+    else:
+        out.append("No gated metric fell against main.")
+    out += ["", "| Metric | main | this pull request | change (points) | |",
+            "| --- | --- | --- | --- | --- |"]
+    for metric, gated, base, head, change in rows:
+        role = "gated" if gated else "report only"
+        out.append(f"| {metric} | {base} | {head} | {change} | {role} |")
+    for metric, gated, worst in details:
+        label = "Where it fell" if gated else "Where it fell (report only)"
+        out += ["", f"**{label}: {metric}**, files with more uncovered than on main:", ""]
+        for grew, name, covered, count in worst[:MAX_FILES]:
+            out.append(f"- `{name}`: {grew} more uncovered, now {covered}/{count}")
+        if len(worst) > MAX_FILES:
+            out.append(f"- and {len(worst) - MAX_FILES} more")
+    return "\n".join(out) + "\n"
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    for side in ("base", "head"):
+        for source in ("stable", "condition"):
+            parser.add_argument(f"--{side}-{source}", metavar="FILE")
+    parser.add_argument("--summary", metavar="FILE",
+                        help="append the Markdown section here (the job summary); default stdout only")
+    args = parser.parse_args(argv)
+
+    sides = {}
+    for side in ("base", "head"):
+        for source in ("stable", "condition"):
+            try:
+                sides[(side, source)] = load(getattr(args, f"{side}_{source}"))
+            except NoFigure as exc:
+                sides[(side, source)] = exc
+
+    rows, fell, unevaluated, details = compare(sides)
+    text = render(rows, fell, unevaluated, details)
+    sys.stdout.write(text)
+    if args.summary:
+        with open(args.summary, "a", encoding="utf-8") as f:
+            f.write(text)
+    if unevaluated:
+        for line in unevaluated:
+            print(f"coverage-ratchet: not evaluated - {line}", file=sys.stderr)
+        return 2
+    if fell:
+        print(f"coverage-ratchet: coverage fell against main: {', '.join(fell)}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

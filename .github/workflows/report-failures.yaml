@@ -8,6 +8,7 @@ on:
     workflows:
       - 'Check inbound changes'
       - 'Code review'
+      - 'Coverage'
       - 'Package'
       - 'Release'
     types: [completed]
