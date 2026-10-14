@@ -17,4 +17,4 @@ workspace = true
 quaffed-representation = { path = "../representation" }
 
 [dev-dependencies]
-proptest = "=1.11.0"
+proptest = "=1.12.0"
