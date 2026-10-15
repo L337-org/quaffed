@@ -45,8 +45,9 @@ same identifiers, so they are Ruff's own.
 The two move together.  `ruff_python_parser` depends on `ruff_python_ast` at its own version, so
 bumping one alone puts two copies of `ruff_python_ast` in the build, and the adapter fails to
 compile with *"there are multiple different versions of crate `ruff_python_ast` in the
-dependency graph"*.  Dependabot groups every `ruff_*` crate into one pull request for this
-reason; that pull request is where the checklist below starts, not a merge on green.
+dependency graph"*.  `.github/dependabot.yml` keeps the `ruff_*` crates in a group of their own
+for this reason; a pull request from that group is where the checklist below starts, not a merge
+on green.
 
 ## Checklist: upgrading Ruff
 
