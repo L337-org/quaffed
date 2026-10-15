@@ -64,6 +64,12 @@ from the runner image's `musl-tools` and gcc, which GitHub updates.  So a re-run
 update can rebuild a package that differs from one already attached with nothing wrong; the attach
 step stops rather than replace it, and says so.
 
+**The package is compressed with xz, chosen explicitly.**  `dpkg-deb` otherwise uses the build
+machine's default, which on Ubuntu 24.04 - the runner image - is zstd, and Debian 11's dpkg
+refuses a zstd member: *"uses unknown compression for member 'control.tar.zst', giving up"*.
+The install test found this on its first run; a package that installs everywhere the binary
+runs needs a compression every target's dpkg reads.
+
 **lintian is a gate.**  The script accepts exactly two findings and fails on any other, so a new
 one is seen rather than buried:
 

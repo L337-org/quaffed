@@ -48,5 +48,6 @@ case "$kind" in
             >"$tree/usr/bin/quaff"
         ;;
 esac
-dpkg-deb --root-owner-group --build "$tree" "$copy" >&2
+# Compressed as build-deb compresses, so the copy differs from the original only as broken.
+dpkg-deb --root-owner-group -Zxz --build "$tree" "$copy" >&2
 printf '%s\n' "$copy"

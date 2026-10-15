@@ -121,7 +121,9 @@ Description: structural, asserted, atomic edits to source code
  edit either happens exactly as specified or does not happen at all.
 EOF
 find "$tree" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
-dpkg-deb --root-owner-group --build "$tree" "$out/$name.deb" >&2
+# xz rather than dpkg-deb's default, which is the build machine's: Ubuntu 24.04's is zstd, and
+# Debian 11's dpkg cannot read a zstd member, so the package would not install there.
+dpkg-deb --root-owner-group -Zxz --build "$tree" "$out/$name.deb" >&2
 
 # lintian's whole output is kept.  The gate accepts exactly the findings below and fails on
 # anything else, so a new finding is seen rather than buried.  no-manual-page: the man page is
