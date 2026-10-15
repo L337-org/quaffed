@@ -52,8 +52,9 @@ scripts/test-deb target/deb/quaffed_*.deb  # install it on each target distribut
 `<version>~dev+g<commit>`, with `.dirty` appended when the working tree has uncommitted changes,
 untracked files included, and its changelog entry says it is not a release.  `~` sorts before
 the release in Debian's version ordering, so a development build never looks newer than the
-release it leads up to, and a package built from a pull request's code cannot be mistaken for
-one that shipped.  Without `--dev` the version is the workspace's, as a release needs.
+release it leads up to, and a package built locally for testing cannot be mistaken for one that
+shipped.  Without `--dev` the version is the workspace's, as a release needs; CI builds without
+it, so that every pull request runs exactly the packaging a release runs.
 
 Each architecture is built on a machine of that architecture; the script refuses otherwise.  The
 package lands in `target/deb/`, with lintian's full output beside it.  Package timestamps come from
@@ -65,10 +66,9 @@ update can rebuild a package that differs from one already attached with nothing
 step stops rather than replace it, and says so.
 
 **The package is compressed with xz, chosen explicitly.**  `dpkg-deb` otherwise uses the build
-machine's default, which on Ubuntu 24.04 - the runner image - is zstd, and Debian 11's dpkg
-refuses a zstd member: *"uses unknown compression for member 'control.tar.zst', giving up"*.
-The install test found this on its first run; a package that installs everywhere the binary
-runs needs a compression every target's dpkg reads.
+machine's default, which can be zstd, and Debian 11's dpkg refuses a zstd member: *"uses unknown
+compression for member 'control.tar.zst', giving up"*.  A package that installs everywhere the
+binary runs needs a compression every target's dpkg reads.
 
 **lintian is a gate.**  The script accepts exactly two findings and fails on any other, so a new
 one is seen rather than buried:
@@ -92,8 +92,9 @@ on a runner of its own architecture, then installs each into a clean container o
 distribution and runs it there, as `verification.md` describes under the package install test.
 It keeps each package, its lintian output and the install logs as a workflow artefact, so a
 change that breaks packaging, or a package that does not install or run, fails where it is made.
-Its jobs, *Debian package (amd64)* and *Debian package (arm64)*, are required status checks, and
-because `release.yaml` calls this workflow, a package is installed and run before it can ship.
+Its jobs, *Debian package (amd64)* and *Debian package (arm64)*, are meant to be required status
+checks, and because `release.yaml` calls this workflow, a package is installed and run before it
+can ship.
 
 ## Releasing
 

@@ -310,12 +310,28 @@ failure also prints the end of its log in the job.  `test-deb` fails naming the 
 is no package, and fails rather than passes when no distribution was tested.
 
 **The target distributions are the Dockerfiles in `packaging/deb/install-test/`**, each a
-single `FROM` pinned by digest, which Dependabot refreshes without ever moving to a new major
-release.  They are the oldest and newest releases of Debian and of Ubuntu.  The oldest are
-there because the binary is static musl precisely so that it runs where a glibc build would
-not (`release.md`), and only an old distribution can show that it does; they may be past their
-distribution's own support, which does not matter to a test that needs no package archive.  To
-add a distribution, add a Dockerfile there named for it; `test-deb` and the job pick it up.
+single `FROM` pinned by digest, which Dependabot refreshes without ever proposing a different
+release.  For each of Debian and Ubuntu there are two kinds:
+
+- **A floor**: a release old enough that a glibc build would not run there (`release.md`, on why
+  the binary is static musl).  The binary exists to run on such a release, and only an old
+  userland shows that it does.  Which release is the floor is a decision, not "the oldest that
+  exists"; a floor may be past its distribution's own support, which does not matter to a test
+  that needs no package archive.
+- **A current release**: what a new user of that distribution is most likely to have.  Nothing
+  announces a new one, because Dependabot is told never to move a release, so it is re-chosen
+  by hand, below.
+
+### Checklist: changing the target distributions
+
+1. Add, remove or rename a Dockerfile in `packaging/deb/install-test/`, named for the
+   distribution and release, with a single `FROM <image>:<tag>@sha256:<digest>`.  The digest is
+   the multi-architecture index's, from `docker buildx imagetools inspect <image>:<tag>`, which
+   must list both `linux/amd64` and `linux/arm64`.
+2. Run `scripts/test-deb` on a package against the new one locally; CI runs every Dockerfile
+   there on both architectures with no further change.
+3. When Debian publishes a new stable release or Ubuntu a new long-term release, re-choose the
+   current release this way.
 
 **The guard has a negative test on every run.**  `scripts/break-deb` makes two deliberately
 broken copies of the package just built - one depending on a package that does not exist, one

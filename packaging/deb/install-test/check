@@ -5,8 +5,8 @@
 #
 # Run by scripts/test-deb, never directly: it expects to be root in a throwaway container, with
 # the source checkout mounted read-only at /src.  Each step is named before it runs and a failure
-# names the step, so the log alone says how far the package got.  architecture/release.md has
-# the reasoning.
+# names the step, so the log alone says how far the package got.  The package install test
+# section of architecture/verification.md has the reasoning.
 
 set -euo pipefail
 

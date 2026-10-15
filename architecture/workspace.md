@@ -15,9 +15,12 @@ the script language in `script.md`, and the Python adapter in `python.md`.
 ├── rustfmt.toml          # pins the style edition, nothing else
 ├── tools.toml            # the verification tools' versions; see verification.md
 ├── packaging/deb/        # the Linux package's copyright file; see release.md
+│   └── install-test/     # the install test's distributions and its in-container check; see verification.md
 ├── scripts/
 │   ├── install-tools     # installs from tools.toml, locally and in CI; see verification.md
 │   ├── build-deb         # builds the Linux package; see release.md
+│   ├── test-deb          # installs and runs a package on each target distribution; see verification.md
+│   ├── break-deb         # breaks a package on purpose, to show test-deb fails; see verification.md
 │   ├── fetch-corpus      # fetches the real-world corpus and runs the oracle; see verification.md
 │   ├── check-synthetic   # the oracle over the synthetic corpus; see verification.md
 │   ├── generate-codecs   # the codec tables, from the oracle's own codecs; see encoding.md

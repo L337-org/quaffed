@@ -31,8 +31,8 @@ jobs:
           - arch: arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
-    # Covers a cold musl build with thin LTO plus installing lintian, and pulling and running four
-    # small distribution images twice over, generously.
+    # Covers a cold musl build with thin LTO, installing lintian, and the install test on each
+    # target distribution with its negative test, generously.
     timeout-minutes: 40
     steps:
       - name: Check out source repository
