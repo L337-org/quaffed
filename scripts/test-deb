@@ -5,7 +5,7 @@
 #
 # PACKAGE is a quaffed_<version>_<arch>.deb, as scripts/build-deb prints.  The distributions are
 # the Dockerfiles in packaging/deb/install-test/, named without the suffix (debian-11,
-# ubuntu-24.04, ...); with none named, every one is tested.  Each container has no network, so
+# ubuntu-26.04, ...); with none named, every one is tested.  Each container has no network, so
 # the package has to install from the file alone.  The full output of each is kept beside the
 # package as <package>.install-<distribution>.txt, passed or failed.
 #

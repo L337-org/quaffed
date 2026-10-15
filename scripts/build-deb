@@ -121,7 +121,7 @@ Description: structural, asserted, atomic edits to source code
  edit either happens exactly as specified or does not happen at all.
 EOF
 find "$tree" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
-# xz rather than dpkg-deb's default, which is the build machine's: Ubuntu 24.04's is zstd, and
+# xz rather than dpkg-deb's default, which is the build machine's and can be zstd, and
 # Debian 11's dpkg cannot read a zstd member, so the package would not install there.
 dpkg-deb --root-owner-group -Zxz --build "$tree" "$out/$name.deb" >&2
 

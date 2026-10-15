@@ -54,7 +54,8 @@ untracked files included, and its changelog entry says it is not a release.  `~`
 the release in Debian's version ordering, so a development build never looks newer than the
 release it leads up to, and a package built locally for testing cannot be mistaken for one that
 shipped.  Without `--dev` the version is the workspace's, as a release needs; CI builds without
-it, so that every pull request runs exactly the packaging a release runs.
+it, so that every pull request runs exactly the packaging a release runs, and so that an upgrade
+test, when there is one, upgrades between the versions a release would really carry.
 
 Each architecture is built on a machine of that architecture; the script refuses otherwise.  The
 package lands in `target/deb/`, with lintian's full output beside it.  Package timestamps come from
