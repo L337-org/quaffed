@@ -160,7 +160,7 @@ runs with:
 
 - `CLAUDE_CODE_OAUTH_TOKEN` and `pull-requests: write`, in `code-review.yaml`;
 - `SLACK_BOT_TOKEN`, in `report-failures.yaml` and `announce-pull-requests.yaml`;
-- the logic of the `Repository hygiene` and `Action pins are immutable` checks, which are
+- the logic of the `Repository hygiene` and `Action pin check` checks, which are
   required.
 
 The release workflow, `release.yaml`, holds `contents: write` to attach packages to a release,

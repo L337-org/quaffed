@@ -38,11 +38,9 @@ jobs:
 
   action-pins:
     # Every `uses:` names a full commit SHA, or for the shared workflows repository its
-    # major-version tag, checked by the shared copy named here.  The job keeps its name although
-    # it now accepts that tag, because the name is a required status check in the branch ruleset
-    # and renaming it means changing the ruleset too.
+    # major-version tag, checked by the shared copy named here.
     runs-on: [ubuntu-latest]
-    name: Action pins are immutable
+    name: Action pin check
     timeout-minutes: 5
     steps:
       - name: Check out source repository
