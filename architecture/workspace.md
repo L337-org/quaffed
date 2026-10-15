@@ -142,10 +142,8 @@ in `architecture/verification.md`, under failed runs are posted to Slack.
 
 **Every job here is meant to be a required status check.**  Adding, renaming or removing one
 means updating the branch ruleset in the same change, or the branch waits on a check that never
-reports, or a new job gates nothing.  Two are deliberate exceptions: the review, below, and
-`Announce to Slack` in `.github/workflows/announce-pull-requests.yaml`, which runs only when a
-pull request is opened, reopened or marked ready for review, so it never reports on a later
-push and a pull request would wait on it forever.
+reports, or a new job gates nothing.  The exceptions are the review, below, and `Announce to
+Slack`, which runs only when a pull request opens, so never reports on a later push.
 
 ### Shared CI
 
@@ -154,17 +152,6 @@ workflows repository, at the major-version tag named in that `uses:`.  What that
 how to run the hygiene check locally, is in that repository's README; it is not restated here,
 because it changes there.  When and for whom this repository asks for a review is in the header
 of `code-review.yaml`.
-
-**A release there reaches this repository without a change here.**  Moving the tag changes what
-runs with:
-
-- `CLAUDE_CODE_OAUTH_TOKEN` and `pull-requests: write`, in `code-review.yaml`;
-- `SLACK_BOT_TOKEN`, in `report-failures.yaml` and `announce-pull-requests.yaml`;
-- the logic of the `Repository hygiene` and `Action pin check` checks, which are
-  required.
-
-The release workflow, `release.yaml`, holds `contents: write` to attach packages to a release,
-and `package.yaml` builds them; neither uses anything from the shared repository.
 
 **The review is advisory.**  It is not a required check and does not approve the pull request,
 which is a deliberate exception to every job here being a required status check.

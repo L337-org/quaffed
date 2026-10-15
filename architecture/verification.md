@@ -306,14 +306,9 @@ the bot token in the `SLACK_BOT_TOKEN` secret.  **Accepted limitation:** a post 
 seen only as a failed *Report failures* run, which is itself a run nobody is watching, so a
 token that stops working is noticed by the absence of posts.
 
-`announce-pull-requests.yaml` calls the shared announcer from `github-workflows`, which posts a
-pull request that needs action to the channel in its own `channel:` input; that repository's
-README says which pull requests it posts.  It runs on `pull_request`, so it is listed in
-`report-failures.yaml` like any other workflow.
-
-`SLACK_BOT_TOKEN` must also be set as a Dependabot secret with the same value, because a run
-Dependabot starts sees only Dependabot secrets; without it, Dependabot's pull requests are not
-announced.  Rotating the token means replacing both.
+`announce-pull-requests.yaml` announces pull requests through the shared announcer, whose README
+says which.  `SLACK_BOT_TOKEN` must also be a Dependabot secret, or Dependabot's pull requests
+are not announced.
 
 ## The tool manifest
 
