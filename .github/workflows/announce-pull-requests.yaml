@@ -1,8 +1,7 @@
 name: 'Announce pull requests'
 
-# Posts each pull request that needs action - opened or reopened and not a draft, or marked
-# ready for review - to the Slack channel named below, through the shared announcer
-# (architecture/verification.md).  Pull requests from forks are skipped by the announcer.
+# Posts a pull request that needs action to the Slack channel named below, through the shared
+# announcer, whose README says which pull requests it posts (architecture/verification.md).
 on:
   pull_request:
     types: [opened, reopened, ready_for_review]

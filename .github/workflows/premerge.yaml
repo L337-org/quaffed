@@ -37,8 +37,10 @@ jobs:
         uses: L337-org/github-workflows/actions/repo-hygiene@v2
 
   action-pins:
-    # Every `uses:` names a full commit SHA, or for the shared workflows repository its protected
-    # major-version tag, checked by the shared copy named here.
+    # Every `uses:` names a full commit SHA, or for the shared workflows repository its
+    # major-version tag, checked by the shared copy named here.  The job keeps its name although
+    # it now accepts that tag, because the name is a required status check in the branch ruleset
+    # and renaming it means changing the ruleset too.
     runs-on: [ubuntu-latest]
     name: Action pins are immutable
     timeout-minutes: 5
@@ -46,7 +48,7 @@ jobs:
       - name: Check out source repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Every `uses:` must name a 40-hex commit SHA or a protected version tag
+      - name: Every `uses:` must name a 40-hex commit SHA, or the shared workflows' major-version tag
         uses: L337-org/github-workflows/actions/action-pins@v2
 
   dco:
