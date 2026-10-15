@@ -42,6 +42,13 @@ same identifiers, so they are Ruff's own.
 `ruff_python_ast` and `ruff_python_parser` are pinned with `=` in this crate's `Cargo.toml`, and
 `Cargo.lock` holds them.  An upgrade is deliberate work in this crate, never a lock-file refresh.
 
+The two move together.  `ruff_python_parser` depends on `ruff_python_ast` at its own version, so
+bumping one alone puts two copies of `ruff_python_ast` in the build, and the adapter fails to
+compile with *"there are multiple different versions of crate `ruff_python_ast` in the
+dependency graph"*.  `.github/dependabot.yml` keeps the `ruff_*` crates in a group of their own
+for this reason; a pull request from that group is where the checklist below starts, not a merge
+on green.
+
 ## Checklist: upgrading Ruff
 
 1. Read Ruff's changelog for both crates between the two versions.
