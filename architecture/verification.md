@@ -290,9 +290,9 @@ cargo flamegraph --profile profiling --bin quaff -o target/flamegraph.svg \
 A failed run is otherwise one red entry in a list nobody opens, so failures are posted to the
 project's Slack channel.  `.github/workflows/report-failures.yaml` names the workflows to report
 and the triggers to report them for - a schedule, a push, a release and a pull request - and
-calls the shared Slack reporter from `github-workflows`, whose README at the pinned commit says
-which of those runs it posts, when, and to where.  A run started by hand, or a review asked for
-by comment, is left out on purpose, because whoever started it is watching.  To add a workflow
+calls the shared Slack reporter from `github-workflows`, whose README says which of those runs
+it posts, when, and to where.  A run started by hand, or a review asked for by comment, is left
+out on purpose, because whoever started it is watching.  To add a workflow
 that runs on a schedule, a push, a release or a pull request:
 
 1. Give it a `name:`, and give every job a `timeout-minutes:`, so a hang ends as a failure
@@ -301,10 +301,14 @@ that runs on a schedule, a push, a release or a pull request:
 2. Add its `name:` to the `workflows:` list in `report-failures.yaml`, exactly as written,
    since GitHub matches on it.  The repository hygiene check enforces the list.
 
-The post goes to the channel of the webhook in the `SLACK_WEBHOOK` secret; a repository secret
-of that name overrides an organisation one.  **Accepted limitation:** a post that fails is seen
-only as a failed *Report failures* run, which is itself a run nobody is watching, so a webhook
-that stops working is noticed by the absence of posts.
+The post goes to the channel named in the `channel:` input of `report-failures.yaml`, through
+the bot token in the `SLACK_BOT_TOKEN` secret.  **Accepted limitation:** a post that fails is
+seen only as a failed *Report failures* run, which is itself a run nobody is watching, so a
+token that stops working is noticed by the absence of posts.
+
+`announce-pull-requests.yaml` announces pull requests through the shared announcer, whose README
+says which.  `SLACK_BOT_TOKEN` must also be a Dependabot secret, or Dependabot's pull requests
+are not announced.
 
 ## The tool manifest
 
