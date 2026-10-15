@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# Install a built package into a clean container of each target distribution and run quaff there.
+#
+#   scripts/test-deb PACKAGE [DISTRIBUTION...]
+#
+# PACKAGE is a quaffed_<version>_<arch>.deb, as scripts/build-deb prints.  The distributions are
+# the Dockerfiles in packaging/deb/install-test/, named without the suffix (debian-11,
+# ubuntu-26.04, ...); with none named, every one is tested.  Each container has no network, so
+# the package has to install from the file alone.  The full output of each is kept beside the
+# package as <package>.install-<distribution>.txt, passed or failed.
+#
+# Fails if the package is missing, if any distribution fails, or if no distribution was tested.
+# CI's package workflow and a contributor both run exactly this.  The package install test section
+# of architecture/verification.md has the reasoning.
+#
+# Needs: docker, on a host of the package's architecture.
+
+set -euo pipefail
+
+die() {
+    printf 'test-deb: %s\n' "$*" >&2
+    exit 1
+}
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+images="$root/packaging/deb/install-test"
+
+[[ $# -ge 1 ]] || die "usage: scripts/test-deb PACKAGE [DISTRIBUTION...]"
+package="$1"
+shift
+[[ -f "$package" ]] || die "no package at '$package': build one with scripts/build-deb first"
+package="$(cd "$(dirname "$package")" && pwd)/$(basename "$package")"
+file="$(basename "$package")"
+name="${file%.deb}"
+# quaffed_<version>_<arch>: a Debian version cannot contain an underscore, so this split is exact.
+IFS=_ read -r pkgname version arch extra <<<"$name"
+[[ "$file" == *.deb && "$pkgname" == quaffed && -n "$version" && -n "$arch" && -z "$extra" ]] ||
+    die "'$file' is not named quaffed_<version>_<arch>.deb, as scripts/build-deb names a package"
+
+command -v docker >/dev/null ||
+    die "docker is not on PATH; the install test runs each distribution in a container"
+host="$(docker version --format '{{.Server.Arch}}')" ||
+    die "docker could not report its server's architecture; is the daemon running?"
+[[ "$host" == "$arch" ]] ||
+    die "'$file' is for $arch but docker runs $host containers; test each architecture on its own"
+
+if [[ $# -eq 0 ]]; then
+    for dockerfile in "$images"/*.Dockerfile; do
+        [[ -e "$dockerfile" ]] || continue
+        distribution="$(basename "$dockerfile" .Dockerfile)"
+        set -- ${@+"$@"} "$distribution"
+    done
+fi
+
+tested=0
+failed=""
+# ${@+"$@"} rather than "$@": macOS's bash 3.2 calls an empty "$@" unbound under set -u.
+for distribution in ${@+"$@"}; do
+    dockerfile="$images/$distribution.Dockerfile"
+    if [[ ! -f "$dockerfile" ]]; then
+        known=""
+        for known_file in "$images"/*.Dockerfile; do
+            [[ -e "$known_file" ]] && known="$known $(basename "$known_file" .Dockerfile)"
+        done
+        die "no distribution '$distribution'; the known ones are:${known:- none}"
+    fi
+    log="$(dirname "$package")/$name.install-$distribution.txt"
+    printf 'test-deb: %s on %s\n' "$file" "$distribution" >&2
+    # The build only names the pinned base image; the context is the directory the Dockerfiles
+    # are in, which holds nothing else worth sending.
+    image="$(docker build --quiet --file "$dockerfile" "$images")" ||
+        die "could not build the $distribution image from $dockerfile"
+    status=0
+    docker run --rm --network none \
+        --volume "$package:/pkg/$file:ro" \
+        --volume "$root:/src:ro" \
+        "$image" bash /src/packaging/deb/install-test/check "/pkg/$file" "$version" \
+        >"$log" 2>&1 || status=$?
+    tested=$((tested + 1))
+    if [[ $status -eq 0 ]]; then
+        printf 'test-deb: %s passed\n' "$distribution" >&2
+    else
+        printf 'test-deb: %s FAILED, exit %s; the last of %s:\n' "$distribution" "$status" "$log" >&2
+        tail -15 "$log" | sed 's/^/    /' >&2
+        failed="$failed $distribution"
+    fi
+done
+
+# A run that tested nothing has shown nothing, so it fails rather than passing.
+[[ $tested -gt 0 ]] || die "no distribution was tested: $images holds no Dockerfiles"
+[[ -z "$failed" ]] || die "$file failed on:$failed.  Each log is beside the package"
+printf 'test-deb: %s passed on %s distributions\n' "$file" "$tested" >&2

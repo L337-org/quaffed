@@ -3,9 +3,11 @@ permissions:
   contents: read
 
 # The Linux package, for both architectures, each built by scripts/build-deb on a runner of its
-# own architecture.  It runs on every pull request, so a change that breaks packaging fails on
-# the pull request that makes it, and release.yaml calls it at the commit the release names, so
-# the package that ships is built by exactly this.  architecture/release.md has the reasoning.
+# own architecture, then installed into a clean container of each target distribution and run
+# by scripts/test-deb.  It runs on every pull request, so a change that breaks packaging, or a
+# package that does not install or run, fails on the pull request that makes it; and
+# release.yaml calls it at the commit the release names, so the package that ships is built
+# and tested by exactly this.  architecture/release.md has the reasoning.
 on:
   pull_request:
   workflow_call:
@@ -29,8 +31,9 @@ jobs:
           - arch: arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
-    # Covers a cold musl build with thin LTO plus installing lintian, generously.
-    timeout-minutes: 30
+    # Covers a cold musl build with thin LTO, installing lintian, and the install test on each
+    # target distribution with its negative test, generously.
+    timeout-minutes: 40
     steps:
       - name: Check out source repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -45,11 +48,42 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools lintian
 
       - name: Build and check the package
-        run: scripts/build-deb ${{ matrix.arch }}
+        id: build
+        run: |
+          deb="$(scripts/build-deb ${{ matrix.arch }})"
+          echo "deb=$deb" >>"$GITHUB_OUTPUT"
 
-      # Saved whether or not the build passed: lintian's output is what explains a failed gate,
-      # and the package itself is kept apart from any release so that a rescue is possible.
-      - name: Keep the package and lintian's output
+      # The package build-deb just printed, so a step that produced no package cannot be passed
+      # over: test-deb fails naming the missing path.
+      - name: Install and run the package on each distribution
+        run: scripts/test-deb "${{ steps.build.outputs.deb }}"
+
+      # The guard's own negative test: a package that cannot install, and one whose quaff fails,
+      # must each fail test-deb at the step that went wrong.  One distribution is enough to show
+      # the guard can fail.
+      - name: Show the install test fails on broken packages
+        run: |
+          check() {
+            kind="$1" expected="$2"
+            broken="$(scripts/break-deb "${{ steps.build.outputs.deb }}" "$kind" "target/deb/broken-$kind")"
+            if scripts/test-deb "$broken" debian-13; then
+              echo "::error::test-deb passed a package broken as $kind"
+              exit 1
+            fi
+            log="${broken%.deb}.install-debian-13.txt"
+            grep -F "check: FAILED at: $expected" "$log" || {
+              echo "::error::test-deb failed on the $kind package, but not at '$expected':"
+              tail -20 "$log"
+              exit 1
+            }
+          }
+          check uninstallable "installing "
+          check failing-binary "running quaff --help"
+
+      # Saved whether or not the build passed: lintian's output and the install logs are what
+      # explain a failed gate, and the package itself is kept apart from any release so that a
+      # rescue is possible.
+      - name: Keep the package, lintian's output and the install logs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -57,4 +91,6 @@ jobs:
           path: |
             target/deb/*.deb
             target/deb/*.lintian.txt
+            target/deb/*.install-*.txt
+            target/deb/broken-*/*.install-*.txt
           if-no-files-found: warn

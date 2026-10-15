@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Make a deliberately broken copy of a built package, to show that scripts/test-deb fails on it.
+#
+#   scripts/break-deb PACKAGE uninstallable|failing-binary DIRECTORY
+#
+# uninstallable   depends on a package that does not exist, so dpkg refuses to configure it.
+# failing-binary  installs, but its quaff exits 1 without doing anything.
+#
+# The copy keeps the original's file name, so test-deb reads the same version and architecture
+# from it, and is written into DIRECTORY, which must not be the original's.  Prints the copy's
+# path on standard output, and nothing else there.  A guard that cannot fail is a comment:
+# the package install test section of architecture/verification.md has where this is run.
+#
+# Needs: dpkg-deb.
+
+set -euo pipefail
+
+die() {
+    printf 'break-deb: %s\n' "$*" >&2
+    exit 1
+}
+
+[[ $# -eq 3 ]] || die "usage: scripts/break-deb PACKAGE uninstallable|failing-binary DIRECTORY"
+package="$1"
+kind="$2"
+out="$3"
+[[ -f "$package" ]] || die "no package at '$package'"
+case "$kind" in
+    uninstallable | failing-binary) ;;
+    *) die "unknown breakage '$kind'; use uninstallable or failing-binary" ;;
+esac
+command -v dpkg-deb >/dev/null || die "dpkg-deb is not on PATH"
+
+mkdir -p "$out"
+copy="$(cd "$out" && pwd)/$(basename "$package")"
+[[ "$copy" != "$(cd "$(dirname "$package")" && pwd)/$(basename "$package")" ]] ||
+    die "'$out' holds the original package; write the broken copy somewhere else"
+
+tree="$(mktemp -d)"
+trap 'rm -rf "$tree"' EXIT
+dpkg-deb --raw-extract "$package" "$tree"
+case "$kind" in
+    uninstallable)
+        printf 'Depends: quaffed-deliberately-missing-dependency\n' >>"$tree/DEBIAN/control"
+        ;;
+    failing-binary)
+        printf '#!/bin/sh\necho "quaff: deliberately broken by scripts/break-deb" >&2\nexit 1\n' \
+            >"$tree/usr/bin/quaff"
+        ;;
+esac
+# Compressed as build-deb compresses, so the copy differs from the original only as broken.
+dpkg-deb --root-owner-group -Zxz --build "$tree" "$copy" >&2
+printf '%s\n' "$copy"
