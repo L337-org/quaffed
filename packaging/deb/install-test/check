@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# Install the package and run the installed quaff, inside a clean container.
+#
+#   check PACKAGE VERSION
+#
+# Run by scripts/test-deb, never directly: it expects to be root in a throwaway container, with
+# the source checkout mounted read-only at /src.  Each step is named before it runs and a failure
+# names the step, so the log alone says how far the package got.  architecture/release.md has
+# the reasoning.
+
+set -euo pipefail
+
+step() {
+    current="$*"
+    printf '\ncheck: %s\n' "$current"
+}
+
+trap 'printf "\ncheck: FAILED at: %s\n" "${current:-starting}"' ERR
+
+fail() {
+    printf '\ncheck: FAILED at: %s: %s\n' "$current" "$*"
+    trap - ERR
+    exit 1
+}
+
+[[ $# -eq 2 ]] || fail "usage: check PACKAGE VERSION"
+package="$1"
+version="$2"
+
+step "describing the container"
+cat /etc/os-release
+
+step "installing $package"
+dpkg -i "$package"
+
+step "checking the installed version is $version"
+installed="$(dpkg-query -W -f '${Version}' quaffed)"
+[[ "$installed" == "$version" ]] || fail "dpkg reports version '$installed'"
+
+step "checking quaff is /usr/bin/quaff"
+found="$(command -v quaff)" || fail "quaff is not on PATH"
+[[ "$found" == /usr/bin/quaff ]] || fail "quaff resolves to '$found'"
+
+step "running quaff --help"
+help="$(quaff --help)"
+printf '%s\n' "$help" | sed -n 1,5p
+[[ -n "$help" ]] || fail "quaff --help printed nothing on standard output"
+
+# A real repository: the checkout this package was built from.  Every source file under crates/
+# opens with this header, and a test in the ordinary run enforces it, so the assertion holds on
+# any commit that passes CI.
+step "searching the quaffed checkout"
+cd /src
+quaff -e 'find "SPDX-License-Identifier: GPL-3.0-or-later" expect at least 1' crates >/tmp/search.txt
+printf '%s matching lines, the first:\n' "$(wc -l </tmp/search.txt)"
+head -3 /tmp/search.txt
+
+# A project whose exact answer is known, so a binary that runs but answers wrongly fails too.
+# The .git directory makes it a project root, as a clone would be.
+step "searching a project with a known answer"
+mkdir -p /tmp/project/.git
+printf 'def connect(self):\n    return connect\n' >/tmp/project/app.py
+cd /tmp/project
+output="$(quaff -e 'find "connect" expect 2')"
+expected='app.py:1:5-1:11: connect
+app.py:2:12-2:18: connect'
+[[ "$output" == "$expected" ]] || fail "expected:
+$expected
+but quaff printed:
+$output"
+
+step "checking a failed assertion exits 2"
+status=0
+quaff -e 'find "connect" expect 3' >/dev/null 2>/tmp/stderr.txt || status=$?
+cat /tmp/stderr.txt
+[[ $status -eq 2 ]] || fail "exit status was $status"
+grep -q 'expected exactly 3 matches of "connect", found 2' /tmp/stderr.txt ||
+    fail "the failure did not say what was expected and what was found"
+
+printf '\ncheck: passed\n'

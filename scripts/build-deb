@@ -2,11 +2,17 @@
 # Build the Linux package for one architecture, on a Linux host of that architecture.
 #
 #   scripts/build-deb amd64|arm64
+#   scripts/build-deb --dev amd64|arm64
 #
 # Builds the static musl binary with the `dist` profile, assembles quaffed_<version>_<arch>.deb
 # under target/deb/, and runs lintian over it, keeping lintian's full output beside the package.
-# CI's package workflow and a contributor both run exactly this.  architecture/release.md has the
-# reasoning.
+# Prints the package's path on standard output, and nothing else there.  CI's package workflow
+# and a contributor both run exactly this.  architecture/release.md has the reasoning.
+#
+# --dev builds a package for testing whose version says so: <version>~dev+g<commit>, with .dirty
+# appended when the working tree has uncommitted changes.  `~` sorts before the release in
+# Debian's version ordering, so a development build never looks newer than the release it leads
+# up to.
 #
 # Needs: rustup (or the musl target already installed), musl-tools, dpkg-deb, lintian, readelf.
 # Every failure stops the script and says what was being done.
@@ -18,7 +24,13 @@ die() {
     exit 1
 }
 
-[[ $# -eq 1 ]] || die "usage: scripts/build-deb amd64|arm64"
+usage="usage: scripts/build-deb [--dev] amd64|arm64"
+dev=false
+if [[ $# -gt 0 && "$1" == --dev ]]; then
+    dev=true
+    shift
+fi
+[[ $# -eq 1 ]] || die "$usage"
 arch="$1"
 case "$arch" in
     amd64) triple=x86_64-unknown-linux-musl ;;
@@ -41,6 +53,14 @@ command -v musl-gcc >/dev/null ||
 
 # The version is read from the workspace, the one place it is declared.
 version="$(scripts/workspace-version)"
+if $dev; then
+    commit="$(git rev-parse --short=12 HEAD)" || die "a development build needs the commit it is built from, and git could not name it"
+    version="$version~dev+g$commit"
+    # Untracked files count too: one the build reads would make the package differ from the commit.
+    if [[ -n "$(git status --porcelain)" ]]; then
+        version="$version.dirty"
+    fi
+fi
 
 # Timestamps inside the package come from the commit, so two builds of one commit in the same
 # environment produce the same package, and a re-run of a release can tell an identical asset
@@ -71,10 +91,15 @@ install -m 0644 packaging/deb/copyright "$tree/usr/share/doc/quaffed/copyright"
 # A native package: the release notes are the changelog, so the entry points at them rather
 # than keeping a second history to drift.
 changelog_date="$(date -u -d "@$SOURCE_DATE_EPOCH" -R)"
+if $dev; then
+    entry="Development build of commit $commit, for testing.  Not a release."
+else
+    entry="Release $version.  See https://github.com/L337-org/quaffed/releases/tag/v$version"
+fi
 cat >"$tree/usr/share/doc/quaffed/changelog" <<EOF
 quaffed ($version) unstable; urgency=medium
 
-  * Release $version.  See https://github.com/L337-org/quaffed/releases/tag/v$version
+  * $entry
 
  -- Gavin Lucas <Gavin@L337.org>  $changelog_date
 EOF

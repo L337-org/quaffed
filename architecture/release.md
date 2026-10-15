@@ -44,7 +44,16 @@ which are the history.
 sudo apt-get install musl-tools lintian
 scripts/build-deb amd64     # on an amd64 Linux machine
 scripts/build-deb arm64     # on an arm64 Linux machine
+scripts/build-deb --dev amd64              # a development build, for testing
+scripts/test-deb target/deb/quaffed_*.deb  # install it on each target distribution and run it
 ```
+
+**A development build says so in its version**: `--dev` makes it
+`<version>~dev+g<commit>`, with `.dirty` appended when the working tree has uncommitted changes,
+untracked files included, and its changelog entry says it is not a release.  `~` sorts before
+the release in Debian's version ordering, so a development build never looks newer than the
+release it leads up to, and a package built from a pull request's code cannot be mistaken for
+one that shipped.  Without `--dev` the version is the workspace's, as a release needs.
 
 Each architecture is built on a machine of that architecture; the script refuses otherwise.  The
 package lands in `target/deb/`, with lintian's full output beside it.  Package timestamps come from
@@ -73,9 +82,12 @@ MVP: its package is for trying quaff out in a container, not held to Debian poli
 ## CI
 
 `.github/workflows/package.yaml` builds both packages on every pull request, each natively
-on a runner of its own architecture, and keeps each package and its lintian
-output as a workflow artefact, so a change that breaks packaging fails where it is made.  Its jobs,
-*Debian package (amd64)* and *Debian package (arm64)*, are meant to be required status checks.
+on a runner of its own architecture, then installs each into a clean container of every target
+distribution and runs it there, as `verification.md` describes under the package install test.
+It keeps each package, its lintian output and the install logs as a workflow artefact, so a
+change that breaks packaging, or a package that does not install or run, fails where it is made.
+Its jobs, *Debian package (amd64)* and *Debian package (arm64)*, are required status checks, and
+because `release.yaml` calls this workflow, a package is installed and run before it can ship.
 
 ## Releasing
 

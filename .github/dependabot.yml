@@ -22,6 +22,22 @@ updates:
         patterns:
           - "ruff_*"
 
+  # The clean distributions scripts/test-deb installs the package into, pinned by digest.  Only
+  # the digest moves: each is a deliberate choice of release (architecture/release.md), the
+  # oldest of a family among them, so a new major release is never proposed in its place.
+  - package-ecosystem: "docker"
+    directory: "/packaging/deb/install-test"
+    schedule:
+      interval: "weekly"
+    groups:
+      install-test:
+        patterns:
+          - "*"
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+
   - package-ecosystem: "github-actions"
     # "/" covers .github/workflows and a root action.yml only; the repository's own composite
     # actions are listed so their pins are updated too.

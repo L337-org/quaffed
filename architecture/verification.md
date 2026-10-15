@@ -285,6 +285,47 @@ cargo flamegraph --profile profiling --bin quaff -o target/flamegraph.svg \
   leaves it after a failed one, so remove it with `rm -rf cargo-flamegraph.trace`.
   `.gitignore` covers all three wherever they are written, so a leftover cannot be committed.
 
+## The package install test
+
+A package that builds is not yet a package that installs, and an installed binary is not yet
+one that runs.  `scripts/test-deb PACKAGE` checks both, on every pull request and before every
+release, inside the *Debian package* job that built the package.  For each target distribution
+it starts a clean container with no network, the package and the checkout mounted read-only,
+and runs `packaging/deb/install-test/check` there, which:
+
+1. installs the package with `dpkg -i`, from the file alone;
+2. checks that dpkg reports the version in the package's file name, and that `quaff` resolves
+   to `/usr/bin/quaff`;
+3. runs `quaff --help`;
+4. searches the quaffed checkout itself - a real repository - with an assertion that holds on
+   any commit that passes CI: the licence header every source file under `crates/` opens with;
+5. searches a small project it writes, whose exact output is known, and checks a failed
+   assertion there exits 2 saying what it expected and what it found, so a binary that runs but
+   answers wrongly fails too.
+
+Each step is named before it runs, and a failure ends `check: FAILED at: <step>`.  Each
+distribution's whole output is kept beside the package as
+`<package>.install-<distribution>.txt`, passed or failed, and is part of the job's artefact; a
+failure also prints the end of its log in the job.  `test-deb` fails naming the path when there
+is no package, and fails rather than passes when no distribution was tested.
+
+**The target distributions are the Dockerfiles in `packaging/deb/install-test/`**, each a
+single `FROM` pinned by digest, which Dependabot refreshes without ever moving to a new major
+release.  They are the oldest and newest releases of Debian and of Ubuntu.  The oldest are
+there because the binary is static musl precisely so that it runs where a glibc build would
+not (`release.md`), and only an old distribution can show that it does; they may be past their
+distribution's own support, which does not matter to a test that needs no package archive.  To
+add a distribution, add a Dockerfile there named for it; `test-deb` and the job pick it up.
+
+**The guard has a negative test on every run.**  `scripts/break-deb` makes two deliberately
+broken copies of the package just built - one depending on a package that does not exist, one
+whose `quaff` exits 1 - and the job fails unless `test-deb` fails on each, at the install step
+and the `--help` step respectively.
+
+Locally, `test-deb` needs docker on a host of the package's architecture: it refuses an arm64
+package on an amd64 docker rather than emulating it.  `scripts/test-deb PACKAGE debian-13` tests
+one distribution.  `break-deb` needs `dpkg-deb`, so runs on Linux.
+
 ## Failed runs are posted to Slack
 
 A failed run is otherwise one red entry in a list nobody opens, so failures are posted to the
