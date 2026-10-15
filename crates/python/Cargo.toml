@@ -16,5 +16,5 @@ workspace = true
 [dependencies]
 # Pinned exactly: Ruff says its Rust API "will have frequent breaking changes", so an
 # upgrade is a deliberate piece of work through this crate, never a lock-file refresh.
-ruff_python_ast = "=0.0.16"
-ruff_python_parser = "=0.0.16"
+ruff_python_ast = "=0.0.18"
+ruff_python_parser = "=0.0.18"
