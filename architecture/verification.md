@@ -322,6 +322,15 @@ release.  For each of Debian and Ubuntu there are two kinds:
   announces a new one, because Dependabot is told never to move a release, so it is re-chosen
   by hand, below.
 
+**The guard has a negative test on every run.**  `scripts/break-deb` makes two deliberately
+broken copies of the package just built - one depending on a package that does not exist, one
+whose `quaff` exits 1 - and the job fails unless `test-deb` fails on each, at the install step
+and the `--help` step respectively.
+
+Locally, `test-deb` needs docker on a host of the package's architecture: it refuses an arm64
+package on an amd64 docker rather than emulating it.  `scripts/test-deb PACKAGE debian-13` tests
+one distribution.  `break-deb` needs `dpkg-deb`, so runs on Linux.
+
 ### Checklist: changing the target distributions
 
 1. Add, remove or rename a Dockerfile in `packaging/deb/install-test/`, named for the
@@ -332,15 +341,6 @@ release.  For each of Debian and Ubuntu there are two kinds:
    there on both architectures with no further change.
 3. When Debian publishes a new stable release or Ubuntu a new long-term release, re-choose the
    current release this way.
-
-**The guard has a negative test on every run.**  `scripts/break-deb` makes two deliberately
-broken copies of the package just built - one depending on a package that does not exist, one
-whose `quaff` exits 1 - and the job fails unless `test-deb` fails on each, at the install step
-and the `--help` step respectively.
-
-Locally, `test-deb` needs docker on a host of the package's architecture: it refuses an arm64
-package on an amd64 docker rather than emulating it.  `scripts/test-deb PACKAGE debian-13` tests
-one distribution.  `break-deb` needs `dpkg-deb`, so runs on Linux.
 
 ## Failed runs are posted to Slack
 
