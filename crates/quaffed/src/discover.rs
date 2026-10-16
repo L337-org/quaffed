@@ -195,6 +195,54 @@ pub fn files(
     Ok(found)
 }
 
+/// The rules in `bytes`, the contents of the ignore file `file`, matched relative to `dir`, and
+/// what could not be used, each error tagged with the file and its line.
+///
+/// Parsed as `GitignoreBuilder::add` parses a file it opens itself, which a test holds it to:
+/// by line, a line's CR and LF dropped, a UTF-8 byte-order mark dropped from the first line, and
+/// a line that is not UTF-8 ending the file, as it ends `add`'s reading.  quaff parses the bytes
+/// rather than letting `add` open the file, so that a file also searched is read once.
+fn parse_ignore_file(dir: &Path, file: &Path, bytes: &[u8]) -> (Gitignore, Vec<ignore::Error>) {
+    let mut builder = GitignoreBuilder::new(dir);
+    let mut errors = Vec::new();
+    let mut lines: Vec<&[u8]> = bytes.split(|&b| b == b'\n').collect();
+    if lines.last().is_some_and(|last| last.is_empty()) {
+        lines.pop();
+    }
+    for (index, raw) in lines.into_iter().enumerate() {
+        let tagged = |err: ignore::Error| ignore::Error::WithPath {
+            path: file.to_path_buf(),
+            err: Box::new(ignore::Error::WithLineNumber {
+                line: index as u64 + 1,
+                err: Box::new(err),
+            }),
+        };
+        let raw = raw.strip_suffix(b"\r").unwrap_or(raw);
+        let Ok(line) = std::str::from_utf8(raw) else {
+            errors.push(tagged(ignore::Error::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "stream did not contain valid UTF-8",
+            ))));
+            break;
+        };
+        let line = if index == 0 {
+            line.trim_start_matches('\u{feff}')
+        } else {
+            line
+        };
+        if let Err(err) = builder.add_line(Some(file.to_path_buf()), line) {
+            errors.push(tagged(err));
+        }
+    }
+    match builder.build() {
+        Ok(matcher) => (matcher, errors),
+        Err(cause) => {
+            errors.push(cause);
+            (Gitignore::empty(), errors)
+        }
+    }
+}
+
 /// An error from reading ignore files, tolerated if it is only lines that could not be parsed:
 /// each is noted in `found` and the rest of its file applies.  Anything else - a directory that
 /// cannot be listed, an ignore file that cannot be read - stops the run rather than answering
@@ -349,47 +397,11 @@ impl Rules {
                 return Gitignore::empty();
             }
         };
-        // Parsed from the bytes as GitignoreBuilder::add parses a file it opens itself: by line,
-        // a line's CR and LF dropped, a UTF-8 byte-order mark dropped from the first line, each
-        // bad line reported with its file and number, and a line that is not UTF-8 ending the
-        // file, as it ends add's reading.
-        let mut builder = GitignoreBuilder::new(dir);
-        let mut lines: Vec<&[u8]> = bytes.split(|&b| b == b'\n').collect();
-        if lines.last().is_some_and(|last| last.is_empty()) {
-            lines.pop();
+        let (matcher, errors) = parse_ignore_file(dir, &file, &bytes);
+        for cause in errors {
+            self.report(cause);
         }
-        for (index, raw) in lines.into_iter().enumerate() {
-            let tagged = |err: ignore::Error| ignore::Error::WithPath {
-                path: file.clone(),
-                err: Box::new(ignore::Error::WithLineNumber {
-                    line: index as u64 + 1,
-                    err: Box::new(err),
-                }),
-            };
-            let raw = raw.strip_suffix(b"\r").unwrap_or(raw);
-            let Ok(line) = std::str::from_utf8(raw) else {
-                self.report(tagged(ignore::Error::Io(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "stream did not contain valid UTF-8",
-                ))));
-                break;
-            };
-            let line = if index == 0 {
-                line.trim_start_matches('\u{feff}')
-            } else {
-                line
-            };
-            if let Err(err) = builder.add_line(Some(file.clone()), line) {
-                self.report(tagged(err));
-            }
-        }
-        match builder.build() {
-            Ok(matcher) => matcher,
-            Err(cause) => {
-                self.report(cause);
-                Gitignore::empty()
-            }
-        }
+        matcher
     }
 
     fn report(&self, cause: ignore::Error) {
@@ -833,6 +845,77 @@ mod tests {
             "{message}"
         );
         assert!(message.contains("valid UTF-8"), "{message}");
+    }
+
+    /// Each error in `err`, as `GitignoreBuilder::add` groups several into one.
+    fn flattened(err: ignore::Error) -> Vec<String> {
+        match err {
+            ignore::Error::Partial(errs) => errs.into_iter().flat_map(flattened).collect(),
+            other => vec![other.to_string()],
+        }
+    }
+
+    #[test]
+    fn ignore_files_are_parsed_from_their_bytes_as_the_ignore_crate_parses_them() {
+        // GitignoreBuilder::add is the reference: for each file, the same paths ignored, the
+        // same whitelisted, and the same errors, as the crate's own reading of the same file.
+        let dir = std::env::temp_dir().join(format!("quaffed-parse-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let cases: &[&[u8]] = &[
+            b"\xef\xbb\xbf*.log\nbuild/\n",
+            b"*.log\r\n!keep.log\r\nbuild/\r\n",
+            b"*.tmp\nno-final-newline.c",
+            b"*.log\na{b\n[z-a]\n*.bak\n",
+            b"*.log\nbad\xff\n*.bak\n",
+            b"# a comment\n\n  \n\\#literal\ntrailing\\ \n",
+            b"",
+        ];
+        let paths = [
+            "a.log",
+            "keep.log",
+            "build",
+            "x.tmp",
+            "no-final-newline.c",
+            "y.bak",
+            "#literal",
+            "trailing ",
+            "other.py",
+        ];
+        for (number, bytes) in cases.iter().enumerate() {
+            let file = dir.join(format!("case{number}.ignore"));
+            fs::write(&file, bytes).unwrap();
+            let mut reference = GitignoreBuilder::new(&dir);
+            let reference_errors = reference.add(&file).map(flattened).unwrap_or_default();
+            let reference = reference.build().unwrap();
+            let (ours, our_errors) = parse_ignore_file(&dir, &file, bytes);
+            let our_errors: Vec<String> = our_errors.into_iter().flat_map(flattened).collect();
+            assert_eq!(our_errors, reference_errors, "case {number}: {bytes:?}");
+            for path in paths {
+                for is_dir in [false, true] {
+                    let path = dir.join(path);
+                    let (got, want) = (
+                        ours.matched(&path, is_dir),
+                        reference.matched(&path, is_dir),
+                    );
+                    assert_eq!(
+                        (got.is_ignore(), got.is_whitelist()),
+                        (want.is_ignore(), want.is_whitelist()),
+                        "case {number} {bytes:?}: {} as a {}",
+                        path.display(),
+                        if is_dir { "directory" } else { "file" }
+                    );
+                }
+            }
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_byte_order_marked_ignore_file_still_applies_its_first_line() {
+        let tree = Tree::new("bom", &[(".git/HEAD", ""), ("a.log", ""), ("b.py", "")]);
+        fs::write(tree.0.join(".ignore"), b"\xef\xbb\xbf*.log\n").unwrap();
+        assert_eq!(tree.found("."), [".ignore", "b.py"]);
     }
 
     #[test]

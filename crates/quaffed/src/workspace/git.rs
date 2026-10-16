@@ -164,9 +164,13 @@ impl IgnoreFiles for GitIgnores {
 
 impl Git {
     fn new(root: &Path, contents: &Contents) -> Git {
-        // Both may also be searched, so their bytes are kept for whichever reads them second.
+        // The first two may also be searched, and the pointer files - a linked worktree's or a
+        // submodule's .git, and a worktree's commondir - are read both to find info/exclude and
+        // to find info/attributes, so all are kept for whichever reads them second.
         contents.keep_named(".gitattributes");
         contents.keep_named(".gitignore");
+        contents.keep_named(MARKER);
+        contents.keep_named("commondir");
         Git {
             root: root.to_path_buf(),
             repositories: HashMap::new(),

@@ -28,9 +28,14 @@ const ALLOWED: &[&str] = &[
     "script_text(fs::read(&path), &source)",
 ];
 
-/// The lines of `source` that read a file directly, outside comments, tests and `ALLOWED`.
+/// The lines of `source` that read a file directly, outside comments, the test module and
+/// `ALLOWED`.  Only the test module is left out: a `#[cfg(test)]` on any other item, such as a
+/// counter a test reads, must not hide the product code after it.
 fn reads_directly(source: &str) -> Vec<&str> {
-    let product = source.split("#[cfg(test)]").next().unwrap_or_default();
+    let product = source
+        .split("#[cfg(test)]\nmod tests")
+        .next()
+        .unwrap_or_default();
     product
         .lines()
         .filter(|line| !line.trim_start().starts_with("//"))
@@ -91,6 +96,11 @@ fn reading_directly_is_found_however_it_is_done() {
     assert_eq!(
         reads_directly("fn f() {}\n#[cfg(test)]\nmod tests { fn t() { fs::read(p); } }"),
         Vec::<&str>::new()
+    );
+    // A test-only item above product code does not hide that code.
+    assert_eq!(
+        reads_directly("#[cfg(test)]\nstatic READS: u8 = 0;\nfn read() { fs::read(p); }").len(),
+        1
     );
     assert_eq!(
         reads_directly("    let text = script_text(fs::read(&path), &source)?;"),

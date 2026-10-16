@@ -1162,6 +1162,49 @@ mod tests {
     }
 
     #[test]
+    fn a_git_pointer_file_is_read_from_disk_once() {
+        // A linked worktree's or a submodule's .git is a file naming the git directory, read
+        // both for the repository's info/exclude and for its info/attributes.
+        let dir = std::env::temp_dir().join(format!("quaffed-run-pointer-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let gitdir = dir.join("gitdir");
+        let project = dir.join("project");
+        for (path, text) in [
+            ("gitdir/info/attributes", "*.md text\n"),
+            ("gitdir/info/exclude", "*.tmp\n"),
+            ("project/a.txt", "TODO\n"),
+        ] {
+            let path = dir.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        }
+        fs::write(
+            project.join(".git"),
+            format!("gitdir: {}\n", gitdir.display()),
+        )
+        .unwrap();
+        let project = fs::canonicalize(&project).unwrap();
+        crate::contents::DISK_READS.with(|reads| reads.borrow_mut().clear());
+        let outcome = run(
+            vec![SourceArg::Query(cli::Query {
+                text: "TODO".into(),
+                source: cli::Source::Positional,
+            })],
+            None,
+            &project,
+            &mut io::empty(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+        );
+        let reads = crate::contents::DISK_READS.with(|reads| reads.borrow().clone());
+        let _ = fs::remove_dir_all(&dir);
+        assert!(outcome.is_ok(), "{outcome:?}");
+        let pointer = project.join(".git");
+        let count = reads.iter().filter(|read| **read == pointer).count();
+        assert_eq!(count, 1, ".git read {count} times: {reads:?}");
+    }
+
+    #[test]
     fn a_file_without_matches_is_not_listed_for_a_pattern() {
         let dir = std::env::temp_dir().join(format!("quaffed-run-{}", std::process::id()));
         fs::create_dir_all(&dir).expect("creating the directory");

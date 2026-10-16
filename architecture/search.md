@@ -76,8 +76,10 @@ than replacing it.
      file, `.gitattributes`, `.editorconfig` - may be in the scope too, so every reader goes
      through `src/contents.rs`, which keeps the bytes of the files whose names a reader reads,
      and the search takes them from there.  The order does not matter: a declaration file
-     searched before it is read for its declarations is kept for the reader.  A test fails if
-     any other source file reads a file itself;
+     searched before it is read for its declarations is kept for the reader.  The ignore files
+     are parsed from those bytes as the `ignore` crate parses a file it opens, and a test holds
+     the two to the same answers.  A test fails if any other source file of the `quaff` binary
+     reads a file itself, a script given with `-f` excepted, since it is never a project file;
    - no git configuration is read, so neither is a global excludes file;
    - hidden files are searched;
    - version-control metadata is skipped by name at any depth: `.git`, `.hg`, `.svn`, `.bzr`,
