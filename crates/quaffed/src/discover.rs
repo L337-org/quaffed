@@ -592,8 +592,8 @@ mod tests {
                     .into_owned()
             })
             .collect();
-        // The good lines still apply beneath it; the bad one is noted once, though both the
-        // walker and the rules read above the scope met it.
+        // The good lines still apply beneath it; the bad one is noted once, though the file is
+        // the rules for every entry under the root.
         assert_eq!(names, ["build/b.py"]);
         assert_eq!(found.skipped_rules.len(), 1, "{:?}", found.skipped_rules);
         assert!(
@@ -601,6 +601,18 @@ mod tests {
             "{:?}",
             found.skipped_rules
         );
+    }
+
+    /// Says that a test of an unreadable path could not check anything, because this user can
+    /// read a mode-000 path, as root can.  In CI, where the runner is not root, that is a
+    /// failure, so a run that checked nothing is never reported as one that passed.
+    fn cannot_check() {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "this user can read a mode-000 path, so the unreadable-path tests check nothing; \
+             run them as a user other than root"
+        );
+        eprintln!("skipped: this user can read a mode-000 path, so it cannot fail");
     }
 
     /// Discovery from the tree's root with `scope` named, after making `locked` unreadable; `None`
@@ -623,7 +635,7 @@ mod tests {
         let result = files_in(&root.join(scope), &root);
         fs::set_permissions(&locked, fs::Permissions::from_mode(mode)).unwrap();
         if readable_anyway {
-            eprintln!("skipped: this user can read a mode-000 path, so it cannot fail");
+            cannot_check();
             return None;
         }
         Some(result)
@@ -631,8 +643,8 @@ mod tests {
 
     #[test]
     fn an_unreadable_ignore_file_above_a_named_ignored_scope_stops_discovery() {
-        // a/ is ignored, so the walk from the root never reads a/.ignore; the rules read above
-        // the scope a/b do, and must not pass over it.
+        // The walker reads no ignore file, so a/.ignore is read only when an entry under a/ is
+        // asked about, and that read must stop the run rather than pass over it.
         let tree = Tree::new(
             "above-unreadable",
             &[
@@ -866,9 +878,7 @@ mod tests {
         let result = files_in(&tree.0, &tree.0);
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
         if readable_anyway {
-            // Root reads a mode-000 directory, so the failure cannot happen; say so rather than
-            // pass having checked nothing.
-            eprintln!("skipped: this user can read a mode-000 directory, so it cannot fail");
+            cannot_check();
             return;
         }
         let message = result

@@ -21,7 +21,7 @@ The scenarios run on a scratch copy of corpus/synthetic, made a project root wit
 (default target/budgets), each run's under names carrying its index: the callgrind profile and
 its annotated report, the strace log, and a list of every path opened with the bytes read from
 it, which is what a reviewer reads to judge whether a moved budget is still correct behaviour.
-The report names the run judged, the one with the most instructions.  A Markdown report
+The report names the run judged for each budget with a margin, its worst.  A Markdown report
 goes to standard output and, in GitHub Actions, to the job summary.
 
 --repeat runs each scenario N times, judges the worst, and reports the spread, so that every
@@ -255,11 +255,14 @@ def worst(name, runs):
             f"{name} opened or read different files on different runs, so file access is not "
             f"repeatable; compare the {name}.<run>.files.txt traces"
         )
-    # The run judged is the one with the most instructions, whose profile is the one to read.
-    measured = dict(max(runs, key=lambda r: r["instructions"]))
+    # Each budget with a margin is judged on its worst run, named so its traces can be found:
+    # the most instructions for the profile to read, and the most memory.
+    measured = dict(runs[0])
     for budget in ("instructions", "peak_memory_kib"):
         values = [r[budget] for r in runs]
-        measured[budget] = max(values)
+        worst_run = max(runs, key=lambda r: r[budget])
+        measured[budget] = worst_run[budget]
+        measured[f"{budget}_run"] = worst_run["run"]
         measured[f"{budget}_spread"] = (min(values), max(values))
     return measured
 
@@ -395,7 +398,10 @@ def render(rows, failures, out):
             lines.append(
                 f"| {name} | {budget} | {limit:,} | {value:,} | {headroom} | {spread} | {to_set:,} |"
             )
-        lines.append(f"| {name} | judged run | | {measured['run']} | | | |")
+        lines.append(
+            f"| {name} | runs judged | | instructions: run {measured['instructions_run']}, "
+            f"peak memory: run {measured['peak_memory_kib_run']} | | | |"
+        )
     if failures:
         lines += ["", *[f"- {failure}" for failure in failures]]
     lines += ["", f"The traces are in `{out}`, and in the job's artefact."]

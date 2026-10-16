@@ -10,19 +10,19 @@
 #   bytes_read       exactly how many bytes it reads from them
 
 [startup]
-instructions = 282_600
-peak_memory_kib = 6_200
+instructions = 240_900
+peak_memory_kib = 6_300
 paths_opened = 2
 bytes_read = 0
 
 [search]
-instructions = 1_150_300
+instructions = 1_163_700
 peak_memory_kib = 6_200
 paths_opened = 18
 bytes_read = 5_951
 
 [scope]
-instructions = 993_900
+instructions = 1_002_100
 peak_memory_kib = 6_200
 paths_opened = 15
 bytes_read = 5_523

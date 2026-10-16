@@ -317,13 +317,13 @@ runner's speed.
   searched, which `budgets.toml` names under `[inside]`; **nothing outside the project may be
   opened** but what it allows under `[outside]`, each with its reason.
 - **The job runs each scenario more than once**, as many times as its `--repeat` says, and judges
-  the run with the most instructions, so its summary shows how much the counts moved; the file
-  access must be identical every time, or nothing is judged.
+  each budget with a margin on its worst run, which the summary names, so it shows how much the
+  counts moved; the file access must be identical every time, or nothing is judged.
 - **A blown budget fails the job naming the scenario, the budget, the limit and the measured
   value**, and the summary gives the limit to set for each budget.  A tool missing, a run that
   exits wrongly or a trace that cannot be read fails it as not measured, never as a pass.
 - **Every run's traces are kept** in the job's `budgets` artefact, passed or failed, under names
-  carrying the run's index, and the summary names the run judged: the callgrind profile and
+  carrying the run's index, and the summary names the runs judged: the callgrind profile and
   `callgrind_annotate`'s report of it, the `strace` log, and `<scenario>.<run>.files.txt`, each
   path opened with the bytes read from it.  Those are what a reviewer reads to judge whether a
   moved budget is still correct behaviour.
@@ -353,9 +353,9 @@ changes only in the pull request that moves it, and only once the new behaviour 
 correct.
 
 1. Read the failing job's summary for the budget, its limit, what was measured and the run
-   judged, and download the `budgets` artefact.
+   judged for it, and download the `budgets` artefact.
 2. Compare the trace with main's - the latest run of the job on main has its own artefact.  For
-   instructions, `callgrind_annotate` the judged runs' profiles, or diff their `.callgrind.txt`
+   instructions, `callgrind_annotate` the profiles of the runs judged for instructions, or diff their `.callgrind.txt`
    reports, and find where the count rose; for files, diff the `.files.txt` lists.
 3. Decide whether that is what the change should do.  If not, it is a defect: fix the code, not
    the limit.
