@@ -29,7 +29,9 @@ pub struct Match {
 /// byte-order mark - by encoding the pattern's text the way the file is.
 ///
 /// Matches are found left to right and do not overlap, so `aa` occurs once in `aaa`.  Literal
-/// text is literal: nothing in it is special.  A line break matches LF, CRLF or a lone CR,
+/// text is literal: nothing in it is special.  A match starts and ends on a character: in a
+/// multi-byte encoding such as Shift-JIS, where a character's second byte can be an ASCII byte,
+/// bytes that match inside a character are not a match.  A line break matches LF, CRLF or a lone CR,
 /// whichever the file has there; a start anchor holds at the start of the file or after a line
 /// ending, and an end anchor at the end of the file or before one.
 ///
@@ -49,11 +51,47 @@ pub fn search(text: &[u8], encoding: Encoding, pattern: &TextPattern) -> Option<
     if compiled.parts.is_empty() {
         return Some(Vec::new());
     }
-    let ranges = compiled.ranges(text);
+    let starts = Starts::of(text, encoding);
+    let ranges = compiled.ranges(text, &starts);
     if ranges.is_empty() {
         return Some(Vec::new());
     }
     Some(positions(text, encoding, &ranges))
+}
+
+/// Where a file's characters start, for an encoding where that is not known from a byte's offset
+/// alone.
+enum Starts {
+    /// Every code unit starts a character, as far as a match is concerned.
+    Units(usize),
+    /// One bit a byte, set where a character starts, and at the end.
+    Bits(Vec<u64>),
+}
+
+impl Starts {
+    fn of(text: &[u8], encoding: Encoding) -> Starts {
+        if !matches!(encoding, Encoding::MultiByte(_)) {
+            return Starts::Units(encoding.unit());
+        }
+        // One bit a byte rather than a list of offsets, so the memory a search needs beyond
+        // the file's own bytes is an eighth of them.
+        let mut bits = vec![0u64; text.len() / 64 + 1];
+        let mut set = |at: usize| bits[at / 64] |= 1 << (at % 64);
+        encoding.each_char(text, |at, _| {
+            set(at);
+            true
+        });
+        set(text.len());
+        Starts::Bits(bits)
+    }
+
+    /// Whether a character starts at byte `at`, or `at` is the end.
+    fn at(&self, at: usize) -> bool {
+        match self {
+            Starts::Units(unit) => at.is_multiple_of(*unit),
+            Starts::Bits(bits) => bits[at / 64] & (1 << (at % 64)) != 0,
+        }
+    }
 }
 
 /// One part of a pattern, spelled in the file's encoding.
@@ -168,12 +206,13 @@ impl Compiled {
         end_holds.then_some(position)
     }
 
-    /// Byte ranges of every non-overlapping match, left to right, each starting on a code unit.
+    /// Byte ranges of every non-overlapping match, left to right, each starting and ending on a
+    /// character.
     ///
     /// Candidates are found by the first literal's bytes where the pattern starts with one -
-    /// a byte match straddling two code units is not a match of the text - and otherwise at
-    /// every code unit.
-    fn ranges(&self, text: &[u8]) -> Vec<(usize, usize)> {
+    /// a byte match straddling two code units, or starting inside a multi-byte character, is
+    /// not a match of the text - and otherwise at every code unit.
+    fn ranges(&self, text: &[u8], starts: &Starts) -> Vec<(usize, usize)> {
         let first = match self.parts.first() {
             Some(Part::Literal(bytes)) => Some(memchr::memmem::Finder::new(bytes)),
             _ => None,
@@ -188,9 +227,13 @@ impl Compiled {
                 },
                 None => from,
             };
-            let usable = candidate % self.unit == 0
+            let usable = starts.at(candidate)
                 && (!self.start_anchor || self.after_line_ending(text, candidate));
-            match usable.then(|| self.match_at(text, candidate)).flatten() {
+            match usable
+                .then(|| self.match_at(text, candidate))
+                .flatten()
+                .filter(|&end| starts.at(end))
+            {
                 Some(end) => {
                     found.push((candidate, end));
                     from = end;
@@ -521,6 +564,54 @@ mod tests {
             found_in("mac_arabic", b"a b", "b"),
             Some(vec![(pos(1, 3), pos(1, 3))])
         );
+    }
+
+    fn found_in_multi_byte(codec: &str, bytes: &[u8], query: &str) -> Vec<(Position, Position)> {
+        let encoding = Encoding::MultiByte(quaffed_encoding::MultiByteCodec::named(codec).unwrap());
+        search(bytes, encoding, &TextPattern::literal(query))
+            .expect("a spelling")
+            .iter()
+            .map(|m| (m.start, m.end))
+            .collect()
+    }
+
+    #[test]
+    fn a_multi_byte_file_is_searched_by_character() {
+        // "x = '日本'" then "# 日本" in Shift-JIS: one column a character, not a byte.
+        let file = b"x = '\x93\xfa\x96\x7b'\n# \x93\xfa\x96\x7b";
+        assert_eq!(
+            found_in_multi_byte("shift_jis", file, "日本"),
+            vec![(pos(1, 6), pos(1, 7)), (pos(2, 3), pos(2, 4))]
+        );
+        // "ア" in EUC-JP, after a three-byte character.
+        assert_eq!(
+            found_in_multi_byte("euc_jp", b"\x8f\xb0\xa1\xa5\xa2", "ア"),
+            vec![(pos(1, 2), pos(1, 2))]
+        );
+    }
+
+    #[test]
+    fn bytes_that_match_inside_a_multi_byte_character_are_not_a_match() {
+        // "ア" is 83 41 in Shift-JIS: its second byte is an "A".  Only the real "A" matches.
+        assert_eq!(
+            found_in_multi_byte("shift_jis", b"\x83\x41A", "A"),
+            vec![(pos(1, 2), pos(1, 2))]
+        );
+        // "ソ" is 83 5C: its second byte is a backslash.
+        assert_eq!(found_in_multi_byte("shift_jis", b"\x83\x5C", "\\"), vec![]);
+    }
+
+    #[test]
+    fn a_multi_byte_files_characters_start_where_its_reading_says() {
+        // "Aア" then a lone first byte: characters start at 0, 1 and 3, and the end at 4 counts.
+        let encoding =
+            Encoding::MultiByte(quaffed_encoding::MultiByteCodec::named("shift_jis").unwrap());
+        let starts = Starts::of(b"A\x83\x41\x83", encoding);
+        let found: Vec<usize> = (0..=4).filter(|&at| starts.at(at)).collect();
+        assert_eq!(found, [0, 1, 3, 4]);
+        // Any other encoding answers by code unit alone.
+        assert!(Starts::of(b"ab", Encoding::Utf16Le).at(2));
+        assert!(!Starts::of(b"ab", Encoding::Utf16Le).at(1));
     }
 
     #[test]

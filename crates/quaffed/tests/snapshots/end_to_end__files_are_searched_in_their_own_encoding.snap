@@ -8,8 +8,8 @@ info:
 success: true
 exit_code: 0
 ----- stdout -----
-latin1.txt:1:6-1:9: TODO
 utf16.txt:1:6-1:9: TODO
 utf8.txt:1:6-1:9: TODO
 
 ----- stderr -----
+quaff: "latin1.txt": possible match of "TODO" on line 1, not counted, since its encoding is unknown: it is not UTF-8, and nothing declares its encoding

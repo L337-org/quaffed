@@ -10,10 +10,12 @@
 
 mod cli;
 mod discover;
+mod editorconfig;
 mod output;
-mod project;
+mod resolve;
 mod run;
 mod search;
+mod workspace;
 
 use std::io::Write;
 use std::process::ExitCode;

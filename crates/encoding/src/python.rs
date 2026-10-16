@@ -12,7 +12,7 @@
 
 use std::fmt;
 
-use crate::codecs::{ALIASES, MODULES, SINGLE_BYTE, UNDEFINED};
+use crate::codecs::{ALIASES, MODULES, MULTI_BYTE, SINGLE_BYTE, UNDEFINED};
 
 /// What a codec module of `CPython`'s is, as far as quaff reads it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,10 +20,13 @@ pub(crate) enum Module {
     /// Each byte decodes alone, to one character or to none: the index of its table in
     /// `SINGLE_BYTE`.
     SingleByte(usize),
+    /// A character is one to three bytes, its first byte saying how many: the index of its
+    /// table in `MULTI_BYTE`.
+    MultiByte(usize),
     /// UTF-8.
     Utf8,
-    /// A text encoding `CPython` reads and quaff does not: multi-byte, stateful, or UTF-16 or
-    /// UTF-32.
+    /// A text encoding `CPython` reads and quaff does not yet: another multi-byte or a stateful
+    /// encoding, or UTF-16 or UTF-32 by name.
     Unread,
     /// A codec, but not of text: `rot13`, `hex`, `zlib` and the like.
     NotText,
@@ -37,6 +40,11 @@ pub(crate) enum Module {
 pub struct Codec(usize);
 
 impl Codec {
+    /// The codec whose table is at `index` in `SINGLE_BYTE`.
+    pub(crate) fn at(index: usize) -> Codec {
+        Codec(index)
+    }
+
     /// The codec by the name of its module in `CPython`'s `encodings` package, such as `koi8_r`,
     /// or `None` if there is no single-byte codec of that name.
     #[must_use]
@@ -76,6 +84,117 @@ impl fmt::Debug for Codec {
     }
 }
 
+/// A multi-byte codec's table, as `scripts/generate-codecs` writes it from the oracle.
+pub(crate) struct MultiByteTable {
+    /// The codec's module name, such as `shift_jis`.
+    pub(crate) name: &'static str,
+    /// How long a character starting with each byte is: 1 to 3, or 0 for a byte that starts
+    /// none.
+    pub(crate) lengths: [u8; 256],
+    /// Every run of bytes that decodes to one character, packed into a `u32` with its first
+    /// byte highest, sorted, with the character's code point.
+    pub(crate) runs: &'static [(u32, u32)],
+}
+
+/// A multi-byte codec of `CPython`'s, such as Shift-JIS or EUC-JP: a character is one to three
+/// bytes, and its first byte says how many.
+///
+/// Read by one rule, which `scripts/generate-codecs` checks against `CPython`'s own decoder
+/// before writing a table: at each byte, its length says how long the character is and the run
+/// is looked up.  A run not in the table is one undecodable byte, its first, and reading goes on
+/// from the next; a run cut short by the end of the bytes is one undecodable run of all that is
+/// left.  That is where `CPython` puts its errors.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct MultiByteCodec(usize);
+
+/// One step of reading a multi-byte codec: a character, or a run that does not decode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Read {
+    /// A character, and how many bytes it is.
+    Char(char, usize),
+    /// Bytes that do not decode, as many as `CPython` counts as one error.
+    Invalid(usize),
+}
+
+impl MultiByteCodec {
+    /// The codec whose table is at `index` in `MULTI_BYTE`.
+    pub(crate) fn at(index: usize) -> MultiByteCodec {
+        MultiByteCodec(index)
+    }
+
+    /// The codec by the name of its module in `CPython`'s `encodings` package, such as
+    /// `shift_jis`, or `None` if quaff reads no multi-byte codec of that name.
+    #[must_use]
+    pub fn named(module: &str) -> Option<MultiByteCodec> {
+        match module_kind(module)? {
+            Module::MultiByte(index) => Some(MultiByteCodec(index)),
+            _ => None,
+        }
+    }
+
+    /// The name of its module in `CPython`'s `encodings` package, such as `shift_jis`.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        MULTI_BYTE[self.0].name
+    }
+
+    /// What the bytes at the start of `bytes`, which must not be empty, read as.
+    ///
+    /// # Panics
+    ///
+    /// If `bytes` is empty, or the table holds a code point that is not a character, which
+    /// `scripts/generate-codecs` never writes.
+    #[must_use]
+    pub fn read(self, bytes: &[u8]) -> Read {
+        let table = &MULTI_BYTE[self.0];
+        let length = usize::from(table.lengths[usize::from(bytes[0])]);
+        if length == 0 {
+            return Read::Invalid(1);
+        }
+        if length > bytes.len() {
+            return Read::Invalid(bytes.len());
+        }
+        let key = bytes[..length]
+            .iter()
+            .fold(0, |key, &b| (key << 8) | u32::from(b));
+        match table.runs.binary_search_by_key(&key, |&(run, _)| run) {
+            Ok(i) => Read::Char(
+                char::from_u32(table.runs[i].1).expect("the generator writes only characters"),
+                length,
+            ),
+            Err(_) => Read::Invalid(1),
+        }
+    }
+
+    /// The runs of bytes that decode to `c`: none if the codec cannot hold it, and more than one
+    /// for a character it spells several ways, as `cp932` does some.
+    #[must_use]
+    pub fn spellings(self, c: char) -> Vec<Vec<u8>> {
+        let table = &MULTI_BYTE[self.0];
+        table
+            .runs
+            .iter()
+            .filter(|&&(_, code)| code == u32::from(c))
+            .map(|&(key, _)| {
+                let length = if key > 0xFFFF {
+                    3
+                } else if key > 0xFF {
+                    2
+                } else {
+                    1
+                };
+                key.to_be_bytes()[4 - length..].to_vec()
+            })
+            .collect()
+    }
+}
+
+impl fmt::Debug for MultiByteCodec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
 /// How a Python file's bytes decode, by what it declares.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceEncoding {
@@ -83,6 +202,8 @@ pub enum SourceEncoding {
     Utf8,
     /// A single-byte codec, declared.
     SingleByte(Codec),
+    /// A multi-byte codec, declared.
+    MultiByte(MultiByteCodec),
 }
 
 /// Why `CPython` refuses to read a Python file, and so quaff does too.
@@ -114,8 +235,8 @@ pub enum Refusal {
         /// The line declaring it.
         line: usize,
     },
-    /// A declared encoding `CPython` reads and quaff does not: a multi-byte or stateful encoding,
-    /// or UTF-16 or UTF-32.  This one is quaff's limit, not Python's.
+    /// A declared encoding `CPython` reads and quaff does not yet: another multi-byte or a
+    /// stateful encoding, or UTF-16 or UTF-32.  This one is quaff's limit, not Python's.
     Unread {
         /// The name, as the file spells it.
         name: String,
@@ -181,10 +302,10 @@ impl fmt::Display for Refusal {
                 "line {line} declares the encoding {name:?}, Python's codec that decodes \
                  nothing"
             ),
-            Refusal::Unread { name, line, .. } => write!(
+            Refusal::Unread { name, codec, line } => write!(
                 f,
-                "line {line} declares the encoding {name:?}, which Python reads and quaff does \
-                 not: quaff reads UTF-8 and single-byte encodings"
+                "line {line} declares the encoding {name:?}, Python's {codec:?}, which Python \
+                 reads and quaff does not yet"
             ),
             Refusal::MarkConflict { name, line } => write!(
                 f,
@@ -294,6 +415,29 @@ impl Source {
                     });
                 }
             },
+            Resolved::MultiByte(codec, name, declared_on) => {
+                let mut text = String::with_capacity(rest.len());
+                let mut at = 0;
+                while at < rest.len() {
+                    match codec.read(&rest[at..]) {
+                        Read::Char(c, width) => {
+                            text.push(c);
+                            at += width;
+                        }
+                        Read::Invalid(_) => {
+                            return Err(Refusal::Invalid {
+                                byte: rest[at],
+                                line: line_of(rest, at),
+                                encoding: Described::Declared {
+                                    name,
+                                    line: declared_on,
+                                },
+                            });
+                        }
+                    }
+                }
+                text
+            }
             Resolved::SingleByte(codec, name, declared_on) => {
                 let mut text = String::with_capacity(rest.len());
                 for (at, &byte) in rest.iter().enumerate() {
@@ -348,6 +492,19 @@ impl Source {
                     }
                 }
             }
+            SourceEncoding::MultiByte(codec) => {
+                for c in text.chars() {
+                    let spellings = codec.spellings(c);
+                    let [only] = spellings.as_slice() else {
+                        return Err(Unencodable {
+                            character: c,
+                            encoding: codec.name(),
+                            ambiguous: !spellings.is_empty(),
+                        });
+                    };
+                    bytes.extend_from_slice(only);
+                }
+            }
         }
         Ok(bytes)
     }
@@ -359,6 +516,8 @@ enum Resolved {
     Utf8(Described),
     /// A single-byte codec, the name it was declared by, and the line declaring it.
     SingleByte(Codec, String, usize),
+    /// A multi-byte codec, the name it was declared by, and the line declaring it.
+    MultiByte(MultiByteCodec, String, usize),
 }
 
 impl Resolved {
@@ -366,6 +525,7 @@ impl Resolved {
         match self {
             Resolved::Utf8(_) => SourceEncoding::Utf8,
             Resolved::SingleByte(codec, ..) => SourceEncoding::SingleByte(*codec),
+            Resolved::MultiByte(codec, ..) => SourceEncoding::MultiByte(*codec),
         }
     }
 }
@@ -408,27 +568,35 @@ fn encoding(bytes: &[u8]) -> Result<(Resolved, usize), Refusal> {
         Some((codec, Module::Unread)) => return Err(Refusal::Unread { name, codec, line }),
         Some((_, Module::Utf8)) => Resolved::Utf8(Described::Declared { name, line }),
         Some((_, Module::SingleByte(index))) => Resolved::SingleByte(Codec(index), name, line),
+        Some((_, Module::MultiByte(index))) => {
+            Resolved::MultiByte(MultiByteCodec(index), name, line)
+        }
     };
     Ok((resolved, body))
 }
 
-/// The encoding a Python file declares, honouring a UTF-8 byte-order mark as `CPython` does, for
-/// a reader that tolerates bytes the encoding does not decode, as a textual search does.
+/// The encoding a Python file declares, and the line declaring it, honouring a UTF-8 byte-order
+/// mark as `CPython` does, for a reader that tolerates bytes the encoding does not decode, as a
+/// textual search does.
 ///
 /// Returns `Ok(None)` when nothing is declared, so that the caller decides what undeclared
-/// bytes are, and the declaration's encoding otherwise.
+/// bytes are.  With a byte-order mark and nothing declared, that is also `Ok(None)`: the mark
+/// is the caller's to read.
 ///
 /// # Errors
 ///
 /// Returns the [`Refusal`] for a declaration `CPython` would refuse whatever the rest of the
 /// file holds: one that is unknown, not of text, the `undefined` codec, one quaff does not read,
 /// or one conflicting with a byte-order mark.
-pub fn declared_encoding(bytes: &[u8]) -> Result<Option<SourceEncoding>, Refusal> {
+pub fn declared_encoding(bytes: &[u8]) -> Result<Option<(SourceEncoding, usize)>, Refusal> {
     let marked = bytes.starts_with(UTF8_MARK);
-    if declaration(&bytes[if marked { UTF8_MARK.len() } else { 0 }..]).is_none() {
+    let Some(declaration) = declaration(&bytes[if marked { UTF8_MARK.len() } else { 0 }..]) else {
         return Ok(None);
-    }
-    Ok(Some(encoding(bytes)?.0.source_encoding()))
+    };
+    Ok(Some((
+        encoding(bytes)?.0.source_encoding(),
+        declaration.line,
+    )))
 }
 
 /// A declaration as `CPython` finds it: the name, as the file spells it, and the line it is on.
@@ -545,13 +713,14 @@ fn normal_name(name: &str) -> &str {
 }
 
 /// The codec module `CPython`'s codec lookup finds for `name`, and its kind, or `None` if it
-/// finds none.
+/// finds none.  Crate-visible for naming an encoding declared outside Python, by
+/// `crate::named`.
 ///
 /// `CPython` lower-cases the name and collapses each run of anything but ASCII letters, digits
 /// and `.` into one `_`, dropping it at either end; looks that up in its aliases, as it is and
 /// with `.` as `_`; then tries the aliased module, then the name itself, as a module of the
 /// `encodings` package, passing over any containing a `.`.
-fn resolve(name: &str) -> Option<(&'static str, Module)> {
+pub(crate) fn resolve(name: &str) -> Option<(&'static str, Module)> {
     let mut normal = String::with_capacity(name.len());
     let mut punctuation = false;
     for c in name.chars() {
@@ -622,6 +791,78 @@ mod tests {
     fn the_tables_are_sorted_for_binary_search() {
         assert!(MODULES.windows(2).all(|w| w[0].0 < w[1].0));
         assert!(ALIASES.windows(2).all(|w| w[0].0 < w[1].0));
+    }
+
+    #[test]
+    fn every_multi_byte_codec_spells_a_line_ending_one_way() {
+        // A textual search spells CR and LF in the file's encoding to find line endings, and
+        // counts lines by them, so none may have a second spelling or hide inside a character;
+        // the generator refuses a table where one would.
+        for table in crate::codecs::MULTI_BYTE {
+            let codec = MultiByteCodec::named(table.name).expect("each table is a codec");
+            for c in ['\r', '\n'] {
+                assert_eq!(
+                    codec.spellings(c),
+                    [vec![u8::try_from(u32::from(c)).unwrap()]],
+                    "{codec:?} spells {c:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_multi_byte_codec_reads_characters_and_counts_errors_as_cpython_does() {
+        let sjis = MultiByteCodec::named("shift_jis").unwrap();
+        assert_eq!(sjis.read(b"\x93\xfa"), Read::Char('日', 2));
+        assert_eq!(sjis.read(b"A\x93"), Read::Char('A', 1));
+        // A first byte with a second that makes no character is one bad byte.
+        assert_eq!(sjis.read(b"\x93\x20"), Read::Invalid(1));
+        // Cut short by the end: one bad run of what is left.
+        assert_eq!(sjis.read(b"\x93"), Read::Invalid(1));
+        // A byte that starts nothing.
+        assert_eq!(sjis.read(b"\xa0"), Read::Invalid(1));
+        let euc = MultiByteCodec::named("euc_jp").unwrap();
+        assert_eq!(euc.read(b"\xa5\xa2"), Read::Char('ア', 2));
+        // EUC-JP's three-byte characters, and one cut short after two of its bytes.
+        assert_eq!(euc.read(b"\x8f\xa1"), Read::Invalid(2));
+        assert_eq!(MultiByteCodec::named("gbk"), None);
+    }
+
+    #[test]
+    fn a_multi_byte_character_may_have_no_spelling_or_several() {
+        let sjis = MultiByteCodec::named("shift_jis").unwrap();
+        assert_eq!(sjis.spellings('日'), [vec![0x93, 0xfa]]);
+        assert_eq!(sjis.spellings('é'), Vec::<Vec<u8>>::new());
+        // cp932 spells some characters twice, NEC's and IBM's rows both holding them.
+        let cp932 = MultiByteCodec::named("cp932").unwrap();
+        assert_eq!(cp932.spellings('∪'), [vec![0x81, 0xbe], vec![0x87, 0x9c]]);
+    }
+
+    #[test]
+    fn a_python_file_declaring_a_multi_byte_encoding_decodes_and_encodes_back() {
+        let bytes = b"# coding: shift_jis\ns = '\x93\xfa\x96\x7b'\n";
+        let source = Source::decode(bytes).unwrap();
+        assert_eq!(source.text, "# coding: shift_jis\ns = '日本'\n");
+        assert_eq!(source.encode(&source.text).unwrap(), bytes);
+        assert_eq!(
+            source.encode("∪").map_err(|e| e.ambiguous),
+            Ok(vec![0x81, 0xbe])
+        );
+        let cp932 = Source::decode(b"# coding: cp932\n").unwrap();
+        assert_eq!(
+            cp932.encode("∪").map_err(|e| e.to_string()),
+            Err(
+                "'∪' has more than one spelling in \"cp932\", so which to write is not known"
+                    .into()
+            )
+        );
+        assert_eq!(
+            Source::decode(b"# coding: shift_jis\n\x93\n").map_err(|e| e.to_string()),
+            Err(
+                "byte 0x93 on line 2 is not valid \"shift_jis\", the encoding line 1 declares"
+                    .into()
+            )
+        );
     }
 
     #[test]
@@ -845,10 +1086,10 @@ mod tests {
             )
         );
         assert_eq!(
-            decoded(b"# coding: sjis\n"),
+            decoded(b"# coding: gbk\n"),
             Err(
-                "line 1 declares the encoding \"sjis\", which Python reads and quaff does \
-                 not: quaff reads UTF-8 and single-byte encodings"
+                "line 1 declares the encoding \"gbk\", Python's \"gbk\", which Python reads \
+                 and quaff does not yet"
                     .into()
             )
         );
@@ -915,17 +1156,24 @@ mod tests {
         assert_eq!(declared_encoding(b"x = '\xe9'\n"), Ok(None));
         assert_eq!(
             declared_encoding(b"# coding: koi8-r\n\xff"),
-            Ok(Some(SourceEncoding::SingleByte(koi8_r())))
+            Ok(Some((SourceEncoding::SingleByte(koi8_r()), 1)))
         );
         // Bytes UTF-8 cannot decode are a reader's to tolerate, not a refusal of the
         // declaration.
         assert_eq!(
             declared_encoding(b"# coding: utf-8\n\xff"),
-            Ok(Some(SourceEncoding::Utf8))
+            Ok(Some((SourceEncoding::Utf8, 1)))
         );
         assert_eq!(
             declared_encoding(b"\xef\xbb\xbf# coding: utf-8\n"),
-            Ok(Some(SourceEncoding::Utf8))
+            Ok(Some((SourceEncoding::Utf8, 1)))
+        );
+        assert_eq!(
+            declared_encoding(b"#!/usr/bin/env python\n# coding: shift_jis\n"),
+            Ok(Some((
+                SourceEncoding::MultiByte(MultiByteCodec::named("shift_jis").unwrap()),
+                2
+            )))
         );
         assert!(matches!(
             declared_encoding(b"# coding: uft-8\n"),

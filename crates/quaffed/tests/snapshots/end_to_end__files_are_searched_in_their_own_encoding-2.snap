@@ -12,4 +12,4 @@ utf16.txt:1:1-1:4: café
 utf8.txt:1:1-1:4: café
 
 ----- stderr -----
-quaff: 1 file in an unknown 8-bit encoding not searched for "café", which is not ASCII and so has no one spelling there
+quaff: 1 file of unknown encoding not searched for "café", which is not ASCII and so has no one spelling there

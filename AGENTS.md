@@ -12,7 +12,7 @@ It is written in Rust and licensed GPL-3.0-or-later.
 
 `architecture/` explains the design's intent, so that a change stays in keeping with it:
 `architecture/search.md` the command line, the search and the exit codes;
-`architecture/encoding.md` how a file's bytes are read, Python's declared encodings included;
+`architecture/encoding.md` how a file's encoding is decided and its bytes read;
 `architecture/representation.md` the operation representation scripts are parsed into;
 `architecture/script.md` the script language.  It never describes what is not built, and it is
 not a record of everything that is.  A construct that parses but is not built is refused with
@@ -39,6 +39,7 @@ the work instead.  The shared hygiene check that CI runs fails on either.
 | an end-to-end test, or anything that changes what `quaff` prints or how it exits | the snapshot sections of [architecture/verification.md](architecture/verification.md) |
 | `crates/quaffed/src/`: the command line, discovery, matching or output | [architecture/search.md](architecture/search.md) |
 | `crates/encoding/`: what a file's bytes are, Python's declared encodings or the codec tables, or `scripts/generate-codecs` | [architecture/encoding.md](architecture/encoding.md) |
+| how a file's encoding is decided: `crates/quaffed/src/resolve.rs`, `src/workspace/`, `src/editorconfig.rs`, or `scripts/generate-declaration-cases` | [architecture/encoding.md](architecture/encoding.md) |
 | `crates/representation/`: what a program means, the checker, or its lint configuration | [architecture/representation.md](architecture/representation.md) |
 | `crates/script/`: the script language's operands, grammar, errors or locations | [architecture/script.md](architecture/script.md) |
 | `crates/python/`, or a `ruff_*` dependency or its version | [architecture/python.md](architecture/python.md) |

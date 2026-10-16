@@ -1,6 +1,5 @@
 ---
 source: crates/quaffed/tests/end_to_end.rs
-assertion_line: 546
 info:
   program: quaff
   args:
@@ -12,4 +11,4 @@ exit_code: 0
 koi8.py:3:13-3:18: привет
 
 ----- stderr -----
-quaff: 1 file in an unknown 8-bit encoding not searched for "привет", which is not ASCII and so has no one spelling there
+quaff: 1 file of unknown encoding not searched for "привет", which is not ASCII and so has no one spelling there

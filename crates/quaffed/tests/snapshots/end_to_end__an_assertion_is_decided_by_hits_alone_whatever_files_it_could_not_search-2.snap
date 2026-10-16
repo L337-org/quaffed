@@ -1,0 +1,16 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "find \"naïve\" expect 1"
+    - legacy
+---
+success: false
+exit_code: 2
+----- stdout -----
+
+----- stderr -----
+quaff: -e expression 1, at character 1: expected exactly 1 match of "naïve", found 0
+quaff: 1 file of unknown encoding not searched for "naïve", which is not ASCII and so has no one spelling there

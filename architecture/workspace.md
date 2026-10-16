@@ -24,6 +24,7 @@ the script language in `script.md`, and the Python adapter in `python.md`.
 │   ├── fetch-corpus      # fetches the real-world corpus and runs the oracle; see verification.md
 │   ├── check-synthetic   # the oracle over the synthetic corpus; see verification.md
 │   ├── generate-codecs   # the codec tables, from the oracle's own codecs; see encoding.md
+│   ├── generate-declaration-cases # git's and EditorConfig's answers the readers are held to; see encoding.md
 │   └── workspace-version # prints the declared version; see release.md
 ├── crates/
 │   ├── quaffed/          # builds the `quaff` binary
