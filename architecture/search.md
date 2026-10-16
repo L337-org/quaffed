@@ -79,7 +79,10 @@ than replacing it.
      rule ignores.  An ignored directory is never reached by the walk from the root, so it is
      walked from itself, and the ignore files between the root and it are read by
      `src/discover.rs` and applied beneath it, each directory's taking precedence over those
-     above, as the walker's own do;
+     above, as the walker's own do.  **Accepted limitation:** beneath such a scope, a rule in an
+     ignore file inside it that un-ignores something a rule above it ignores, such as `!keep.log`
+     against the root's `*.log`, is not honoured, since the walker applies the inner rules first
+     and does not say when one of them matched;
    - **a line of an ignore file that cannot be parsed** - `a{b`, which git reads as literal
      braces, or `[z-a]` - is skipped, and the rest of that file applies.  The run names the file
      and the line on standard error, with the glob parser's own words, and searches on.  Skipping
