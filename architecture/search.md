@@ -66,7 +66,10 @@ than replacing it.
      rule that matches decides, and the kinds then rank `.ignore` above `.gitignore` above
      `info/exclude`, so a `.ignore` rule outranks a `.gitignore` one however deep each is.  A
      repository's own ignore files stop at its root, so in a nested repository or submodule only
-     its own `.gitignore` and `info/exclude` apply, as git applies them there;
+     its own `.gitignore` and `info/exclude` apply, as git applies them there.  Which files
+     discovery lists is held to git's own answer - `git ls-files --others --exclude-standard` in
+     each repository - by a test replaying what `scripts/generate-ignore-cases` recorded; a
+     behaviour to pin is a case added there and the script run again;
    - **no ignore file above the project root is read**, or above the current directory with no
      project, so that nothing outside the project changes which files are searched.  The walker
      cannot be told to stop there, which is why it reads none.  The walk starts at the root and

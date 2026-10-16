@@ -918,6 +918,93 @@ mod tests {
         assert_eq!(tree.found("."), [".ignore", "b.py"]);
     }
 
+    /// Every answer `scripts/generate-ignore-cases` recorded from git, for the same trees
+    /// rebuilt here: discovery must list exactly the files git lists, for each scope asked.
+    #[test]
+    fn discovery_agrees_with_git_on_which_files_it_lists() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/ignores.txt");
+        let data = fs::read_to_string(path).unwrap_or_else(|err| panic!("reading {path}: {err}"));
+        let base = std::env::temp_dir().join(format!("quaffed-ignores-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let mut root: Option<PathBuf> = None;
+        // The scope being collected, and git's answer for it so far.
+        let mut pending: Option<(String, Vec<String>)> = None;
+        let mut checked = 0;
+        let check = |root: &Path, scope: &str, want: &[String]| {
+            let root = fs::canonicalize(root).unwrap();
+            let target = if scope == "." {
+                root.clone()
+            } else {
+                root.join(scope)
+            };
+            let found = files_in(&target, &root).unwrap();
+            let got: Vec<String> = found
+                .files
+                .iter()
+                .map(|p| {
+                    p.strip_prefix(&root)
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect();
+            assert_eq!(got, want, "{} scope {scope}", root.display());
+        };
+        for (number, line) in data.lines().enumerate() {
+            if line.starts_with('#') || line.is_empty() {
+                continue;
+            }
+            let fields: Vec<&str> = line.split('\t').collect();
+            let at = format!("{path}:{}", number + 1);
+            match fields.as_slice() {
+                ["case", name] => {
+                    if let (Some(root), Some((scope, want))) = (&root, pending.take()) {
+                        check(root, &scope, &want);
+                        checked += 1;
+                    }
+                    let dir = base.join(name);
+                    fs::create_dir_all(dir.join(".git")).unwrap();
+                    root = Some(dir);
+                }
+                ["repository", dir] => {
+                    let root = root.as_ref().expect("a case first");
+                    fs::create_dir_all(root.join(dir).join(".git")).unwrap();
+                }
+                ["file", file, hex] => {
+                    let bytes: Vec<u8> = (0..hex.len())
+                        .step_by(2)
+                        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("hex"))
+                        .collect();
+                    let target = root.as_ref().expect("a case first").join(file);
+                    fs::create_dir_all(target.parent().unwrap()).unwrap();
+                    fs::write(target, bytes).unwrap();
+                }
+                ["scope", scope] => {
+                    if let (Some(root), Some((scope, want))) = (&root, pending.take()) {
+                        check(root, &scope, &want);
+                        checked += 1;
+                    }
+                    pending = Some(((*scope).to_owned(), Vec::new()));
+                }
+                ["listed", file] => {
+                    pending
+                        .as_mut()
+                        .expect("a scope first")
+                        .1
+                        .push((*file).to_owned());
+                }
+                _ => panic!("{at}: cannot read {line:?}"),
+            }
+        }
+        if let (Some(root), Some((scope, want))) = (&root, pending.take()) {
+            check(root, &scope, &want);
+            checked += 1;
+        }
+        let _ = fs::remove_dir_all(&base);
+        // A file that held no answers would pass having checked nothing.
+        assert!(checked >= 10, "only {checked} scopes in {path}");
+    }
+
     #[test]
     fn special_files_are_counted_not_read() {
         let tree = Tree::new("special", &[("a.py", "")]);

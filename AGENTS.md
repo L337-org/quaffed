@@ -41,6 +41,7 @@ the work instead.  The shared hygiene check that CI runs fails on either.
 | `crates/encoding/`: what a file's bytes are, Python's declared encodings or the codec tables, or `scripts/generate-codecs` | [architecture/encoding.md](architecture/encoding.md) |
 | how a file's encoding is decided: `crates/quaffed/src/resolve.rs`, `src/workspace/`, `src/editorconfig.rs`, or `scripts/generate-declaration-cases` | [architecture/encoding.md](architecture/encoding.md) |
 | `crates/quaffed/src/contents.rs`, or anything that reads a file | the discovery section of [architecture/search.md](architecture/search.md) |
+| discovery's ignore rules, or `scripts/generate-ignore-cases` | the discovery section of [architecture/search.md](architecture/search.md) |
 | `crates/representation/`: what a program means, the checker, or its lint configuration | [architecture/representation.md](architecture/representation.md) |
 | `crates/script/`: the script language's operands, grammar, errors or locations | [architecture/script.md](architecture/script.md) |
 | `crates/python/`, or a `ruff_*` dependency or its version | [architecture/python.md](architecture/python.md) |
