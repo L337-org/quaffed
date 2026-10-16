@@ -383,6 +383,13 @@ and runs `packaging/deb/install-test/check` there, which:
    assertion there exits 2 saying what it expected and what it found, so a binary that runs but
    answers wrongly fails too.
 
+Building each distribution's image pulls its pinned base image from a registry outside the
+test's control.  A registry server error, 5xx, says nothing about the package, so it alone is
+retried, twice, after a pause that `TEST_DEB_RETRY_PAUSE` sets and that doubles; each retry says
+what the registry answered.  Any other failure, or a third server error, fails with docker's own
+words.  `crates/quaffed/tests/test_deb.rs` runs the script against a stand-in `docker` to hold
+it to that.
+
 Each step is named before it runs, and a failure ends `check: FAILED at: <step>`.  Each
 distribution's whole output is kept beside the package as
 `<package>.install-<distribution>.txt`, passed or failed, and is part of the job's artefact; a

@@ -9,6 +9,11 @@
 # the package has to install from the file alone.  The full output of each is kept beside the
 # package as <package>.install-<distribution>.txt, passed or failed.
 #
+# Building a distribution's image pulls its pinned base image from the registry.  A registry
+# answering with a server error, 5xx, is retried twice, after TEST_DEB_RETRY_PAUSE seconds and
+# then twice that (default 20); each retry says what the registry answered.  Any other failure,
+# or a third server error, fails with docker's own words.
+#
 # Fails if the package is missing, if any distribution fails, or if no distribution was tested.
 # CI's package workflow and a contributor both run exactly this.  The package install test section
 # of architecture/verification.md has the reasoning.
@@ -20,6 +25,32 @@ set -euo pipefail
 die() {
     printf 'test-deb: %s\n' "$*" >&2
     exit 1
+}
+
+# Builds a distribution's image and prints its ID.  The registry the base image comes from is a
+# service outside this test's control, and a server error from it says nothing about the package,
+# so that alone is retried; anything else - a Dockerfile that is wrong, a digest that does not
+# exist - fails at once.
+build_image() {
+    local distribution="$1" dockerfile="$2" attempt pause errors image
+    errors="$(mktemp)"
+    for attempt in 1 2 3; do
+        if image="$(docker build --quiet --file "$dockerfile" "$images" 2>"$errors")"; then
+            rm -f "$errors"
+            printf '%s\n' "$image"
+            return 0
+        fi
+        if [[ $attempt -lt 3 ]] && grep -Eq 'status code[^0-9]*5[0-9][0-9]|[^0-9]5[0-9][0-9] (Bad Gateway|Service Unavailable|Gateway Timeout|Internal Server Error)' "$errors"; then
+            pause=$(( ${TEST_DEB_RETRY_PAUSE:-20} * attempt ))
+            printf 'test-deb: the registry answered the %s image build with a server error; retrying in %ss: %s\n' \
+                "$distribution" "$pause" "$(grep -Eo '[^ ]*5[0-9][0-9][^;]*' "$errors" | tail -1)" >&2
+            sleep "$pause"
+            continue
+        fi
+        sed 's/^/    /' "$errors" >&2
+        rm -f "$errors"
+        die "could not build the $distribution image from $dockerfile, attempt $attempt; docker's error is above"
+    done
 }
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -68,8 +99,7 @@ for distribution in ${@+"$@"}; do
     printf 'test-deb: %s on %s\n' "$file" "$distribution" >&2
     # The build only names the pinned base image; the context is the directory the Dockerfiles
     # are in, which holds nothing else worth sending.
-    image="$(docker build --quiet --file "$dockerfile" "$images")" ||
-        die "could not build the $distribution image from $dockerfile"
+    image="$(build_image "$distribution" "$dockerfile")" || exit 1
     status=0
     docker run --rm --network none \
         --volume "$package:/pkg/$file:ro" \
