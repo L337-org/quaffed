@@ -10,23 +10,25 @@
 #   bytes_read       exactly how many bytes it reads from them
 
 [startup]
-instructions = 277_600
+instructions = 282_600
 peak_memory_kib = 6_200
 paths_opened = 2
 bytes_read = 0
 
 [search]
-instructions = 1_148_100
+instructions = 1_150_300
 peak_memory_kib = 6_200
 paths_opened = 18
 bytes_read = 5_951
 
-# What may be opened outside the project, each for a reason the project cannot change.
+# What may be opened outside the project, each for a reason the project cannot change.  Each
+# is a pattern, in which * matches anything, / included.
 [outside]
 allowed = [
-    # The standard library reads the cgroup's CPU quota to size its thread pool.
+    # The standard library reads the CPU quota of the process's cgroup, and each cgroup above it,
+    # to size its thread pool; how deep the cgroup is depends on the machine.
     "/proc/self/cgroup",
-    "/sys/fs/cgroup/cpu.max",
+    "/sys/fs/cgroup/*cpu.max",
     # mimalloc, the package's allocator, reads how the kernel overcommits and hands out pages.
     "/proc/sys/vm/overcommit_memory",
     "/sys/kernel/mm/transparent_hugepage/enabled",

@@ -37,6 +37,7 @@ Needs: valgrind (with callgrind_annotate), strace, GNU time at /usr/bin/time, Li
 """
 
 import argparse
+import fnmatch
 import os
 import re
 import shutil
@@ -335,7 +336,7 @@ def judge(name, measured, limits, outside, project):
     ignore_names = set(outside.get("ignore_files_above_the_project", []))
     for path in measured["outside"]:
         above = Path(path).name in ignore_names and project.is_relative_to(Path(path).parent)
-        if path not in allowed and not above:
+        if not any(fnmatch.fnmatchcase(path, pattern) for pattern in allowed) and not above:
             failures.append(f"{name}: {path!r}, outside the project, was opened")
     for budget in ("paths_opened", "bytes_read"):
         value = measured[budget]
