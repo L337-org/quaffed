@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 Gavin Lucas
+
 //! `scripts/test-deb` retries a registry's server error, and nothing else.
 //!
 //! Building a distribution's image pulls its base image from a registry outside the test's
