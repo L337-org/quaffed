@@ -628,6 +628,28 @@ mod tests {
     }
 
     #[test]
+    fn the_ignore_files_are_the_directory_s_and_at_the_root_info_exclude() {
+        let dir = std::env::temp_dir().join(format!("quaffed-git-ignores-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join(".git")).unwrap();
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::create_dir_all(dir.join("pointer")).unwrap();
+        fs::write(dir.join("pointer/.git"), "not a pointer\n").unwrap();
+        let workspace = find(&dir).unwrap();
+        let at_root = workspace.ignore_files(&dir).unwrap();
+        let below = workspace.ignore_files(&dir.join("sub")).unwrap();
+        // A .git file that points nowhere has no info/exclude to read.
+        let no_git_dir = workspace.ignore_files(&dir.join("pointer")).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(
+            at_root,
+            [dir.join(".gitignore"), dir.join(".git/info/exclude")]
+        );
+        assert_eq!(below, [dir.join("sub/.gitignore")]);
+        assert_eq!(no_git_dir, [dir.join("pointer/.gitignore")]);
+    }
+
+    #[test]
     fn a_git_file_with_no_gitdir_line_has_no_info_attributes() {
         let dir = std::env::temp_dir().join(format!("quaffed-git-file-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);

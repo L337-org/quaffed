@@ -155,6 +155,29 @@ pub fn files(scope: &Path, cwd: &Path, workspace: Option<&dyn Workspace>) -> Res
     Ok(found)
 }
 
+/// An error from reading ignore files, tolerated if it is only lines that could not be parsed:
+/// each is noted in `found` and the rest of its file applies.  Anything else - a directory that
+/// cannot be listed, an ignore file that cannot be read - stops the run rather than answering
+/// short.
+///
+/// It takes the error by value: a clone of one loses the system's error inside it, which the
+/// message quotes.
+fn tolerate(cause: ignore::Error, cwd: &Path, found: &mut Found) -> Result<(), Error> {
+    if !is_rule_error(&cause) {
+        return Err(Error {
+            cause,
+            cwd: cwd.to_path_buf(),
+        });
+    }
+    for each in each_error(&cause) {
+        let described = describe(each, cwd);
+        if !found.skipped_rules.contains(&described) {
+            found.skipped_rules.push(described);
+        }
+    }
+    Ok(())
+}
+
 /// The ignore files in each directory from the one holding `scope` up to `boundary`, read as
 /// matchers, the one that takes precedence first: nearer directories before further ones, and
 /// within a directory `.ignore` before the workspace's own.  A line that cannot be used is noted
@@ -185,24 +208,12 @@ fn rules_above(
         }
         for file in files.into_iter().filter(|file| file.is_file()) {
             let mut builder = GitignoreBuilder::new(dir);
-            let added = builder.add(&file);
-            let built = builder.build();
-            for cause in added.iter().chain(built.as_ref().err()) {
-                if !is_rule_error(cause) {
-                    return Err(Error {
-                        cause: cause.clone(),
-                        cwd: cwd.to_path_buf(),
-                    });
-                }
-                for each in each_error(cause) {
-                    let described = describe(each, cwd);
-                    if !found.skipped_rules.contains(&described) {
-                        found.skipped_rules.push(described);
-                    }
-                }
+            if let Some(cause) = builder.add(&file) {
+                tolerate(cause, cwd, found)?;
             }
-            if let Ok(matcher) = built {
-                rules.push(matcher);
+            match builder.build() {
+                Ok(matcher) => rules.push(matcher),
+                Err(cause) => tolerate(cause, cwd, found)?,
             }
         }
     }
@@ -257,38 +268,15 @@ fn walk(
     }
     let mut reached = within.is_none();
     for entry in walker.build() {
-        // An ignore file line that could not be parsed costs that one rule: say so, and carry
-        // on with the rest.  Anything else - a directory that cannot be listed, an ignore file
-        // that cannot be read - stops the run rather than answering short.
-        let mut skipped = |cause: &ignore::Error| {
-            for each in each_error(cause) {
-                let described = describe(each, cwd);
-                if !found.skipped_rules.contains(&described) {
-                    found.skipped_rules.push(described);
-                }
-            }
-        };
         let entry = match entry {
             Ok(entry) => entry,
-            Err(cause) if is_rule_error(&cause) => {
-                skipped(&cause);
-                continue;
-            }
             Err(cause) => {
-                return Err(Error {
-                    cause,
-                    cwd: cwd.to_path_buf(),
-                });
+                tolerate(cause, cwd, found)?;
+                continue;
             }
         };
         if let Some(cause) = entry.error() {
-            if !is_rule_error(cause) {
-                return Err(Error {
-                    cause: cause.clone(),
-                    cwd: cwd.to_path_buf(),
-                });
-            }
-            skipped(cause);
+            tolerate(cause.clone(), cwd, found)?;
         }
         let Some(kind) = entry.file_type() else {
             continue;
@@ -512,6 +500,125 @@ mod tests {
             ],
         );
         assert_eq!(tree.found("build"), ["build/b.py"]);
+    }
+
+    #[test]
+    fn a_bad_line_above_a_named_ignored_directory_is_skipped_with_a_note() {
+        let tree = Tree::new(
+            "boundary-bad-line",
+            &[
+                (".git/HEAD", ""),
+                (".gitignore", "build/\na{b\n*.log\n"),
+                ("build/a.log", ""),
+                ("build/b.py", ""),
+            ],
+        );
+        // Canonical, as a run passes them: the temporary directory may be reached through a
+        // symbolic link, and the walker names files by the path it was given.
+        let root = fs::canonicalize(&tree.0).unwrap();
+        let found = files_in(&root.join("build"), &root).unwrap();
+        let names: Vec<_> = found
+            .files
+            .iter()
+            .map(|p| {
+                p.strip_prefix(&root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        // The good lines still apply beneath it; the bad one is noted once, though both the
+        // walker and the rules read above the scope met it.
+        assert_eq!(names, ["build/b.py"]);
+        assert_eq!(found.skipped_rules.len(), 1, "{:?}", found.skipped_rules);
+        assert!(
+            found.skipped_rules[0].starts_with("\".gitignore\": line 2: "),
+            "{:?}",
+            found.skipped_rules
+        );
+    }
+
+    /// Discovery from the tree's root with `scope` named, after making `locked` unreadable; `None`
+    /// if this user can read it anyway, as root can, so that the failure cannot happen.
+    fn found_with_unreadable(
+        tree: &Tree,
+        scope: &str,
+        locked: &str,
+    ) -> Option<Result<Found, Error>> {
+        use std::os::unix::fs::PermissionsExt;
+        let root = fs::canonicalize(&tree.0).unwrap();
+        let locked = root.join(locked);
+        let mode = fs::metadata(&locked).unwrap().permissions().mode();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        let readable_anyway = if locked.is_dir() {
+            fs::read_dir(&locked).is_ok()
+        } else {
+            fs::read(&locked).is_ok()
+        };
+        let result = files_in(&root.join(scope), &root);
+        fs::set_permissions(&locked, fs::Permissions::from_mode(mode)).unwrap();
+        if readable_anyway {
+            eprintln!("skipped: this user can read a mode-000 path, so it cannot fail");
+            return None;
+        }
+        Some(result)
+    }
+
+    #[test]
+    fn an_unreadable_ignore_file_above_a_named_ignored_scope_stops_discovery() {
+        // a/ is ignored, so the walk from the root never reads a/.ignore; the rules read above
+        // the scope a/b do, and must not pass over it.
+        let tree = Tree::new(
+            "above-unreadable",
+            &[
+                (".git/HEAD", ""),
+                (".gitignore", "a/\n"),
+                ("a/.ignore", "*.log\n"),
+                ("a/b/x.py", ""),
+            ],
+        );
+        if let Some(result) = found_with_unreadable(&tree, "a/b", "a/.ignore") {
+            let message = result.expect_err("must stop").to_string();
+            assert!(message.contains("a/.ignore"), "{message}");
+            assert!(message.contains("Permission denied"), "{message}");
+        }
+    }
+
+    #[test]
+    fn a_workspace_that_cannot_say_where_its_ignore_files_are_stops_discovery() {
+        // a/ is ignored and holds a nested repository whose .git file cannot be read, so where
+        // its info/exclude is cannot be known.
+        let tree = Tree::new(
+            "above-unreadable-git",
+            &[
+                (".git/HEAD", ""),
+                (".gitignore", "a/\n"),
+                ("a/.git", "gitdir: elsewhere\n"),
+                ("a/b/x.py", ""),
+            ],
+        );
+        if let Some(result) = found_with_unreadable(&tree, "a/b", "a/.git") {
+            let message = result.expect_err("must stop").to_string();
+            assert!(message.contains("a/.git"), "{message}");
+            assert!(message.contains("Permission denied"), "{message}");
+        }
+    }
+
+    #[test]
+    fn an_unreadable_directory_beneath_a_named_ignored_scope_stops_discovery() {
+        let tree = Tree::new(
+            "beneath-unreadable",
+            &[
+                (".git/HEAD", ""),
+                (".gitignore", "build/\n"),
+                ("build/locked/x.py", ""),
+            ],
+        );
+        if let Some(result) = found_with_unreadable(&tree, "build", "build/locked") {
+            let message = result.expect_err("must stop").to_string();
+            assert!(message.contains("build/locked"), "{message}");
+            assert!(message.contains("Permission denied"), "{message}");
+        }
     }
 
     #[test]
