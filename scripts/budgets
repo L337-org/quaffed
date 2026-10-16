@@ -1,0 +1,393 @@
+#!/usr/bin/env python3
+"""Measure the work the quaff binary does over the synthetic corpus, against budgets.toml.
+
+Each scenario runs the binary three ways, each counting something that does not depend on how
+fast the machine is:
+
+- under Valgrind's callgrind, for the instructions it executes;
+- natively under GNU time, for its peak resident memory;
+- under strace, for the files it opens and the bytes it reads from them.
+
+Instructions and memory are held to a limit with a margin, since they move slightly with the
+operating system image and the Valgrind version.  The files are held exactly: how many paths in
+the project are opened and how many bytes are read from them must equal budgets.toml, no path
+in the project may be opened twice, and nothing outside the project may be opened but what
+budgets.toml allows.  architecture/verification.md has the reasoning and how to change a limit.
+
+    scripts/budgets BINARY [--repeat N] [--out DIR] [--env NAME=VALUE ...] [--scenario NAME ...]
+
+The scenarios run on a scratch copy of corpus/synthetic, made a project root with an empty
+`.git`, so nothing else in the checkout can move a budget.  Every trace is kept under DIR
+(default target/budgets): the callgrind profile and its annotated report, the strace log, and
+for each scenario a list of every path opened with the bytes read from it, which is what a
+reviewer reads to judge whether a moved budget is still correct behaviour.  A Markdown report
+goes to standard output and, in GitHub Actions, to the job summary.
+
+--repeat runs each scenario N times, judges the worst, and reports the spread, so that every
+run shows how much the counts move; the file access must be the same every time.
+
+--env passes a variable to the binary, `{project}` in its value standing for the scratch
+project's path; the negative test uses it to drive a deliberately worsened build.
+
+Exit status: 0 when every budget holds, 1 when one does not, 2 when something could not be
+measured - a tool missing, a run that failed, a trace that could not be read - since a budget
+that was not measured has not passed.
+
+Needs: valgrind (with callgrind_annotate), strace, GNU time at /usr/bin/time, Linux.
+"""
+
+import argparse
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import tomllib
+from collections import defaultdict
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+
+# Each scenario: what it runs in, quaff's arguments, and the exit status a correct run gives.
+# startup searches a project with nothing in it, so what it costs is quaff starting up; search
+# is a search of the whole synthetic corpus.
+SCENARIOS = {
+    "startup": {"project": "empty", "args": ["TODO"], "exit": 1},
+    "search": {"project": "corpus", "args": ["def"], "exit": 0},
+}
+
+# GNU time, for peak memory.  Not the shell's builtin, which cannot report it, and not a
+# measurement from here: a child of this script starts as a copy of Python, and the kernel's
+# peak for a process counts the memory it had before it started quaff.  time's own child starts
+# as a copy of time, far smaller than quaff.
+TIME = "/usr/bin/time"
+
+# A tool's run, so a hung one cannot hang the job.  Valgrind runs quaff many times slower than
+# natively, and the corpus is small.
+TIMEOUT = 300
+
+# What the binary sees of the environment: nothing of the machine's, so neither a locale nor
+# anything else can change a count.
+BASE_ENV = {"PATH": "/usr/bin:/bin"}
+
+
+class Unmeasured(Exception):
+    """Something could not be measured: exit 2, naming it."""
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("binary", type=Path)
+    parser.add_argument("--out", type=Path, default=ROOT / "target" / "budgets")
+    parser.add_argument("--env", action="append", default=[], metavar="NAME=VALUE")
+    parser.add_argument("--scenario", action="append", choices=sorted(SCENARIOS))
+    parser.add_argument("--repeat", type=int, default=1, metavar="N")
+    parser.add_argument("--budgets", type=Path, default=ROOT / "budgets.toml")
+    args = parser.parse_args(argv)
+    try:
+        return run_all(args)
+    except Unmeasured as err:
+        print(f"budgets: not measured: {err}", file=sys.stderr)
+        annotate("error", f"budgets not measured: {err}")
+        return 2
+
+
+def run_all(args):
+    binary = args.binary.resolve()
+    if not binary.is_file():
+        raise Unmeasured(f"no binary at {str(args.binary)!r}")
+    for tool in ("valgrind", "callgrind_annotate", "strace", TIME):
+        if shutil.which(tool) is None:
+            raise Unmeasured(f"{tool} is not on PATH; install it from the system's packages")
+    budgets = read_budgets(args.budgets)
+    args.out.mkdir(parents=True, exist_ok=True)
+    names = args.scenario or list(SCENARIOS)
+    failures = []
+    rows = []
+    # Always under /tmp, whatever TMPDIR says, and at the same depth: quaff handles each file's
+    # absolute path, so a project one directory deeper executes thousands more instructions.
+    # The random part of the name is always the same length, and its characters do not matter.
+    with tempfile.TemporaryDirectory(prefix="quaffed-budgets-", dir="/tmp") as scratch:
+        projects = make_projects(Path(scratch))
+        for name in names:
+            scenario = SCENARIOS[name]
+            project = projects[scenario["project"]]
+            env = dict(BASE_ENV)
+            for item in args.env:
+                key, sep, value = item.partition("=")
+                if not sep:
+                    raise Unmeasured(f"--env {item!r} is not NAME=VALUE")
+                env[key] = value.replace("{project}", str(project))
+            limits = budgets.get(name)
+            if limits is None:
+                raise Unmeasured(f"budgets.toml has no [{name}] table")
+            if args.repeat < 1:
+                raise Unmeasured(f"--repeat {args.repeat} measures nothing")
+            runs = [
+                measure(name, scenario, binary, project, env, args.out) for _ in range(args.repeat)
+            ]
+            measured = worst(name, runs)
+            failures += judge(name, measured, limits, budgets.get("outside", {}), project)
+            rows.append((name, measured, limits))
+    report = render(rows, failures, args.out)
+    print(report)
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        with open(summary, "a", encoding="utf-8") as out:
+            out.write(report + "\n")
+    for failure in failures:
+        print(f"budgets: {failure}", file=sys.stderr)
+        annotate("error", failure)
+    return 1 if failures else 0
+
+
+def read_budgets(path):
+    """budgets.toml, parsed; a missing or malformed file cannot be measured against."""
+    try:
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError) as err:
+        raise Unmeasured(f"reading {str(path)!r}: {err}") from err
+
+
+def make_projects(scratch):
+    """The projects the scenarios run in, each an empty `.git` away from being a project root."""
+    corpus = ROOT / "corpus" / "synthetic"
+    if not any(corpus.rglob("*")):
+        raise Unmeasured(f"the synthetic corpus at {str(corpus)!r} is empty")
+    projects = {"empty": scratch / "empty", "corpus": scratch / "corpus"}
+    projects["empty"].mkdir()
+    shutil.copytree(corpus, projects["corpus"])
+    for project in projects.values():
+        (project / ".git").mkdir()
+    return projects
+
+
+def measure(name, scenario, binary, project, env, out):
+    """Instructions, peak memory and file access for one scenario, keeping every trace."""
+    command = [str(binary), *scenario["args"]]
+    expected = scenario["exit"]
+
+    profile = out / f"{name}.callgrind"
+    run(
+        ["valgrind", "--tool=callgrind", f"--callgrind-out-file={profile}", *command],
+        project,
+        env,
+        expected,
+        f"{name} under callgrind",
+    )
+    instructions = callgrind_total(profile)
+    report = run(["callgrind_annotate", str(profile)], project, BASE_ENV, 0, "callgrind_annotate")
+    (out / f"{name}.callgrind.txt").write_text(report, encoding="utf-8")
+
+    memory = peak_memory(command, project, env, expected, out, name)
+
+    log = out / f"{name}.strace"
+    run(
+        [
+            "strace",
+            "-f",
+            "-qq",
+            "-y",
+            "-s",
+            "0",
+            "-o",
+            str(log),
+            "-e",
+            "trace=open,openat,openat2,read,pread64,readv,preadv,preadv2",
+            *command,
+        ],
+        project,
+        env,
+        expected,
+        f"{name} under strace",
+    )
+    access = file_access(log)
+    lines = [f"{opens}\t{read}\t{path}" for path, (opens, read) in sorted(access.items())]
+    (out / f"{name}.files.txt").write_text(
+        "opens\tbytes read\tpath\n" + "\n".join(lines) + "\n", encoding="utf-8"
+    )
+    inside = {
+        path: counts
+        for path, counts in access.items()
+        if Path(path) == project or Path(path).is_relative_to(project)
+    }
+    return {
+        "instructions": instructions,
+        "peak_memory_kib": memory,
+        "paths_opened": len(inside),
+        "bytes_read": sum(read for _, read in inside.values()),
+        "inside": inside,
+        "outside": sorted(set(access) - set(inside)),
+    }
+
+
+def worst(name, runs):
+    """The highest instructions and memory of several runs, with their spread, and the file
+    access they all share; file access that differs between runs is not a measurement."""
+    access = {
+        (r["paths_opened"], r["bytes_read"], tuple(sorted(r["inside"].items()))) for r in runs
+    }
+    if len(access) > 1:
+        raise Unmeasured(
+            f"{name} opened or read different files on different runs, so file access is not "
+            f"repeatable; compare the {name}.files.txt traces"
+        )
+    measured = dict(runs[-1])
+    for budget in ("instructions", "peak_memory_kib"):
+        values = [r[budget] for r in runs]
+        measured[budget] = max(values)
+        measured[f"{budget}_spread"] = (min(values), max(values))
+    return measured
+
+
+def run(command, cwd, env, expected, doing):
+    """A command's standard output, failing if it does not exit as expected."""
+    try:
+        done = subprocess.run(
+            command, cwd=cwd, env=env, capture_output=True, timeout=TIMEOUT, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired) as err:
+        raise Unmeasured(f"running {doing}: {err!r}") from err
+    if done.returncode != expected:
+        stderr = done.stderr.decode("utf-8", "replace").strip()
+        raise Unmeasured(f"{doing} exited {done.returncode}, not {expected}: {stderr[-2000:]!r}")
+    return done.stdout.decode("utf-8", "replace")
+
+
+def callgrind_total(profile):
+    """The instructions callgrind counted, from its profile's summary line."""
+    try:
+        text = profile.read_text(encoding="utf-8", errors="replace")
+    except OSError as err:
+        raise Unmeasured(f"reading {str(profile)!r}: {err}") from err
+    match = re.search(r"^(?:summary|totals): (\d+)", text, re.MULTILINE)
+    if match is None:
+        raise Unmeasured(f"{str(profile)!r} has no summary line")
+    return int(match.group(1))
+
+
+def peak_memory(command, cwd, env, expected, out, name):
+    """The peak resident memory of a native run, in KiB, as GNU time reports it."""
+    record = out / f"{name}.time"
+    run([TIME, "-f", "%M", "-o", str(record), *command], cwd, env, expected, f"{name} natively")
+    try:
+        return int(record.read_text(encoding="utf-8").split()[-1])
+    except (OSError, ValueError, IndexError) as err:
+        raise Unmeasured(f"reading the peak memory from {str(record)!r}: {err}") from err
+
+
+# A successful open, with strace -y's annotation of the descriptor: `= 3</path>`.
+OPENED = re.compile(r"^\d+\s+(?:open|openat|openat2)\(.*\) = \d+<(.*)>$")
+# A read from a descriptor strace -y annotated: `read(3</path>, ...) = 12`.
+READ = re.compile(r"^\d+\s+(?:read|pread64|readv|preadv|preadv2)\(\d+<(.*?)>, .*\) = (\d+)$")
+# A call split across two lines by another thread: `<unfinished ...>`, then `<... resumed>`.
+UNFINISHED = re.compile(r"^(\d+)\s+(.*) <unfinished \.\.\.>$")
+RESUMED = re.compile(r"^(\d+)\s+<\.\.\. \w+ resumed>(.*)$")
+
+
+def file_access(log):
+    """Each path opened, with how many times and how many bytes were read from it."""
+    try:
+        text = log.read_text(encoding="utf-8", errors="replace")
+    except OSError as err:
+        raise Unmeasured(f"reading {str(log)!r}: {err}") from err
+    access = defaultdict(lambda: [0, 0])
+    pending = {}
+    for line in text.splitlines():
+        if m := UNFINISHED.match(line):
+            pending[m.group(1)] = m.group(2)
+            continue
+        if m := RESUMED.match(line):
+            line = f"{m.group(1)} {pending.pop(m.group(1), '')}{m.group(2)}"
+        if m := OPENED.match(line):
+            access[normalise(m.group(1))][0] += 1
+        elif m := READ.match(line):
+            access[normalise(m.group(1))][1] += int(m.group(2))
+    if not access:
+        raise Unmeasured(f"{str(log)!r} records no file opened, so nothing was traced")
+    return {path: tuple(counts) for path, counts in access.items()}
+
+
+def normalise(path):
+    """A path as budgets.toml names it: the process's own /proc entry as /proc/self."""
+    return re.sub(r"^/proc/\d+/", "/proc/self/", path)
+
+
+def judge(name, measured, limits, outside, project):
+    """Each way the scenario is over its budget, said in full."""
+    failures = []
+    for budget in ("instructions", "peak_memory_kib"):
+        limit = limits.get(budget)
+        if limit is None:
+            failures.append(f"{name}: budgets.toml sets no {budget}")
+        elif measured[budget] > limit:
+            over = f" ({(measured[budget] - limit) / limit:+.2%} over)" if limit > 0 else ""
+            failures.append(
+                f"{name} {budget}: limit {limit:,}, measured {measured[budget]:,}{over}"
+            )
+    for path, (opens, _) in sorted(measured["inside"].items()):
+        if opens > 1:
+            shown = Path(path).relative_to(project)
+            failures.append(f"{name}: {str(shown)!r} in the project was opened {opens} times")
+    allowed = set(outside.get("allowed", []))
+    ignore_names = set(outside.get("ignore_files_above_the_project", []))
+    for path in measured["outside"]:
+        above = Path(path).name in ignore_names and project.is_relative_to(Path(path).parent)
+        if path not in allowed and not above:
+            failures.append(f"{name}: {path!r}, outside the project, was opened")
+    for budget in ("paths_opened", "bytes_read"):
+        value = measured[budget]
+        limit = limits.get(budget)
+        if limit is None:
+            failures.append(f"{name}: budgets.toml sets no {budget}")
+        elif value != limit:
+            failures.append(f"{name} {budget}: budgets.toml says {limit:,}, measured {value:,}")
+    return failures
+
+
+def render(rows, failures, out):
+    """The Markdown report: each budget, its limit, what was measured, and the headroom."""
+    lines = ["## Budgets", ""]
+    lines.append("**Every budget holds.**" if not failures else f"**{len(failures)} over budget.**")
+    lines += [
+        "",
+        "| Scenario | Budget | Limit | Measured | Headroom | Spread over the runs |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for name, measured, limits in rows:
+        for budget in ("instructions", "peak_memory_kib", "paths_opened", "bytes_read"):
+            value = measured[budget]
+            low, high = measured.get(f"{budget}_spread", (value, value))
+            spread = f"{low:,} - {high:,} ({(high - low) / low:.2%})" if low else "exact"
+            if budget in ("paths_opened", "bytes_read"):
+                spread = "exact"
+            limit = limits.get(budget)
+            if limit is None:
+                lines.append(f"| {name} | {budget} | - | {value:,} | - | {spread} |")
+                continue
+            headroom = f"{(limit - value) / limit:.2%}" if limit else "-"
+            lines.append(f"| {name} | {budget} | {limit:,} | {value:,} | {headroom} | {spread} |")
+    if failures:
+        lines += ["", *[f"- {failure}" for failure in failures]]
+    lines += ["", f"The traces are in `{out}`, and in the job's artefact."]
+    return "\n".join(lines)
+
+
+def annotate(level, message):
+    """A GitHub Actions annotation, when running there."""
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        print(f"::{level}::{message}", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    # An unexpected error is a measurement that did not happen, not a budget that failed, so it
+    # exits 2 like the rest; Python's own exit for it would be 1.
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except Exception:  # noqa: BLE001 - reported in full, then the exit says it was not measured
+        import traceback
+
+        traceback.print_exc()
+        sys.exit(2)

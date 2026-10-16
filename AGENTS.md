@@ -46,6 +46,7 @@ the work instead.  The shared hygiene check that CI runs fails on either.
 | `corpus/`, `scripts/fetch-corpus` or `scripts/check-synthetic`, or adding Python to the synthetic corpus | the corpus sections of [architecture/verification.md](architecture/verification.md) |
 | `packaging/`, `scripts/build-deb`, the package or release workflows, or a dependency the binary links | [architecture/release.md](architecture/release.md) |
 | `scripts/test-deb`, `scripts/break-deb` or `packaging/deb/install-test/`, or adding a target distribution | the package install test section of [architecture/verification.md](architecture/verification.md) |
+| `budgets.toml`, `scripts/budgets` or `scripts/break-budgets`, or a change that moves a budget | the budgets section of [architecture/verification.md](architecture/verification.md) |
 
 ## Commands
 
@@ -62,6 +63,7 @@ python3.X scripts/fetch-corpus                     # the real-world corpus (3.X:
 python3.X scripts/check-synthetic                  # the oracle over the synthetic corpus
 scripts/build-deb --dev amd64                      # a development package (on amd64 Linux)
 scripts/test-deb target/deb/quaffed_*.deb          # install and run it on each target distribution
+scripts/budgets <quaff> --repeat 3                 # the budgets, on amd64 Linux (verification.md)
 ```
 
 CI builds `--locked`, so a dependency change must commit `Cargo.lock` alongside `Cargo.toml`.

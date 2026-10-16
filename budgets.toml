@@ -1,0 +1,36 @@
+# What the quaff binary may do over the synthetic corpus, checked by scripts/budgets on every
+# pull request.  architecture/verification.md has the reasoning, how to read a failure's trace,
+# and how to change a limit: in the pull request that moves it, once its trace has been
+# reviewed and the new behaviour agreed to be correct.
+#
+# Per scenario:
+#   instructions     the most it may execute, under callgrind: the measured count plus a margin
+#   peak_memory_kib  the most resident memory it may use, in KiB, plus a margin
+#   paths_opened     exactly how many paths in the project it opens, directories included
+#   bytes_read       exactly how many bytes it reads from them
+
+[startup]
+instructions = 277_600
+peak_memory_kib = 6_200
+paths_opened = 2
+bytes_read = 0
+
+[search]
+instructions = 1_148_100
+peak_memory_kib = 6_200
+paths_opened = 18
+bytes_read = 5_951
+
+# What may be opened outside the project, each for a reason the project cannot change.
+[outside]
+allowed = [
+    # The standard library reads the cgroup's CPU quota to size its thread pool.
+    "/proc/self/cgroup",
+    "/sys/fs/cgroup/cpu.max",
+    # mimalloc, the package's allocator, reads how the kernel overcommits and hands out pages.
+    "/proc/sys/vm/overcommit_memory",
+    "/sys/kernel/mm/transparent_hugepage/enabled",
+]
+# The ignore crate opens these in every directory above where a walk starts, to find
+# repositories, whether or not any of them applies; quaff applies none above the project root.
+ignore_files_above_the_project = [".gitignore", ".ignore"]

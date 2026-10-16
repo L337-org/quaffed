@@ -215,6 +215,73 @@ jobs:
       - name: Snapshots match, and none is unreferenced
         run: cargo insta test --workspace --check --unreferenced=reject
 
+  budgets:
+    # The work the shipped build does over the synthetic corpus - instructions, peak memory, and
+    # the files it opens and reads - held to budgets.toml by scripts/budgets.  Counted rather
+    # than timed, so the runner's speed cannot move it; architecture/verification.md has the
+    # reasoning and how to change a limit.  The runner image is named, not ubuntu-latest,
+    # because Valgrind comes from it and its version moves the instruction counts.
+    runs-on: [ubuntu-24.04]
+    name: Budgets
+    # Covers two cold musl builds with thin LTO - quaff, and the worsened copy for the negative
+    # test - and the measurements, which take seconds, generously.
+    timeout-minutes: 40
+    steps:
+      - name: Check out source repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+
+      - name: Add the musl target the package is built for
+        run: rustup target add x86_64-unknown-linux-musl
+
+      - name: Install Valgrind, strace, GNU time and the musl C toolchain
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends valgrind strace time musl-tools
+
+      # The package's build - musl, mimalloc, the dist profile's optimisation - with its
+      # symbols kept, so callgrind's report names every function.
+      - name: Build quaff as the package does, with symbols
+        run: cargo build --locked --profile profiling --target x86_64-unknown-linux-musl --bin quaff
+
+      # Three runs of each scenario, judged on the worst, so the job summary shows how much the
+      # counts move from run to run.
+      - name: Every budget holds
+        run: scripts/budgets target/x86_64-unknown-linux-musl/profiling/quaff --repeat 3
+
+      # The guard's own negative test: a build worsened each way must fail on the budget that
+      # guards it, saying so.
+      - name: Show the budgets fail on a worsened build
+        run: |
+          worse="$(scripts/break-budgets "$RUNNER_TEMP/worse")"
+          check() {
+            how="$1" expected="$2"
+            if scripts/budgets "$worse" --scenario search --env "QUAFFED_WORSEN=$how" \
+                --out "$RUNNER_TEMP/worse-out" >/dev/null 2>"$RUNNER_TEMP/err"; then
+              echo "::error::scripts/budgets passed a build worsened as $how"
+              exit 1
+            fi
+            grep -F "$expected" "$RUNNER_TEMP/err" || {
+              echo "::error::scripts/budgets failed on the build worsened as $how, but not with '$expected':"
+              cat "$RUNNER_TEMP/err"
+              exit 1
+            }
+          }
+          check instructions "search instructions: limit"
+          check memory "search peak_memory_kib: limit"
+          check "read-twice:{project}/modules/statements.py" "'modules/statements.py' in the project was opened 2 times"
+          check outside "'/etc/passwd', outside the project, was opened"
+
+      # Saved whether or not the budgets held: the traces are what a reviewer reads to judge
+      # whether a moved budget is still correct behaviour.
+      - name: Keep the traces
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: budgets
+          path: target/budgets
+          if-no-files-found: warn
+
   real-world-corpus:
     # The oracle - the CPython release corpus/real-world.toml names - judges both corpora.  It
     # confirms every Python file of the synthetic corpus is valid Python (scripts/check-synthetic).

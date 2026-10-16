@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# Build a deliberately worsened quaff, to show that scripts/budgets fails on each thing it guards.
+#
+#   scripts/break-budgets DIRECTORY
+#
+# Copies the checkout's tracked files into DIRECTORY, adds to the top of main() a block that
+# worsens the run as the QUAFFED_WORSEN environment variable says, and builds it as the budgets
+# job builds quaff: the profiling profile, for the amd64 musl target.  Prints the binary's path
+# on standard output, and nothing else there.  The checkout itself is never touched.
+#
+# QUAFFED_WORSEN, read only by this build:
+#   instructions     executes a few million instructions more
+#   memory           allocates and fills 32 MiB
+#   read-twice:PATH  reads PATH, a file the search reads too, so it is opened twice
+#   outside          reads /etc/passwd, outside any project
+#
+# A guard that cannot fail is a comment: the budgets section of architecture/verification.md
+# has where this is run.
+#
+# Needs: git, cargo with the x86_64-unknown-linux-musl target, musl-tools.
+
+set -euo pipefail
+
+die() {
+    printf 'break-budgets: %s\n' "$*" >&2
+    exit 1
+}
+
+[[ $# -eq 1 ]] || die "usage: scripts/break-budgets DIRECTORY"
+out="$1"
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+mkdir -p "$out"
+out="$(cd "$out" && pwd)"
+case "$out/" in
+    "$root/"*) die "DIRECTORY '$out' is inside the checkout; the copy would be copied into itself" ;;
+esac
+[[ -z "$(ls -A "$out")" ]] || die "DIRECTORY '$out' is not empty"
+
+# The working tree's tracked files, uncommitted changes included, so the worsened build is this
+# checkout's code plus the worsening and nothing else.
+(cd "$root" && git ls-files -z | tar --null -T - -cf -) | tar -xf - -C "$out" ||
+    die "copying the checkout's tracked files into '$out' failed"
+
+main="$out/crates/quaffed/src/main.rs"
+anchor='fn main() -> ExitCode {'
+grep -qxF "$anchor" "$main" || die "no line '$anchor' in $main to add the worsening after"
+worsening='    // Added by scripts/break-budgets; never in a real build.
+    match std::env::var("QUAFFED_WORSEN").as_deref() {
+        Ok("instructions") => {
+            let mut sum = 0u64;
+            for i in 0..1_000_000u64 {
+                sum = std::hint::black_box(sum.wrapping_add(i));
+            }
+            std::hint::black_box(sum);
+        }
+        Ok("memory") => {
+            std::hint::black_box(vec![1u8; 32 << 20]);
+        }
+        Ok(how) if how.starts_with("read-twice:") => {
+            let _ = std::fs::read(&how["read-twice:".len()..]);
+        }
+        Ok("outside") => {
+            let _ = std::fs::read("/etc/passwd");
+        }
+        _ => {}
+    }'
+# awk rather than sed, so the block goes in verbatim whatever it holds.
+awk -v anchor="$anchor" -v block="$worsening" '{ print } $0 == anchor { print block }' \
+    "$main" >"$main.new" && mv "$main.new" "$main" || die "adding the worsening to $main failed"
+
+# Its own target directory, so nothing it builds can be mistaken for the real binary.
+(cd "$out" && cargo build --locked --profile profiling --target x86_64-unknown-linux-musl \
+    --bin quaff --target-dir "$out/target") >&2 || die "building the worsened quaff failed"
+binary="$out/target/x86_64-unknown-linux-musl/profiling/quaff"
+[[ -x "$binary" ]] || die "the build left no binary at $binary"
+printf '%s\n' "$binary"
