@@ -256,7 +256,10 @@ jobs:
           worse="$(scripts/break-budgets "$RUNNER_TEMP/worse")"
           check() {
             how="$1" expected="$2"
-            if scripts/budgets "$worse" --scenario search --env "QUAFFED_WORSEN=$how" \
+            # These failures are expected: neither annotated as errors nor added to the job
+            # summary, which report the real budgets.
+            if env -u GITHUB_STEP_SUMMARY GITHUB_ACTIONS=false \
+                scripts/budgets "$worse" --scenario search --env "QUAFFED_WORSEN=$how" \
                 --out "$RUNNER_TEMP/worse-out" >/dev/null 2>"$RUNNER_TEMP/err"; then
               echo "::error::scripts/budgets passed a build worsened as $how"
               exit 1
