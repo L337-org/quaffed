@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
-use super::{Declared, Error, Origin, Workspace};
+use super::{Declared, Error, IgnoreFiles, Origin, SystemIgnores, Workspace};
 
 /// The name whose presence marks a project root.
 ///
@@ -73,20 +73,8 @@ impl Workspace for Git {
         &self.root
     }
 
-    fn ignore_rules(&self, walk: &mut ignore::WalkBuilder) {
-        walk.git_ignore(true).git_exclude(true).git_global(false);
-    }
-
-    fn ignore_files(&self, dir: &Path) -> Result<Vec<PathBuf>, Error> {
-        // A directory's .gitignore takes precedence over info/exclude, which applies from the
-        // root of the repository holding it.
-        let mut files = vec![dir.join(".gitignore")];
-        if is_root(dir)
-            && let Some(git_dir) = git_dir(dir)?
-        {
-            files.push(git_dir.join("info").join("exclude"));
-        }
-        Ok(files)
+    fn ignore_files(&self) -> Box<dyn IgnoreFiles> {
+        Box::new(GitIgnores)
     }
 
     fn declared_encoding(
@@ -143,6 +131,26 @@ impl Workspace for Git {
 
     fn declares_encodings_in(&self) -> &'static str {
         ".gitattributes"
+    }
+}
+
+/// git's ignore files: each directory's `.gitignore`, and at each repository's root its
+/// `info/exclude`, never the configuration's global excludes file.
+struct GitIgnores;
+
+impl IgnoreFiles for GitIgnores {
+    fn in_dir(&self, dir: &Path) -> Result<SystemIgnores, Error> {
+        let repository_root = is_root(dir);
+        let exclude = if repository_root {
+            git_dir(dir)?.map(|git_dir| git_dir.join("info").join("exclude"))
+        } else {
+            None
+        };
+        Ok(SystemIgnores {
+            file: dir.join(".gitignore"),
+            exclude,
+            repository_root,
+        })
     }
 }
 
@@ -635,18 +643,36 @@ mod tests {
         fs::create_dir_all(dir.join("sub")).unwrap();
         fs::create_dir_all(dir.join("pointer")).unwrap();
         fs::write(dir.join("pointer/.git"), "not a pointer\n").unwrap();
-        let workspace = find(&dir).unwrap();
-        let at_root = workspace.ignore_files(&dir).unwrap();
-        let below = workspace.ignore_files(&dir.join("sub")).unwrap();
-        // A .git file that points nowhere has no info/exclude to read.
-        let no_git_dir = workspace.ignore_files(&dir.join("pointer")).unwrap();
+        let ignores = find(&dir).unwrap().ignore_files();
+        let at_root = ignores.in_dir(&dir).unwrap();
+        let below = ignores.in_dir(&dir.join("sub")).unwrap();
+        // A .git file that points nowhere is a repository's root with no info/exclude to read.
+        let no_git_dir = ignores.in_dir(&dir.join("pointer")).unwrap();
         let _ = fs::remove_dir_all(&dir);
         assert_eq!(
             at_root,
-            [dir.join(".gitignore"), dir.join(".git/info/exclude")]
+            SystemIgnores {
+                file: dir.join(".gitignore"),
+                exclude: Some(dir.join(".git/info/exclude")),
+                repository_root: true,
+            }
         );
-        assert_eq!(below, [dir.join("sub/.gitignore")]);
-        assert_eq!(no_git_dir, [dir.join("pointer/.gitignore")]);
+        assert_eq!(
+            below,
+            SystemIgnores {
+                file: dir.join("sub/.gitignore"),
+                exclude: None,
+                repository_root: false,
+            }
+        );
+        assert_eq!(
+            no_git_dir,
+            SystemIgnores {
+                file: dir.join("pointer/.gitignore"),
+                exclude: None,
+                repository_root: true,
+            }
+        );
     }
 
     #[test]

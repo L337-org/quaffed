@@ -18,9 +18,10 @@ budgets.toml allows.  architecture/verification.md has the reasoning and how to 
 
 The scenarios run on a scratch copy of corpus/synthetic, made a project root with an empty
 `.git`, so nothing else in the checkout can move a budget.  Every trace is kept under DIR
-(default target/budgets): the callgrind profile and its annotated report, the strace log, and
-for each scenario a list of every path opened with the bytes read from it, which is what a
-reviewer reads to judge whether a moved budget is still correct behaviour.  A Markdown report
+(default target/budgets), each run's under names carrying its index: the callgrind profile and
+its annotated report, the strace log, and a list of every path opened with the bytes read from
+it, which is what a reviewer reads to judge whether a moved budget is still correct behaviour.
+The report names the run judged, the one with the most instructions.  A Markdown report
 goes to standard output and, in GitHub Actions, to the job summary.
 
 --repeat runs each scenario N times, judges the worst, and reports the spread, so that every
@@ -52,11 +53,19 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # Each scenario: what it runs in, quaff's arguments, and the exit status a correct run gives.
 # startup searches a project with nothing in it, so what it costs is quaff starting up; search
-# is a search of the whole synthetic corpus.
+# is a search of the whole synthetic corpus; scope names a directory in it, so the walk is
+# narrowed to a scope as it goes down.
 SCENARIOS = {
     "startup": {"project": "empty", "args": ["TODO"], "exit": 1},
     "search": {"project": "corpus", "args": ["def"], "exit": 0},
+    "scope": {"project": "corpus", "args": ["def", "modules"], "exit": 0},
 }
+
+# The margin each limit with one carries over the worst measured run: repeated runs differ by a
+# fraction of a percent, and a different Valgrind or runner image moves the count a little more.
+# The report gives, for each budget, the limit these make of what was measured, which is what
+# to set when a limit is changed.
+MARGINS = {"instructions": 0.02, "peak_memory_kib": 0.10}
 
 # GNU time, for peak memory.  Not the shell's builtin, which cannot report it, and not a
 # measurement from here: a child of this script starts as a copy of Python, and the kernel's
@@ -126,10 +135,18 @@ def run_all(args):
             if args.repeat < 1:
                 raise Unmeasured(f"--repeat {args.repeat} measures nothing")
             runs = [
-                measure(name, scenario, binary, project, env, args.out) for _ in range(args.repeat)
+                measure(name, scenario, binary, project, env, args.out, index)
+                for index in range(1, args.repeat + 1)
             ]
             measured = worst(name, runs)
-            failures += judge(name, measured, limits, budgets.get("outside", {}), project)
+            failures += judge(
+                name,
+                measured,
+                limits,
+                budgets.get("outside", {}),
+                budgets.get("inside", {}),
+                project,
+            )
             rows.append((name, measured, limits))
     report = render(rows, failures, args.out)
     print(report)
@@ -165,12 +182,14 @@ def make_projects(scratch):
     return projects
 
 
-def measure(name, scenario, binary, project, env, out):
-    """Instructions, peak memory and file access for one scenario, keeping every trace."""
+def measure(name, scenario, binary, project, env, out, index):
+    """Instructions, peak memory and file access for one run of a scenario, keeping every trace
+    under names that carry the run's index, so no run's overwrites another's."""
     command = [str(binary), *scenario["args"]]
     expected = scenario["exit"]
+    stem = f"{name}.{index}"
 
-    profile = out / f"{name}.callgrind"
+    profile = out / f"{stem}.callgrind"
     run(
         ["valgrind", "--tool=callgrind", f"--callgrind-out-file={profile}", *command],
         project,
@@ -180,11 +199,11 @@ def measure(name, scenario, binary, project, env, out):
     )
     instructions = callgrind_total(profile)
     report = run(["callgrind_annotate", str(profile)], project, BASE_ENV, 0, "callgrind_annotate")
-    (out / f"{name}.callgrind.txt").write_text(report, encoding="utf-8")
+    (out / f"{stem}.callgrind.txt").write_text(report, encoding="utf-8")
 
-    memory = peak_memory(command, project, env, expected, out, name)
+    memory = peak_memory(command, project, env, expected, out, stem)
 
-    log = out / f"{name}.strace"
+    log = out / f"{stem}.strace"
     run(
         [
             "strace",
@@ -206,7 +225,7 @@ def measure(name, scenario, binary, project, env, out):
     )
     access = file_access(log)
     lines = [f"{opens}\t{read}\t{path}" for path, (opens, read) in sorted(access.items())]
-    (out / f"{name}.files.txt").write_text(
+    (out / f"{stem}.files.txt").write_text(
         "opens\tbytes read\tpath\n" + "\n".join(lines) + "\n", encoding="utf-8"
     )
     inside = {
@@ -215,6 +234,7 @@ def measure(name, scenario, binary, project, env, out):
         if Path(path) == project or Path(path).is_relative_to(project)
     }
     return {
+        "run": index,
         "instructions": instructions,
         "peak_memory_kib": memory,
         "paths_opened": len(inside),
@@ -233,9 +253,10 @@ def worst(name, runs):
     if len(access) > 1:
         raise Unmeasured(
             f"{name} opened or read different files on different runs, so file access is not "
-            f"repeatable; compare the {name}.files.txt traces"
+            f"repeatable; compare the {name}.<run>.files.txt traces"
         )
-    measured = dict(runs[-1])
+    # The run judged is the one with the most instructions, whose profile is the one to read.
+    measured = dict(max(runs, key=lambda r: r["instructions"]))
     for budget in ("instructions", "peak_memory_kib"):
         values = [r[budget] for r in runs]
         measured[budget] = max(values)
@@ -316,7 +337,7 @@ def normalise(path):
     return re.sub(r"^/proc/\d+/", "/proc/self/", path)
 
 
-def judge(name, measured, limits, outside, project):
+def judge(name, measured, limits, outside, inside_rules, project):
     """Each way the scenario is over its budget, said in full."""
     failures = []
     for budget in ("instructions", "peak_memory_kib"):
@@ -328,15 +349,14 @@ def judge(name, measured, limits, outside, project):
             failures.append(
                 f"{name} {budget}: limit {limit:,}, measured {measured[budget]:,}{over}"
             )
+    twice = set(inside_rules.get("read_as_rules_and_as_content", []))
     for path, (opens, _) in sorted(measured["inside"].items()):
-        if opens > 1:
+        if opens > (2 if Path(path).name in twice else 1):
             shown = Path(path).relative_to(project)
             failures.append(f"{name}: {str(shown)!r} in the project was opened {opens} times")
     allowed = set(outside.get("allowed", []))
-    ignore_names = set(outside.get("ignore_files_above_the_project", []))
     for path in measured["outside"]:
-        above = Path(path).name in ignore_names and project.is_relative_to(Path(path).parent)
-        if not any(fnmatch.fnmatchcase(path, pattern) for pattern in allowed) and not above:
+        if not any(fnmatch.fnmatchcase(path, pattern) for pattern in allowed):
             failures.append(f"{name}: {path!r}, outside the project, was opened")
     for budget in ("paths_opened", "bytes_read"):
         value = measured[budget]
@@ -354,8 +374,8 @@ def render(rows, failures, out):
     lines.append("**Every budget holds.**" if not failures else f"**{len(failures)} over budget.**")
     lines += [
         "",
-        "| Scenario | Budget | Limit | Measured | Headroom | Spread over the runs |",
-        "| --- | --- | --- | --- | --- | --- |",
+        "| Scenario | Budget | Limit | Measured | Headroom | Spread over the runs | Limit to set |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
     ]
     for name, measured, limits in rows:
         for budget in ("instructions", "peak_memory_kib", "paths_opened", "bytes_read"):
@@ -364,12 +384,18 @@ def render(rows, failures, out):
             spread = f"{low:,} - {high:,} ({(high - low) / low:.2%})" if low else "exact"
             if budget in ("paths_opened", "bytes_read"):
                 spread = "exact"
+            margin = MARGINS.get(budget)
+            # Rounded up to a hundred, so a limit is easy to read and never below the margin.
+            to_set = -(-int(value * (1 + margin)) // 100) * 100 if margin else value
             limit = limits.get(budget)
             if limit is None:
-                lines.append(f"| {name} | {budget} | - | {value:,} | - | {spread} |")
+                lines.append(f"| {name} | {budget} | - | {value:,} | - | {spread} | {to_set:,} |")
                 continue
             headroom = f"{(limit - value) / limit:.2%}" if limit else "-"
-            lines.append(f"| {name} | {budget} | {limit:,} | {value:,} | {headroom} | {spread} |")
+            lines.append(
+                f"| {name} | {budget} | {limit:,} | {value:,} | {headroom} | {spread} | {to_set:,} |"
+            )
+        lines.append(f"| {name} | judged run | | {measured['run']} | | | |")
     if failures:
         lines += ["", *[f"- {failure}" for failure in failures]]
     lines += ["", f"The traces are in `{out}`, and in the job's artefact."]

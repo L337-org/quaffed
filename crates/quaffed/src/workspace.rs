@@ -20,17 +20,9 @@ pub trait Workspace {
     /// The project root, which a search covers when no scope narrows it.
     fn root(&self) -> &Path;
 
-    /// Sets `walk` to leave out what this system's ignore files leave out.
-    fn ignore_rules(&self, walk: &mut ignore::WalkBuilder);
-
-    /// This system's ignore files that would apply to what is in `dir`, under the root, the
-    /// one that takes precedence first, whether or not they exist.  Discovery reads them itself
-    /// where the walker cannot: beneath a scope that names an ignored directory.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`Error`] when a file that says where they are cannot be read.
-    fn ignore_files(&self, dir: &Path) -> Result<Vec<PathBuf>, Error>;
+    /// Where this system keeps the ignore files for each directory, for discovery to read as it
+    /// walks the project.
+    fn ignore_files(&self) -> Box<dyn IgnoreFiles>;
 
     /// The encoding this system's own files declare for the file at `path`, under the root, if
     /// they declare one, with the declaring file shown relative to `shown_from`.
@@ -53,6 +45,30 @@ pub trait Workspace {
     /// Where this system lets a project declare a file's encoding, as a message tells the user,
     /// such as `.gitattributes`.
     fn declares_encodings_in(&self) -> &'static str;
+}
+
+/// Where a version control system keeps the ignore files that apply in a directory.
+pub trait IgnoreFiles: Send + Sync {
+    /// This system's ignore files in `dir`, a directory in the project, whether or not they
+    /// exist, and whether `dir` is a repository's root.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error`] when a file that says where they are cannot be read.
+    fn in_dir(&self, dir: &Path) -> Result<SystemIgnores, Error>;
+}
+
+/// A version control system's ignore files in one directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemIgnores {
+    /// The directory's own ignore file, such as `.gitignore`.
+    pub file: PathBuf,
+    /// The repository's exclude file, lower in precedence than any directory's own, where the
+    /// directory is a repository's root, such as `.git/info/exclude`.
+    pub exclude: Option<PathBuf>,
+    /// Whether the directory is a repository's root: this system's ignore files in directories
+    /// above it do not apply to anything in it.
+    pub repository_root: bool,
 }
 
 /// An encoding a project declares for a file, by name, and where.
@@ -115,10 +131,4 @@ pub fn find(start: &Path) -> Option<Box<dyn Workspace>> {
         .iter()
         .filter_map(|system| system(start))
         .max_by_key(|workspace| workspace.root().components().count())
-}
-
-/// Ignore rules with no version control system: only the `.ignore` files any project may have,
-/// which are not a system's.
-pub fn no_system_ignore_rules(walk: &mut ignore::WalkBuilder) {
-    walk.git_ignore(false).git_exclude(false).git_global(false);
 }

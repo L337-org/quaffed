@@ -57,14 +57,21 @@ than replacing it.
    the whole search, so it bounds the scope instead, again with exit 3.  **It is a path, not a
    glob**: a quoted glob that reaches quaff is reported as not found, with a note that globs are
    not expanded.  This is the MVP's behaviour and is expected to change.
-4. **Discovery** (`src/discover.rs`) uses the `ignore` crate, ripgrep's walker:
-   - `.gitignore`, `.ignore` and `.git/info/exclude` are honoured, `.gitignore` only inside a git
-     repository, as git itself does;
-   - **no ignore file above the project root applies**, or above the current directory with no
-     project, so that nothing outside the project changes which files are searched.  The walk
-     starts at the root and is narrowed to the scope as it goes down, so the ignore files between
-     the root and a scope still apply.  The `ignore` crate still opens the ignore files above
-     where a walk starts, to find repository boundaries, but quaff applies none of them;
+4. **Discovery** (`src/discover.rs`) walks with the `ignore` crate, ripgrep's walker, with the
+   walker's own ignore handling off, and reads and matches the ignore files itself:
+   - `.ignore` files, and the version control system's own, which the workspace names - for git,
+     each directory's `.gitignore` and a repository root's `info/exclude` - are honoured.  With no
+     project, only `.ignore` is;
+   - **they are ranked as the walker ranks them**: in each kind, the nearest directory with a
+     rule that matches decides, and the kinds then rank `.ignore` above `.gitignore` above
+     `info/exclude`, so a `.ignore` rule outranks a `.gitignore` one however deep each is.  A
+     repository's own ignore files stop at its root, so in a nested repository or submodule only
+     its own `.gitignore` and `info/exclude` apply, as git applies them there;
+   - **no ignore file above the project root is read**, or above the current directory with no
+     project, so that nothing outside the project changes which files are searched.  The walker
+     cannot be told to stop there, which is why it reads none.  The walk starts at the root and
+     is narrowed to the scope as it goes down, so the ignore files between the root and a scope
+     still apply, and each is read once;
    - no git configuration is read, so neither is a global excludes file;
    - hidden files are searched;
    - version-control metadata is skipped by name at any depth: `.git`, `.hg`, `.svn`, `.bzr`,
@@ -73,23 +80,18 @@ than replacing it.
    - FIFOs, sockets and device files are not read - reading a FIFO waits for a writer - and the
      run says how many it met;
    - **a scope that names a file or an ignored directory is searched even so** - naming it is
-     asking for it - **but it crosses only that one boundary.**  Every ignore rule from the
-     project root down still applies beneath it, so inside a named `build/` that the root ignores,
-     a `*.log` file the root also ignores is not searched, and neither is a directory another
-     rule ignores.  An ignored directory is never reached by the walk from the root, so it is
-     walked from itself, and the ignore files between the root and it are read by
-     `src/discover.rs` and applied beneath it, each directory's taking precedence over those
-     above, as the walker's own do.  **Accepted limitation:** beneath such a scope, a rule in an
-     ignore file inside it that un-ignores something a rule above it ignores, such as `!keep.log`
-     against the root's `*.log`, is not honoured, since the walker applies the inner rules first
-     and does not say when one of them matched;
+     asking for it - **but it crosses only the boundaries on the way to it.**  Every ignore rule
+     still applies beneath it, so inside a named `build/` that the root ignores, a `*.log` file
+     the root also ignores is not searched, a directory another rule ignores is not entered, and
+     an ignore file inside `build/` can still bring a file back, as `!keep.log` does;
    - **a line of an ignore file that cannot be parsed** - `a{b`, which git reads as literal
      braces, or `[z-a]` - is skipped, and the rest of that file applies.  The run names the file
      and the line on standard error, with the glob parser's own words, and searches on.  Skipping
      a rule usually searches more files, but a skipped negation such as `!a{b` leaves ignored a
      file it would have brought back; either way the note says which line went;
-   - anything else the walker cannot read - a directory that cannot be listed, an ignore file
-     that cannot be opened - stops the run with exit 7 rather than searching the rest and
+   - anything else that cannot be read - a directory that cannot be listed, an ignore file that
+     cannot be opened, a `.git` file that says where a repository's `info/exclude` is - stops
+     the run with exit 7 rather than searching the rest and
      answering short.  The message names the path relative to the current directory, quoted,
      with the system's own error.
 5. Files are searched in path order, so output is the same on every run.

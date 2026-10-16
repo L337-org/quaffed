@@ -295,48 +295,48 @@ runner's speed.
 
 - **What is measured is the package's build**: the amd64 musl binary with the `dist` profile's
   optimisation, built with the `profiling` profile so that symbols are kept and callgrind's
-  report names every function.  It runs on a runner image named in the workflow, not
+  report names every function.  It runs on the runner image the job's `runs-on:` names, not
   `ubuntu-latest`, because Valgrind comes from the image and its version moves the counts.
-- **The scenarios are `SCENARIOS` in `scripts/budgets`**: `startup`, a search of a project with
-  nothing in it, and `search`, a search of the whole synthetic corpus.  Each runs in a scratch
-  copy, made a project root with an empty `.git`, so nothing else in the checkout can move a
-  budget.  The copy is always made under `/tmp`, at the same depth: quaff handles each file's
-  absolute path, so a project one directory deeper executes thousands more instructions.
+- **The scenarios are `SCENARIOS` in `scripts/budgets`.**  Each runs in a scratch copy of the
+  synthetic corpus, made a project root with an empty `.git`, so nothing else in the checkout
+  can move a budget.  The copy is always made under `/tmp`, at the same depth: quaff handles
+  each file's absolute path, so a project one directory deeper executes thousands more
+  instructions.
 - **The limits are `budgets.toml`**, per scenario:
-  - `instructions`: counted under Valgrind's callgrind.  Repeated runs differ by a fraction of
-    a percent - hash tables are seeded at random - and a different Valgrind or image moves the
-    count a little more, so the limit is the measured count plus a margin.
-  - `peak_memory_kib`: the peak resident memory, from GNU time, plus a margin.  It is taken
-    through `/usr/bin/time` because the kernel's peak for a process counts the memory it had
-    before it started quaff, and a child of the Python script starts as a copy of Python.
+  - `instructions`: counted under Valgrind's callgrind.  Repeated runs can differ, and a
+    different Valgrind or image moves the count, so the limit carries a margin, `MARGINS` in
+    `scripts/budgets`.
+  - `peak_memory_kib`: the peak resident memory, from GNU time, with its margin in `MARGINS`.
+    It is taken through `/usr/bin/time` because the kernel's peak for a process counts the
+    memory it had before it started quaff, and a child of the Python script starts as a copy of
+    Python.
   - `paths_opened` and `bytes_read`: exactly how many paths in the project quaff opens,
     directories included, and how many bytes it reads from them, traced with `strace`.  These
     have no margin: a change in either is a change in behaviour.
-- **No path in the project may be opened twice, and nothing outside it may be opened** but what
-  `budgets.toml` allows under `[outside]`, each with its reason: what the standard library and
-  mimalloc read about the machine at startup, and the `.gitignore` and `.ignore` files in every
-  directory above the project.  The `ignore` crate opens those to find repository boundaries
-  wherever a walk starts and has no way to be stopped; quaff applies none of them (`search.md`).
-- **The job runs each scenario three times** and judges the worst, so its summary shows how much
-  the counts moved; the file access must be identical every time, or nothing is judged.
+- **No path in the project may be opened twice**, except a file both read for its rules and
+  searched, which `budgets.toml` names under `[inside]`; **nothing outside the project may be
+  opened** but what it allows under `[outside]`, each with its reason.
+- **The job runs each scenario more than once**, as many times as its `--repeat` says, and judges
+  the run with the most instructions, so its summary shows how much the counts moved; the file
+  access must be identical every time, or nothing is judged.
 - **A blown budget fails the job naming the scenario, the budget, the limit and the measured
-  value.**  A tool missing, a run that exits wrongly or a trace that cannot be read fails it as
-  not measured, never as a pass.
-- **Every trace is kept** in the job's `budgets` artefact, passed or failed: for each scenario
-  the callgrind profile and `callgrind_annotate`'s report of it, the `strace` log, and
-  `<scenario>.files.txt`, each path opened with the bytes read from it.  Those are what a
-  reviewer reads to judge whether a moved budget is still correct behaviour.
+  value**, and the summary gives the limit to set for each budget.  A tool missing, a run that
+  exits wrongly or a trace that cannot be read fails it as not measured, never as a pass.
+- **Every run's traces are kept** in the job's `budgets` artefact, passed or failed, under names
+  carrying the run's index, and the summary names the run judged: the callgrind profile and
+  `callgrind_annotate`'s report of it, the `strace` log, and `<scenario>.<run>.files.txt`, each
+  path opened with the bytes read from it.  Those are what a reviewer reads to judge whether a
+  moved budget is still correct behaviour.
 
 **The guard has a negative test on every run.**  `scripts/break-budgets` builds a copy of quaff
-that, as its `QUAFFED_WORSEN` variable says, executes a million-iteration loop, fills 32 MiB, reads
-a corpus file the search also reads, or reads `/etc/passwd`, and the job fails unless
-`scripts/budgets` fails on each, naming the budget that guards it.
+worsened in each of the ways its header lists, and the job fails unless `scripts/budgets` fails
+on each, naming the budget that guards it.
 
 Locally it needs Linux on amd64, with Valgrind, strace, GNU time and the musl target.  On any
-other machine, run it in a container of the runner's image:
+other machine, run it in a container of the image the job's `runs-on:` names:
 
 ```bash
-docker run --rm -it -v "$PWD":/src -w /src ubuntu:24.04 bash
+docker run --rm -it -v "$PWD":/src -w /src ubuntu:<the runs-on release> bash
 # inside: apt-get update && apt-get install -y valgrind strace time musl-tools curl build-essential
 #         python3 git, then rustup with the musl target, then:
 cargo build --locked --profile profiling --target x86_64-unknown-linux-musl --bin quaff
@@ -352,16 +352,16 @@ Most changes that add behaviour move a budget, so limits change often.  The rule
 changes only in the pull request that moves it, and only once the new behaviour is agreed to be
 correct.
 
-1. Read the failing job's summary for the budget, its limit and what was measured, and download
-   the `budgets` artefact.
+1. Read the failing job's summary for the budget, its limit, what was measured and the run
+   judged, and download the `budgets` artefact.
 2. Compare the trace with main's - the latest run of the job on main has its own artefact.  For
-   instructions, `callgrind_annotate` the two profiles, or diff the `.callgrind.txt` reports,
-   and find where the count rose; for files, diff the `.files.txt` lists.
+   instructions, `callgrind_annotate` the judged runs' profiles, or diff their `.callgrind.txt`
+   reports, and find where the count rose; for files, diff the `.files.txt` lists.
 3. Decide whether that is what the change should do.  If not, it is a defect: fix the code, not
    the limit.
-4. If it is, set the new limit in `budgets.toml`: for `instructions` and `peak_memory_kib`, the
-   worst of the job's runs plus the margin the other limits carry; for `paths_opened` and
-   `bytes_read`, the measured value exactly.
+4. If it is, set the limit in `budgets.toml` to the summary's *Limit to set*, which is the
+   judged run plus its margin from `MARGINS`, or the measured value exactly for `paths_opened`
+   and `bytes_read`.
 5. Say in the pull request description which budget moved, by how much, and what in the trace
    accounts for it, so the reviewer can agree it.
 

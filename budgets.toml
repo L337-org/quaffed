@@ -3,9 +3,9 @@
 # and how to change a limit: in the pull request that moves it, once its trace has been
 # reviewed and the new behaviour agreed to be correct.
 #
-# Per scenario:
-#   instructions     the most it may execute, under callgrind: the measured count plus a margin
-#   peak_memory_kib  the most resident memory it may use, in KiB, plus a margin
+# Per scenario, from SCENARIOS in scripts/budgets:
+#   instructions     the most it may execute, under callgrind: the worst run plus MARGINS's share
+#   peak_memory_kib  the most resident memory it may use, in KiB: the worst run plus MARGINS's share
 #   paths_opened     exactly how many paths in the project it opens, directories included
 #   bytes_read       exactly how many bytes it reads from them
 
@@ -21,18 +21,28 @@ peak_memory_kib = 6_200
 paths_opened = 18
 bytes_read = 5_951
 
+[scope]
+instructions = 993_900
+peak_memory_kib = 6_200
+paths_opened = 15
+bytes_read = 5_523
+
 # What may be opened outside the project, each for a reason the project cannot change.  Each
 # is a pattern, in which * matches anything, / included.
 [outside]
 allowed = [
-    # The standard library reads the CPU quota of the process's cgroup, and each cgroup above it,
-    # to size its thread pool; how deep the cgroup is depends on the machine.
+    # regex-automata, through the ignore matcher's globs, asks the standard library how many
+    # CPUs it may use, to size its pool of regex caches; the standard library reads the CPU quota
+    # of the process's cgroup and each cgroup above it to answer.  How deep the cgroup is depends
+    # on the machine.
     "/proc/self/cgroup",
     "/sys/fs/cgroup/*cpu.max",
     # mimalloc, the package's allocator, reads how the kernel overcommits and hands out pages.
     "/proc/sys/vm/overcommit_memory",
     "/sys/kernel/mm/transparent_hugepage/enabled",
 ]
-# The ignore crate opens these in every directory above where a walk starts, to find
-# repositories, whether or not any of them applies; quaff applies none above the project root.
-ignore_files_above_the_project = [".gitignore", ".ignore"]
+
+# What may be opened twice in the project, by name: a file that holds rules quaff reads, and
+# that is in the project, so is also searched.  Anything else opened twice fails.
+[inside]
+read_as_rules_and_as_content = [".gitignore", ".ignore", ".gitattributes", ".editorconfig"]

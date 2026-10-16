@@ -223,8 +223,8 @@ jobs:
     # because Valgrind comes from it and its version moves the instruction counts.
     runs-on: [ubuntu-24.04]
     name: Budgets
-    # Covers two cold musl builds with thin LTO - quaff, and the worsened copy for the negative
-    # test - and the measurements, which take seconds, generously.
+    # Covers two cold builds of the package's profile - quaff, and the worsened copy for the
+    # negative test - and the measurements, generously.
     timeout-minutes: 40
     steps:
       - name: Check out source repository
@@ -244,7 +244,7 @@ jobs:
       - name: Build quaff as the package does, with symbols
         run: cargo build --locked --profile profiling --target x86_64-unknown-linux-musl --bin quaff
 
-      # Three runs of each scenario, judged on the worst, so the job summary shows how much the
+      # Several runs of each scenario, judged on the worst, so the job summary shows how much the
       # counts move from run to run.
       - name: Every budget holds
         run: scripts/budgets target/x86_64-unknown-linux-musl/profiling/quaff --repeat 3

@@ -4,17 +4,20 @@
 //! Which files a search looks at.
 //!
 //! A discovery filter governs where quaff looks, never what it may touch.  The ignore files read
-//! are `.ignore`, and the version control system's own - for git, `.gitignore` and
-//! `.git/info/exclude` - through the `ignore` crate, ripgrep's walker, and nothing else of the
-//! system's: no configuration, so no global excludes file.  Hidden files are searched.
-//! Version-control metadata is skipped by name.
+//! are `.ignore`, and the version control system's own as the workspace names them - for git,
+//! `.gitignore` and `.git/info/exclude` - and nothing else of the system's: no configuration, so
+//! no global excludes file.  They are read and matched here rather than by the `ignore` crate's
+//! walker, which would read them up to the filesystem root; this reads none above the project.
+//! Hidden files are searched.  Version-control metadata is skipped by name.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
-use crate::workspace::{self, Workspace};
+use crate::workspace::{IgnoreFiles, Workspace};
 
 /// Directory and file names that hold version-control metadata, never searched.
 ///
@@ -123,7 +126,7 @@ impl std::error::Error for Error {
 /// asking for it.  Naming an ignored directory crosses only that one boundary: every ignore
 /// rule from the boundary down still applies to what is beneath it, so a file or directory
 /// inside that another rule ignores is not searched.  No ignore file above the boundary - the
-/// project root, or `cwd` with no project - applies, so that nothing outside the project changes
+/// project root, or `cwd` with no project - is read, so that nothing outside the project changes
 /// which files are searched.
 ///
 /// # Errors
@@ -133,23 +136,63 @@ impl std::error::Error for Error {
 pub fn files(scope: &Path, cwd: &Path, workspace: Option<&dyn Workspace>) -> Result<Found, Error> {
     let boundary = workspace.map_or(cwd, |w| w.root());
     let mut found = Found::default();
-    // The walker reads ignore files from every directory above where it starts, up to the
-    // filesystem root, and has no way to stop at the project's.  So it starts at the boundary,
-    // with no parents read, and is narrowed to the scope as it goes: the ignore files between
-    // the boundary and the scope still apply, as they are met on the way down, and none above
-    // the boundary is ever consulted.  A file scope is walked on its own, as naming it is
-    // asking for it whatever ignores it.
-    let saw_scope = if scope.is_dir() {
-        walk(boundary, Some(scope), &[], cwd, workspace, &mut found)?
-    } else {
-        walk(scope, None, &[], cwd, workspace, &mut found)?
-    };
-    // An ignored scope directory is never reached from the boundary, so it is walked from
-    // itself.  The walker would then apply only the rules from the scope down, so the rules
-    // between the boundary and the scope are read here and applied beneath it too.
-    if !saw_scope {
-        let above = rules_above(scope, boundary, cwd, workspace, &mut found)?;
-        walk(scope, None, &above, cwd, workspace, &mut found)?;
+    // The walker reads its ignore files from every directory above where it starts, up to the
+    // filesystem root, and cannot be told to stop at the project's.  So it reads none: it walks
+    // from the boundary, narrowed to the scope, and the rules are read and matched here, as
+    // each directory is met, ranked as the walker ranks its own.  A file scope is walked on its
+    // own, as naming it is asking for it whatever ignores it.
+    let rules = Arc::new(Rules::new(boundary, workspace.map(Workspace::ignore_files)));
+    let start = if scope.is_dir() { boundary } else { scope };
+    let narrow_to = scope.to_path_buf();
+    let matcher = Arc::clone(&rules);
+    let mut walker = ignore::WalkBuilder::new(start);
+    walker
+        .standard_filters(false)
+        .follow_links(false)
+        .sort_by_file_name(std::cmp::Ord::cmp)
+        .filter_entry(move |entry| {
+            let path = entry.path();
+            if entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| VCS_METADATA.contains(&name))
+            {
+                return false;
+            }
+            // On the way down to the scope, and the scope itself, nothing is ignored: those are
+            // the boundaries naming the scope crosses.  Beside the way, nothing is searched.
+            if narrow_to.starts_with(path) {
+                return true;
+            }
+            if !path.starts_with(&narrow_to) {
+                return false;
+            }
+            let is_dir = entry.file_type().is_some_and(|kind| kind.is_dir());
+            !matcher.ignored(path, is_dir)
+        });
+    for entry in walker.build() {
+        // The walker reads no ignore file, so what it reports is never a line that could not be
+        // parsed: it is a directory that could not be listed, and stops the run.
+        let entry = entry.map_err(|cause| Error {
+            cause,
+            cwd: cwd.to_path_buf(),
+        })?;
+        let Some(kind) = entry.file_type() else {
+            continue;
+        };
+        if !entry.path().starts_with(scope) {
+            continue;
+        }
+        if kind.is_symlink() {
+            found.links_not_followed += 1;
+        } else if kind.is_file() {
+            found.files.push(entry.into_path());
+        } else if !kind.is_dir() {
+            found.special_files += 1;
+        }
+    }
+    for cause in rules.take_errors() {
+        tolerate(cause, cwd, &mut found)?;
     }
     found.files.sort();
     Ok(found)
@@ -178,126 +221,148 @@ fn tolerate(cause: ignore::Error, cwd: &Path, found: &mut Found) -> Result<(), E
     Ok(())
 }
 
-/// The ignore files in each directory from the one holding `scope` up to `boundary`, read as
-/// matchers, the one that takes precedence first: nearer directories before further ones, and
-/// within a directory `.ignore` before the workspace's own.  A line that cannot be used is noted
-/// in `found`, as the walker notes its own.
-fn rules_above(
-    scope: &Path,
-    boundary: &Path,
-    cwd: &Path,
-    workspace: Option<&dyn Workspace>,
-    found: &mut Found,
-) -> Result<Vec<Gitignore>, Error> {
-    let mut rules = Vec::new();
-    for dir in scope
-        .ancestors()
-        .skip(1)
-        .take_while(|dir| dir.starts_with(boundary))
-    {
-        let mut files = vec![dir.join(".ignore")];
-        if let Some(workspace) = workspace {
-            let declared = workspace.ignore_files(dir).map_err(|err| Error {
-                cause: ignore::Error::WithPath {
-                    path: err.path,
-                    err: Box::new(ignore::Error::Io(err.cause)),
-                },
-                cwd: cwd.to_path_buf(),
-            })?;
-            files.extend(declared);
-        }
-        for file in files.into_iter().filter(|file| file.is_file()) {
-            let mut builder = GitignoreBuilder::new(dir);
-            if let Some(cause) = builder.add(&file) {
-                tolerate(cause, cwd, found)?;
-            }
-            match builder.build() {
-                Ok(matcher) => rules.push(matcher),
-                Err(cause) => tolerate(cause, cwd, found)?,
-            }
-        }
-    }
-    Ok(rules)
+/// The ignore rules of the directories from the boundary down, read once each as the walk
+/// meets them.
+struct Rules {
+    boundary: PathBuf,
+    system: Option<Box<dyn IgnoreFiles>>,
+    /// For each directory met, its rules and those of every directory above it up to the
+    /// boundary, nearest first: built once per directory, from its parent's, so each ignore
+    /// file is read once and an entry costs one lookup, of its parent.
+    chains: Mutex<HashMap<PathBuf, Arc<Vec<Arc<DirRules>>>>>,
+    /// What reading them reported, in the order met, for the run to judge once the walk is done.
+    errors: Mutex<Vec<ignore::Error>>,
 }
 
-/// Walks from `start`, adding what is found to `found`: everything, or with `within`, only
-/// what is at or under it, and the directories on the way to it.  Below `start`, an entry the
-/// first of `above` to match ignores is left out, with what is under it.  Returns whether
-/// `within`, if given, was reached.
-fn walk(
-    start: &Path,
-    within: Option<&Path>,
-    above: &[Gitignore],
-    cwd: &Path,
-    workspace: Option<&dyn Workspace>,
-    found: &mut Found,
-) -> Result<bool, Error> {
-    let mut walker = ignore::WalkBuilder::new(start);
-    let narrow_to = within.map(Path::to_path_buf);
-    let above = above.to_vec();
-    walker
-        .hidden(false)
-        .parents(false)
-        .ignore(true)
-        .follow_links(false)
-        .sort_by_file_name(std::cmp::Ord::cmp)
-        .filter_entry(move |entry| {
-            let name_ok = entry
-                .file_name()
-                .to_str()
-                .is_none_or(|name| !VCS_METADATA.contains(&name));
-            let path = entry.path();
-            let is_dir = entry.file_type().is_some_and(|kind| kind.is_dir());
-            // The first rule that says anything about the entry decides, as the walker decides
-            // between its own; `start` itself is the boundary being crossed, so never left out.
-            let kept_by_above = entry.depth() == 0
-                || above
-                    .iter()
-                    .map(|rules| rules.matched(path, is_dir))
-                    .find(|matched| !matched.is_none())
-                    .is_none_or(|matched| !matched.is_ignore());
-            name_ok
-                && kept_by_above
-                && narrow_to
-                    .as_deref()
-                    .is_none_or(|scope| path.starts_with(scope) || scope.starts_with(path))
-        });
-    match workspace {
-        Some(workspace) => workspace.ignore_rules(&mut walker),
-        None => workspace::no_system_ignore_rules(&mut walker),
+/// One directory's ignore rules, each file as a matcher, empty where there is no such file.
+struct DirRules {
+    dot_ignore: Gitignore,
+    system: Gitignore,
+    exclude: Gitignore,
+    repository_root: bool,
+}
+
+impl Rules {
+    fn new(boundary: &Path, system: Option<Box<dyn IgnoreFiles>>) -> Rules {
+        Rules {
+            boundary: boundary.to_path_buf(),
+            system,
+            chains: Mutex::new(HashMap::new()),
+            errors: Mutex::new(Vec::new()),
+        }
     }
-    let mut reached = within.is_none();
-    for entry in walker.build() {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(cause) => {
-                tolerate(cause, cwd, found)?;
-                continue;
+
+    /// Whether `path` is ignored, decided as the walker decides: in each kind of ignore file,
+    /// the nearest directory with a rule that matches decides that kind, and the kinds then rank
+    /// `.ignore` above the system's own files above its exclude file.  The system's files stop
+    /// at the nearest repository root, so a nested repository's own rules alone apply in it;
+    /// `.ignore` files apply up to the boundary.  None above the boundary is ever read.
+    fn ignored(&self, path: &Path, is_dir: bool) -> bool {
+        // Only what is beneath the scope is asked about, so it always has a parent within the
+        // boundary.
+        let dirs = self.chain(path.parent().unwrap_or(path));
+        let decide = |matched: ignore::Match<&ignore::gitignore::Glob>| {
+            if matched.is_ignore() {
+                Some(true)
+            } else if matched.is_whitelist() {
+                Some(false)
+            } else {
+                None
             }
         };
-        if let Some(cause) = entry.error() {
-            tolerate(cause.clone(), cwd, found)?;
+        let (mut dot_ignore, mut system, mut exclude) = (None, None, None);
+        let mut past_repository = false;
+        for rules in dirs.iter() {
+            if dot_ignore.is_none() {
+                dot_ignore = decide(rules.dot_ignore.matched(path, is_dir));
+            }
+            if !past_repository {
+                if system.is_none() {
+                    system = decide(rules.system.matched(path, is_dir));
+                }
+                if exclude.is_none() {
+                    exclude = decide(rules.exclude.matched(path, is_dir));
+                }
+            }
+            past_repository = past_repository || rules.repository_root;
         }
-        let Some(kind) = entry.file_type() else {
-            continue;
+        dot_ignore.or(system).or(exclude).unwrap_or(false)
+    }
+
+    /// The rules of `dir`, at or below the boundary, and of each directory above it up to the
+    /// boundary, nearest first.
+    fn chain(&self, dir: &Path) -> Arc<Vec<Arc<DirRules>>> {
+        if let Some(chain) = self
+            .chains
+            .lock()
+            .expect("no thread panics holding it")
+            .get(dir)
+        {
+            return Arc::clone(chain);
+        }
+        // Every directory asked about is at or below the boundary, so the parents end there.
+        let mut chain = vec![Arc::new(self.read(dir))];
+        if dir != self.boundary
+            && let Some(parent) = dir.parent()
+        {
+            chain.extend(self.chain(parent).iter().cloned());
+        }
+        let chain = Arc::new(chain);
+        self.chains
+            .lock()
+            .expect("no thread panics holding it")
+            .insert(dir.to_path_buf(), Arc::clone(&chain));
+        chain
+    }
+
+    fn read(&self, dir: &Path) -> DirRules {
+        let declared = match self.system.as_ref().map(|system| system.in_dir(dir)) {
+            Some(Ok(declared)) => Some(declared),
+            Some(Err(err)) => {
+                self.report(ignore::Error::WithPath {
+                    path: err.path,
+                    err: Box::new(ignore::Error::Io(err.cause)),
+                });
+                None
+            }
+            None => None,
         };
-        let path = entry.path();
-        if within.is_some_and(|scope| path == scope) {
-            reached = true;
-        }
-        // On the way down to the scope, only what is inside it counts.
-        if within.is_some_and(|scope| !path.starts_with(scope)) {
-            continue;
-        }
-        if kind.is_symlink() {
-            found.links_not_followed += 1;
-        } else if kind.is_file() {
-            found.files.push(entry.into_path());
-        } else if !kind.is_dir() {
-            found.special_files += 1;
+        DirRules {
+            dot_ignore: self.matcher(dir, Some(dir.join(".ignore"))),
+            system: self.matcher(dir, declared.as_ref().map(|d| d.file.clone())),
+            exclude: self.matcher(dir, declared.as_ref().and_then(|d| d.exclude.clone())),
+            repository_root: declared.is_some_and(|d| d.repository_root),
         }
     }
-    Ok(reached)
+
+    /// The rules in `file`, matched relative to `dir`; empty if there is no such file.
+    fn matcher(&self, dir: &Path, file: Option<PathBuf>) -> Gitignore {
+        let Some(file) = file.filter(|file| file.is_file()) else {
+            return Gitignore::empty();
+        };
+        let mut builder = GitignoreBuilder::new(dir);
+        if let Some(cause) = builder.add(&file) {
+            self.report(cause);
+        }
+        match builder.build() {
+            Ok(matcher) => matcher,
+            Err(cause) => {
+                self.report(cause);
+                Gitignore::empty()
+            }
+        }
+    }
+
+    fn report(&self, cause: ignore::Error) {
+        self.errors
+            .lock()
+            .expect("no thread panics holding it")
+            .push(cause);
+    }
+
+    fn take_errors(&self) -> Vec<ignore::Error> {
+        std::mem::take(&mut *self.errors.lock().expect("no thread panics holding it"))
+    }
 }
 
 #[cfg(test)]
@@ -307,7 +372,7 @@ mod tests {
 
     /// Discovery as a run does it: with the workspace found from `cwd`, if there is one.
     fn files_in(scope: &Path, cwd: &Path) -> Result<Found, Error> {
-        let workspace = workspace::find(cwd);
+        let workspace = crate::workspace::find(cwd);
         files(scope, cwd, workspace.as_deref())
     }
 
@@ -619,6 +684,87 @@ mod tests {
             assert!(message.contains("build/locked"), "{message}");
             assert!(message.contains("Permission denied"), "{message}");
         }
+    }
+
+    #[test]
+    fn a_dot_ignore_rule_outranks_a_gitignore_rule_at_any_depth() {
+        // As the walker ranks them: the nearest match of each kind, then .ignore before
+        // .gitignore, however deep each is.
+        let tree = Tree::new(
+            "kind-order",
+            &[
+                (".git/HEAD", ""),
+                (".ignore", "*.log\n!wanted.tmp\n"),
+                ("sub/.gitignore", "build/\n!keep.log\n*.tmp\n"),
+                ("sub/build/keep.log", ""),
+                ("sub/build/wanted.tmp", ""),
+                ("sub/build/x.py", ""),
+            ],
+        );
+        assert_eq!(
+            tree.found("sub/build"),
+            ["sub/build/wanted.tmp", "sub/build/x.py"]
+        );
+    }
+
+    #[test]
+    fn a_nested_repository_s_gitignore_rules_stop_at_its_root() {
+        // The root's .gitignore and info/exclude do not reach into a nested repository, whether
+        // the search covers the project or names an ignored directory inside it.
+        let tree = Tree::new(
+            "nested-repo",
+            &[
+                (".git/HEAD", ""),
+                (".git/info/exclude", "*.tmp\n"),
+                (".gitignore", "*.log\n"),
+                ("vendor/lib/.git", "gitdir: ../../.git/modules/lib\n"),
+                ("vendor/lib/.gitignore", "out/\n"),
+                ("vendor/lib/x.log", ""),
+                ("vendor/lib/y.tmp", ""),
+                ("vendor/lib/out/a.log", ""),
+            ],
+        );
+        assert_eq!(
+            tree.found("vendor"),
+            [
+                "vendor/lib/.gitignore",
+                "vendor/lib/x.log",
+                "vendor/lib/y.tmp"
+            ]
+        );
+        assert_eq!(tree.found("vendor/lib/out"), ["vendor/lib/out/a.log"]);
+    }
+
+    #[test]
+    fn beneath_a_named_ignored_directory_its_own_rules_can_bring_a_file_back() {
+        let tree = Tree::new(
+            "boundary-whitelist",
+            &[
+                (".git/HEAD", ""),
+                (".gitignore", "build/\n*.log\n"),
+                ("build/.gitignore", "!keep.log\n"),
+                ("build/keep.log", ""),
+                ("build/drop.log", ""),
+            ],
+        );
+        assert_eq!(tree.found("build"), ["build/.gitignore", "build/keep.log"]);
+    }
+
+    #[test]
+    fn a_bad_line_in_an_ignore_file_above_the_project_is_not_noted() {
+        // None of that file applies, so saying the rest of it does would be untrue.
+        let tree = Tree::new(
+            "above-bad-line",
+            &[
+                ("outer/.ignore", "a{b\n"),
+                ("outer/proj/.git/HEAD", ""),
+                ("outer/proj/x.py", ""),
+            ],
+        );
+        let dir = tree.0.join("outer/proj");
+        let found = files_in(&dir, &dir).unwrap();
+        assert_eq!(found.files.len(), 1);
+        assert!(found.skipped_rules.is_empty(), "{:?}", found.skipped_rules);
     }
 
     #[test]
