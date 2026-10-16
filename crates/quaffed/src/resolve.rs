@@ -428,6 +428,50 @@ mod tests {
     }
 
     #[test]
+    fn info_attributes_is_found_through_a_git_file() {
+        // A linked worktree, as `git worktree add` lays one out: its .git file points to the
+        // worktree's git directory, whose commondir points back to the main one, which holds
+        // info/attributes.  A submodule's .git file points to its directory directly.
+        let project = Project::new(
+            "pointers",
+            false,
+            &[
+                (
+                    "main/.git/info/attributes",
+                    b"*.c working-tree-encoding=EUC-JP\n",
+                ),
+                ("main/.git/worktrees/linked/commondir", b"../..\n"),
+                (
+                    "main/.git/modules/sub/info/attributes",
+                    b"*.c working-tree-encoding=CP932\n",
+                ),
+                ("linked/a.c", b"x\n"),
+                ("sub/a.c", b"x\n"),
+            ],
+        );
+        let pointer = format!(
+            "gitdir: {}\n",
+            project.0.join("main/.git/worktrees/linked").display()
+        );
+        fs::write(project.0.join("linked/.git"), pointer).unwrap();
+        fs::write(
+            project.0.join("sub/.git"),
+            "gitdir: ../main/.git/modules/sub\n",
+        )
+        .unwrap();
+        let declared = |path: &str| {
+            let target = project.0.join(path);
+            workspace::find(target.parent().unwrap())
+                .expect("a git workspace")
+                .declared_encoding(&target)
+                .unwrap()
+                .map(|d| d.name)
+        };
+        assert_eq!(declared("linked/a.c"), Some("EUC-JP".to_owned()));
+        assert_eq!(declared("sub/a.c"), Some("CP932".to_owned()));
+    }
+
+    #[test]
     fn the_first_source_that_applies_decides() {
         let project = Project::new(
             "order",
