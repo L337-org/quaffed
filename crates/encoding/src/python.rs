@@ -8,7 +8,7 @@
 //! tokenizer's, followed to the letter, quirks included, because a file quaff and `CPython` read
 //! differently is a file quaff misreads: `Parser/tokenizer/helpers.c` and `string_tokenizer.c`
 //! for finding the declaration, `Objects/unicodeobject.c` and `Lib/encodings/__init__.py` for
-//! resolving its name, all at the oracle's release.  `architecture/encoding.md` specifies it.
+//! resolving its name, all at the oracle's release.  `architecture/encoding.md` describes it.
 
 use std::fmt;
 

@@ -1,6 +1,6 @@
 # Textual search
 
-What `quaff TEXT [PATH]`, `quaff -s TEXT [PATH]` and a script's textual `find` do, as built.
+What `quaff TEXT [PATH]`, `quaff -s TEXT [PATH]` and a script's textual `find` do, and why.
 This page also carries the command line and the exit codes as far as they exist; the script
 language itself is `script.md`.  Specifications of further kinds of search join this page rather
 than replacing it.

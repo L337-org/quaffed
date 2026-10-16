@@ -6,7 +6,7 @@
 //! [`parse_source`] reads one source - a script file, standard input, or one `-e` expression -
 //! and appends its statements to a [`Program`].  Sources compose in the order they are parsed.
 //! Inline text goes through the same parser as a file and is never split on `;` first, because
-//! an operand may contain one.  `architecture/script.md` specifies the grammar as built.
+//! an operand may contain one.  `architecture/script.md` describes the grammar's design.
 
 pub mod lexer;
 pub mod location;

@@ -10,15 +10,17 @@ It is written in Rust and licensed GPL-3.0-or-later.
 
 ## Status
 
-What is built is specified in `architecture/`: `architecture/search.md` the command line, the
-search and the exit codes; `architecture/encoding.md` how a file's bytes are read, Python's
-declared encodings included; `architecture/representation.md` the operation representation
-scripts are parsed into; `architecture/script.md` the script language.  A construct that parses but is
-not built is refused with exit 5, and those pages list which.
+`architecture/` explains the design's intent, so that a change stays in keeping with it:
+`architecture/search.md` the command line, the search and the exit codes;
+`architecture/encoding.md` how a file's bytes are read, Python's declared encodings included;
+`architecture/representation.md` the operation representation scripts are parsed into;
+`architecture/script.md` the script language.  It never describes what is not built, and it is
+not a record of everything that is.  A construct that parses but is not built is refused with
+exit 5, and those pages list which.
 
 - **Do not implement features from a recollection of the design.**  When a piece of it settles,
-  its specification lands in `architecture/` in the same change as the code, and that is what
-  to build against.
+  the intent a contributor needs lands in `architecture/` in the same change as the code, and
+  that is what to build against.
 
 ## This repository is public
 

@@ -1,7 +1,7 @@
 # Workspace and toolchain
 
 How the Cargo workspace is laid out, what pins what, and the conventions that are enforced
-mechanically.  What each member does is specified in its own note: textual search in
+mechanically.  Each member's design is in its own note: textual search in
 `search.md`, encodings in `encoding.md`, the operation representation in `representation.md`,
 the script language in `script.md`, and the Python adapter in `python.md`.
 
