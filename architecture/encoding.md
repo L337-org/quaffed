@@ -53,14 +53,16 @@ Read by `src/workspace/git.rs` from the repository's own files only - every `.gi
 the root down to the file's directory, and `info/attributes` in the git directory, found through a
 `.git` file for a worktree or submodule - and never from git's configuration, so
 `core.attributesFile` and the system's attributes file change nothing.  git's rules
-(`gitattributes(5)`): within a file a later line overrides an earlier one, a deeper `.gitattributes`
-overrides a shallower one, and `info/attributes` overrides them all.  Patterns match as in
-`.gitignore`, through the `ignore` crate's matcher, except that a negative pattern is skipped with
-a note, as git ignores it, and a pattern naming a directory does not match what is inside it.  A
-pattern may be quoted in C style.  `[attr]` macros are read from the top-level `.gitattributes` and
-`info/attributes` only.  Only a value declares an encoding; set, unset and unspecified declare none.
-A declaration file that cannot be read stops the run, exit 7, rather than reading a file in the
-wrong encoding for want of it.
+(`gitattributes(5)`): within a file a later line overrides an earlier one, a deeper
+`.gitattributes` overrides a shallower one, and `info/attributes` overrides them all.  Patterns
+match as in `.gitignore`, through the `ignore` crate's matcher, except that a negative pattern is
+skipped with a note, as git ignores it, and a pattern naming a directory does not match what is
+inside it.  A pattern may be quoted in C style.  `[attr]` macros are read from the top-level
+`.gitattributes` and `info/attributes` only.  A file in a repository nested in the project, a
+submodule among them, takes its attributes, macros included, from that repository's files alone,
+as git does working there.  Only a value declares an encoding; set, unset and unspecified declare
+none.  A declaration file that cannot be read stops the run, exit 7, rather than reading a file
+in the wrong encoding for want of it.
 
 ## EditorConfig's `charset`
 
@@ -151,20 +153,19 @@ codec is single-byte if CPython decodes it from a table, or it is `ascii`, `lati
 refuses to write one that is not single-byte after all.
 
 **Multi-byte codecs** quaff reads are those named in the generator's `MULTI_BYTE`.  For each it
-writes how long a character starting with each byte is, and every run
-of bytes that decodes to one character.  They are read by one rule: a byte's length says how long
-the character is and the run is looked up; a run not in the table is one undecodable byte, its
-first, and reading goes on from the next; a run cut short by the end is one undecodable run of
-what is left.  That is where CPython puts its errors, so a column counts as CPython reads the
-file.  The generator refuses a codec that does not fit the rule - a byte that both decodes alone
-and starts a longer run, or a line ending inside a character - and checks the rule against
-CPython's own decoder on byte strings, many broken on purpose, before writing anything.  It
-writes those strings with CPython's reading of each to `tests/data/multi_byte.txt`, which
-`tests/multi_byte.rs` holds quaff's reader to.  A character a codec spells more than one way, as
-`cp932` does some, has no one spelling: a query holding it does not search the file, and it cannot
-be written.  `latin-1` is true Latin-1, every byte
-its own code point, as CPython has it, and not the web's reading of it as `windows-1252`; that
-difference is why quaff does not use the web's encoding tables.
+writes how long a character starting with each byte is, and every run of bytes that decodes to one
+character.  They are read by one rule: a byte's length says how long the character is and the run
+is looked up; a run not in the table is one undecodable byte, its first, and reading goes on from
+the next; a run cut short by the end is one undecodable run of what is left.  That is where
+CPython puts its errors, so a column counts as CPython reads the file.  The generator refuses a
+codec that does not fit the rule - a byte that both decodes alone and starts a longer run, or a
+line ending inside a character - and checks the rule against CPython's own decoder on byte
+strings, many broken on purpose, before writing anything.  It writes those strings with CPython's
+reading of each to `tests/data/multi_byte.txt`, which `tests/multi_byte.rs` holds quaff's reader
+to.  A character a codec spells more than one way, as `cp932` does some, has no one spelling: a
+query holding it does not search the file, and it cannot be written.  `latin-1` is true Latin-1,
+every byte its own code point, as CPython has it, and not the web's reading of it as
+`windows-1252`; that difference is why quaff does not use the web's encoding tables.
 
 **Accepted limitations:**
 

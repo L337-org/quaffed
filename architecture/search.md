@@ -150,9 +150,9 @@ src/app.py:12:5-12:22: def connect(self):
   count expected and the count found:
   `quaff: checks.quaff:3:1: expected exactly 2 matches of "TODO", found 1`.  One whose scope
   held files its query could not be searched in also names those files; the count is of hits
-  only, never of possible matches.  A message names a pattern by its text quoted, a line break as `\n`, with any anchors outside the quotes as a
-  script writes them: `^"x"$`.  Statements after a failed block do not run, so they add no
-  notes.
+  only, never of possible matches.  A message names a pattern by its text quoted, a line break
+  as `\n`, with any anchors outside the quotes as a script writes them: `^"x"$`.  Statements
+  after a failed block do not run, so they add no notes.
 - A closed standard output - piping into `head` - stops the printing quietly.  Assertions are
   still evaluated, so the exit code is still the answer.
 
