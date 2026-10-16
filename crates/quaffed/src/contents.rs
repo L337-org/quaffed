@@ -27,6 +27,8 @@ pub struct Contents {
 struct Inner {
     /// File names a reader reads its rules from, such as `.gitignore`.
     names: HashSet<OsString>,
+    /// Particular files read before the search and possibly searched too, such as a script.
+    paths: HashSet<PathBuf>,
     kept: HashMap<PathBuf, Arc<[u8]>>,
 }
 
@@ -44,8 +46,14 @@ impl Contents {
         self.lock().names.insert(OsString::from(name));
     }
 
+    /// Names `path` as a file to keep once read, whatever its name: one read before the search
+    /// that the search may read again, such as a script given with `-f` that is in the scope.
+    pub fn keep_path(&self, path: &Path) {
+        self.lock().paths.insert(path.to_path_buf());
+    }
+
     /// `path`'s bytes: the kept ones if it has been read before, otherwise read from disk, and
-    /// kept if a reader reads files of its name.
+    /// kept if a reader reads files of its name or it was named with `keep_path`.
     ///
     /// # Errors
     ///
@@ -58,9 +66,10 @@ impl Contents {
         DISK_READS.with(|reads| reads.borrow_mut().push(path.to_path_buf()));
         let bytes: Arc<[u8]> = Arc::from(fs::read(path)?);
         let mut inner = self.lock();
-        if path
-            .file_name()
-            .is_some_and(|name| inner.names.contains(name))
+        if inner.paths.contains(path)
+            || path
+                .file_name()
+                .is_some_and(|name| inner.names.contains(name))
         {
             inner.kept.insert(path.to_path_buf(), Arc::clone(&bytes));
         }

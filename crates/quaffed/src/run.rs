@@ -201,7 +201,10 @@ pub fn run(
     out: &mut impl Write,
     notes: &mut impl Write,
 ) -> Result<Outcome, Failure> {
-    let mut built = build(sources, stdin)?;
+    // One store for the whole run, so a file read before the search or for its rules, and
+    // searched as well, is read once.
+    let contents = Contents::default();
+    let mut built = build(sources, stdin, &contents)?;
     built.program.narrow_to = scope.map(PathBuf::from);
     if built.program.body().is_empty() {
         return Err(Failure::Empty {
@@ -227,8 +230,6 @@ pub fn run(
         path: cwd.to_path_buf(),
         cause,
     })?;
-    // One store for the whole run, so a file read for its rules and searched is read once.
-    let contents = Contents::default();
     let workspace = workspace::find(&cwd, &contents);
     let scope = resolve_scope(
         built.program.narrow_to.as_deref(),
@@ -337,7 +338,11 @@ fn name(source: &Source) -> String {
 }
 
 /// Reads and parses each source in turn into one program.
-fn build(sources: Vec<SourceArg>, stdin: &mut impl Read) -> Result<Built, Failure> {
+fn build(
+    sources: Vec<SourceArg>,
+    stdin: &mut impl Read,
+    contents: &Contents,
+) -> Result<Built, Failure> {
     let mut built = Built {
         program: Program::default(),
         texts: Vec::new(),
@@ -352,7 +357,13 @@ fn build(sources: Vec<SourceArg>, stdin: &mut impl Read) -> Result<Built, Failur
             SourceArg::File(path) => {
                 let path = PathBuf::from(path);
                 let source = Source::File(path.clone());
-                let text = script_text(fs::read(&path), &source)?;
+                // Kept under its canonical path, as the walker names files, so that a script in
+                // the scope is not read again when it is searched.  A path that cannot be
+                // canonicalised is read as given, and fails with the system's own error.
+                let key = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+                contents.keep_path(&key);
+                let read = contents.read(&key).map(|bytes| bytes.to_vec());
+                let text = script_text(read, &source)?;
                 (source, text)
             }
             SourceArg::Stdin => {
@@ -1211,6 +1222,38 @@ mod tests {
                 pointer.display()
             );
         }
+    }
+
+    #[test]
+    fn a_script_in_the_scope_is_read_from_disk_once() {
+        // `quaff -f scripts/fix.quaff` from the project's root: the script is read to run it,
+        // and is in the scope, so searched as well.
+        let dir = std::env::temp_dir().join(format!("quaffed-run-script-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join(".git")).unwrap();
+        fs::create_dir_all(dir.join("scripts")).unwrap();
+        fs::write(dir.join("scripts/fix.quaff"), "find \"TODO\"\n").unwrap();
+        fs::write(dir.join("a.txt"), "TODO\n").unwrap();
+        let dir = fs::canonicalize(&dir).unwrap();
+        let script = dir.join("scripts/fix.quaff");
+        crate::contents::DISK_READS.with(|reads| reads.borrow_mut().clear());
+        let mut out = Vec::new();
+        let outcome = run(
+            vec![SourceArg::File(script.clone().into_os_string())],
+            None,
+            &dir,
+            &mut io::empty(),
+            &mut out,
+            &mut Vec::new(),
+        );
+        let reads = crate::contents::DISK_READS.with(|reads| reads.borrow().clone());
+        let _ = fs::remove_dir_all(&dir);
+        assert!(outcome.is_ok(), "{outcome:?}");
+        // The script holds "TODO" too, so it was searched as well as run.
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.contains("fix.quaff"), "{out}");
+        let count = reads.iter().filter(|read| **read == script).count();
+        assert_eq!(count, 1, "the script read {count} times: {reads:?}");
     }
 
     #[test]

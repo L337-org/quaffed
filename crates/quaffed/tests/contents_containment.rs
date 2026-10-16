@@ -7,8 +7,8 @@
 //! and is read once because every reader goes through the store in `src/contents.rs`.  A reader
 //! that read a file itself would read it a second time, which nothing else would notice until
 //! the budgets' file trace did.  This reads every other source file of the `quaff` binary and
-//! fails naming any line that reads a file directly, except a script file given with `-f`,
-//! which is never a project file.
+//! fails naming any line that reads a file directly.  A script given with `-f` is read through
+//! the store too, as it may be in the scope and searched.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -22,14 +22,7 @@ const DIRECT_READS: &[&str] = &[
     ".add(&",
 ];
 
-/// Lines allowed to read a file directly, each with its reason.
-const ALLOWED: &[&str] = &[
-    // A script given with -f: quaff's input, never a file in the project it searches.
-    "script_text(fs::read(&path), &source)",
-];
-
-/// The lines of `source` that read a file directly, outside comments, the test module and
-/// `ALLOWED`.  Only the test module is left out: a `#[cfg(test)]` on any other item, such as a
+/// The lines of `source` that read a file directly, outside comments and the test module.  Only the test module is left out: a `#[cfg(test)]` on any other item, such as a
 /// counter a test reads, must not hide the product code after it.
 fn reads_directly(source: &str) -> Vec<&str> {
     let product = source
@@ -40,7 +33,6 @@ fn reads_directly(source: &str) -> Vec<&str> {
         .lines()
         .filter(|line| !line.trim_start().starts_with("//"))
         .filter(|line| DIRECT_READS.iter().any(|needle| line.contains(needle)))
-        .filter(|line| !ALLOWED.iter().any(|allowed| line.contains(allowed)))
         .collect()
 }
 
@@ -102,8 +94,9 @@ fn reading_directly_is_found_however_it_is_done() {
         reads_directly("#[cfg(test)]\nstatic READS: u8 = 0;\nfn read() { fs::read(p); }").len(),
         1
     );
+    // Reading a script is reading a file like any other.
     assert_eq!(
-        reads_directly("    let text = script_text(fs::read(&path), &source)?;"),
-        Vec::<&str>::new()
+        reads_directly("    let text = script_text(fs::read(&path), &source)?;").len(),
+        1
     );
 }
