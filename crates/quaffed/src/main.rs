@@ -9,6 +9,7 @@
 //! design.
 
 mod cli;
+mod contents;
 mod discover;
 mod editorconfig;
 mod output;

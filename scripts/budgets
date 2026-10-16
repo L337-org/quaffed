@@ -144,7 +144,6 @@ def run_all(args):
                 measured,
                 limits,
                 budgets.get("outside", {}),
-                budgets.get("inside", {}),
                 project,
             )
             rows.append((name, measured, limits))
@@ -342,7 +341,7 @@ def normalise(path):
     return re.sub(r"^/proc/\d+/", "/proc/self/", path)
 
 
-def judge(name, measured, limits, outside, inside_rules, project):
+def judge(name, measured, limits, outside, project):
     """Each way the scenario is over its budget, said in full."""
     failures = []
     for budget in ("instructions", "peak_memory_kib"):
@@ -354,9 +353,8 @@ def judge(name, measured, limits, outside, inside_rules, project):
             failures.append(
                 f"{name} {budget}: limit {limit:,}, measured {measured[budget]:,}{over}"
             )
-    twice = set(inside_rules.get("read_as_rules_and_as_content", []))
     for path, (opens, _) in sorted(measured["inside"].items()):
-        if opens > (2 if Path(path).name in twice else 1):
+        if opens > 1:
             shown = Path(path).relative_to(project)
             failures.append(f"{name}: {str(shown)!r} in the project was opened {opens} times")
     allowed = set(outside.get("allowed", []))

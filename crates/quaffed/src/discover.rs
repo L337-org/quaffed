@@ -12,11 +12,13 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
+use crate::contents::Contents;
 use crate::workspace::{IgnoreFiles, Workspace};
 
 /// Directory and file names that hold version-control metadata, never searched.
@@ -62,25 +64,16 @@ impl fmt::Display for Error {
     }
 }
 
-/// Whether `err` is only ignore-file lines that could not be parsed, which cost one rule each,
-/// rather than something that stops the walk.
+/// Whether `err` is an ignore-file line that could not be parsed, which costs that one rule,
+/// rather than something that stops the walk.  Each is reported on its own, tagged with its
+/// file and line, as the rules are read.
 fn is_rule_error(err: &ignore::Error) -> bool {
     match err {
         ignore::Error::Glob { .. } => true,
-        ignore::Error::WithPath { err, .. }
-        | ignore::Error::WithLineNumber { err, .. }
-        | ignore::Error::WithDepth { err, .. } => is_rule_error(err),
-        ignore::Error::Partial(errs) => errs.iter().all(is_rule_error),
+        ignore::Error::WithPath { err, .. } | ignore::Error::WithLineNumber { err, .. } => {
+            is_rule_error(err)
+        }
         _ => false,
-    }
-}
-
-/// The separate errors inside `err`: one per unparseable line, however the walker grouped them.
-fn each_error(err: &ignore::Error) -> Vec<&ignore::Error> {
-    match err {
-        ignore::Error::Partial(errs) => errs.iter().flat_map(each_error).collect(),
-        ignore::Error::WithDepth { err, .. } => each_error(err),
-        other => vec![other],
     }
 }
 
@@ -99,11 +92,6 @@ fn describe(err: &ignore::Error, cwd: &Path) -> String {
             format!("line {line}: {}", describe(err, cwd))
         }
         ignore::Error::WithDepth { err, .. } => describe(err, cwd),
-        ignore::Error::Partial(errs) => errs
-            .iter()
-            .map(|err| describe(err, cwd))
-            .collect::<Vec<_>>()
-            .join("; "),
         // walkdir wraps the system's error in one of its own, whose message repeats the
         // absolute path already given above; the system's error is the one to quote.
         ignore::Error::Io(io) => io
@@ -133,7 +121,12 @@ impl std::error::Error for Error {
 ///
 /// Returns an [`Error`] for anything the walker cannot read - a directory, or an ignore file
 /// it could not parse - rather than searching the rest and reporting a short answer as complete.
-pub fn files(scope: &Path, cwd: &Path, workspace: Option<&dyn Workspace>) -> Result<Found, Error> {
+pub fn files(
+    scope: &Path,
+    cwd: &Path,
+    workspace: Option<&dyn Workspace>,
+    contents: &Contents,
+) -> Result<Found, Error> {
     let boundary = workspace.map_or(cwd, |w| w.root());
     let mut found = Found::default();
     // The walker reads its ignore files from every directory above where it starts, up to the
@@ -141,7 +134,11 @@ pub fn files(scope: &Path, cwd: &Path, workspace: Option<&dyn Workspace>) -> Res
     // from the boundary, narrowed to the scope, and the rules are read and matched here, as
     // each directory is met, ranked as the walker ranks its own.  A file scope is walked on its
     // own, as naming it is asking for it whatever ignores it.
-    let rules = Arc::new(Rules::new(boundary, workspace.map(Workspace::ignore_files)));
+    let rules = Arc::new(Rules::new(
+        boundary,
+        workspace.map(Workspace::ignore_files),
+        contents,
+    ));
     let start = if scope.is_dir() { boundary } else { scope };
     let narrow_to = scope.to_path_buf();
     let matcher = Arc::clone(&rules);
@@ -212,11 +209,9 @@ fn tolerate(cause: ignore::Error, cwd: &Path, found: &mut Found) -> Result<(), E
             cwd: cwd.to_path_buf(),
         });
     }
-    for each in each_error(&cause) {
-        let described = describe(each, cwd);
-        if !found.skipped_rules.contains(&described) {
-            found.skipped_rules.push(described);
-        }
+    let described = describe(&cause, cwd);
+    if !found.skipped_rules.contains(&described) {
+        found.skipped_rules.push(described);
     }
     Ok(())
 }
@@ -232,6 +227,8 @@ struct Rules {
     chains: Mutex<HashMap<PathBuf, Arc<Vec<Arc<DirRules>>>>>,
     /// What reading them reported, in the order met, for the run to judge once the walk is done.
     errors: Mutex<Vec<ignore::Error>>,
+    /// Where they are read through, so one also searched is read once.
+    contents: Contents,
 }
 
 /// One directory's ignore rules, each file as a matcher, empty where there is no such file.
@@ -243,12 +240,14 @@ struct DirRules {
 }
 
 impl Rules {
-    fn new(boundary: &Path, system: Option<Box<dyn IgnoreFiles>>) -> Rules {
+    fn new(boundary: &Path, system: Option<Box<dyn IgnoreFiles>>, contents: &Contents) -> Rules {
+        contents.keep_named(".ignore");
         Rules {
             boundary: boundary.to_path_buf(),
             system,
             chains: Mutex::new(HashMap::new()),
             errors: Mutex::new(Vec::new()),
+            contents: contents.clone(),
         }
     }
 
@@ -340,9 +339,49 @@ impl Rules {
         let Some(file) = file.filter(|file| file.is_file()) else {
             return Gitignore::empty();
         };
+        let bytes = match self.contents.read(&file) {
+            Ok(bytes) => bytes,
+            Err(cause) => {
+                self.report(ignore::Error::WithPath {
+                    path: file,
+                    err: Box::new(ignore::Error::Io(cause)),
+                });
+                return Gitignore::empty();
+            }
+        };
+        // Parsed from the bytes as GitignoreBuilder::add parses a file it opens itself: by line,
+        // a line's CR and LF dropped, a UTF-8 byte-order mark dropped from the first line, each
+        // bad line reported with its file and number, and a line that is not UTF-8 ending the
+        // file, as it ends add's reading.
         let mut builder = GitignoreBuilder::new(dir);
-        if let Some(cause) = builder.add(&file) {
-            self.report(cause);
+        let mut lines: Vec<&[u8]> = bytes.split(|&b| b == b'\n').collect();
+        if lines.last().is_some_and(|last| last.is_empty()) {
+            lines.pop();
+        }
+        for (index, raw) in lines.into_iter().enumerate() {
+            let tagged = |err: ignore::Error| ignore::Error::WithPath {
+                path: file.clone(),
+                err: Box::new(ignore::Error::WithLineNumber {
+                    line: index as u64 + 1,
+                    err: Box::new(err),
+                }),
+            };
+            let raw = raw.strip_suffix(b"\r").unwrap_or(raw);
+            let Ok(line) = std::str::from_utf8(raw) else {
+                self.report(tagged(ignore::Error::Io(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "stream did not contain valid UTF-8",
+                ))));
+                break;
+            };
+            let line = if index == 0 {
+                line.trim_start_matches('\u{feff}')
+            } else {
+                line
+            };
+            if let Err(err) = builder.add_line(Some(file.clone()), line) {
+                self.report(tagged(err));
+            }
         }
         match builder.build() {
             Ok(matcher) => matcher,
@@ -372,8 +411,9 @@ mod tests {
 
     /// Discovery as a run does it: with the workspace found from `cwd`, if there is one.
     fn files_in(scope: &Path, cwd: &Path) -> Result<Found, Error> {
-        let workspace = crate::workspace::find(cwd);
-        files(scope, cwd, workspace.as_deref())
+        let contents = Contents::default();
+        let workspace = crate::workspace::find(cwd, &contents);
+        files(scope, cwd, workspace.as_deref(), &contents)
     }
 
     struct Tree(PathBuf);
@@ -777,6 +817,22 @@ mod tests {
         let found = files_in(&dir, &dir).unwrap();
         assert_eq!(found.files.len(), 1);
         assert!(found.skipped_rules.is_empty(), "{:?}", found.skipped_rules);
+    }
+
+    #[test]
+    fn an_ignore_file_that_is_not_utf8_stops_discovery_naming_its_line() {
+        // As the ignore crate reads one: the lines before the bad one apply, and the run stops
+        // rather than guess what the rest of the file says.
+        let tree = Tree::new("not-utf8", &[(".git/HEAD", ""), ("a.py", "")]);
+        fs::write(tree.0.join(".ignore"), b"*.log\nbad\xff\n").unwrap();
+        let message = files_in(&tree.0, &tree.0)
+            .expect_err("an ignore file that is not UTF-8 must stop discovery")
+            .to_string();
+        assert!(
+            message.starts_with("finding the files to search: \".ignore\": line 2: "),
+            "{message}"
+        );
+        assert!(message.contains("valid UTF-8"), "{message}");
     }
 
     #[test]

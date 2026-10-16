@@ -313,9 +313,8 @@ runner's speed.
   - `paths_opened` and `bytes_read`: exactly how many paths in the project quaff opens,
     directories included, and how many bytes it reads from them, traced with `strace`.  These
     have no margin: a change in either is a change in behaviour.
-- **No path in the project may be opened twice**, except a file both read for its rules and
-  searched, which `budgets.toml` names under `[inside]`; **nothing outside the project may be
-  opened** but what it allows under `[outside]`, each with its reason.
+- **No path in the project may be opened twice**, and **nothing outside the project may be
+  opened** but what `budgets.toml` allows under `[outside]`, each with its reason.
 - **The job runs each scenario more than once**, as many times as its `--repeat` says, and judges
   each budget with a margin on its worst run, which the summary names, so it shows how much the
   counts moved; the file access must be identical every time, or nothing is judged.

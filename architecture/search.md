@@ -71,7 +71,13 @@ than replacing it.
      project, so that nothing outside the project changes which files are searched.  The walker
      cannot be told to stop there, which is why it reads none.  The walk starts at the root and
      is narrowed to the scope as it goes down, so the ignore files between the root and a scope
-     still apply, and each is read once;
+     still apply;
+   - **every file is read once**, whatever reads it.  A file read for its rules - an ignore
+     file, `.gitattributes`, `.editorconfig` - may be in the scope too, so every reader goes
+     through `src/contents.rs`, which keeps the bytes of the files whose names a reader reads,
+     and the search takes them from there.  The order does not matter: a declaration file
+     searched before it is read for its declarations is kept for the reader.  A test fails if
+     any other source file reads a file itself;
    - no git configuration is read, so neither is a global excludes file;
    - hidden files are searched;
    - version-control metadata is skipped by name at any depth: `.git`, `.hg`, `.svn`, `.bzr`,

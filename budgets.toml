@@ -41,8 +41,3 @@ allowed = [
     "/proc/sys/vm/overcommit_memory",
     "/sys/kernel/mm/transparent_hugepage/enabled",
 ]
-
-# What may be opened twice in the project, by name: a file that holds rules quaff reads, and
-# that is in the project, so is also searched.  Anything else opened twice fails.
-[inside]
-read_as_rules_and_as_content = [".gitignore", ".ignore", ".gitattributes", ".editorconfig"]

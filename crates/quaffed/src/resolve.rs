@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 
 use quaffed_encoding::{self as encoding, Encoding, Named, Refusal, Unproven};
 
+use crate::contents::Contents;
 use crate::editorconfig::EditorConfig;
 use crate::workspace::{self, Origin, Workspace};
 
@@ -25,6 +26,9 @@ pub struct Declarations {
     pub editorconfig: EditorConfig,
     /// The directory paths in messages are relative to.
     pub cwd: PathBuf,
+    /// Where every file of the run is read through, the declaring files and the searched ones
+    /// alike, so that a declaring file also searched is read once.
+    pub contents: Contents,
 }
 
 /// A file to decide the encoding of.
@@ -359,10 +363,12 @@ mod tests {
         }
 
         fn resolve(&self, path: &str) -> Resolution {
+            let contents = Contents::default();
             let mut declarations = Declarations {
-                workspace: workspace::find(&self.0),
-                editorconfig: EditorConfig::new(&self.0),
+                workspace: workspace::find(&self.0, &contents),
+                editorconfig: EditorConfig::new(&self.0, &contents),
                 cwd: self.0.clone(),
+                contents,
             };
             let path = self.0.join(path);
             let bytes = fs::read(&path).unwrap();
@@ -429,12 +435,14 @@ mod tests {
                     let root = &project.as_ref().expect("a case first").0;
                     let target = root.join(file);
                     let declared = if *kind == "attribute" {
-                        workspace::find(root)
+                        workspace::find(root, &Contents::default())
                             .expect("a git workspace")
                             .declared_encoding(&target, root)
                             .unwrap()
                     } else {
-                        EditorConfig::new(root).charset(&target, root).unwrap()
+                        EditorConfig::new(root, &Contents::default())
+                            .charset(&target, root)
+                            .unwrap()
                     };
                     let found = declared.map_or("-".to_owned(), |d| d.name);
                     assert_eq!(&found, expected, "{at}: {kind} of {file}");
@@ -494,7 +502,7 @@ mod tests {
         .unwrap();
         let declared = |path: &str| {
             let target = project.0.join(path);
-            workspace::find(target.parent().unwrap())
+            workspace::find(target.parent().unwrap(), &Contents::default())
                 .expect("a git workspace")
                 .declared_encoding(&target, &project.0)
                 .unwrap()
@@ -679,8 +687,9 @@ mod tests {
         // Asked with the subdirectory as the boundary, the project's file is above it.
         let mut declarations = Declarations {
             workspace: None,
-            editorconfig: EditorConfig::new(&project.0.join("sub")),
+            editorconfig: EditorConfig::new(&project.0.join("sub"), &Contents::default()),
             cwd: project.0.clone(),
+            contents: Contents::default(),
         };
         let path = project.0.join("sub/a.txt");
         assert_eq!(
