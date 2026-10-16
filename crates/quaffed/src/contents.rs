@@ -32,6 +32,27 @@ struct Inner {
     kept: HashMap<PathBuf, Arc<[u8]>>,
 }
 
+/// A file's bytes, as [`Contents::read`] gives them: kept and shared, or read for this caller
+/// alone.
+#[derive(Debug)]
+pub enum Bytes {
+    /// Kept by the store, for whichever reader comes next.
+    Kept(Arc<[u8]>),
+    /// Read for this caller alone, so never copied.
+    Read(Vec<u8>),
+}
+
+impl std::ops::Deref for Bytes {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        match self {
+            Bytes::Kept(bytes) => bytes,
+            Bytes::Read(bytes) => bytes,
+        }
+    }
+}
+
 #[cfg(test)]
 thread_local! {
     /// Every path read from disk on this thread, so a test can count them.
@@ -58,22 +79,26 @@ impl Contents {
     /// # Errors
     ///
     /// Returns the system's error, verbatim, when the file cannot be read.
-    pub fn read(&self, path: &Path) -> io::Result<Arc<[u8]>> {
+    pub fn read(&self, path: &Path) -> io::Result<Bytes> {
         if let Some(bytes) = self.lock().kept.get(path) {
-            return Ok(Arc::clone(bytes));
+            return Ok(Bytes::Kept(Arc::clone(bytes)));
         }
         #[cfg(test)]
         DISK_READS.with(|reads| reads.borrow_mut().push(path.to_path_buf()));
-        let bytes: Arc<[u8]> = Arc::from(fs::read(path)?);
+        let bytes = fs::read(path)?;
         let mut inner = self.lock();
         if inner.paths.contains(path)
             || path
                 .file_name()
                 .is_some_and(|name| inner.names.contains(name))
         {
-            inner.kept.insert(path.to_path_buf(), Arc::clone(&bytes));
+            // Shared, so a later reader has them; copying into it is paid only for the files
+            // kept, a handful of small ones, never for every file searched.
+            let kept: Arc<[u8]> = Arc::from(bytes);
+            inner.kept.insert(path.to_path_buf(), Arc::clone(&kept));
+            return Ok(Bytes::Kept(kept));
         }
-        Ok(bytes)
+        Ok(Bytes::Read(bytes))
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
