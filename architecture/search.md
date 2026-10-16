@@ -60,6 +60,11 @@ than replacing it.
 4. **Discovery** (`src/discover.rs`) uses the `ignore` crate, ripgrep's walker:
    - `.gitignore`, `.ignore` and `.git/info/exclude` are honoured, `.gitignore` only inside a git
      repository, as git itself does;
+   - **no ignore file above the project root applies**, or above the current directory with no
+     project, so that nothing outside the project changes which files are searched.  The walk
+     starts at the root and is narrowed to the scope as it goes down, so the ignore files between
+     the root and a scope still apply.  The `ignore` crate still opens the ignore files above
+     where a walk starts, to find repository boundaries, but quaff applies none of them;
    - no git configuration is read, so neither is a global excludes file;
    - hidden files are searched;
    - version-control metadata is skipped by name at any depth: `.git`, `.hg`, `.svn`, `.bzr`,

@@ -118,31 +118,71 @@ impl std::error::Error for Error {
 /// Finds every file under `scope`, which may be a directory or a single file.
 ///
 /// A scope that names a file, or an ignored directory, is searched even so: naming it is
-/// asking for it.  Ignore rules apply to what is found beneath it.
+/// asking for it.  Ignore rules apply to what is found beneath it.  No ignore file above the
+/// boundary - the project root, or `cwd` with no project - applies, so that nothing outside the
+/// project changes which files are searched.
 ///
 /// # Errors
 ///
 /// Returns an [`Error`] for anything the walker cannot read - a directory, or an ignore file
 /// it could not parse - rather than searching the rest and reporting a short answer as complete.
 pub fn files(scope: &Path, cwd: &Path, workspace: Option<&dyn Workspace>) -> Result<Found, Error> {
-    let mut walker = ignore::WalkBuilder::new(scope);
+    let boundary = workspace.map_or(cwd, |w| w.root());
+    let mut found = Found::default();
+    // The walker reads ignore files from every directory above where it starts, up to the
+    // filesystem root, and has no way to stop at the project's.  So it starts at the boundary,
+    // with no parents read, and is narrowed to the scope as it goes: the ignore files between
+    // the boundary and the scope still apply, as they are met on the way down, and none above
+    // the boundary is ever consulted.  A file scope is walked on its own, as naming it is
+    // asking for it whatever ignores it.
+    let saw_scope = if scope.is_dir() {
+        walk(boundary, Some(scope), cwd, workspace, &mut found)?
+    } else {
+        walk(scope, None, cwd, workspace, &mut found)?
+    };
+    // An ignored scope directory is never reached from the boundary: it is walked from itself,
+    // so that rules from it downwards apply.
+    if !saw_scope {
+        walk(scope, None, cwd, workspace, &mut found)?;
+    }
+    found.files.sort();
+    Ok(found)
+}
+
+/// Walks from `start`, adding what is found to `found`: everything, or with `within`, only
+/// what is at or under it, and the directories on the way to it.  Returns whether `within`, if
+/// given, was reached.
+fn walk(
+    start: &Path,
+    within: Option<&Path>,
+    cwd: &Path,
+    workspace: Option<&dyn Workspace>,
+    found: &mut Found,
+) -> Result<bool, Error> {
+    let mut walker = ignore::WalkBuilder::new(start);
+    let narrow_to = within.map(Path::to_path_buf);
     walker
         .hidden(false)
-        .parents(true)
+        .parents(false)
         .ignore(true)
         .follow_links(false)
         .sort_by_file_name(std::cmp::Ord::cmp)
-        .filter_entry(|entry| {
-            entry
+        .filter_entry(move |entry| {
+            let name_ok = entry
                 .file_name()
                 .to_str()
-                .is_none_or(|name| !VCS_METADATA.contains(&name))
+                .is_none_or(|name| !VCS_METADATA.contains(&name));
+            let path = entry.path();
+            name_ok
+                && narrow_to
+                    .as_deref()
+                    .is_none_or(|scope| path.starts_with(scope) || scope.starts_with(path))
         });
     match workspace {
         Some(workspace) => workspace.ignore_rules(&mut walker),
         None => workspace::no_system_ignore_rules(&mut walker),
     }
-    let mut found = Found::default();
+    let mut reached = within.is_none();
     for entry in walker.build() {
         // An ignore file line that could not be parsed costs that one rule: say so, and carry
         // on with the rest.  Anything else - a directory that cannot be listed, an ignore file
@@ -180,6 +220,14 @@ pub fn files(scope: &Path, cwd: &Path, workspace: Option<&dyn Workspace>) -> Res
         let Some(kind) = entry.file_type() else {
             continue;
         };
+        let path = entry.path();
+        if within.is_some_and(|scope| path == scope) {
+            reached = true;
+        }
+        // On the way down to the scope, only what is inside it counts.
+        if within.is_some_and(|scope| !path.starts_with(scope)) {
+            continue;
+        }
         if kind.is_symlink() {
             found.links_not_followed += 1;
         } else if kind.is_file() {
@@ -188,8 +236,7 @@ pub fn files(scope: &Path, cwd: &Path, workspace: Option<&dyn Workspace>) -> Res
             found.special_files += 1;
         }
     }
-    found.files.sort();
-    Ok(found)
+    Ok(reached)
 }
 
 #[cfg(test)]
@@ -275,6 +322,58 @@ mod tests {
             ],
         );
         assert_eq!(tree.found("."), [".gitignore", ".ignore", "a.py"]);
+    }
+
+    /// The files found searching from `dir`, under the tree, with no scope.
+    fn found_from(tree: &Tree, dir: &str) -> Vec<String> {
+        let dir = tree.0.join(dir);
+        files_in(&dir, &dir)
+            .unwrap()
+            .files
+            .iter()
+            .map(|p| p.strip_prefix(&dir).unwrap().to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn no_ignore_file_above_the_project_root_applies() {
+        let tree = Tree::new(
+            "above-root",
+            &[
+                ("outer/.ignore", "*.py\n"),
+                ("outer/.gitignore", "*.py\n"),
+                ("outer/proj/.git/HEAD", ""),
+                ("outer/proj/x.py", ""),
+            ],
+        );
+        assert_eq!(found_from(&tree, "outer/proj"), ["x.py"]);
+    }
+
+    #[test]
+    fn with_no_project_no_ignore_file_above_the_current_directory_applies() {
+        let tree = Tree::new(
+            "above-cwd",
+            &[("outer/.ignore", "*.py\n"), ("outer/here/x.py", "")],
+        );
+        assert_eq!(found_from(&tree, "outer/here"), ["x.py"]);
+    }
+
+    #[test]
+    fn the_ignore_files_between_the_root_and_a_scope_still_apply() {
+        let tree = Tree::new(
+            "between",
+            &[
+                (".git/HEAD", ""),
+                (".gitignore", "*.log\n"),
+                ("sub/.ignore", "*.tmp\n"),
+                ("sub/deeper/a.log", ""),
+                ("sub/deeper/b.tmp", ""),
+                ("sub/deeper/c.py", ""),
+                ("other/d.py", ""),
+            ],
+        );
+        assert_eq!(tree.found("sub/deeper"), ["sub/deeper/c.py"]);
+        assert_eq!(tree.found("sub"), ["sub/.ignore", "sub/deeper/c.py"]);
     }
 
     #[test]
