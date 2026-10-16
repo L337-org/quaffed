@@ -351,11 +351,12 @@ impl Rules {
         }
     }
 
-    /// Whether `path`, in the directory whose chain of rules is `dirs`, is ignored, decided as the `ignore` crate's walker decides: in each kind of ignore file,
-    /// the nearest directory with a rule that matches decides that kind, and the kinds then rank
-    /// `.ignore` above the system's own files above its exclude file.  The system's files stop
-    /// at the nearest repository root, so a nested repository's own rules alone apply in it;
-    /// `.ignore` files apply up to the boundary.  None above the boundary is ever read.
+    /// Whether `path`, in the directory whose chain of rules is `dirs`, is ignored, decided as
+    /// the `ignore` crate's walker decides: in each kind of ignore file, the nearest directory
+    /// with a rule that matches decides that kind, and the kinds then rank `.ignore` above the
+    /// system's own files above its exclude file.  The system's files stop at the nearest
+    /// repository root, so a nested repository's own rules alone apply in it; `.ignore` files
+    /// apply up to the boundary.  None above the boundary is ever read.
     ///
     /// The walk fetches a directory's chain once, for everything the directory holds.
     fn ignored_in(dirs: &[Arc<DirRules>], path: &Path, is_dir: bool) -> bool {

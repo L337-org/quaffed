@@ -10,21 +10,21 @@
 #   bytes_read       exactly how many bytes it reads from them
 
 [startup]
-instructions = 245_100
-peak_memory_kib = 6_300
-paths_opened = 2
+instructions = 220_100
+peak_memory_kib = 5_800
+paths_opened = 1
 bytes_read = 0
 
 [search]
-instructions = 1_179_900
-peak_memory_kib = 6_200
-paths_opened = 18
+instructions = 1_008_100
+peak_memory_kib = 5_800
+paths_opened = 17
 bytes_read = 5_951
 
 [scope]
-instructions = 1_009_800
-peak_memory_kib = 6_200
-paths_opened = 15
+instructions = 847_600
+peak_memory_kib = 5_800
+paths_opened = 12
 bytes_read = 5_523
 
 # What may be opened outside the project, each for a reason the project cannot change.  Each

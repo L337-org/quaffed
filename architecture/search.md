@@ -63,14 +63,15 @@ than replacing it.
    - `.ignore` files, and the version control system's own, which the workspace names - for git,
      each directory's `.gitignore` and a repository root's `info/exclude` - are honoured.  With no
      project, only `.ignore` is;
-   - **they are ranked as the `ignore` crate's walker ranks them**: in each kind, the nearest directory with a
-     rule that matches decides, and the kinds then rank `.ignore` above `.gitignore` above
-     `info/exclude`, so a `.ignore` rule outranks a `.gitignore` one however deep each is.  A
-     repository's own ignore files stop at its root, so in a nested repository or submodule only
-     its own `.gitignore` and `info/exclude` apply, as git applies them there.  Which files
-     discovery lists is held to git's own answer - `git ls-files --others --exclude-standard` in
-     each repository - by a test replaying what `scripts/generate-ignore-cases` recorded; a
-     behaviour to pin is a case added there and the script run again;
+   - **they are ranked as the `ignore` crate's walker ranks them**: in each kind, the nearest
+     directory with a rule that matches decides, and the kinds then rank `.ignore` above
+     `.gitignore` above `info/exclude`, so a `.ignore` rule outranks a `.gitignore` one however
+     deep each is.  A repository's own ignore files stop at its root, so in a nested repository
+     or submodule only its own `.gitignore` and `info/exclude` apply, as git applies them there.
+     Which files discovery lists is held to git's own answer - `git ls-files --others
+     --exclude-standard` in each repository - by a test replaying what
+     `scripts/generate-ignore-cases` recorded; a behaviour to pin is a case added there and the
+     script run again;
    - **no ignore file above the project root is read**, or above the current directory with no
      project, so that nothing outside the project changes which files are searched.  The
      crate's walker cannot be told to stop there, which is one reason quaff walks itself.  The
