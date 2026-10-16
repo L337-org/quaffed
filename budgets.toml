@@ -31,12 +31,6 @@ bytes_read = 5_523
 # is a pattern, in which * matches anything, / included.
 [outside]
 allowed = [
-    # regex-automata, through the ignore matcher's globs, asks the standard library how many
-    # CPUs it may use, to size its pool of regex caches; the standard library reads the CPU quota
-    # of the process's cgroup and each cgroup above it to answer.  How deep the cgroup is depends
-    # on the machine.
-    "/proc/self/cgroup",
-    "/sys/fs/cgroup/*cpu.max",
     # mimalloc, the package's allocator, reads how the kernel overcommits and hands out pages.
     "/proc/sys/vm/overcommit_memory",
     "/sys/kernel/mm/transparent_hugepage/enabled",
