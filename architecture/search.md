@@ -57,12 +57,13 @@ than replacing it.
    the whole search, so it bounds the scope instead, again with exit 3.  **It is a path, not a
    glob**: a quoted glob that reaches quaff is reported as not found, with a note that globs are
    not expanded.  This is the MVP's behaviour and is expected to change.
-4. **Discovery** (`src/discover.rs`) walks with the `ignore` crate, ripgrep's walker, with the
-   walker's own ignore handling off, and reads and matches the ignore files itself:
+4. **Discovery** (`src/discover.rs`) walks the project itself, with the standard library's
+   directory listing, and reads and matches the ignore files itself with the `ignore` crate's
+   pattern matcher - ripgrep's - not its walker:
    - `.ignore` files, and the version control system's own, which the workspace names - for git,
      each directory's `.gitignore` and a repository root's `info/exclude` - are honoured.  With no
      project, only `.ignore` is;
-   - **they are ranked as the walker ranks them**: in each kind, the nearest directory with a
+   - **they are ranked as the `ignore` crate's walker ranks them**: in each kind, the nearest directory with a
      rule that matches decides, and the kinds then rank `.ignore` above `.gitignore` above
      `info/exclude`, so a `.ignore` rule outranks a `.gitignore` one however deep each is.  A
      repository's own ignore files stop at its root, so in a nested repository or submodule only
@@ -71,10 +72,16 @@ than replacing it.
      each repository - by a test replaying what `scripts/generate-ignore-cases` recorded; a
      behaviour to pin is a case added there and the script run again;
    - **no ignore file above the project root is read**, or above the current directory with no
-     project, so that nothing outside the project changes which files are searched.  The walker
-     cannot be told to stop there, which is why it reads none.  The walk starts at the root and
-     is narrowed to the scope as it goes down, so the ignore files between the root and a scope
-     still apply;
+     project, so that nothing outside the project changes which files are searched.  The
+     crate's walker cannot be told to stop there, which is one reason quaff walks itself.  The
+     walk starts at the root and is narrowed to the scope as it goes down, so the ignore files
+     between the root and a scope still apply;
+   - **a directory is listed only once it is to be entered**: on the way to the scope, or
+     under it and not ignored.  An ignored directory, or one beside the way, is never opened,
+     so an ignored `node_modules/` costs nothing however many names it holds.  A walker that
+     filters what it has already listed - the crate's, and `walkdir` under it, list a
+     directory as they hand it over - reads every name in it first.  A test counts the
+     directories listed;
    - **every file is read once**, whatever reads it.  A file read for its rules - an ignore
      file, `.gitattributes`, `.editorconfig` - may be in the scope too, so every reader goes
      through `src/contents.rs`, which keeps the bytes of the files whose names a reader reads,
