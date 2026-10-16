@@ -1163,8 +1163,9 @@ mod tests {
 
     #[test]
     fn a_git_pointer_file_is_read_from_disk_once() {
-        // A linked worktree's or a submodule's .git is a file naming the git directory, read
-        // both for the repository's info/exclude and for its info/attributes.
+        // A linked worktree's .git is a file naming its own git directory, whose commondir names
+        // the main one, where info/ is; both are read for the repository's info/exclude and
+        // again for its info/attributes.
         let dir = std::env::temp_dir().join(format!("quaffed-run-pointer-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let gitdir = dir.join("gitdir");
@@ -1172,15 +1173,17 @@ mod tests {
         for (path, text) in [
             ("gitdir/info/attributes", "*.md text\n"),
             ("gitdir/info/exclude", "*.tmp\n"),
+            ("gitdir/worktrees/project/commondir", "../..\n"),
             ("project/a.txt", "TODO\n"),
         ] {
             let path = dir.join(path);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, text).unwrap();
         }
+        let worktree = gitdir.join("worktrees/project");
         fs::write(
             project.join(".git"),
-            format!("gitdir: {}\n", gitdir.display()),
+            format!("gitdir: {}\n", worktree.display()),
         )
         .unwrap();
         let project = fs::canonicalize(&project).unwrap();
@@ -1199,9 +1202,15 @@ mod tests {
         let reads = crate::contents::DISK_READS.with(|reads| reads.borrow().clone());
         let _ = fs::remove_dir_all(&dir);
         assert!(outcome.is_ok(), "{outcome:?}");
-        let pointer = project.join(".git");
-        let count = reads.iter().filter(|read| **read == pointer).count();
-        assert_eq!(count, 1, ".git read {count} times: {reads:?}");
+        for pointer in [project.join(".git"), worktree.join("commondir")] {
+            let count = reads.iter().filter(|read| **read == pointer).count();
+            assert_eq!(
+                count,
+                1,
+                "{} read {count} times: {reads:?}",
+                pointer.display()
+            );
+        }
     }
 
     #[test]
