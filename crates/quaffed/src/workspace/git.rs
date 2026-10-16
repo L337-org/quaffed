@@ -77,6 +77,18 @@ impl Workspace for Git {
         walk.git_ignore(true).git_exclude(true).git_global(false);
     }
 
+    fn ignore_files(&self, dir: &Path) -> Result<Vec<PathBuf>, Error> {
+        // A directory's .gitignore takes precedence over info/exclude, which applies from the
+        // root of the repository holding it.
+        let mut files = vec![dir.join(".gitignore")];
+        if is_root(dir)
+            && let Some(git_dir) = git_dir(dir)?
+        {
+            files.push(git_dir.join("info").join("exclude"));
+        }
+        Ok(files)
+    }
+
     fn declared_encoding(
         &mut self,
         path: &Path,

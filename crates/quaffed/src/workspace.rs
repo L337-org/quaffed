@@ -23,6 +23,15 @@ pub trait Workspace {
     /// Sets `walk` to leave out what this system's ignore files leave out.
     fn ignore_rules(&self, walk: &mut ignore::WalkBuilder);
 
+    /// This system's ignore files that would apply to what is in `dir`, under the root, the
+    /// one that takes precedence first, whether or not they exist.  Discovery reads them itself
+    /// where the walker cannot: beneath a scope that names an ignored directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error`] when a file that says where they are cannot be read.
+    fn ignore_files(&self, dir: &Path) -> Result<Vec<PathBuf>, Error>;
+
     /// The encoding this system's own files declare for the file at `path`, under the root, if
     /// they declare one, with the declaring file shown relative to `shown_from`.
     ///

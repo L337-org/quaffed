@@ -12,6 +12,8 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
+
 use crate::workspace::{self, Workspace};
 
 /// Directory and file names that hold version-control metadata, never searched.
@@ -118,9 +120,11 @@ impl std::error::Error for Error {
 /// Finds every file under `scope`, which may be a directory or a single file.
 ///
 /// A scope that names a file, or an ignored directory, is searched even so: naming it is
-/// asking for it.  Ignore rules apply to what is found beneath it.  No ignore file above the
-/// boundary - the project root, or `cwd` with no project - applies, so that nothing outside the
-/// project changes which files are searched.
+/// asking for it.  Naming an ignored directory crosses only that one boundary: every ignore
+/// rule from the boundary down still applies to what is beneath it, so a file or directory
+/// inside that another rule ignores is not searched.  No ignore file above the boundary - the
+/// project root, or `cwd` with no project - applies, so that nothing outside the project changes
+/// which files are searched.
 ///
 /// # Errors
 ///
@@ -136,31 +140,90 @@ pub fn files(scope: &Path, cwd: &Path, workspace: Option<&dyn Workspace>) -> Res
     // the boundary is ever consulted.  A file scope is walked on its own, as naming it is
     // asking for it whatever ignores it.
     let saw_scope = if scope.is_dir() {
-        walk(boundary, Some(scope), cwd, workspace, &mut found)?
+        walk(boundary, Some(scope), &[], cwd, workspace, &mut found)?
     } else {
-        walk(scope, None, cwd, workspace, &mut found)?
+        walk(scope, None, &[], cwd, workspace, &mut found)?
     };
-    // An ignored scope directory is never reached from the boundary: it is walked from itself,
-    // so that rules from it downwards apply.
+    // An ignored scope directory is never reached from the boundary, so it is walked from
+    // itself.  The walker would then apply only the rules from the scope down, so the rules
+    // between the boundary and the scope are read here and applied beneath it too.
     if !saw_scope {
-        walk(scope, None, cwd, workspace, &mut found)?;
+        let above = rules_above(scope, boundary, cwd, workspace, &mut found)?;
+        walk(scope, None, &above, cwd, workspace, &mut found)?;
     }
     found.files.sort();
     Ok(found)
 }
 
+/// The ignore files in each directory from the one holding `scope` up to `boundary`, read as
+/// matchers, the one that takes precedence first: nearer directories before further ones, and
+/// within a directory `.ignore` before the workspace's own.  A line that cannot be used is noted
+/// in `found`, as the walker notes its own.
+fn rules_above(
+    scope: &Path,
+    boundary: &Path,
+    cwd: &Path,
+    workspace: Option<&dyn Workspace>,
+    found: &mut Found,
+) -> Result<Vec<Gitignore>, Error> {
+    let mut rules = Vec::new();
+    for dir in scope
+        .ancestors()
+        .skip(1)
+        .take_while(|dir| dir.starts_with(boundary))
+    {
+        let mut files = vec![dir.join(".ignore")];
+        if let Some(workspace) = workspace {
+            let declared = workspace.ignore_files(dir).map_err(|err| Error {
+                cause: ignore::Error::WithPath {
+                    path: err.path,
+                    err: Box::new(ignore::Error::Io(err.cause)),
+                },
+                cwd: cwd.to_path_buf(),
+            })?;
+            files.extend(declared);
+        }
+        for file in files.into_iter().filter(|file| file.is_file()) {
+            let mut builder = GitignoreBuilder::new(dir);
+            let added = builder.add(&file);
+            let built = builder.build();
+            for cause in added.iter().chain(built.as_ref().err()) {
+                if !is_rule_error(cause) {
+                    return Err(Error {
+                        cause: cause.clone(),
+                        cwd: cwd.to_path_buf(),
+                    });
+                }
+                for each in each_error(cause) {
+                    let described = describe(each, cwd);
+                    if !found.skipped_rules.contains(&described) {
+                        found.skipped_rules.push(described);
+                    }
+                }
+            }
+            if let Ok(matcher) = built {
+                rules.push(matcher);
+            }
+        }
+    }
+    Ok(rules)
+}
+
 /// Walks from `start`, adding what is found to `found`: everything, or with `within`, only
-/// what is at or under it, and the directories on the way to it.  Returns whether `within`, if
-/// given, was reached.
+/// what is at or under it, and the directories on the way to it.  Below `start`, an entry the
+/// first of `above` to match ignores is left out, with what is under it.  Returns whether
+/// `within`, if given, was reached.
 fn walk(
     start: &Path,
     within: Option<&Path>,
+    above: &[Gitignore],
     cwd: &Path,
     workspace: Option<&dyn Workspace>,
     found: &mut Found,
 ) -> Result<bool, Error> {
     let mut walker = ignore::WalkBuilder::new(start);
     let narrow_to = within.map(Path::to_path_buf);
+    let above = above.to_vec();
     walker
         .hidden(false)
         .parents(false)
@@ -173,7 +236,17 @@ fn walk(
                 .to_str()
                 .is_none_or(|name| !VCS_METADATA.contains(&name));
             let path = entry.path();
+            let is_dir = entry.file_type().is_some_and(|kind| kind.is_dir());
+            // The first rule that says anything about the entry decides, as the walker decides
+            // between its own; `start` itself is the boundary being crossed, so never left out.
+            let kept_by_above = entry.depth() == 0
+                || above
+                    .iter()
+                    .map(|rules| rules.matched(path, is_dir))
+                    .find(|matched| !matched.is_none())
+                    .is_none_or(|matched| !matched.is_ignore());
             name_ok
+                && kept_by_above
                 && narrow_to
                     .as_deref()
                     .is_none_or(|scope| path.starts_with(scope) || scope.starts_with(path))
@@ -403,6 +476,42 @@ mod tests {
         );
         assert_eq!(tree.found("build"), ["build/out.py"]);
         assert_eq!(tree.found("build/out.py"), ["build/out.py"]);
+    }
+
+    #[test]
+    fn naming_an_ignored_directory_crosses_only_that_boundary() {
+        // build/ is named, so it is searched; every other rule from the root down still applies
+        // inside it, so a .log file, a .tmp file and the cache/ directory stay out.
+        let tree = Tree::new(
+            "boundary",
+            &[
+                (".git/HEAD", ""),
+                (".git/info/exclude", "*.tmp\n"),
+                (".gitignore", "build/\n*.log\n"),
+                (".ignore", "cache/\n"),
+                ("build/a.log", ""),
+                ("build/b.py", ""),
+                ("build/c.tmp", ""),
+                ("build/cache/d.py", ""),
+                ("build/sub/e.py", ""),
+                ("build/sub/f.log", ""),
+            ],
+        );
+        assert_eq!(tree.found("build"), ["build/b.py", "build/sub/e.py"]);
+        assert_eq!(tree.found("build/sub"), ["build/sub/e.py"]);
+    }
+
+    #[test]
+    fn with_no_project_a_named_ignored_directory_keeps_the_other_ignore_rules() {
+        let tree = Tree::new(
+            "boundary-no-project",
+            &[
+                (".ignore", "build/\n*.log\n"),
+                ("build/a.log", ""),
+                ("build/b.py", ""),
+            ],
+        );
+        assert_eq!(tree.found("build"), ["build/b.py"]);
     }
 
     #[test]

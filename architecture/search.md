@@ -72,8 +72,14 @@ than replacing it.
    - symbolic links are not followed, and the run says how many it met;
    - FIFOs, sockets and device files are not read - reading a FIFO waits for a writer - and the
      run says how many it met;
-   - a scope that names a file or an ignored directory is searched even so - naming it is asking
-     for it - and the ignore rules apply beneath it;
+   - **a scope that names a file or an ignored directory is searched even so** - naming it is
+     asking for it - **but it crosses only that one boundary.**  Every ignore rule from the
+     project root down still applies beneath it, so inside a named `build/` that the root ignores,
+     a `*.log` file the root also ignores is not searched, and neither is a directory another
+     rule ignores.  An ignored directory is never reached by the walk from the root, so it is
+     walked from itself, and the ignore files between the root and it are read by
+     `src/discover.rs` and applied beneath it, each directory's taking precedence over those
+     above, as the walker's own do;
    - **a line of an ignore file that cannot be parsed** - `a{b`, which git reads as literal
      braces, or `[z-a]` - is skipped, and the rest of that file applies.  The run names the file
      and the line on standard error, with the glob parser's own words, and searches on.  Skipping
