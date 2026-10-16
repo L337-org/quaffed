@@ -22,8 +22,9 @@ const DIRECT_READS: &[&str] = &[
     ".add(&",
 ];
 
-/// The lines of `source` that read a file directly, outside comments and the test module.  Only the test module is left out: a `#[cfg(test)]` on any other item, such as a
-/// counter a test reads, must not hide the product code after it.
+/// The lines of `source` that read a file directly, outside comments and the test module.
+/// Only the test module is left out: a `#[cfg(test)]` on any other item, such as a counter a
+/// test reads, must not hide the product code after it.
 fn reads_directly(source: &str) -> Vec<&str> {
     let product = source
         .split("#[cfg(test)]\nmod tests")
