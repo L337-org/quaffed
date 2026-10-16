@@ -1,6 +1,6 @@
 # Textual search
 
-What `quaff TEXT [PATH]`, `quaff -s TEXT [PATH]` and a script's textual `find` do, as built.
+What `quaff TEXT [PATH]`, `quaff -s TEXT [PATH]` and a script's textual `find` do, and why.
 This page also carries the command line and the exit codes as far as they exist; the script
 language itself is `script.md`.  Specifications of further kinds of search join this page rather
 than replacing it.
@@ -44,9 +44,11 @@ than replacing it.
 
 ## What a search covers
 
-1. **The project root** is the nearest directory at or above the current one that contains
-   `.git`, tested for existence rather than type, so a submodule's `.git` file counts
-   (`src/project.rs`).  `.gitignore` is not a marker.
+1. **The project root** is found by the project's version control system, through the
+   workspace (`src/workspace.rs`), which is the only part of quaff that knows any system.  For
+   git it is the nearest directory at or above the current one that contains `.git`, tested for
+   existence rather than type, so a submodule's `.git` file counts (`src/workspace/git.rs`).
+   `.gitignore` is not a marker.
 2. **Without a scope, a search covers the whole project**, from wherever `quaff` runs.  With no
    project root it covers the current directory.
 3. **A scope** is one file or directory path, relative to the current directory.  It must exist -
@@ -81,17 +83,18 @@ than replacing it.
 ## Matching, in the file's own encoding
 
 A query is matched in each file's encoding by encoding the query the way the file is, rather
-than decoding the file (`crates/encoding`, specified in `encoding.md`, and `src/search.rs`).  The
-encoding is taken from what the file declares, never guessed from statistics:
+than decoding the file (`crates/encoding` and `src/search.rs`).  The encoding comes from what
+declares it, never from statistics, and is decided by `src/resolve.rs` as `encoding.md`
+describes: a byte-order mark, a Python file's coding line, the version control system's
+declaration, EditorConfig's `charset`, or the bytes being proven UTF-8 - the first that applies.
+What is decided then settles how the file is searched:
 
-| the file | is | a query is matched |
-|---|---|---|
-| starts with a byte-order mark | UTF-8, UTF-16 or UTF-32, as the mark says | encoded to match; a match must start on a code unit |
-| no mark, and a NUL in its first 8000 bytes | binary, by git's own test | not at all: the run says how many binary files it skipped |
-| a Python file - `.py`, `.pyi` or `.pyw` - with no UTF-16 or UTF-32 mark and no NUL in its first 8000 bytes, declaring an encoding on its first or second line | that encoding, as CPython reads the declaration (`encoding.md`); bytes it does not decode count as one character each | as its bytes in that encoding; a character the encoding cannot hold matches nothing, and one it spells more than one way leaves the file not searched for that query, noted or failing an assertion as below |
-| a Python file whose declaration cannot be honoured: an encoding Python does not know, a codec not of text, the `undefined` codec, one quaff does not read, or a declaration contradicting a UTF-8 mark | not read | not at all, for any query: a note names it and says why, and an assertion treats it as not searched (see *Exit codes*) |
-| no mark, valid UTF-8 | UTF-8 | as its UTF-8 bytes |
-| anything else | an unknown 8-bit encoding | if ASCII, as its bytes, which are the same in every ASCII-compatible encoding; otherwise not at all: a `find` notes how many files it skipped, and an assertion fails naming them (see *Exit codes*) |
+| the file is | a query is matched |
+|---|---|
+| binary, by git's test: a NUL in its first 8000 bytes, unless a byte-order mark or a declaration says UTF-16 or UTF-32 | not at all: the run says how many binary files it skipped |
+| in a known encoding | as its bytes in that encoding, each match starting and ending on a character, so bytes that match inside a multi-byte character, as in Shift-JIS, are not a match.  A character the encoding cannot hold matches nothing; one it spells more than one way leaves the file not searched for that query, and a note says so.  Every match is a hit |
+| of unknown encoding: not proven UTF-8 and nothing declaring it, or declared in an encoding quaff does not read | an ASCII query as its bytes, which are the same in every ASCII-compatible encoding.  Where they are absent there is certainly no match.  Where present, each is a **possible match**: reported by line, never counted, and the file is never edited, since in some encodings those bytes end a character.  A non-ASCII query is not searched there, and a note says so.  A file declared UTF-16 or UTF-32 by a name quaff does not read, such as plain `UTF-16`, is not searched for any query, since ASCII is other bytes there, and a note says so |
+| a Python file `CPython` refuses whatever it holds: an encoding name Python does not know, a codec not of text, the `undefined` codec, or a declaration contradicting a UTF-8 mark | not at all, for any query: a note names it and says why |
 
 The binary test is git's: `xdiff-interface.c` defines `FIRST_FEW_BYTES` as 8000, and
 `buffer_is_binary` looks for a NUL within at most that many bytes.  A byte-order mark is
@@ -134,19 +137,22 @@ src/app.py:12:5-12:22: def connect(self):
   an `expect` prints its matches as a `find` without one does.  Every file is read once
   whatever the number of queries.
 - **Notes go to standard error**, prefixed `quaff:`: no matches for a `find` without an
-  `expect`, binary files not searched, files in an unknown encoding not searched for a
-  non-ASCII query, a file not searched for a query its encoding spells more than one way, a
-  Python file whose declared encoding cannot be read and why, ignore file lines skipped, special
-  files not read, symbolic links not followed.  Anything not looked at is said, never silently left out.
+  `expect`; possible matches, with their lines and why the file's encoding is unknown - naming
+  the declaration and where it is, when one declared an encoding quaff does not read; files of
+  unknown encoding not searched for a non-ASCII query; a file not searched for a query its
+  encoding spells more than one way; a Python file `CPython` refuses and why; binary files not
+  searched; ignore and attributes file lines skipped; special files not read; symbolic links not
+  followed.  Anything not looked at, or looked at without certainty, is said, never silently left
+  out.  When the user's locale names an encoding that files of unknown encoding read cleanly in,
+  a note says so as a hint; the locale never decides anything, since it describes the user's
+  terminal and not the project.
 - **A failed assertion** goes to standard error before the notes, as where it was written, the
   count expected and the count found:
   `quaff: checks.quaff:3:1: expected exactly 2 matches of "TODO", found 1`.  One whose scope
-  held files its query could not be searched in also names those files, and, where what was
-  found does not settle it, says it cannot check and how to make them checkable (see *Exit
-  codes*).  A message names a
-  pattern by its text quoted, a line break as `\n`, with any anchors outside the quotes as a
-  script writes them: `^"x"$`.  Statements after a failed block do not run, so they add no
-  notes.
+  held files its query could not be searched in also names those files; the count is of hits
+  only, never of possible matches.  A message names a pattern by its text quoted, a line break
+  as `\n`, with any anchors outside the quotes as a script writes them: `^"x"$`.  Statements
+  after a failed block do not run, so they add no notes.
 - A closed standard output - piping into `head` - stops the printing quietly.  Assertions are
   still evaluated, so the exit code is still the answer.
 
@@ -165,23 +171,12 @@ src/app.py:12:5-12:22: def connect(self):
 the end: every assertion in it is checked and each that fails is reported.  If any failed, the
 run stops after the block, exit 2, and nothing after it runs.
 
-**An assertion whose scope holds a file its query could not be searched in** is decided only
-where no number of matches in those files could change it, since they can only add matches.
-That is the case for a non-ASCII query and a file in an unknown 8-bit encoding, for a query
-with a character a file's single-byte encoding spells more than one way, and for every query
-and a Python file whose declared encoding cannot be read.
-- **Settled by what was found, held:** `at least N` with N already found, or `any`.  It passes,
-  and a note names the unsearched files.
-- **Settled by what was found, failed:** `none`, `at most N`, `exactly N` or `N or none` with
-  more than N already found.  It fails as an ordinary count, exit 2, naming the files.
-- **Otherwise it cannot be checked, and fails, exit 2**: a count over fewer files than the
-  scope holds is not a passed assertion.  The failure names every unsearched file, by its path
-  relative to the current directory, with what was found in the rest and how to make the files
-  checkable.
-
-An assertion's unsearched files get no separate note.  A `find` without `expect` notes them
-instead, and a Python file whose declared encoding cannot be read is noted whenever one ran.  Binary files never fail an assertion: they are not text, so skipping them leaves no
-question unanswered.
+**An assertion is decided by hits alone.**  Possible matches, and files not searched for its
+query, are noted but never decide it, so that a file quaff cannot read never blocks an answer
+about the files it can, and a `find` and an edit with the same `expect` count the same matches.
+The cost is that `expect none` can hold while a possible match exists in a file whose encoding
+is not declared; the note says where, and declaring the file's encoding makes it count.  Binary
+files never decide an assertion either: they are not text.
 
 **Every source is read and parsed, and the whole program checked, before any file is looked
 at**, so a script with an error anywhere does not run at all.  A script error names where it is

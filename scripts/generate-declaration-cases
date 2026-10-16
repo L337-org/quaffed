@@ -1,0 +1,247 @@
+#!/usr/bin/env python3
+"""Record what git and EditorConfig's reference core declare for a set of project trees.
+
+quaff reads a file's encoding from git's `working-tree-encoding` attribute and from
+EditorConfig's `charset`, with readers of its own.  This builds each case's tree in a temporary
+directory, asks the real tools what applies to each path - `git check-attr`, and the reference
+EditorConfig core for Python - and writes crates/quaffed/tests/data/declarations.txt.  Tests in
+the quaffed crate rebuild the same trees and hold quaff's readers to every answer recorded, so
+the readers are checked against the tools themselves rather than against expectations written
+by hand.
+
+Only a repository's own files are read, by quaff and here alike: git runs with no global or
+system configuration, and an `.editorconfig` saying only `root = true` sits above every case, so
+nothing above the case's directory can change an answer.  A path ending `/.git/` in a case makes
+a nested repository there; git is asked about each path from inside the nearest repository
+holding it, as it is when it works in that repository.
+
+It is run by hand when a case is added or a tool's behaviour is to be followed, and its output
+is committed.
+
+Usage: uv run --with EditorConfig==0.17.1 scripts/generate-declaration-cases [--output FILE]
+
+architecture/encoding.md describes the readers; add a case below for any behaviour to pin.
+"""
+
+import argparse
+import os
+import pathlib
+import subprocess
+import sys
+import tempfile
+
+EDITORCONFIG_VERSION = "0.17.1"
+
+# Each case: a name, its files, and the paths to ask about.  `.git/` paths are written inside
+# the repository's git directory after `git init`; a path ending `/.git/` makes a nested
+# repository at that directory.
+CASES = [
+    (
+        "attributes-basic",
+        {
+            ".gitattributes": "*.c working-tree-encoding=SHIFT-JIS\n*.h text\n",
+            "a.c": "", "sub/b.c": "", "a.h": "", "a.txt": "",
+        },
+        ["a.c", "sub/b.c", "a.h", "a.txt"],
+    ),
+    (
+        "attributes-later-lines-and-deeper-files-win",
+        {
+            ".gitattributes": "*.c working-tree-encoding=SHIFT-JIS\n*.c working-tree-encoding=EUC-JP\n"
+            "x.c -working-tree-encoding\ny.c !working-tree-encoding\nz.c working-tree-encoding\n",
+            "sub/.gitattributes": "*.c working-tree-encoding=CP932\n",
+            "a.c": "", "x.c": "", "y.c": "", "z.c": "", "sub/b.c": "", "sub/deeper/c.c": "",
+        },
+        ["a.c", "x.c", "y.c", "z.c", "sub/b.c", "sub/deeper/c.c"],
+    ),
+    (
+        "attributes-patterns",
+        {
+            ".gitattributes": "/top.c working-tree-encoding=A\nanywhere.c working-tree-encoding=B\n"
+            "dir/ working-tree-encoding=C\ntree/** working-tree-encoding=D\n"
+            "mid/**/end.c working-tree-encoding=E\n\"with space.c\" working-tree-encoding=F\n"
+            "!neg.c working-tree-encoding=G\n[ab].k working-tree-encoding=H\n",
+            "top.c": "", "sub/top.c": "", "sub/anywhere.c": "", "dir/x.c": "", "tree/a/b.c": "",
+            "mid/end.c": "", "mid/x/y/end.c": "", "with space.c": "", "neg.c": "", "a.k": "",
+            "c.k": "",
+        },
+        ["top.c", "sub/top.c", "sub/anywhere.c", "dir/x.c", "tree/a/b.c", "mid/end.c",
+         "mid/x/y/end.c", "with space.c", "neg.c", "a.k", "c.k"],
+    ),
+    (
+        "attributes-macros-and-info",
+        {
+            ".gitattributes": "[attr]sjis working-tree-encoding=SHIFT-JIS\n*.c sjis\n"
+            "*.d sjis -working-tree-encoding\n",
+            "sub/.gitattributes": "[attr]euc working-tree-encoding=EUC-JP\n*.e euc\n",
+            ".git/info/attributes": "info.c working-tree-encoding=FROM-INFO\n",
+            "a.c": "", "a.d": "", "sub/a.e": "", "info.c": "",
+        },
+        ["a.c", "a.d", "sub/a.e", "info.c"],
+    ),
+    (
+        "editorconfig-basic",
+        {
+            ".editorconfig": "root = true\n\n[*]\ncharset = utf-8\n\n[*.py]\ncharset = latin1\n",
+            "a.py": "", "sub/b.py": "", "a.txt": "",
+        },
+        ["a.py", "sub/b.py", "a.txt"],
+    ),
+    (
+        "editorconfig-nearer-files-and-later-sections-win",
+        {
+            ".editorconfig": "root = true\n[*]\ncharset = latin1\n[*.c]\ncharset = utf-16le\n",
+            "sub/.editorconfig": "[*.c]\nCharset = UTF-16BE\n[x.c]\ncharset = unset\n",
+            "a.c": "", "sub/a.c": "", "sub/x.c": "", "sub/y.txt": "",
+        },
+        ["a.c", "sub/a.c", "sub/x.c", "sub/y.txt"],
+    ),
+    (
+        "editorconfig-a-root-stops-the-search",
+        {
+            ".editorconfig": "root = true\n[*]\ncharset = latin1\n",
+            "inner/.editorconfig": "root = true\n[*.c]\ncharset = utf-8\n",
+            "inner/a.c": "", "inner/a.txt": "",
+        },
+        ["inner/a.c", "inner/a.txt"],
+    ),
+    (
+        "editorconfig-globs",
+        {
+            ".editorconfig": "root = true\n"
+            "[src/*.c]\ncharset = latin1\n"
+            "[/top/**.h]\ncharset = utf-8\n"
+            "[*.{py,pyi}]\ncharset = utf-16le\n"
+            "[file{1..12}.txt]\ncharset = utf-16be\n"
+            "[[!a]x.dat]\ncharset = latin1\n"
+            "[{single}.k]\ncharset = utf-8\n"
+            "# comment\n; also a comment\n"
+            "[\\*.esc]\ncharset = latin1\n"
+            "[deep/**/x.c]\ncharset = utf-16le\n",
+            "src/a.c": "", "x/src/a.c": "", "src/deep/a.c": "", "top/a/b.h": "", "m.pyi": "",
+            "m.pyc": "", "file9.txt": "", "file13.txt": "", "bx.dat": "", "ax.dat": "",
+            "{single}.k": "", "*.esc": "", "deep/x.c": "", "deep/a/b/x.c": "",
+        },
+        ["src/a.c", "x/src/a.c", "src/deep/a.c", "top/a/b.h", "m.pyi", "m.pyc", "file9.txt",
+         "file13.txt", "bx.dat", "ax.dat", "{single}.k", "*.esc", "deep/x.c", "deep/a/b/x.c"],
+    ),
+    (
+        "attributes-a-nested-repository-is-its-own",
+        {
+            ".gitattributes": "*.txt working-tree-encoding=UTF-16LE\n[attr]outer working-tree-encoding=OUTER\n",
+            "inner/.git/": "",
+            "inner/.gitattributes": "*.dat working-tree-encoding=SHIFT-JIS\n*.m outer\n",
+            "a.txt": "", "inner/a.txt": "", "inner/b.dat": "", "inner/c.m": "",
+        },
+        ["a.txt", "inner/a.txt", "inner/b.dat", "inner/c.m"],
+    ),
+]
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    repo = pathlib.Path(__file__).resolve().parent.parent
+    parser.add_argument(
+        "--output",
+        type=pathlib.Path,
+        default=repo / "crates/quaffed/tests/data/declarations.txt",
+    )
+    args = parser.parse_args(argv)
+    try:
+        import editorconfig
+    except ImportError:
+        return fail(
+            f"needs EditorConfig {EDITORCONFIG_VERSION}, the reference core; run it as "
+            f"uv run --with EditorConfig=={EDITORCONFIG_VERSION} scripts/generate-declaration-cases"
+        )
+    if editorconfig.__version__ != EDITORCONFIG_VERSION:
+        return fail(
+            f"needs EditorConfig {EDITORCONFIG_VERSION}, but this is {editorconfig.__version__}"
+        )
+    git = run(["git", "--version"], pathlib.Path.cwd(), {}).strip()
+
+    lines = [
+        f"# What {git} and EditorConfig {EDITORCONFIG_VERSION} declare for each case's paths.",
+        "# Generated by scripts/generate-declaration-cases; regenerate rather than editing.",
+        "# Fields are separated by tabs, as a path may hold a space.  case NAME, then each nested",
+        "# repository as repository DIR, each file as file PATH HEX, then each answer as",
+        "# attribute PATH VALUE or charset PATH VALUE, - for none.",
+    ]
+    with tempfile.TemporaryDirectory(prefix="quaffed-declarations-") as scratch:
+        home = pathlib.Path(scratch) / "home"
+        home.mkdir()
+        # The EditorConfig core searches up to the filesystem root; this stops it above the
+        # cases, so nothing outside them can answer.
+        (pathlib.Path(scratch) / ".editorconfig").write_text("root = true\n", encoding="utf-8")
+        # No global or system git configuration: a repository's own files only.
+        env = {
+            "HOME": str(home),
+            "XDG_CONFIG_HOME": str(home),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "PATH": os.environ.get("PATH", ""),
+        }
+        for name, files, paths in CASES:
+            root = pathlib.Path(scratch) / name
+            root.mkdir()
+            run(["git", "init", "-q", str(root)], root, env)
+            lines.append(f"case\t{name}")
+            for path, text in sorted(files.items()):
+                target = root / path
+                if path.endswith("/.git/"):
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    run(["git", "init", "-q", str(target.parent)], root, env)
+                    lines.append(f"repository\t{path[: -len('/.git/')]}")
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(text, encoding="utf-8")
+                lines.append(f"file\t{path}\t{text.encode('utf-8').hex()}")
+            for path in paths:
+                lines.append(f"attribute\t{path}\t{attribute(root, path, env)}")
+                lines.append(f"charset\t{path}\t{charset(editorconfig, root, path)}")
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"generate-declaration-cases: wrote {len(CASES)} cases to {str(args.output)!r}")
+    return 0
+
+
+def attribute(root, path, env):
+    """git's own answer for the encoding attribute, asked from inside the nearest repository
+    holding `path`: its value, or - for none."""
+    repository = next(
+        parent for parent in (root / path).parents if (parent / ".git").exists()
+    )
+    relative = (root / path).relative_to(repository)
+    out = run(["git", "check-attr", "working-tree-encoding", "--", str(relative)], repository, env)
+    value = out.rsplit(": ", 1)[1].strip()
+    return "-" if value in ("unspecified", "set", "unset") else value
+
+
+def charset(editorconfig, root, path):
+    """The reference core's answer for `charset`, or - for none."""
+    value = editorconfig.get_properties(str(root / path)).get("charset")
+    return "-" if value in (None, "unset") else value
+
+
+def run(command, cwd, env):
+    """A command's output, stopping with its own words if it fails."""
+    try:
+        done = subprocess.run(
+            command, cwd=cwd, env=env or None, capture_output=True, timeout=60, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired) as err:
+        sys.exit(f"generate-declaration-cases: running {command!r}: {err!r}")
+    if done.returncode != 0:
+        sys.exit(
+            f"generate-declaration-cases: {command!r} in {str(cwd)!r} exited "
+            f"{done.returncode}: {done.stderr.decode('utf-8', 'replace').strip()!r}"
+        )
+    return done.stdout.decode("utf-8", "replace")
+
+
+def fail(message):
+    print(f"generate-declaration-cases: {message}", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

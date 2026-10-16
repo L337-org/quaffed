@@ -1,6 +1,5 @@
 ---
 source: crates/quaffed/tests/end_to_end.rs
-assertion_line: 549
 info:
   program: quaff
   args:
@@ -12,4 +11,5 @@ exit_code: 2
 ----- stdout -----
 
 ----- stderr -----
-quaff: -e expression 1, at character 1: cannot check for exactly 1 match of "x = 1": "arabic.py", in "mac_arabic", which spells a character of the query more than one way, was not searched.  Found 0 in the files that were searched.  To check it, re-encode the file as UTF-8, or leave it out with the scope or an ignore file
+quaff: -e expression 1, at character 1: expected exactly 1 match of "x = 1", found 0
+quaff: "arabic.py" not searched for "x = 1": it is in "mac_arabic", which spells a character of it more than one way

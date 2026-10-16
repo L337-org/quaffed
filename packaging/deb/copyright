@@ -40,9 +40,10 @@ Comment: usr/bin/quaff is a statically linked binary.  quaffed itself is
  encodings package of Python 3.14.8 (Copyright (c) 2001 Python Software
  Foundation; All Rights Reserved), under the PSF License Version 2.  CPython
  generated those codecs from the Unicode Consortium's mapping files.  The
- change made: each single-byte codec's decoding table, and the codec and
- alias names, are read from CPython and written out as Rust data by
- scripts/generate-codecs in the source repository, to
+ change made: each single-byte codec's decoding table, what each run of bytes
+ decodes to in each multi-byte codec quaff reads, and the codec and alias
+ names, are read from CPython by decoding with it and written out as Rust
+ data by scripts/generate-codecs in the source repository, to
  crates/encoding/src/codecs.rs.  Being data in the source tree rather than a
  crate, it is kept here by hand.
  .

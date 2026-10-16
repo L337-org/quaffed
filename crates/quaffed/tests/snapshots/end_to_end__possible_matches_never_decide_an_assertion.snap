@@ -1,0 +1,14 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "find \"TODO\" expect none"
+---
+success: true
+exit_code: 0
+----- stdout -----
+
+----- stderr -----
+quaff: "latin1.txt": possible match of "TODO" on line 1, not counted, since its encoding is unknown: it is not UTF-8, and nothing declares its encoding

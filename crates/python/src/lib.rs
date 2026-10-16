@@ -6,7 +6,7 @@
 //! This is the only crate that names a `ruff_*` type.  Everything it offers is quaff's own,
 //! so a Ruff upgrade that changes its API is absorbed here and reaches nothing else.  It offers
 //! every kind of node in the grammar, and the kinds a parsed piece of source contains, which is
-//! what the test corpus's coverage check needs.  `architecture/python.md` specifies it.
+//! what the test corpus's coverage check needs.  `architecture/python.md` describes it.
 
 mod kinds;
 

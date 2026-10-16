@@ -1,0 +1,17 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - TODO
+---
+success: true
+exit_code: 0
+----- stdout -----
+log.txt:1:6-1:9: TODO
+
+----- stderr -----
+quaff: "a.cn": possible match of "TODO" on line 1, not counted, since its encoding is unknown: working-tree-encoding on line 1 of ".gitattributes" declares "GBK", Python's "gbk", which quaff does not read
+quaff: "a.xx": possible match of "TODO" on line 1, not counted, since its encoding is unknown: working-tree-encoding on line 2 of ".gitattributes" declares "MADE-UP", which is not an encoding quaff knows
+quaff: "mail.txt": possible match of "TODO" on line 1, not counted, since its encoding is unknown: it switches into a multi-byte character set the ISO-2022 way, with ESC $, so may not be the UTF-8 it looks like, and nothing declares its encoding
+quaff: attributes file ".gitattributes": line 3: a negative pattern, which git ignores in an attributes file; that line is skipped

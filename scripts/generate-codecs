@@ -9,12 +9,18 @@ writes crates/encoding/src/codecs.rs:
 - every codec module in CPython's `encodings` package, and what kind it is: single-byte, UTF-8,
   another text encoding quaff does not read, not a text encoding, or the `undefined` codec;
 - every alias in `encodings.aliases`;
-- for each single-byte codec, the character each byte decodes to, or none.
+- for each single-byte codec, the character each byte decodes to, or none;
+- for each multi-byte codec quaff reads, how long a character starting with each byte is, and
+  every run of bytes that decodes to one character, with that character.
+
+It also writes crates/encoding/tests/data/multi_byte.txt: byte strings, many of them broken on
+purpose, with what CPython decodes each to and where each character starts, so that a test holds
+quaff's multi-byte reader to CPython's own, replacement characters included.
 
 It is run by hand, when a codec is added or the tables need to follow a new CPython, and its
 output is committed.
 
-Usage: scripts/generate-codecs [--manifest FILE] [--output FILE]
+Usage: scripts/generate-codecs [--manifest FILE] [--output FILE] [--vectors FILE]
 
 Run it with the oracle's Python, or it stops, naming the version it needs.
 architecture/encoding.md describes how the tables are used, and the checklist for regenerating.
@@ -27,6 +33,7 @@ import encodings.aliases
 import importlib
 import pathlib
 import pkgutil
+import random
 import sys
 
 if sys.version_info < (3, 11):
@@ -42,6 +49,16 @@ SINGLE_BYTE_WITHOUT_TABLE = ("ascii", "latin_1", "charmap")
 # that declares it cannot have: CPython refuses any declaration but `utf-8` after a mark.
 UTF8 = ("utf_8", "utf_8_sig")
 
+# Multi-byte codecs quaff reads.  Each is read the same way - a byte says how long the character
+# it starts is, and the run of bytes is looked up - so another such codec is added by naming it
+# here; the checks in multi_byte_table refuse one that does not fit.
+MULTI_BYTE = ("cp932", "euc_jp", "shift_jis")
+
+# How many byte strings to test each multi-byte codec's reading against CPython's with, and the
+# seed that picks them, fixed so that regenerating changes nothing unless CPython does.
+VECTORS = 300
+VECTOR_SEED = 263
+
 # CPython's marker, in its own tables, for a byte that decodes to nothing.  U+FFFE is a
 # noncharacter, so no codec maps a byte to it.
 UNDEFINED = 0xFFFE
@@ -53,6 +70,11 @@ def main(argv):
     parser.add_argument("--manifest", type=pathlib.Path, default=repo / "corpus/real-world.toml")
     parser.add_argument(
         "--output", type=pathlib.Path, default=repo / "crates/encoding/src/codecs.rs"
+    )
+    parser.add_argument(
+        "--vectors",
+        type=pathlib.Path,
+        default=repo / "crates/encoding/tests/data/multi_byte.txt",
     )
     args = parser.parse_args(argv)
 
@@ -70,6 +92,7 @@ def main(argv):
 
     modules = []
     tables = []
+    multi = []
     for name in sorted(info.name for info in pkgutil.iter_modules(encodings.__path__)):
         if name.startswith("_") or name == "aliases":
             continue
@@ -94,15 +117,36 @@ def main(argv):
                 return fail(str(err))
             kind = f"SingleByte({len(tables)})"
             tables.append((name, table))
+        elif name in MULTI_BYTE:
+            try:
+                lengths, entries = multi_byte_table(name)
+            except ValueError as err:
+                return fail(str(err))
+            kind = f"MultiByte({len(multi)})"
+            multi.append((name, lengths, entries))
         else:
             kind = "Unread"
         modules.append((name, kind))
 
+    missing = sorted(set(MULTI_BYTE) - {name for name, _, _ in multi})
+    if missing:
+        return fail(f"this CPython has no multi-byte codec named {missing!r}")
+
+    vectors = []
+    for name, lengths, entries in multi:
+        try:
+            vectors += multi_byte_vectors(name, lengths, entries)
+        except ValueError as err:
+            return fail(str(err))
+
     aliases = sorted(encodings.aliases.aliases.items())
-    args.output.write_text(render(oracle, modules, tables, aliases), encoding="utf-8")
+    args.output.write_text(render(oracle, modules, tables, multi, aliases), encoding="utf-8")
+    args.vectors.parent.mkdir(parents=True, exist_ok=True)
+    args.vectors.write_text(render_vectors(oracle, vectors), encoding="utf-8")
     print(
         f"generate-codecs: wrote {str(args.output)!r} from CPython {oracle}: {len(modules)} "
-        f"codecs, {len(tables)} of them single-byte, and {len(aliases)} aliases"
+        f"codecs, {len(tables)} of them single-byte and {len(multi)} multi-byte, and "
+        f"{len(aliases)} aliases; and {len(vectors)} test strings to {str(args.vectors)!r}"
     )
     return 0
 
@@ -134,7 +178,177 @@ def single_byte_table(name, module):
     return table
 
 
-def render(oracle, modules, tables, aliases):
+def decodes_to_one(name, run):
+    """The one character `run` decodes to by itself, or None."""
+    try:
+        decoded = run.decode(name)
+    except UnicodeDecodeError:
+        return None
+    return decoded if len(decoded) == 1 else None
+
+
+def multi_byte_table(name):
+    """How long a character starting with each byte is, and every run that decodes to one.
+
+    A byte's length is 1 if it decodes alone, the length of the runs it starts otherwise, and 0
+    if it starts none.  Raises ValueError if the codec does not fit that reading: a byte that both
+    decodes alone and starts a longer run, or starts runs of two lengths; a trailing byte that is
+    a line ending, which would let a line end inside a character; or a character past the Basic
+    Multilingual Plane, or U+FFFE, which the generated tables do not hold.
+    """
+    lengths = [0] * 256
+    entries = {}
+    for byte in range(256):
+        c = decodes_to_one(name, bytes([byte]))
+        if c is not None:
+            lengths[byte] = 1
+            entries[bytes([byte])] = c
+    for first in range(256):
+        for second in range(256):
+            run = bytes([first, second])
+            c = decodes_to_one(name, run)
+            if c is None:
+                continue
+            if lengths[first] not in (0, 2):
+                raise ValueError(f"{name!r}: byte {first:#04x} starts runs of two lengths")
+            lengths[first] = 2
+            entries[run] = c
+    for first in range(256):
+        if lengths[first] != 0:
+            continue
+        for second in range(256):
+            for third in range(256):
+                run = bytes([first, second, third])
+                c = decodes_to_one(name, run)
+                if c is None:
+                    continue
+                lengths[first] = 3
+                entries[run] = c
+    for run, c in entries.items():
+        if any(b in (0x0A, 0x0D) for b in run[1:]):
+            raise ValueError(f"{name!r}: {run.hex()} has a line ending after its first byte")
+        if ord(c) > 0xFFFF or ord(c) == UNDEFINED:
+            raise ValueError(f"{name!r}: {run.hex()} decodes to {c!r}")
+    for byte in (0x0A, 0x0D):
+        if entries.get(bytes([byte])) != chr(byte):
+            raise ValueError(f"{name!r}: byte {byte:#04x} does not decode to itself")
+    return lengths, sorted(entries.items(), key=lambda item: (len(item[0]), item[0]))
+
+
+def read_as_quaff_does(lengths, entries, data):
+    """Decodes `data` by the rule the generated reader follows, giving (offset, character) pairs.
+
+    At each byte, its length says how long the character is; the run is looked up.  A run not in
+    the table is one replacement character for its first byte alone, and a run cut short by the
+    end of the data is one replacement character for all of what is left - which is where
+    CPython's own decoder puts its errors.
+    """
+    table = dict(entries)
+    found = []
+    at = 0
+    while at < len(data):
+        length = lengths[data[at]]
+        if length == 0:
+            found.append((at, "\ufffd"))
+            at += 1
+        elif at + length > len(data):
+            found.append((at, "\ufffd"))
+            at = len(data)
+        elif data[at : at + length] in table:
+            found.append((at, table[data[at : at + length]]))
+            at += length
+        else:
+            found.append((at, "\ufffd"))
+            at += 1
+    return found
+
+
+def read_as_cpython_does(name, data):
+    """CPython's own decoding of `data`, as (offset, character) pairs, each error one
+    replacement character at the offset CPython reports it."""
+    found = []
+    # Decoded a piece at a time between errors, so each character's offset is known.
+    at = 0
+    while at < len(data):
+        try:
+            decoded = data[at:].decode(name, "strict")
+        except UnicodeDecodeError as err:
+            good = data[at : at + err.start].decode(name)
+            found += offsets(name, data, at, good)
+            found.append((at + err.start, "\ufffd"))
+            at += err.end
+            continue
+        found += offsets(name, data, at, decoded)
+        break
+    return found
+
+
+def offsets(name, data, start, decoded):
+    """Where each character of `decoded`, decoded strictly from `data[start:]`, starts."""
+    found = []
+    at = start
+    for c in decoded:
+        for width in (1, 2, 3):
+            if data[at : at + width].decode(name, "ignore") == c and decodes_to_one(
+                name, data[at : at + width]
+            ) == c:
+                found.append((at, c))
+                at += width
+                break
+        else:
+            raise ValueError(f"{name!r}: cannot place {c!r} at offset {at} of {data.hex()}")
+    return found
+
+
+def multi_byte_vectors(name, lengths, entries):
+    """Byte strings with CPython's reading of each, checked against the reader's rule first.
+
+    Each string is a few characters, real ones and broken ones - a lone first byte, a run cut
+    short, a first byte with a wrong second - so the replacement characters are tested as well as
+    the table.  Raises ValueError if the rule and CPython ever disagree, so that no table is
+    written that the reader would misread.
+    """
+    generator = random.Random(f"{VECTOR_SEED}-{name}")
+    runs = [run for run, _ in entries]
+    firsts = [byte for byte in range(256) if lengths[byte] >= 2]
+    vectors = []
+    for _ in range(VECTORS):
+        data = b""
+        for _ in range(generator.randint(1, 6)):
+            pick = generator.random()
+            if pick < 0.5:
+                data += generator.choice(runs)
+            elif pick < 0.7:
+                data += bytes([generator.choice(firsts)])
+            elif pick < 0.85:
+                data += bytes([generator.choice(firsts), generator.randrange(256)])
+            else:
+                data += bytes([generator.randrange(256)])
+        quaff = read_as_quaff_does(lengths, entries, data)
+        cpython = read_as_cpython_does(name, data)
+        if quaff != cpython:
+            raise ValueError(
+                f"{name!r}: {data.hex()} reads as {quaff!r} by the reader's rule but "
+                f"{cpython!r} in CPython"
+            )
+        vectors.append((name, data, cpython))
+    return vectors
+
+
+def render_vectors(oracle, vectors):
+    lines = [
+        f"# CPython {oracle}'s reading of byte strings in each multi-byte codec quaff reads.",
+        "# Generated by scripts/generate-codecs; regenerate rather than editing.",
+        "# Each line: the codec, the bytes in hex, then each character as offset:code point,",
+        "# U+FFFD for a byte or run CPython replaces.",
+    ]
+    for name, data, found in vectors:
+        chars = " ".join(f"{at}:{ord(c):04X}" for at, c in found)
+        lines.append(f"{name} {data.hex()} {chars}")
+    return "\n".join(lines) + "\n"
+
+
+def render(oracle, modules, tables, multi, aliases):
     lines = [
         "// SPDX-License-Identifier: GPL-3.0-or-later",
         "// SPDX-FileCopyrightText: 2026 Gavin Lucas",
@@ -146,7 +360,7 @@ def render(oracle, modules, tables, aliases):
         "//! Derived from `CPython`'s codecs, Copyright (c) 2001 Python Software Foundation; All Rights",
         "//! Reserved, under the PSF License Version 2, which `packaging/deb/copyright` carries.",
         "",
-        "use crate::python::Module;",
+        "use crate::python::{Module, MultiByteTable};",
         "",
         "/// The marker for a byte that decodes to nothing, as `CPython`'s own tables mark it.",
         f"pub(crate) const UNDEFINED: u16 = 0x{UNDEFINED:04X};",
@@ -174,6 +388,31 @@ def render(oracle, modules, tables, aliases):
             values = ", ".join(f"0x{value:04X}" for value in table[row : row + 8])
             lines.append(f"        {values},")
         lines.append("    ]),")
+    lines += [
+        "];",
+        "",
+        "/// Each multi-byte codec: how long a character starting with each byte is, 0 for a byte",
+        "/// that starts none, and every run of bytes that decodes to one character, sorted by",
+        "/// length and then by bytes, each packed into a `u32` with its first byte highest.",
+        "pub(crate) static MULTI_BYTE: &[MultiByteTable] = &[",
+    ]
+    for name, lengths, entries in multi:
+        lines.append("    MultiByteTable {")
+        lines.append(f'        name: "{name}",')
+        lines.append("        lengths: [")
+        for row in range(0, 256, 32):
+            lines.append("            " + ", ".join(str(n) for n in lengths[row : row + 32]) + ",")
+        lines.append("        ],")
+        lines.append("        runs: &[")
+        packed = [(int.from_bytes(run, "big"), ord(c)) for run, c in entries]
+        for row in range(0, len(packed), 6):
+            pairs = ", ".join(
+                f"(0x{key >> 16:04X}_{key & 0xFFFF:04X}, 0x{c:04X})"
+                for key, c in packed[row : row + 6]
+            )
+            lines.append(f"            {pairs},")
+        lines.append("        ],")
+        lines.append("    },")
     lines += ["];", ""]
     return "\n".join(lines)
 

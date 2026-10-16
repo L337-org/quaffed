@@ -1,0 +1,18 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - 日本
+---
+success: true
+exit_code: 0
+----- stdout -----
+euc.c:1:4-1:5: 日本
+euc.py:2:10-2:11: 日本
+sjis.cc:1:4-1:5: 日本
+sjis.py:2:9-2:10: 日本
+windows.h:2:4-2:5: 日本
+windows.py:2:3-2:4: 日本
+
+----- stderr -----

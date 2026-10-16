@@ -1,0 +1,18 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "find \"TODO\" expect 1\nfind \"here\" expect at least 0\nfind \"café\""
+---
+success: true
+exit_code: 0
+----- stdout -----
+utf8.txt:1:1-1:4: TODO
+utf8.txt:1:6-1:9: here
+
+----- stderr -----
+quaff: no matches for "café"
+quaff: "latin1.txt": possible match of "TODO" on line 1, not counted, since its encoding is unknown: it is not UTF-8, and nothing declares its encoding
+quaff: 2 files of unknown encoding not searched for "café", which is not ASCII and so has no one spelling there

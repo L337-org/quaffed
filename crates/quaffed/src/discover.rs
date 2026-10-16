@@ -4,12 +4,15 @@
 //! Which files a search looks at.
 //!
 //! A discovery filter governs where quaff looks, never what it may touch.  The ignore files read
-//! are `.gitignore`, `.ignore` and `.git/info/exclude`, through the `ignore` crate - ripgrep's
-//! walker - and nothing else of git's: no configuration, so no global excludes file.  Hidden
-//! files are searched.  Version-control metadata is skipped by name.
+//! are `.ignore`, and the version control system's own - for git, `.gitignore` and
+//! `.git/info/exclude` - through the `ignore` crate, ripgrep's walker, and nothing else of the
+//! system's: no configuration, so no global excludes file.  Hidden files are searched.
+//! Version-control metadata is skipped by name.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
+
+use crate::workspace::{self, Workspace};
 
 /// Directory and file names that hold version-control metadata, never searched.
 ///
@@ -121,15 +124,12 @@ impl std::error::Error for Error {
 ///
 /// Returns an [`Error`] for anything the walker cannot read - a directory, or an ignore file
 /// it could not parse - rather than searching the rest and reporting a short answer as complete.
-pub fn files(scope: &Path, cwd: &Path) -> Result<Found, Error> {
+pub fn files(scope: &Path, cwd: &Path, workspace: Option<&dyn Workspace>) -> Result<Found, Error> {
     let mut walker = ignore::WalkBuilder::new(scope);
     walker
         .hidden(false)
         .parents(true)
         .ignore(true)
-        .git_ignore(true)
-        .git_exclude(true)
-        .git_global(false)
         .follow_links(false)
         .sort_by_file_name(std::cmp::Ord::cmp)
         .filter_entry(|entry| {
@@ -138,6 +138,10 @@ pub fn files(scope: &Path, cwd: &Path) -> Result<Found, Error> {
                 .to_str()
                 .is_none_or(|name| !VCS_METADATA.contains(&name))
         });
+    match workspace {
+        Some(workspace) => workspace.ignore_rules(&mut walker),
+        None => workspace::no_system_ignore_rules(&mut walker),
+    }
     let mut found = Found::default();
     for entry in walker.build() {
         // An ignore file line that could not be parsed costs that one rule: say so, and carry
@@ -193,6 +197,12 @@ mod tests {
     use super::*;
     use std::fs;
 
+    /// Discovery as a run does it: with the workspace found from `cwd`, if there is one.
+    fn files_in(scope: &Path, cwd: &Path) -> Result<Found, Error> {
+        let workspace = workspace::find(cwd);
+        files(scope, cwd, workspace.as_deref())
+    }
+
     struct Tree(PathBuf);
 
     impl Tree {
@@ -210,7 +220,7 @@ mod tests {
         }
 
         fn found(&self, scope: &str) -> Vec<String> {
-            files(&self.0.join(scope), &self.0)
+            files_in(&self.0.join(scope), &self.0)
                 .unwrap()
                 .files
                 .iter()
@@ -305,7 +315,7 @@ mod tests {
             .status()
             .expect("running mkfifo");
         assert!(made.success(), "mkfifo {} failed", fifo.display());
-        let found = files(&tree.0, &tree.0).unwrap();
+        let found = files_in(&tree.0, &tree.0).unwrap();
         assert_eq!(found.files.len(), 1);
         assert_eq!(found.special_files, 1);
     }
@@ -322,7 +332,7 @@ mod tests {
                 ("kept.py", ""),
             ],
         );
-        let found = files(&tree.0, &tree.0).unwrap();
+        let found = files_in(&tree.0, &tree.0).unwrap();
         let names: Vec<_> = found
             .files
             .iter()
@@ -354,7 +364,7 @@ mod tests {
             "badparent",
             &[(".git/HEAD", ""), (".gitignore", "a{b\n"), ("sub/x.py", "")],
         );
-        let found = files(&tree.0.join("sub"), &tree.0).unwrap();
+        let found = files_in(&tree.0.join("sub"), &tree.0).unwrap();
         assert_eq!(found.files.len(), 1);
         assert_eq!(found.skipped_rules.len(), 1, "{:?}", found.skipped_rules);
     }
@@ -380,7 +390,7 @@ mod tests {
     fn symbolic_links_are_counted_not_followed() {
         let tree = Tree::new("links", &[("a.py", "")]);
         std::os::unix::fs::symlink("a.py", tree.0.join("link.py")).unwrap();
-        let found = files(&tree.0, &tree.0).unwrap();
+        let found = files_in(&tree.0, &tree.0).unwrap();
         assert_eq!(found.files.len(), 1);
         assert_eq!(found.links_not_followed, 1);
     }
@@ -392,7 +402,7 @@ mod tests {
         let locked = tree.0.join("locked");
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
         let readable_anyway = fs::read_dir(&locked).is_ok();
-        let result = files(&tree.0, &tree.0);
+        let result = files_in(&tree.0, &tree.0);
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
         if readable_anyway {
             // Root reads a mode-000 directory, so the failure cannot happen; say so rather than

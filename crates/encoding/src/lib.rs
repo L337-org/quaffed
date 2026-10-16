@@ -4,21 +4,20 @@
 //! What a file's bytes are, as far as quaff can tell without guessing.
 //!
 //! A textual query is matched in the file's own encoding: it is encoded the way the file is,
-//! rather than the file being decoded.  The encoding is taken from what the file declares - a
-//! byte-order mark, or a Python file's encoding declaration - or from the bytes being valid
-//! UTF-8, and never inferred from statistics.  Anything else is binary, by git's own test, or an
-//! unknown 8-bit encoding, where an ASCII query is the same bytes in every ASCII-compatible
-//! encoding and anything else cannot be matched honestly.
+//! rather than the file being decoded.  This crate knows what bytes are in a given encoding, and
+//! reads the declarations that live in the bytes themselves - a byte-order mark, a Python file's
+//! coding line - and whether the bytes are proven UTF-8.  Deciding which declaration applies to a
+//! file, including ones kept outside it, is the caller's.  Nothing is inferred from statistics.
 //!
 //! Python source is read as `CPython` reads it, by the [`python`] module's rules and `CPython`'s
-//! own codecs.  `architecture/encoding.md` specifies this crate.
+//! own codecs.  `architecture/encoding.md` describes this crate.
 
 // Generated from the oracle's codecs; the generator owns its layout.
 #[rustfmt::skip]
 mod codecs;
 pub mod python;
 
-pub use python::{Codec, Refusal, SourceEncoding};
+pub use python::{Codec, MultiByteCodec, Read, Refusal, SourceEncoding};
 
 /// How many leading bytes git examines for a NUL when deciding a file is binary.
 ///
@@ -31,41 +30,39 @@ const BINARY_PROBE: usize = 8000;
 pub enum Encoding {
     /// UTF-8, with or without a byte-order mark.
     Utf8,
-    /// UTF-16, little-endian, declared by its byte-order mark.
+    /// UTF-16, little-endian, by its byte-order mark or a name giving the byte order.
     Utf16Le,
-    /// UTF-16, big-endian, declared by its byte-order mark.
+    /// UTF-16, big-endian, by its byte-order mark or a name giving the byte order.
     Utf16Be,
-    /// UTF-32, little-endian, declared by its byte-order mark.
+    /// UTF-32, little-endian, by its byte-order mark or a name giving the byte order.
     Utf32Le,
-    /// UTF-32, big-endian, declared by its byte-order mark.
+    /// UTF-32, big-endian, by its byte-order mark or a name giving the byte order.
     Utf32Be,
-    /// A single-byte encoding a Python file declares, such as Latin-1 or KOI8-R.
+    /// A single-byte encoding, declared, such as Latin-1 or KOI8-R.
     SingleByte(Codec),
-    /// Not UTF-8 and nothing declared: some 8-bit encoding, but which is unknown.
+    /// A multi-byte encoding, declared, such as Shift-JIS or EUC-JP.
+    MultiByte(MultiByteCodec),
+    /// Not proven UTF-8 and nothing declared that quaff reads: some ASCII-compatible encoding,
+    /// but which is unknown.
     Unknown8Bit,
 }
 
-/// What a file's bytes are.
-#[derive(Debug, PartialEq, Eq)]
-pub enum Content {
-    /// Text in `encoding`, starting `body` bytes in, after any byte-order mark.
-    Text {
-        /// The encoding.
-        encoding: Encoding,
-        /// How many bytes of byte-order mark come before the text.
-        body: usize,
-    },
-    /// Binary, by git's test: a NUL in the first 8000 bytes, with no byte-order mark.
-    Binary,
+impl From<SourceEncoding> for Encoding {
+    fn from(encoding: SourceEncoding) -> Encoding {
+        match encoding {
+            SourceEncoding::Utf8 => Encoding::Utf8,
+            SourceEncoding::SingleByte(codec) => Encoding::SingleByte(codec),
+            SourceEncoding::MultiByte(codec) => Encoding::MultiByte(codec),
+        }
+    }
 }
 
-/// Decides what the bytes of any file are, by its byte-order mark and its bytes alone.
+/// The encoding a byte-order mark at the start of `bytes` declares, and how long the mark is.
 ///
-/// A byte-order mark wins, because it is a declaration, and a UTF-16 or UTF-32 file is full of
-/// NULs that would otherwise make it binary.  UTF-32's marks are tested before UTF-16's because
-/// the little-endian UTF-32 mark begins with the UTF-16 one.
+/// UTF-32's marks are tested before UTF-16's because the little-endian UTF-32 mark begins with
+/// the UTF-16 one.
 #[must_use]
-pub fn classify(bytes: &[u8]) -> Content {
+pub fn byte_order_mark(bytes: &[u8]) -> Option<(Encoding, usize)> {
     const MARKS: [(&[u8], Encoding); 5] = [
         (&[0xEF, 0xBB, 0xBF], Encoding::Utf8),
         (&[0xFF, 0xFE, 0x00, 0x00], Encoding::Utf32Le),
@@ -73,65 +70,84 @@ pub fn classify(bytes: &[u8]) -> Content {
         (&[0xFF, 0xFE], Encoding::Utf16Le),
         (&[0xFE, 0xFF], Encoding::Utf16Be),
     ];
-    for (mark, encoding) in MARKS {
-        if bytes.starts_with(mark) {
-            return Content::Text {
-                encoding,
-                body: mark.len(),
-            };
-        }
-    }
-    if memchr::memchr(0, &bytes[..bytes.len().min(BINARY_PROBE)]).is_some() {
-        return Content::Binary;
-    }
-    let encoding = if std::str::from_utf8(bytes).is_ok() {
-        Encoding::Utf8
-    } else {
-        Encoding::Unknown8Bit
-    };
-    Content::Text { encoding, body: 0 }
+    MARKS
+        .into_iter()
+        .find(|(mark, _)| bytes.starts_with(mark))
+        .map(|(mark, encoding)| (encoding, mark.len()))
 }
 
-/// Decides what the bytes of a Python file are, honouring the encoding it declares as well.
+/// Whether git would call `bytes` binary: a NUL in its first 8000 bytes.
+#[must_use]
+pub fn looks_binary(bytes: &[u8]) -> bool {
+    memchr::memchr(0, &bytes[..bytes.len().min(BINARY_PROBE)]).is_some()
+}
+
+/// Why bytes are not proven UTF-8.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unproven {
+    /// They are not valid UTF-8.
+    Invalid,
+    /// They are valid UTF-8 but switch into a multi-byte set the ISO-2022 way, with `ESC $`, so
+    /// they may be ISO-2022 text that is seven-bit and only looks like UTF-8.
+    Iso2022Switch,
+}
+
+/// Whether `bytes` are proven UTF-8: valid UTF-8 with no ISO-2022 switch into a multi-byte set.
 ///
-/// A byte-order mark for UTF-16 or UTF-32 decides as it does for any file, and a NUL makes the
-/// file binary as it does for any other.  Otherwise a declaration, if there is one, decides: a
-/// declared encoding is trusted the way a byte-order mark is, so bytes it does not decode are
-/// tolerated, each counting as one character.  With no declaration, the file is classified as
-/// any other.
+/// ISO-2022-JP is seven-bit, so its bytes are valid UTF-8 and an ASCII query could match inside
+/// its Japanese text.  It switches into Japanese with an escape sequence that starts `ESC $`,
+/// anywhere in the text, so the whole of it is checked.  Colour codes start `ESC [` and are not
+/// mistaken for it.
 ///
 /// # Errors
 ///
-/// Returns the [`Refusal`] for a declaration that cannot be honoured whatever the rest of the
-/// file holds: an encoding Python does not know, a codec that is not of text, one quaff does
-/// not read, or a declaration that contradicts a UTF-8 byte-order mark.
-pub fn classify_python(bytes: &[u8]) -> Result<Content, Refusal> {
-    let content = classify(bytes);
-    if !matches!(
-        content,
-        Content::Text {
-            encoding: Encoding::Utf8 | Encoding::Unknown8Bit,
-            ..
-        }
-    ) {
-        return Ok(content);
+/// Returns why they are not proven.
+pub fn proven_utf8(bytes: &[u8]) -> Result<(), Unproven> {
+    if std::str::from_utf8(bytes).is_err() {
+        return Err(Unproven::Invalid);
     }
-    let body = if bytes.starts_with(python::UTF8_MARK) {
-        python::UTF8_MARK.len()
-    } else {
-        0
+    if memchr::memmem::find(bytes, b"\x1b$").is_some() {
+        return Err(Unproven::Iso2022Switch);
+    }
+    Ok(())
+}
+
+/// What an encoding named outside a Python file is to quaff, by `CPython`'s codec lookup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Named {
+    /// An encoding quaff reads.
+    Read(Encoding),
+    /// A text encoding `CPython` reads and quaff does not, by its `CPython` codec name.
+    Unread(&'static str),
+    /// No `CPython` text codec has the name.
+    Unknown,
+}
+
+/// The encoding `name` means, looked up as `CPython` looks a codec name up, so that the spellings
+/// git's attributes and `EditorConfig` use - `SHIFT-JIS`, `ISO-8859-1`, `UTF-16LE` - find the
+/// same codecs a Python file's declaration would.
+///
+/// UTF-16 and UTF-32 are read by name only with their byte order: plain `UTF-16` needs a
+/// byte-order mark to say which, and with one, the mark has decided before any name is read.
+#[must_use]
+pub fn named(name: &str) -> Named {
+    use python::Module;
+    let Some((module, kind)) = python::resolve(name) else {
+        return Named::Unknown;
     };
-    Ok(match python::declared_encoding(bytes)? {
-        None => content,
-        Some(SourceEncoding::Utf8) => Content::Text {
-            encoding: Encoding::Utf8,
-            body,
+    match kind {
+        Module::Utf8 => Named::Read(Encoding::Utf8),
+        Module::SingleByte(index) => Named::Read(Encoding::SingleByte(Codec::at(index))),
+        Module::MultiByte(index) => Named::Read(Encoding::MultiByte(MultiByteCodec::at(index))),
+        Module::Unread => match module {
+            "utf_16_le" => Named::Read(Encoding::Utf16Le),
+            "utf_16_be" => Named::Read(Encoding::Utf16Be),
+            "utf_32_le" => Named::Read(Encoding::Utf32Le),
+            "utf_32_be" => Named::Read(Encoding::Utf32Be),
+            _ => Named::Unread(module),
         },
-        Some(SourceEncoding::SingleByte(codec)) => Content::Text {
-            encoding: Encoding::SingleByte(codec),
-            body,
-        },
-    })
+        Module::NotText | Module::Undefined => Named::Unknown,
+    }
 }
 
 /// How a piece of text is spelled in an encoding.
@@ -151,7 +167,10 @@ impl Encoding {
     #[must_use]
     pub fn unit(self) -> usize {
         match self {
-            Encoding::Utf8 | Encoding::SingleByte(_) | Encoding::Unknown8Bit => 1,
+            Encoding::Utf8
+            | Encoding::SingleByte(_)
+            | Encoding::MultiByte(_)
+            | Encoding::Unknown8Bit => 1,
             Encoding::Utf16Le | Encoding::Utf16Be => 2,
             Encoding::Utf32Le | Encoding::Utf32Be => 4,
         }
@@ -160,9 +179,10 @@ impl Encoding {
     /// How `text` is spelled in this encoding.
     ///
     /// In an unknown 8-bit encoding, ASCII text is the same bytes in every ASCII-compatible
-    /// encoding, but any other character has no single spelling.  In a single-byte encoding, a
-    /// character it cannot hold makes the text impossible, and one it spells several ways - a
-    /// few codecs do - ambiguous; impossible wins, since the text cannot occur either way.
+    /// encoding, but any other character has no single spelling.  In a single-byte or
+    /// multi-byte encoding, a character it cannot hold makes the text impossible, and one it
+    /// spells several ways - a few codecs do - ambiguous; impossible wins, since the text cannot
+    /// occur either way.
     #[must_use]
     pub fn encode(self, text: &str) -> Spelling {
         match self {
@@ -178,6 +198,22 @@ impl Encoding {
                         (None, _) => return Spelling::Impossible,
                         (Some(byte), None) => bytes.push(byte),
                         (Some(_), Some(_)) => ambiguous = true,
+                    }
+                }
+                if ambiguous {
+                    Spelling::Ambiguous
+                } else {
+                    Spelling::Bytes(bytes)
+                }
+            }
+            Encoding::MultiByte(codec) => {
+                let mut bytes = Vec::with_capacity(text.len() * 2);
+                let mut ambiguous = false;
+                for c in text.chars() {
+                    match codec.spellings(c).as_slice() {
+                        [] => return Spelling::Impossible,
+                        [only] => bytes.extend_from_slice(only),
+                        _ => ambiguous = true,
                     }
                 }
                 if ambiguous {
@@ -205,6 +241,45 @@ impl Encoding {
         }
     }
 
+    /// Whether every byte of `bytes` decodes in this encoding, with nothing left over.
+    ///
+    /// Says only that the bytes could be in this encoding, never that they are: many runs of
+    /// bytes read cleanly in several encodings.
+    #[must_use]
+    pub fn reads_cleanly(self, bytes: &[u8]) -> bool {
+        match self {
+            Encoding::Utf8 => std::str::from_utf8(bytes).is_ok(),
+            Encoding::SingleByte(codec) => bytes.iter().all(|&b| codec.decode(b).is_some()),
+            Encoding::MultiByte(codec) => {
+                let mut at = 0;
+                while at < bytes.len() {
+                    match codec.read(&bytes[at..]) {
+                        Read::Char(_, width) => at += width,
+                        Read::Invalid(_) => return false,
+                    }
+                }
+                true
+            }
+            Encoding::Unknown8Bit => bytes.is_ascii(),
+            Encoding::Utf16Le | Encoding::Utf16Be => {
+                let mut clean = bytes.len().is_multiple_of(2);
+                self.each_char(bytes, |_, c| {
+                    clean &= c != '\u{FFFD}';
+                    clean
+                });
+                clean
+            }
+            Encoding::Utf32Le | Encoding::Utf32Be => {
+                let mut clean = bytes.len().is_multiple_of(4);
+                self.each_char(bytes, |_, c| {
+                    clean &= c != '\u{FFFD}';
+                    clean
+                });
+                clean
+            }
+        }
+    }
+
     /// Calls `visit` with each character of `bytes` and the offset of its first byte, in
     /// order, until it returns `false`.
     ///
@@ -212,8 +287,9 @@ impl Encoding {
     /// Bytes that do not decode - an invalid sequence in UTF-8, any non-ASCII byte in an
     /// unknown 8-bit encoding, a byte a single-byte encoding decodes to nothing, an unpaired
     /// surrogate, a truncated unit - each count as one character, `U+FFFD`, so that positions
-    /// stay countable.  For a single-byte encoding such
-    /// as Latin-1 that is one column a byte, which is what an editor showing the file in that
+    /// stay countable.  A multi-byte encoding counts them as `CPython` does, one character for
+    /// each error `CPython` reports, which is a byte, or a character cut short at the end.  For
+    /// a single-byte encoding such as Latin-1 that is one column a byte, which is what an editor showing the file in that
     /// encoding counts.
     pub fn each_char(self, bytes: &[u8], mut visit: impl FnMut(usize, char) -> bool) {
         match self {
@@ -241,6 +317,19 @@ impl Encoding {
                     if !visit(i, codec.decode(b).unwrap_or('\u{FFFD}')) {
                         return;
                     }
+                }
+            }
+            Encoding::MultiByte(codec) => {
+                let mut at = 0;
+                while at < bytes.len() {
+                    let (c, width) = match codec.read(&bytes[at..]) {
+                        Read::Char(c, width) => (c, width),
+                        Read::Invalid(width) => ('\u{FFFD}', width),
+                    };
+                    if !visit(at, c) {
+                        return;
+                    }
+                    at += width;
                 }
             }
             Encoding::Unknown8Bit => {
@@ -306,76 +395,40 @@ mod tests {
     #[test]
     fn a_byte_order_mark_decides_the_encoding() {
         assert_eq!(
-            classify(b"\xEF\xBB\xBFtext"),
-            Content::Text {
-                encoding: Encoding::Utf8,
-                body: 3
-            }
+            byte_order_mark(b"\xEF\xBB\xBFtext"),
+            Some((Encoding::Utf8, 3))
         );
         assert_eq!(
-            classify(b"\xFF\xFEt\x00"),
-            Content::Text {
-                encoding: Encoding::Utf16Le,
-                body: 2
-            }
+            byte_order_mark(b"\xFF\xFEt\x00"),
+            Some((Encoding::Utf16Le, 2))
         );
         assert_eq!(
-            classify(b"\xFE\xFF\x00t"),
-            Content::Text {
-                encoding: Encoding::Utf16Be,
-                body: 2
-            }
+            byte_order_mark(b"\xFE\xFF\x00t"),
+            Some((Encoding::Utf16Be, 2))
         );
         assert_eq!(
-            classify(b"\xFF\xFE\x00\x00t\x00\x00\x00"),
-            Content::Text {
-                encoding: Encoding::Utf32Le,
-                body: 4
-            }
+            byte_order_mark(b"\xFF\xFE\x00\x00t\x00\x00\x00"),
+            Some((Encoding::Utf32Le, 4))
         );
         assert_eq!(
-            classify(b"\x00\x00\xFE\xFF\x00\x00\x00t"),
-            Content::Text {
-                encoding: Encoding::Utf32Be,
-                body: 4
-            }
+            byte_order_mark(b"\x00\x00\xFE\xFF\x00\x00\x00t"),
+            Some((Encoding::Utf32Be, 4))
         );
+        assert_eq!(byte_order_mark(b"text"), None);
     }
 
     #[test]
     fn a_nul_in_the_first_8000_bytes_is_binary_and_later_is_not() {
-        assert_eq!(classify(b"a\0b"), Content::Binary);
+        assert!(looks_binary(b"a\0b"));
         let mut late = vec![b'a'; BINARY_PROBE];
         late.push(0);
-        // Valid UTF-8, since a NUL is a valid UTF-8 character.
-        assert_eq!(
-            classify(&late),
-            Content::Text {
-                encoding: Encoding::Utf8,
-                body: 0
-            }
-        );
+        assert!(!looks_binary(&late));
+        // A NUL is a valid UTF-8 character, so a late one leaves the bytes proven UTF-8.
+        assert_eq!(proven_utf8(&late), Ok(()));
         let mut edge = vec![b'a'; BINARY_PROBE - 1];
         edge.push(0);
-        assert_eq!(classify(&edge), Content::Binary);
-    }
-
-    #[test]
-    fn invalid_utf8_without_a_mark_is_an_unknown_8bit_encoding() {
-        assert_eq!(
-            classify(b"caf\xE9"),
-            Content::Text {
-                encoding: Encoding::Unknown8Bit,
-                body: 0
-            }
-        );
-        assert_eq!(
-            classify(b""),
-            Content::Text {
-                encoding: Encoding::Utf8,
-                body: 0
-            }
-        );
+        assert!(looks_binary(&edge));
+        assert!(!looks_binary(b""));
     }
 
     #[test]
@@ -412,53 +465,77 @@ mod tests {
     }
 
     #[test]
-    fn a_python_files_declaration_decides_its_encoding() {
+    fn utf8_is_proven_only_without_an_iso_2022_switch() {
+        assert_eq!(proven_utf8(b"plain"), Ok(()));
+        assert_eq!(proven_utf8("caf\u{e9}".as_bytes()), Ok(()));
+        assert_eq!(proven_utf8(b"caf\xE9"), Err(Unproven::Invalid));
+        // ISO-2022-JP switches into Japanese with ESC $ B, anywhere in the text.
         assert_eq!(
-            classify_python(b"# coding: koi8-r\n\xc1"),
-            Ok(Content::Text {
-                encoding: single_byte("koi8_r"),
-                body: 0
-            })
+            proven_utf8(b"import os\n# \x1b$B%3%a%s%H\x1b(B\n"),
+            Err(Unproven::Iso2022Switch)
         );
+        // Colour codes, and a terminal's switch back to ASCII, are not that.
+        assert_eq!(proven_utf8(b"\x1b[31mred\x1b(B\x1b[m"), Ok(()));
+        assert_eq!(proven_utf8(b""), Ok(()));
+    }
+
+    #[test]
+    fn an_encoding_named_outside_python_is_found_as_cpython_finds_it() {
+        let sjis = MultiByteCodec::named("shift_jis").unwrap();
+        assert_eq!(named("SHIFT-JIS"), Named::Read(Encoding::MultiByte(sjis)));
+        assert_eq!(named("ISO-8859-1"), Named::Read(single_byte("latin_1")));
+        assert_eq!(named("latin1"), Named::Read(single_byte("latin_1")));
+        assert_eq!(named("UTF-8"), Named::Read(Encoding::Utf8));
+        assert_eq!(named("UTF-16LE"), Named::Read(Encoding::Utf16Le));
+        assert_eq!(named("utf-32-be"), Named::Read(Encoding::Utf32Be));
+        // Plain UTF-16 says nothing of byte order without a mark.
+        assert_eq!(named("UTF-16"), Named::Unread("utf_16"));
+        assert_eq!(named("GBK"), Named::Unread("gbk"));
+        assert_eq!(named("rot13"), Named::Unknown);
+        assert_eq!(named("no-such-encoding"), Named::Unknown);
+    }
+
+    #[test]
+    fn bytes_read_cleanly_only_where_every_byte_decodes() {
+        let euc = Encoding::MultiByte(MultiByteCodec::named("euc_jp").unwrap());
+        assert!(euc.reads_cleanly(b"x \xa5\xa2"));
+        assert!(!euc.reads_cleanly(b"x \xa5"));
+        assert!(single_byte("latin_1").reads_cleanly(b"caf\xe9"));
+        assert!(!single_byte("cp1252").reads_cleanly(b"\x81"));
+        assert!(!Encoding::Utf8.reads_cleanly(b"caf\xe9"));
+        assert!(Encoding::Unknown8Bit.reads_cleanly(b"ascii"));
+        assert!(!Encoding::Unknown8Bit.reads_cleanly(b"caf\xe9"));
+        let utf16: Vec<u8> = "hé".encode_utf16().flat_map(u16::to_be_bytes).collect();
+        assert!(Encoding::Utf16Be.reads_cleanly(&utf16));
+        // An odd byte left over, and an unpaired surrogate.
+        assert!(!Encoding::Utf16Be.reads_cleanly(&utf16[..3]));
+        assert!(!Encoding::Utf16Le.reads_cleanly(b"\x00\xd8a\x00"));
+        let utf32: Vec<u8> = "hé"
+            .chars()
+            .flat_map(|c| u32::from(c).to_le_bytes())
+            .collect();
+        assert!(Encoding::Utf32Le.reads_cleanly(&utf32));
+        assert!(!Encoding::Utf32Le.reads_cleanly(&utf32[..5]));
+        assert!(!Encoding::Utf32Be.reads_cleanly(b"\x00\x11\x00\x00"));
+    }
+
+    #[test]
+    fn a_python_files_encoding_is_an_encoding_and_utf32_is_four_bytes_a_unit() {
+        assert_eq!(Encoding::from(SourceEncoding::Utf8), Encoding::Utf8);
+        assert_eq!(Encoding::Utf32Le.unit(), 4);
         assert_eq!(
-            classify_python(b"\xef\xbb\xbf# coding: utf-8\n"),
-            Ok(Content::Text {
-                encoding: Encoding::Utf8,
-                body: 3
-            })
+            Encoding::Utf32Le.encode("h"),
+            Spelling::Bytes(vec![b'h', 0, 0, 0])
         );
-        // Declared UTF-8 vouches for the file as a mark does, invalid bytes and all.
-        assert_eq!(
-            classify_python(b"# coding: utf-8\n\xe9"),
-            Ok(Content::Text {
-                encoding: Encoding::Utf8,
-                body: 0
-            })
-        );
-        // Undeclared, it is classified as any file is.
-        assert_eq!(
-            classify_python(b"x = '\xe9'\n"),
-            Ok(Content::Text {
-                encoding: Encoding::Unknown8Bit,
-                body: 0
-            })
-        );
-        assert_eq!(
-            classify_python(b"# coding: latin-1\n\0"),
-            Ok(Content::Binary)
-        );
-        let utf16 = [&[0xFF, 0xFE][..], &b"#\0 \0"[..]].concat();
-        assert_eq!(
-            classify_python(&utf16),
-            Ok(Content::Text {
-                encoding: Encoding::Utf16Le,
-                body: 2
-            })
-        );
-        assert!(matches!(
-            classify_python(b"# coding: uft-8\n"),
-            Err(Refusal::Unknown { .. })
-        ));
+    }
+
+    #[test]
+    fn a_query_in_a_multi_byte_encoding_is_spelled_its_way_or_not_at_all() {
+        let sjis = Encoding::MultiByte(MultiByteCodec::named("shift_jis").unwrap());
+        assert_eq!(sjis.encode("A日"), Spelling::Bytes(vec![b'A', 0x93, 0xfa]));
+        assert_eq!(sjis.encode("é"), Spelling::Impossible);
+        let cp932 = Encoding::MultiByte(MultiByteCodec::named("cp932").unwrap());
+        assert_eq!(cp932.encode("∪"), Spelling::Ambiguous);
     }
 
     fn chars(encoding: Encoding, bytes: &[u8]) -> Vec<(usize, char)> {

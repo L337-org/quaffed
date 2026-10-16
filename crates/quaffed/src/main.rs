@@ -5,15 +5,17 @@
 //!
 //! It runs textual search and the script language's textual subset:
 //! `quaff TEXT`, `-s TEXT`, and scripts from `-e` and `-f` of `find` statements, with or
-//! without an `expect`.  `architecture/search.md` and `architecture/script.md` specify it as
-//! built.
+//! without an `expect`.  `architecture/search.md` and `architecture/script.md` describe its
+//! design.
 
 mod cli;
 mod discover;
+mod editorconfig;
 mod output;
-mod project;
+mod resolve;
 mod run;
 mod search;
+mod workspace;
 
 use std::io::Write;
 use std::process::ExitCode;

@@ -1,0 +1,13 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - 日
+---
+success: true
+exit_code: 0
+----- stdout -----
+plain.py:1:6-1:6: 日
+
+----- stderr -----

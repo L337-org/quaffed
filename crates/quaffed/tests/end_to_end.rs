@@ -491,6 +491,30 @@ fn a_directory_that_cannot_be_listed_stops_the_run_naming_it() {
 }
 
 #[test]
+fn a_declaration_file_that_cannot_be_read_stops_the_run_naming_it() {
+    // info/attributes, which is never searched itself, so only the declaration reader meets it.
+    let project = Project::new(&[
+        (".git/HEAD", ""),
+        (
+            ".git/info/attributes",
+            "*.c working-tree-encoding=SHIFT-JIS\n",
+        ),
+        ("a.c", "TODO\n"),
+    ]);
+    let locked = Locked::new(project.dir.join(".git/info/attributes"));
+    if fs::read(&locked.path).is_ok() {
+        // Root reads a mode-000 file, so the failure cannot happen; say so rather than pass
+        // having checked nothing.
+        eprintln!("skipped: this user can read a mode-000 file, so it cannot fail");
+        return;
+    }
+    // A file is never read in the wrong encoding for want of its declaration.
+    assert_quaff_snapshot!(project.quaff(&["TODO"]));
+    drop(locked);
+    project.assert_unchanged();
+}
+
+#[test]
 fn special_files_are_not_read_and_the_run_says_so() {
     let mut project = Project::new(PROJECT);
     let fifo = project.dir.join("pipe");
@@ -565,13 +589,13 @@ fn a_python_file_python_would_not_read_is_not_searched_and_the_run_says_so() {
     project.add_bytes("unknown.py", b"# -*- coding: uft-8 -*-\n# TODO\n");
     // A byte-order mark and a declaration of anything but UTF-8, as in bad_coding2.py.
     project.add_bytes("marked.py", b"\xef\xbb\xbf# coding: latin-1\n# TODO\n");
-    // An encoding Python reads and quaff does not.
-    project.add_bytes("japanese.py", b"# coding: shift_jis\n# TODO\n");
+    // An encoding Python reads and quaff does not: its encoding is unknown, so its match
+    // is only possible, and noted, naming the declaration.
+    project.add_bytes("chinese.py", b"# coding: gbk\n# TODO\n");
     assert_quaff_snapshot!(project.quaff(&["TODO"]));
-    // Unread files could hold more, so a count they could change cannot be checked.
+    // Hits alone decide: the files not searched, and the possible match, are noted.
     assert_quaff_snapshot!(project.quaff(&["-e", "find \"TODO\" expect 1"]));
-    // One already found settles `at least 1` whatever they hold.
-    assert_quaff_snapshot!(project.quaff(&["-e", "find \"TODO\" expect at least 1"]));
+    assert_quaff_snapshot!(project.quaff(&["-e", "find \"TODO\" expect 2"]));
     project.assert_unchanged();
 }
 
@@ -786,25 +810,24 @@ fn standard_input_can_be_a_source_only_once() {
 }
 
 #[test]
-fn an_assertion_over_files_its_query_cannot_be_searched_in_fails_naming_them() {
+fn an_assertion_is_decided_by_hits_alone_whatever_files_it_could_not_search() {
     let mut project = Project::new(&[(".git/HEAD", ""), ("utf8.txt", "TODO here\n")]);
-    // Latin-1, with no declaration: an unknown 8-bit encoding, which "café" has no one
-    // spelling in.
+    // Latin-1, with no declaration: its encoding is unknown, so "café" has no one spelling in
+    // it, and its "TODO" is only a possible match.
     project.add_bytes("latin1.txt", b"caf\xe9 TODO\n");
     project.add_bytes("legacy/old.txt", b"na\xefve\n");
-    // The count found would hold, and the assertion fails all the same, naming both files;
-    // the ASCII assertion in the same block is still checked, and holds.
+    // Both hold, by the hits: the files not searched and the possible match are noted.
     assert_quaff_snapshot!(project.quaff(&[
         "-e",
-        "find \"caf\u{e9}\" expect none\nfind \"TODO\" expect 2",
+        "find \"caf\u{e9}\" expect none\nfind \"TODO\" expect 1",
     ]));
-    // One file, narrowed to it by the scope.
+    // A count the hits do not meet fails, whatever the unsearched file might hold.
     assert_quaff_snapshot!(project.quaff(&["-e", "find \"na\u{ef}ve\" expect 1", "legacy"]));
     // A find after a passing block of several assertions keeps its note: the assertions'
     // patterns come before it, so a note out of step with them would be lost.
     assert_quaff_snapshot!(project.quaff(&[
         "-e",
-        "find \"TODO\" expect 2\nfind \"here\" expect at least 0\nfind \"caf\u{e9}\"",
+        "find \"TODO\" expect 1\nfind \"here\" expect at least 0\nfind \"caf\u{e9}\"",
     ]));
     // A find without an expect only notes the files, and exits by what it found.
     assert_quaff_snapshot!(project.quaff(&["-e", "find \"caf\u{e9}\""]));
@@ -812,16 +835,153 @@ fn an_assertion_over_files_its_query_cannot_be_searched_in_fails_naming_them() {
 }
 
 #[test]
-fn an_assertion_the_searched_files_already_settle_is_decided_despite_unsearched_ones() {
+fn possible_matches_never_decide_an_assertion() {
     let mut project = Project::new(&[(".git/HEAD", ""), ("menu.txt", "caf\u{e9} au lait\n")]);
-    project.add_bytes("latin1.txt", b"caf\xe9\n");
-    // One match already meets `at least 1`, whatever the Latin-1 file holds: it holds, with
-    // a note naming the file.
-    assert_quaff_snapshot!(project.quaff(&["-e", "find \"caf\u{e9}\" expect at least 1"]));
-    // One match already breaks `none`: it fails as an ordinary count, naming the file too.
-    assert_quaff_snapshot!(project.quaff(&["-e", "find \"caf\u{e9}\" expect none"]));
-    // `exactly 1` is met so far, but the Latin-1 file could hold another: cannot check.
+    project.add_bytes("latin1.txt", b"caf\xe9 TODO\n");
+    // The Latin-1 file's "TODO" might be real, but `none` counts hits, and there are none: it
+    // holds, the possible match noted - the accepted cost of a file left undeclared.
+    assert_quaff_snapshot!(project.quaff(&["-e", "find \"TODO\" expect none"]));
+    // Nor does it meet `exactly 1`.
+    assert_quaff_snapshot!(project.quaff(&["-e", "find \"TODO\" expect 1"]));
+    // The UTF-8 file's hit meets `exactly 1` for a query the Latin-1 file was not searched for.
     assert_quaff_snapshot!(project.quaff(&["-e", "find \"caf\u{e9}\" expect 1"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn japanese_is_found_in_files_declaring_shift_jis_cp932_or_euc_jp() {
+    let mut project = Project::new(&[
+        (".git/HEAD", ""),
+        (
+            ".gitattributes",
+            "*.c working-tree-encoding=EUC-JP\n*.h working-tree-encoding=CP932\n\
+             *.cc working-tree-encoding=SHIFT-JIS\n",
+        ),
+    ]);
+    // "日本" in each codec, declared both ways, at a known line and column.
+    project.add_bytes(
+        "sjis.py",
+        b"# coding: shift_jis\nname = '\x93\xfa\x96\x7b'\n",
+    );
+    project.add_bytes("windows.py", b"# coding: cp932\n# \x93\xfa\x96\x7b\n");
+    project.add_bytes("euc.py", b"# coding: euc_jp\nx = 1  # \xc6\xfc\xcb\xdc\n");
+    project.add_bytes("sjis.cc", b"// \x93\xfa\x96\x7b\n");
+    // "①" is 87 40 in cp932 and not in Shift-JIS at all, so finding it shows cp932 itself is
+    // read, not Shift-JIS under another name.
+    project.add_bytes(
+        "windows.h",
+        b"#define X 1\n/* \x93\xfa\x96\x7b \x87\x40 */\n",
+    );
+    project.add_bytes("euc.c", b"/* \xc6\xfc\xcb\xdc */\n");
+    assert_quaff_snapshot!(project.quaff(&["\u{65e5}\u{672c}"]));
+    assert_quaff_snapshot!(project.quaff(&["\u{2460}"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn bytes_inside_a_multi_byte_character_are_never_a_match() {
+    let mut project = Project::new(&[(".git/HEAD", "")]);
+    // "ア" is 83 41 in Shift-JIS, its second byte an "A"; "ソ" is 83 5C, its second byte a
+    // backslash.  Only the real "A" on line 2 is a hit.
+    project.add_bytes("a.py", b"# coding: shift_jis\n\x83\x41 A \x83\x5c\n");
+    assert_quaff_snapshot!(project.quaff(&["A", "a.py"]));
+    assert_quaff_snapshot!(project.quaff(&["\\", "a.py"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn the_first_declaration_that_applies_decides() {
+    let mut project = Project::new(&[
+        (".git/HEAD", ""),
+        (".gitattributes", "*.py working-tree-encoding=SHIFT-JIS\n"),
+        (".editorconfig", "root = true\n[*]\ncharset = latin1\n"),
+    ]);
+    // The coding line comes before .gitattributes: read as Latin-1, so "é" is a hit.
+    project.add_bytes("coded.py", b"# coding: latin-1\nx = 'caf\xe9'\n");
+    // .gitattributes comes before EditorConfig: read as Shift-JIS.
+    project.add_bytes("plain.py", b"x = '\x93\xfa'\n");
+    // EditorConfig decides a file nothing earlier declares, latin1 included.
+    project.add_bytes("notes.txt", b"caf\xe9\n");
+    assert_quaff_snapshot!(project.quaff(&["caf\u{e9}"]));
+    assert_quaff_snapshot!(project.quaff(&["\u{65e5}"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn an_unknown_encoding_gives_possible_matches_and_names_what_declared_it() {
+    let mut project = Project::new(&[
+        (".git/HEAD", ""),
+        (
+            ".gitattributes",
+            "*.cn working-tree-encoding=GBK\n*.xx working-tree-encoding=MADE-UP\n\
+             !*.zz working-tree-encoding=X\n",
+        ),
+    ]);
+    // Declared in an encoding quaff does not read, and in one no codec has.  The third line
+    // is a negative pattern, which git ignores in an attributes file: the run says so.
+    project.add_bytes("a.cn", b"TODO \xc4\xe3\n");
+    project.add_bytes("a.xx", b"TODO\n");
+    // Valid UTF-8, but switching into Japanese the ISO-2022 way.
+    project.add_bytes("mail.txt", b"TODO \x1b$B%3\x1b(B\n");
+    // Colour codes are not that: a plain UTF-8 hit.
+    project.add_bytes("log.txt", b"\x1b[31mTODO\x1b[m\n");
+    // An absence is certain: no "TODO" bytes, no possible match, and nothing to say.
+    project.add_bytes("empty.cn", b"\xc4\xe3\n");
+    assert_quaff_snapshot!(project.quaff(&["TODO"]));
+    // A non-ASCII query is not searched there, and the note names the declaration.
+    assert_quaff_snapshot!(project.quaff(&["\u{4f60}"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_declaration_is_named_from_where_quaff_runs_and_a_nested_repository_has_its_own() {
+    let mut project = Project::new(&[
+        (".git/HEAD", ""),
+        (
+            ".gitattributes",
+            "*.txt working-tree-encoding=UTF-16LE\n*.cn working-tree-encoding=GBK\n\
+             *.w working-tree-encoding=UTF-16\n!*.zz working-tree-encoding=X\n",
+        ),
+        ("vendor/.git/HEAD", ""),
+    ]);
+    // Run from sub/, the declaring file and the skipped line are named from there.
+    project.add_bytes("sub/a.cn", b"TODO \xc4\xe3\n");
+    // A nested repository takes its attributes from its own files alone, so the outer *.txt
+    // line does not make this UTF-8 file UTF-16.
+    project.add_bytes("vendor/notes.txt", b"TODO\n");
+    // UTF-16 by a name that leaves the byte order to a mark, with no mark: an encoding quaff
+    // does not read, not a binary file, though it is full of NULs.
+    project.add_bytes("sub/wide.w", b"T\0O\0D\0O\0\n\0");
+    assert_quaff_snapshot!(project.quaff_in("sub", &["TODO"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn the_locale_hints_with_no_project_and_never_when_it_is_utf8() {
+    let mut project = Project::new(&[]);
+    project.add_bytes("euc.txt", b"TODO \xc6\xfc\xcb\xdc\n");
+    // With no project there is no version control system to declare it in.
+    let mut command = project.quaff(&["TODO"]);
+    command.env("LANG", "ja_JP.eucJP");
+    assert_quaff_snapshot!(command);
+    // A UTF-8 locale gives no hint: the file is not UTF-8, so it cannot read cleanly in it.
+    let mut command = project.quaff(&["TODO"]);
+    command.env("LC_ALL", "en_GB.UTF-8");
+    assert_quaff_snapshot!(command);
+    project.assert_unchanged();
+}
+
+#[test]
+fn the_locale_is_only_ever_a_hint() {
+    let mut project = Project::new(&[(".git/HEAD", "")]);
+    // EUC-JP, undeclared: valid in a Japanese locale's encoding, but a locale says nothing of a
+    // project's files, so its encoding stays unknown and its match only possible.
+    project.add_bytes("euc.txt", b"TODO \xc6\xfc\xcb\xdc\n");
+    let mut command = project.quaff(&["TODO"]);
+    command.env("LANG", "ja_JP.eucJP");
+    assert_quaff_snapshot!(command);
+    // Without the locale, the same answer and no hint.
+    assert_quaff_snapshot!(project.quaff(&["TODO"]));
     project.assert_unchanged();
 }
 
