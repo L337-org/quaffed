@@ -83,12 +83,26 @@ pub enum Unknown {
     Unreadable {
         /// The name, as the declaration spells it.
         name: String,
-        /// The `CPython` codec it names, if it names one quaff does not read yet; `None` if it
-        /// names no encoding quaff knows.
+        /// The `CPython` codec it names, if it names one quaff does not read; `None` if it names
+        /// no encoding quaff knows.
         codec: Option<&'static str>,
         /// What declares it.
         source: Source,
     },
+}
+
+impl Unknown {
+    /// Whether ASCII text would be the same bytes in the file's encoding, as it is in every
+    /// encoding but UTF-16 and UTF-32: `false` only for a declaration of one of those by a name
+    /// quaff does not read, such as plain `UTF-16`, which leaves the byte order to a mark.
+    #[must_use]
+    pub fn ascii_compatible(&self) -> bool {
+        !matches!(
+            self,
+            Unknown::Unreadable { codec: Some(codec), .. }
+                if codec.starts_with("utf_16") || codec.starts_with("utf_32")
+        )
+    }
 }
 
 impl fmt::Display for Unknown {
@@ -106,7 +120,7 @@ impl fmt::Display for Unknown {
                 source,
             } => write!(
                 f,
-                "{source} declares {name:?}, Python's {codec:?}, which quaff does not read yet"
+                "{source} declares {name:?}, Python's {codec:?}, which quaff does not read"
             ),
             Unknown::Unreadable {
                 name,
@@ -169,19 +183,21 @@ pub fn resolve(
         let Some(decided) = source(file, declarations)? else {
             continue;
         };
-        let wide = matches!(
-            decided,
+        // A wide encoding's text is full of NULs, so a mark or a declaration of one - even
+        // UTF-16 or UTF-32 by a name quaff does not read - exempts a file from the binary test.
+        let wide = match &decided {
             Resolution::Known {
-                encoding: Encoding::Utf16Le
-                    | Encoding::Utf16Be
-                    | Encoding::Utf32Le
-                    | Encoding::Utf32Be,
-                ..
-            } | Resolution::Known {
-                source: Source::ByteOrderMark,
+                encoding:
+                    Encoding::Utf16Le | Encoding::Utf16Be | Encoding::Utf32Le | Encoding::Utf32Be,
                 ..
             }
-        );
+            | Resolution::Known {
+                source: Source::ByteOrderMark,
+                ..
+            } => true,
+            Resolution::Unknown(unknown) => !unknown.ascii_compatible(),
+            _ => false,
+        };
         if !wide && encoding::looks_binary(file.bytes) {
             return Ok(Resolution::Binary);
         }
@@ -238,7 +254,7 @@ fn version_control(
     let Some(workspace) = declarations.workspace.as_mut() else {
         return Ok(None);
     };
-    let Some(declared) = workspace.declared_encoding(file.path)? else {
+    let Some(declared) = workspace.declared_encoding(file.path, &declarations.cwd)? else {
         return Ok(None);
     };
     // git writes a byte-order mark for these, which has decided before a name is read; the
@@ -395,6 +411,10 @@ mod tests {
             let at = format!("{path}:{}", number + 1);
             match fields.as_slice() {
                 ["case", name] => project = Some(Project::new(name, true, &[])),
+                ["repository", dir] => {
+                    let root = &project.as_ref().expect("a case first").0;
+                    fs::create_dir_all(root.join(dir).join(".git/info")).unwrap();
+                }
                 ["file", file, hex] => {
                     let bytes: Vec<u8> = (0..hex.len())
                         .step_by(2)
@@ -411,7 +431,7 @@ mod tests {
                     let declared = if *kind == "attribute" {
                         workspace::find(root)
                             .expect("a git workspace")
-                            .declared_encoding(&target)
+                            .declared_encoding(&target, root)
                             .unwrap()
                     } else {
                         EditorConfig::new(root).charset(&target, root).unwrap()
@@ -425,6 +445,19 @@ mod tests {
         }
         // A file that held no answers would pass having checked nothing.
         assert!(checked >= 80, "only {checked} answers in {path}");
+    }
+
+    #[test]
+    fn each_source_names_itself() {
+        assert_eq!(Source::ByteOrderMark.to_string(), "its byte-order mark");
+        assert_eq!(
+            Source::ProvenUtf8.to_string(),
+            "its bytes being valid UTF-8"
+        );
+        assert_eq!(
+            Source::CodingLine(2).to_string(),
+            "the coding line on line 2"
+        );
     }
 
     #[test]
@@ -463,7 +496,7 @@ mod tests {
             let target = project.0.join(path);
             workspace::find(target.parent().unwrap())
                 .expect("a git workspace")
-                .declared_encoding(&target)
+                .declared_encoding(&target, &project.0)
                 .unwrap()
                 .map(|d| d.name)
         };
@@ -593,7 +626,7 @@ mod tests {
             }
             .to_string(),
             "working-tree-encoding on line 1 of \".gitattributes\" declares \"GBK\", Python's \
-             \"gbk\", which quaff does not read yet"
+             \"gbk\", which quaff does not read"
         );
     }
 

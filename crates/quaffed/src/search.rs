@@ -40,7 +40,7 @@ pub struct Match {
 ///
 /// Returns `None` when the pattern's text has no one spelling in the encoding, so that the
 /// caller reports the file as not searched rather than as holding no matches: non-ASCII text in
-/// an unknown 8-bit encoding, or a character a single-byte encoding spells more than one way.  A
+/// an unknown 8-bit encoding, or a character an encoding spells more than one way.  A
 /// character the encoding cannot hold at all is no matches, since the text cannot occur there.
 pub fn search(text: &[u8], encoding: Encoding, pattern: &TextPattern) -> Option<Vec<Match>> {
     let compiled = match Compiled::new(pattern, encoding) {
@@ -311,9 +311,35 @@ mod tests {
         Position { line, column }
     }
 
-    use quaffed_encoding::{Content, classify};
+    use std::path::Path;
 
-    /// What the run makes of a whole file's bytes: classified first, then searched.
+    use crate::editorconfig::EditorConfig;
+    use crate::resolve::{Declarations, File, Resolution, resolve};
+
+    /// The encoding the run decides for a file of `bytes` with nothing declaring one, and where
+    /// its text starts: `None` for binary.  A file of unknown encoding is searched as the run
+    /// searches it, as unknown 8-bit text.
+    fn decided(bytes: &[u8]) -> Option<(Encoding, usize)> {
+        let nowhere = Path::new("/nonexistent-quaffed-search-test");
+        let mut declarations = Declarations {
+            workspace: None,
+            editorconfig: EditorConfig::new(nowhere),
+            cwd: nowhere.to_path_buf(),
+        };
+        let file = File {
+            path: &nowhere.join("file.txt"),
+            bytes,
+        };
+        match resolve(&file, &mut declarations).expect("nothing to read") {
+            Resolution::Binary => None,
+            Resolution::Known { encoding, body, .. } => Some((encoding, body)),
+            Resolution::Unknown(_) => Some((Encoding::Unknown8Bit, 0)),
+            Resolution::Refused(refusal) => panic!("only Python is refused: {refusal:?}"),
+        }
+    }
+
+    /// What the run makes of a whole file's bytes with nothing declaring their encoding: its
+    /// encoding decided first, then searched.
     #[derive(Debug, PartialEq, Eq)]
     enum Outcome {
         Binary,
@@ -322,9 +348,9 @@ mod tests {
     }
 
     fn outcome(bytes: &[u8], query: &str) -> Outcome {
-        match classify(bytes) {
-            Content::Binary => Outcome::Binary,
-            Content::Text { encoding, body } => {
+        match decided(bytes) {
+            None => Outcome::Binary,
+            Some((encoding, body)) => {
                 match search(&bytes[body..], encoding, &TextPattern::literal(query)) {
                     None => Outcome::NoSpelling,
                     Some(matches) => Outcome::Found(matches),
@@ -372,7 +398,7 @@ mod tests {
     }
 
     fn found_pattern(bytes: &[u8], written: &str) -> Vec<(Position, Position)> {
-        let Content::Text { encoding, body } = classify(bytes) else {
+        let Some((encoding, body)) = decided(bytes) else {
             panic!("binary")
         };
         search(&bytes[body..], encoding, &pattern(written))

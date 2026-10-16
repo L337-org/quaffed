@@ -12,7 +12,7 @@ exit_code: 1
 ----- stderr -----
 quaff: no matches for "你"
 quaff: 1 file of unknown encoding not searched for "你", which is not ASCII and so has no one spelling there
-quaff: "a.cn" not searched for "你", which is not ASCII: working-tree-encoding on line 1 of ".gitattributes" declares "GBK", Python's "gbk", which quaff does not read yet
+quaff: "a.cn" not searched for "你", which is not ASCII: working-tree-encoding on line 1 of ".gitattributes" declares "GBK", Python's "gbk", which quaff does not read
 quaff: "a.xx" not searched for "你", which is not ASCII: working-tree-encoding on line 2 of ".gitattributes" declares "MADE-UP", which is not an encoding quaff knows
-quaff: "empty.cn" not searched for "你", which is not ASCII: working-tree-encoding on line 1 of ".gitattributes" declares "GBK", Python's "gbk", which quaff does not read yet
+quaff: "empty.cn" not searched for "你", which is not ASCII: working-tree-encoding on line 1 of ".gitattributes" declares "GBK", Python's "gbk", which quaff does not read
 quaff: attributes file ".gitattributes": line 3: a negative pattern, which git ignores in an attributes file; that line is skipped

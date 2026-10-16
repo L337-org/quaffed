@@ -126,7 +126,7 @@ the caller prefixes with the file's path:
 | declares `undefined` | that codec decodes nothing |
 | has a UTF-8 byte-order mark and declares anything but `utf-8` | a mark allows only UTF-8 |
 | has a byte its encoding does not decode | the byte is invalid, named with its line; undeclared UTF-8 says to declare or re-encode |
-| declares an encoding Python reads and quaff does not yet | quaff's limit, not Python's |
+| declares an encoding Python reads and quaff does not | quaff's limit, not Python's |
 
 `Source` keeps the text, the encoding and whether there was a mark.  `Source::encode` writes text
 back the same way, mark first, so a file's own decoded text encodes to its exact bytes.
@@ -134,7 +134,7 @@ back the same way, mark first, so a file's own decoded text encodes to its exact
 **For a reader that tolerates bad bytes**, as a textual search is, `declared_encoding` resolves
 the declaration alone, with the line declaring it, and refuses only what no content could make
 readable: an unknown name, a codec not of text, `undefined`, or a conflict with a mark.  An
-encoding Python reads and quaff does not yet is refused too, and `src/resolve.rs` turns that one
+encoding Python reads and quaff does not is refused too, and `src/resolve.rs` turns that one
 into an unknown encoding naming the declaration, rather than a file not searched at all.  An
 undeclared Python file that is not valid UTF-8 is of unknown encoding rather than being read as
 UTF-8, so that a non-ASCII query is reported as not searched rather than silently matching
@@ -150,8 +150,8 @@ codec is single-byte if CPython decodes it from a table, or it is `ascii`, `lati
 `charmap`; the generator checks every such codec byte by byte against CPython's own decoder and
 refuses to write one that is not single-byte after all.
 
-**Multi-byte codecs** quaff reads are named in the generator's `MULTI_BYTE`: `shift_jis`, `cp932`
-and `euc_jp`.  For each it writes how long a character starting with each byte is, and every run
+**Multi-byte codecs** quaff reads are those named in the generator's `MULTI_BYTE`.  For each it
+writes how long a character starting with each byte is, and every run
 of bytes that decodes to one character.  They are read by one rule: a byte's length says how long
 the character is and the run is looked up; a run not in the table is one undecodable byte, its
 first, and reading goes on from the next; a run cut short by the end is one undecodable run of

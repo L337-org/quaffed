@@ -217,6 +217,14 @@ fn parse(chars: &[char], at: &mut usize, out: &mut Vec<Node>, in_braces: bool) {
                 out.push(Node::Char(chars[*at + 1]));
                 *at += 2;
             }
+            // `/**/` is zero or more directories, so `a/**/b` matches `a/b` as well as `a/x/b`.
+            '/' if chars.get(*at + 1..*at + 4) == Some(&['*', '*', '/']) => {
+                out.push(Node::Either(vec![
+                    vec![Node::Char('/')],
+                    vec![Node::Char('/'), Node::Stars, Node::Char('/')],
+                ]));
+                *at += 4;
+            }
             '*' if chars.get(*at + 1) == Some(&'*') => {
                 out.push(Node::Stars);
                 *at += 2;
@@ -430,5 +438,63 @@ mod tests {
         assert!(glob_matches("{open.c", "{open.c"));
         assert!(glob_matches(r"\*.c", "*.c"));
         assert!(!glob_matches(r"\*.c", "a.c"));
+    }
+
+    #[test]
+    fn a_question_mark_is_one_character_but_a_slash() {
+        assert!(glob_matches("a?.c", "ab.c"));
+        assert!(!glob_matches("a?.c", "a.c"));
+        assert!(!glob_matches("src/a?b", "src/a/b"));
+    }
+
+    #[test]
+    fn a_class_never_closed_or_holding_a_slash_is_literal() {
+        assert!(glob_matches("[ab.c", "[ab.c"));
+        assert!(glob_matches("x/[a/b]", "x/[a/b]"));
+        // An escaped bracket inside a class is a member of it.
+        assert!(glob_matches(r"[\]a]x", "]x"));
+        assert!(glob_matches(r"[a\]]x", "ax"));
+        // A class whose escape runs off the end is literal too.
+        assert!(glob_matches(r"[a\", r"[a\"));
+    }
+
+    #[test]
+    fn an_escaped_brace_does_not_open_or_close_a_group() {
+        assert!(glob_matches(r"{a,\}}.x", "}.x"));
+        assert!(glob_matches(r"{a,\{}.x", "{.x"));
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_is_an_error_naming_it() {
+        let dir = std::env::temp_dir().join(format!("quaffed-editorconfig-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        // A directory where the file should be cannot be read as one.
+        fs::create_dir_all(dir.join(FILE)).unwrap();
+        let err = EditorConfig::new(&dir)
+            .charset(&dir.join("a.txt"), &dir)
+            .unwrap_err();
+        let _ = fs::remove_dir_all(&dir);
+        assert!(err.path.ends_with(FILE), "{err}");
+    }
+
+    #[test]
+    fn lines_outside_a_section_and_keys_it_does_not_read_are_passed_over() {
+        let dir =
+            std::env::temp_dir().join(format!("quaffed-editorconfig-keys-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join(FILE),
+            "no equals sign here\nindent_style = tab\n[*]\nindent_size = 4\ncharset = latin1\n",
+        )
+        .unwrap();
+        let declared = EditorConfig::new(&dir)
+            .charset(&dir.join("a.txt"), &dir)
+            .unwrap();
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(
+            declared.map(|d| (d.name, d.origin.line)),
+            Some(("latin1".into(), 5))
+        );
     }
 }

@@ -638,9 +638,15 @@ fn search_files(
                 }
                 // An ASCII query is the same bytes in every ASCII-compatible encoding, so where
                 // its bytes are absent there is certainly no match; where present, a match is
-                // only possible, since in some encodings those bytes end a character.
+                // only possible, since in some encodings those bytes end a character.  In a
+                // declared UTF-16 or UTF-32 it is other bytes, so no query can be searched.
                 for (i, pattern) in patterns.iter().enumerate() {
-                    match search::search(&bytes, Encoding::Unknown8Bit, pattern) {
+                    let in_file = if reason.ascii_compatible() {
+                        search::search(&bytes, Encoding::Unknown8Bit, pattern)
+                    } else {
+                        None
+                    };
+                    match in_file {
                         None => searched.unspelled[i]
                             .push((shown.clone(), Unspelled::Unknown(reason.clone()))),
                         Some(in_file) if in_file.is_empty() => {}
@@ -818,7 +824,12 @@ fn skipped(
                     name_of(*encoding)
                 )),
                 Unspelled::Unknown(reason @ Unknown::Unreadable { .. }) => notes.push(format!(
-                    "{path:?} not searched for {pattern}, which is not ASCII: {reason}"
+                    "{path:?} not searched for {pattern}{}: {reason}",
+                    if reason.ascii_compatible() {
+                        ", which is not ASCII"
+                    } else {
+                        ""
+                    }
                 )),
                 Unspelled::Unknown(_) => {}
             }
@@ -1003,6 +1014,18 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         assert_eq!(failed.expect("running"), Outcome::AssertionFailed);
         assert_eq!(held.expect("running"), Outcome::Success);
+    }
+
+    #[test]
+    fn every_encoding_is_named_as_cpython_names_its_codec() {
+        let sjis = quaffed_encoding::MultiByteCodec::named("shift_jis").unwrap();
+        assert_eq!(name_of(Encoding::MultiByte(sjis)), "shift_jis");
+        assert_eq!(name_of(Encoding::Utf8), "utf_8");
+        assert_eq!(name_of(Encoding::Utf16Le), "utf_16_le");
+        assert_eq!(name_of(Encoding::Utf16Be), "utf_16_be");
+        assert_eq!(name_of(Encoding::Utf32Le), "utf_32_le");
+        assert_eq!(name_of(Encoding::Utf32Be), "utf_32_be");
+        assert_eq!(name_of(Encoding::Unknown8Bit), "unknown");
     }
 
     #[test]

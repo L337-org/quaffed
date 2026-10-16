@@ -130,7 +130,6 @@ pub fn files(scope: &Path, cwd: &Path, workspace: Option<&dyn Workspace>) -> Res
         .hidden(false)
         .parents(true)
         .ignore(true)
-        .git_global(false)
         .follow_links(false)
         .sort_by_file_name(std::cmp::Ord::cmp)
         .filter_entry(|entry| {

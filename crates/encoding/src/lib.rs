@@ -30,13 +30,13 @@ const BINARY_PROBE: usize = 8000;
 pub enum Encoding {
     /// UTF-8, with or without a byte-order mark.
     Utf8,
-    /// UTF-16, little-endian, declared by its byte-order mark.
+    /// UTF-16, little-endian, by its byte-order mark or a name giving the byte order.
     Utf16Le,
-    /// UTF-16, big-endian, declared by its byte-order mark.
+    /// UTF-16, big-endian, by its byte-order mark or a name giving the byte order.
     Utf16Be,
-    /// UTF-32, little-endian, declared by its byte-order mark.
+    /// UTF-32, little-endian, by its byte-order mark or a name giving the byte order.
     Utf32Le,
-    /// UTF-32, big-endian, declared by its byte-order mark.
+    /// UTF-32, big-endian, by its byte-order mark or a name giving the byte order.
     Utf32Be,
     /// A single-byte encoding, declared, such as Latin-1 or KOI8-R.
     SingleByte(Codec),
@@ -55,20 +55,6 @@ impl From<SourceEncoding> for Encoding {
             SourceEncoding::MultiByte(codec) => Encoding::MultiByte(codec),
         }
     }
-}
-
-/// What a file's bytes are.
-#[derive(Debug, PartialEq, Eq)]
-pub enum Content {
-    /// Text in `encoding`, starting `body` bytes in, after any byte-order mark.
-    Text {
-        /// The encoding.
-        encoding: Encoding,
-        /// How many bytes of byte-order mark come before the text.
-        body: usize,
-    },
-    /// Binary, by git's test: a NUL in the first 8000 bytes, with no byte-order mark.
-    Binary,
 }
 
 /// The encoding a byte-order mark at the start of `bytes` declares, and how long the mark is.
@@ -126,34 +112,12 @@ pub fn proven_utf8(bytes: &[u8]) -> Result<(), Unproven> {
     Ok(())
 }
 
-/// Decides what the bytes of a file are by what they hold alone: a byte-order mark, then git's
-/// binary test, then whether they are proven UTF-8, and otherwise an unknown 8-bit encoding.
-///
-/// A byte-order mark wins, because it is a declaration, and a UTF-16 or UTF-32 file is full of
-/// NULs that would otherwise make it binary.  Declarations kept elsewhere - a Python file's
-/// coding line, a project's - are the caller's to weigh first.
-#[must_use]
-pub fn classify(bytes: &[u8]) -> Content {
-    if let Some((encoding, body)) = byte_order_mark(bytes) {
-        return Content::Text { encoding, body };
-    }
-    if looks_binary(bytes) {
-        return Content::Binary;
-    }
-    let encoding = if proven_utf8(bytes).is_ok() {
-        Encoding::Utf8
-    } else {
-        Encoding::Unknown8Bit
-    };
-    Content::Text { encoding, body: 0 }
-}
-
 /// What an encoding named outside a Python file is to quaff, by `CPython`'s codec lookup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Named {
     /// An encoding quaff reads.
     Read(Encoding),
-    /// A text encoding `CPython` reads and quaff does not yet, by its `CPython` codec name.
+    /// A text encoding `CPython` reads and quaff does not, by its `CPython` codec name.
     Unread(&'static str),
     /// No `CPython` text codec has the name.
     Unknown,
@@ -324,8 +288,8 @@ impl Encoding {
     /// unknown 8-bit encoding, a byte a single-byte encoding decodes to nothing, an unpaired
     /// surrogate, a truncated unit - each count as one character, `U+FFFD`, so that positions
     /// stay countable.  A multi-byte encoding counts them as `CPython` does, one character for
-    /// each error `CPython` reports, which is a byte, or a character cut short at the end.  For a single-byte encoding such
-    /// as Latin-1 that is one column a byte, which is what an editor showing the file in that
+    /// each error `CPython` reports, which is a byte, or a character cut short at the end.  For
+    /// a single-byte encoding such as Latin-1 that is one column a byte, which is what an editor showing the file in that
     /// encoding counts.
     pub fn each_char(self, bytes: &[u8], mut visit: impl FnMut(usize, char) -> bool) {
         match self {
@@ -431,76 +395,40 @@ mod tests {
     #[test]
     fn a_byte_order_mark_decides_the_encoding() {
         assert_eq!(
-            classify(b"\xEF\xBB\xBFtext"),
-            Content::Text {
-                encoding: Encoding::Utf8,
-                body: 3
-            }
+            byte_order_mark(b"\xEF\xBB\xBFtext"),
+            Some((Encoding::Utf8, 3))
         );
         assert_eq!(
-            classify(b"\xFF\xFEt\x00"),
-            Content::Text {
-                encoding: Encoding::Utf16Le,
-                body: 2
-            }
+            byte_order_mark(b"\xFF\xFEt\x00"),
+            Some((Encoding::Utf16Le, 2))
         );
         assert_eq!(
-            classify(b"\xFE\xFF\x00t"),
-            Content::Text {
-                encoding: Encoding::Utf16Be,
-                body: 2
-            }
+            byte_order_mark(b"\xFE\xFF\x00t"),
+            Some((Encoding::Utf16Be, 2))
         );
         assert_eq!(
-            classify(b"\xFF\xFE\x00\x00t\x00\x00\x00"),
-            Content::Text {
-                encoding: Encoding::Utf32Le,
-                body: 4
-            }
+            byte_order_mark(b"\xFF\xFE\x00\x00t\x00\x00\x00"),
+            Some((Encoding::Utf32Le, 4))
         );
         assert_eq!(
-            classify(b"\x00\x00\xFE\xFF\x00\x00\x00t"),
-            Content::Text {
-                encoding: Encoding::Utf32Be,
-                body: 4
-            }
+            byte_order_mark(b"\x00\x00\xFE\xFF\x00\x00\x00t"),
+            Some((Encoding::Utf32Be, 4))
         );
+        assert_eq!(byte_order_mark(b"text"), None);
     }
 
     #[test]
     fn a_nul_in_the_first_8000_bytes_is_binary_and_later_is_not() {
-        assert_eq!(classify(b"a\0b"), Content::Binary);
+        assert!(looks_binary(b"a\0b"));
         let mut late = vec![b'a'; BINARY_PROBE];
         late.push(0);
-        // Valid UTF-8, since a NUL is a valid UTF-8 character.
-        assert_eq!(
-            classify(&late),
-            Content::Text {
-                encoding: Encoding::Utf8,
-                body: 0
-            }
-        );
+        assert!(!looks_binary(&late));
+        // A NUL is a valid UTF-8 character, so a late one leaves the bytes proven UTF-8.
+        assert_eq!(proven_utf8(&late), Ok(()));
         let mut edge = vec![b'a'; BINARY_PROBE - 1];
         edge.push(0);
-        assert_eq!(classify(&edge), Content::Binary);
-    }
-
-    #[test]
-    fn invalid_utf8_without_a_mark_is_an_unknown_8bit_encoding() {
-        assert_eq!(
-            classify(b"caf\xE9"),
-            Content::Text {
-                encoding: Encoding::Unknown8Bit,
-                body: 0
-            }
-        );
-        assert_eq!(
-            classify(b""),
-            Content::Text {
-                encoding: Encoding::Utf8,
-                body: 0
-            }
-        );
+        assert!(looks_binary(&edge));
+        assert!(!looks_binary(b""));
     }
 
     #[test]
@@ -548,13 +476,7 @@ mod tests {
         );
         // Colour codes, and a terminal's switch back to ASCII, are not that.
         assert_eq!(proven_utf8(b"\x1b[31mred\x1b(B\x1b[m"), Ok(()));
-        assert_eq!(
-            classify(b"\x1b$Bx"),
-            Content::Text {
-                encoding: Encoding::Unknown8Bit,
-                body: 0
-            }
-        );
+        assert_eq!(proven_utf8(b""), Ok(()));
     }
 
     #[test]
@@ -581,6 +503,30 @@ mod tests {
         assert!(single_byte("latin_1").reads_cleanly(b"caf\xe9"));
         assert!(!single_byte("cp1252").reads_cleanly(b"\x81"));
         assert!(!Encoding::Utf8.reads_cleanly(b"caf\xe9"));
+        assert!(Encoding::Unknown8Bit.reads_cleanly(b"ascii"));
+        assert!(!Encoding::Unknown8Bit.reads_cleanly(b"caf\xe9"));
+        let utf16: Vec<u8> = "hé".encode_utf16().flat_map(u16::to_be_bytes).collect();
+        assert!(Encoding::Utf16Be.reads_cleanly(&utf16));
+        // An odd byte left over, and an unpaired surrogate.
+        assert!(!Encoding::Utf16Be.reads_cleanly(&utf16[..3]));
+        assert!(!Encoding::Utf16Le.reads_cleanly(b"\x00\xd8a\x00"));
+        let utf32: Vec<u8> = "hé"
+            .chars()
+            .flat_map(|c| u32::from(c).to_le_bytes())
+            .collect();
+        assert!(Encoding::Utf32Le.reads_cleanly(&utf32));
+        assert!(!Encoding::Utf32Le.reads_cleanly(&utf32[..5]));
+        assert!(!Encoding::Utf32Be.reads_cleanly(b"\x00\x11\x00\x00"));
+    }
+
+    #[test]
+    fn a_python_files_encoding_is_an_encoding_and_utf32_is_four_bytes_a_unit() {
+        assert_eq!(Encoding::from(SourceEncoding::Utf8), Encoding::Utf8);
+        assert_eq!(Encoding::Utf32Le.unit(), 4);
+        assert_eq!(
+            Encoding::Utf32Le.encode("h"),
+            Spelling::Bytes(vec![b'h', 0, 0, 0])
+        );
     }
 
     #[test]

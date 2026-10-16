@@ -1,0 +1,16 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - TODO
+  env:
+    LC_ALL: en_GB.UTF-8
+---
+success: false
+exit_code: 1
+----- stdout -----
+
+----- stderr -----
+quaff: no matches for "TODO"
+quaff: "euc.txt": possible match of "TODO" on line 1, not counted, since its encoding is unknown: it is not UTF-8, and nothing declares its encoding

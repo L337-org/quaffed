@@ -93,7 +93,7 @@ What is decided then settles how the file is searched:
 |---|---|
 | binary, by git's test: a NUL in its first 8000 bytes, unless a byte-order mark or a declaration says UTF-16 or UTF-32 | not at all: the run says how many binary files it skipped |
 | in a known encoding | as its bytes in that encoding, each match starting and ending on a character, so bytes that match inside a multi-byte character, as in Shift-JIS, are not a match.  A character the encoding cannot hold matches nothing; one it spells more than one way leaves the file not searched for that query, and a note says so.  Every match is a hit |
-| of unknown encoding: not proven UTF-8 and nothing declaring it, or declared in an encoding quaff does not read | an ASCII query as its bytes, which are the same in every ASCII-compatible encoding.  Where they are absent there is certainly no match.  Where present, each is a **possible match**: reported by line, never counted, and the file is never edited, since in some encodings those bytes end a character.  A non-ASCII query is not searched there, and a note says so |
+| of unknown encoding: not proven UTF-8 and nothing declaring it, or declared in an encoding quaff does not read | an ASCII query as its bytes, which are the same in every ASCII-compatible encoding.  Where they are absent there is certainly no match.  Where present, each is a **possible match**: reported by line, never counted, and the file is never edited, since in some encodings those bytes end a character.  A non-ASCII query is not searched there, and a note says so.  A file declared UTF-16 or UTF-32 by a name quaff does not read, such as plain `UTF-16`, is not searched for any query, since ASCII is other bytes there, and a note says so |
 | a Python file `CPython` refuses whatever it holds: an encoding name Python does not know, a codec not of text, the `undefined` codec, or a declaration contradicting a UTF-8 mark | not at all, for any query: a note names it and says why |
 
 The binary test is git's: `xdiff-interface.c` defines `FIRST_FEW_BYTES` as 8000, and
@@ -149,10 +149,8 @@ src/app.py:12:5-12:22: def connect(self):
 - **A failed assertion** goes to standard error before the notes, as where it was written, the
   count expected and the count found:
   `quaff: checks.quaff:3:1: expected exactly 2 matches of "TODO", found 1`.  One whose scope
-  held files its query could not be searched in also names those files, and, where what was
-  found does not settle it, says it cannot check and how to make them checkable (see *Exit
-  codes*).  A message names a
-  pattern by its text quoted, a line break as `\n`, with any anchors outside the quotes as a
+  held files its query could not be searched in also names those files; the count is of hits
+  only, never of possible matches.  A message names a pattern by its text quoted, a line break as `\n`, with any anchors outside the quotes as a
   script writes them: `^"x"$`.  Statements after a failed block do not run, so they add no
   notes.
 - A closed standard output - piping into `head` - stops the printing quietly.  Assertions are

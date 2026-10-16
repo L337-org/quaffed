@@ -17,6 +17,7 @@ const GIT_ONLY: &[&str] = &[
     "gitdir:",
     ".git_ignore(",
     ".git_exclude(",
+    ".git_global(",
     "MARKER",
 ];
 

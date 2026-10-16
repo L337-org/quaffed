@@ -1,0 +1,16 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - TODO
+---
+success: true
+exit_code: 0
+----- stdout -----
+../vendor/notes.txt:1:1-1:4: TODO
+
+----- stderr -----
+quaff: "wide.w" not searched for "TODO": working-tree-encoding on line 3 of "../.gitattributes" declares "UTF-16", Python's "utf_16", which quaff does not read
+quaff: "a.cn": possible match of "TODO" on line 1, not counted, since its encoding is unknown: working-tree-encoding on line 2 of "../.gitattributes" declares "GBK", Python's "gbk", which quaff does not read
+quaff: attributes file "../.gitattributes": line 4: a negative pattern, which git ignores in an attributes file; that line is skipped

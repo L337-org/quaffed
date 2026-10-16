@@ -24,16 +24,21 @@ pub trait Workspace {
     fn ignore_rules(&self, walk: &mut ignore::WalkBuilder);
 
     /// The encoding this system's own files declare for the file at `path`, under the root, if
-    /// they declare one.
+    /// they declare one, with the declaring file shown relative to `shown_from`.
     ///
     /// # Errors
     ///
     /// Returns an [`Error`] when a file that could declare one cannot be read, so that a file is
     /// never read in the wrong encoding for want of its declaration.
-    fn declared_encoding(&mut self, path: &Path) -> Result<Option<Declared>, Error>;
+    fn declared_encoding(
+        &mut self,
+        path: &Path,
+        shown_from: &Path,
+    ) -> Result<Option<Declared>, Error>;
 
     /// Each line of this system's files that could not be understood and was passed over,
-    /// described for the user, in the order met.
+    /// described for the user, in the order met, its file shown as `declared_encoding` was asked
+    /// to show it.
     fn skipped(&self) -> &[String];
 
     /// Where this system lets a project declare a file's encoding, as a message tells the user,
@@ -106,5 +111,5 @@ pub fn find(start: &Path) -> Option<Box<dyn Workspace>> {
 /// Ignore rules with no version control system: only the `.ignore` files any project may have,
 /// which are not a system's.
 pub fn no_system_ignore_rules(walk: &mut ignore::WalkBuilder) {
-    walk.git_ignore(false).git_exclude(false);
+    walk.git_ignore(false).git_exclude(false).git_global(false);
 }

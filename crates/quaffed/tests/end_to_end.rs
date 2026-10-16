@@ -589,7 +589,7 @@ fn a_python_file_python_would_not_read_is_not_searched_and_the_run_says_so() {
     project.add_bytes("unknown.py", b"# -*- coding: uft-8 -*-\n# TODO\n");
     // A byte-order mark and a declaration of anything but UTF-8, as in bad_coding2.py.
     project.add_bytes("marked.py", b"\xef\xbb\xbf# coding: latin-1\n# TODO\n");
-    // An encoding Python reads and quaff does not yet: its encoding is unknown, so its match
+    // An encoding Python reads and quaff does not: its encoding is unknown, so its match
     // is only possible, and noted, naming the declaration.
     project.add_bytes("chinese.py", b"# coding: gbk\n# TODO\n");
     assert_quaff_snapshot!(project.quaff(&["TODO"]));
@@ -904,7 +904,7 @@ fn an_unknown_encoding_gives_possible_matches_and_names_what_declared_it() {
              !*.zz working-tree-encoding=X\n",
         ),
     ]);
-    // Declared in an encoding quaff does not read yet, and in one no codec has.  The third line
+    // Declared in an encoding quaff does not read, and in one no codec has.  The third line
     // is a negative pattern, which git ignores in an attributes file: the run says so.
     project.add_bytes("a.cn", b"TODO \xc4\xe3\n");
     project.add_bytes("a.xx", b"TODO\n");
@@ -917,6 +917,44 @@ fn an_unknown_encoding_gives_possible_matches_and_names_what_declared_it() {
     assert_quaff_snapshot!(project.quaff(&["TODO"]));
     // A non-ASCII query is not searched there, and the note names the declaration.
     assert_quaff_snapshot!(project.quaff(&["\u{4f60}"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_declaration_is_named_from_where_quaff_runs_and_a_nested_repository_has_its_own() {
+    let mut project = Project::new(&[
+        (".git/HEAD", ""),
+        (
+            ".gitattributes",
+            "*.txt working-tree-encoding=UTF-16LE\n*.cn working-tree-encoding=GBK\n\
+             *.w working-tree-encoding=UTF-16\n!*.zz working-tree-encoding=X\n",
+        ),
+        ("vendor/.git/HEAD", ""),
+    ]);
+    // Run from sub/, the declaring file and the skipped line are named from there.
+    project.add_bytes("sub/a.cn", b"TODO \xc4\xe3\n");
+    // A nested repository takes its attributes from its own files alone, so the outer *.txt
+    // line does not make this UTF-8 file UTF-16.
+    project.add_bytes("vendor/notes.txt", b"TODO\n");
+    // UTF-16 by a name that leaves the byte order to a mark, with no mark: an encoding quaff
+    // does not read, not a binary file, though it is full of NULs.
+    project.add_bytes("sub/wide.w", b"T\0O\0D\0O\0\n\0");
+    assert_quaff_snapshot!(project.quaff_in("sub", &["TODO"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn the_locale_hints_with_no_project_and_never_when_it_is_utf8() {
+    let mut project = Project::new(&[]);
+    project.add_bytes("euc.txt", b"TODO \xc6\xfc\xcb\xdc\n");
+    // With no project there is no version control system to declare it in.
+    let mut command = project.quaff(&["TODO"]);
+    command.env("LANG", "ja_JP.eucJP");
+    assert_quaff_snapshot!(command);
+    // A UTF-8 locale gives no hint: the file is not UTF-8, so it cannot read cleanly in it.
+    let mut command = project.quaff(&["TODO"]);
+    command.env("LC_ALL", "en_GB.UTF-8");
+    assert_quaff_snapshot!(command);
     project.assert_unchanged();
 }
 

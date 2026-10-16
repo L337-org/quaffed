@@ -25,7 +25,7 @@ pub(crate) enum Module {
     MultiByte(usize),
     /// UTF-8.
     Utf8,
-    /// A text encoding `CPython` reads and quaff does not yet: another multi-byte or a stateful
+    /// A text encoding `CPython` reads and quaff does not: another multi-byte or a stateful
     /// encoding, or UTF-16 or UTF-32 by name.
     Unread,
     /// A codec, but not of text: `rot13`, `hex`, `zlib` and the like.
@@ -235,7 +235,7 @@ pub enum Refusal {
         /// The line declaring it.
         line: usize,
     },
-    /// A declared encoding `CPython` reads and quaff does not yet: another multi-byte or a
+    /// A declared encoding `CPython` reads and quaff does not: another multi-byte or a
     /// stateful encoding, or UTF-16 or UTF-32.  This one is quaff's limit, not Python's.
     Unread {
         /// The name, as the file spells it.
@@ -305,7 +305,7 @@ impl fmt::Display for Refusal {
             Refusal::Unread { name, codec, line } => write!(
                 f,
                 "line {line} declares the encoding {name:?}, Python's {codec:?}, which Python \
-                 reads and quaff does not yet"
+                 reads and quaff does not"
             ),
             Refusal::MarkConflict { name, line } => write!(
                 f,
@@ -791,6 +791,13 @@ mod tests {
     fn the_tables_are_sorted_for_binary_search() {
         assert!(MODULES.windows(2).all(|w| w[0].0 < w[1].0));
         assert!(ALIASES.windows(2).all(|w| w[0].0 < w[1].0));
+        for table in MULTI_BYTE {
+            assert!(
+                table.runs.windows(2).all(|w| w[0].0 < w[1].0),
+                "{}'s runs are not strictly sorted",
+                table.name
+            );
+        }
     }
 
     #[test]
@@ -836,6 +843,10 @@ mod tests {
         // cp932 spells some characters twice, NEC's and IBM's rows both holding them.
         let cp932 = MultiByteCodec::named("cp932").unwrap();
         assert_eq!(cp932.spellings('∪'), [vec![0x81, 0xbe], vec![0x87, 0x9c]]);
+        // EUC-JP's three-byte characters, JIS X 0212, spell as three bytes.
+        let euc = MultiByteCodec::named("euc_jp").unwrap();
+        assert_eq!(euc.spellings('丂'), [vec![0x8f, 0xb0, 0xa1]]);
+        assert_eq!(format!("{euc:?}"), "euc_jp");
     }
 
     #[test]
@@ -1089,7 +1100,7 @@ mod tests {
             decoded(b"# coding: gbk\n"),
             Err(
                 "line 1 declares the encoding \"gbk\", Python's \"gbk\", which Python reads \
-                 and quaff does not yet"
+                 and quaff does not"
                     .into()
             )
         );
