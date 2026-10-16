@@ -852,16 +852,29 @@ fn possible_matches_never_decide_an_assertion() {
 fn japanese_is_found_in_files_declaring_shift_jis_cp932_or_euc_jp() {
     let mut project = Project::new(&[
         (".git/HEAD", ""),
-        (".gitattributes", "*.c working-tree-encoding=EUC-JP\n"),
+        (
+            ".gitattributes",
+            "*.c working-tree-encoding=EUC-JP\n*.h working-tree-encoding=CP932\n\
+             *.cc working-tree-encoding=SHIFT-JIS\n",
+        ),
     ]);
-    // "日本" in each, at a known line and column.
+    // "日本" in each codec, declared both ways, at a known line and column.
     project.add_bytes(
         "sjis.py",
         b"# coding: shift_jis\nname = '\x93\xfa\x96\x7b'\n",
     );
     project.add_bytes("windows.py", b"# coding: cp932\n# \x93\xfa\x96\x7b\n");
+    project.add_bytes("euc.py", b"# coding: euc_jp\nx = 1  # \xc6\xfc\xcb\xdc\n");
+    project.add_bytes("sjis.cc", b"// \x93\xfa\x96\x7b\n");
+    // "①" is 87 40 in cp932 and not in Shift-JIS at all, so finding it shows cp932 itself is
+    // read, not Shift-JIS under another name.
+    project.add_bytes(
+        "windows.h",
+        b"#define X 1\n/* \x93\xfa\x96\x7b \x87\x40 */\n",
+    );
     project.add_bytes("euc.c", b"/* \xc6\xfc\xcb\xdc */\n");
     assert_quaff_snapshot!(project.quaff(&["\u{65e5}\u{672c}"]));
+    assert_quaff_snapshot!(project.quaff(&["\u{2460}"]));
     project.assert_unchanged();
 }
 
