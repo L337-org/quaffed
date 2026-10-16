@@ -1,0 +1,48 @@
+# What the quaff binary may do over the synthetic corpus, checked by scripts/budgets on every
+# pull request.  architecture/verification.md has the reasoning, how to read a failure's trace,
+# and how to change a limit: in the pull request that moves it, once its trace has been
+# reviewed and the new behaviour agreed to be correct.
+#
+# Per scenario, from SCENARIOS in scripts/budgets:
+#   instructions     the most it may execute, under callgrind: the worst run plus MARGINS's share
+#   peak_memory_kib  the most resident memory it may use, in KiB: the worst run plus MARGINS's share
+#   paths_opened     exactly how many paths in the project it opens, directories included
+#   bytes_read       exactly how many bytes it reads from them
+
+[startup]
+instructions = 240_900
+peak_memory_kib = 6_300
+paths_opened = 2
+bytes_read = 0
+
+[search]
+instructions = 1_163_700
+peak_memory_kib = 6_200
+paths_opened = 18
+bytes_read = 5_951
+
+[scope]
+instructions = 1_002_100
+peak_memory_kib = 6_200
+paths_opened = 15
+bytes_read = 5_523
+
+# What may be opened outside the project, each for a reason the project cannot change.  Each
+# is a pattern, in which * matches anything, / included.
+[outside]
+allowed = [
+    # regex-automata, through the ignore matcher's globs, asks the standard library how many
+    # CPUs it may use, to size its pool of regex caches; the standard library reads the CPU quota
+    # of the process's cgroup and each cgroup above it to answer.  How deep the cgroup is depends
+    # on the machine.
+    "/proc/self/cgroup",
+    "/sys/fs/cgroup/*cpu.max",
+    # mimalloc, the package's allocator, reads how the kernel overcommits and hands out pages.
+    "/proc/sys/vm/overcommit_memory",
+    "/sys/kernel/mm/transparent_hugepage/enabled",
+]
+
+# What may be opened twice in the project, by name: a file that holds rules quaff reads, and
+# that is in the project, so is also searched.  Anything else opened twice fails.
+[inside]
+read_as_rules_and_as_content = [".gitignore", ".ignore", ".gitattributes", ".editorconfig"]

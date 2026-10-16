@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
-use super::{Declared, Error, Origin, Workspace};
+use super::{Declared, Error, IgnoreFiles, Origin, SystemIgnores, Workspace};
 
 /// The name whose presence marks a project root.
 ///
@@ -73,8 +73,8 @@ impl Workspace for Git {
         &self.root
     }
 
-    fn ignore_rules(&self, walk: &mut ignore::WalkBuilder) {
-        walk.git_ignore(true).git_exclude(true).git_global(false);
+    fn ignore_files(&self) -> Box<dyn IgnoreFiles> {
+        Box::new(GitIgnores)
     }
 
     fn declared_encoding(
@@ -134,6 +134,26 @@ impl Workspace for Git {
     }
 }
 
+/// git's ignore files: each directory's `.gitignore`, and at each repository's root its
+/// `info/exclude`, never the configuration's global excludes file.
+struct GitIgnores;
+
+impl IgnoreFiles for GitIgnores {
+    fn in_dir(&self, dir: &Path) -> Result<SystemIgnores, Error> {
+        let repository_root = is_root(dir);
+        let exclude = if repository_root {
+            git_dir(dir)?.map(|git_dir| git_dir.join("info").join("exclude"))
+        } else {
+            None
+        };
+        Ok(SystemIgnores {
+            file: dir.join(".gitignore"),
+            exclude,
+            repository_root,
+        })
+    }
+}
+
 impl Git {
     fn new(root: &Path) -> Git {
         Git {
@@ -163,31 +183,41 @@ impl Git {
 
 impl Repository {
     /// Reads the files macros come from, the top-level `.gitattributes` and `info/attributes`,
-    /// and `info/attributes`' rules.
+    /// and the rules in each.  Each is read once: its macros and its rules come from the same
+    /// text, and the top-level file's rules are kept with the root's, so the walk up from a file
+    /// never reads it again.
     fn read(
         root: &Path,
         shown_from: &Path,
         skipped: &mut Vec<String>,
     ) -> Result<Repository, Error> {
+        let top_file = root.join(".gitattributes");
+        let info_file = git_dir(root)?.map(|dir| dir.join("info").join("attributes"));
+        let top = read(&top_file)?;
+        let info = match &info_file {
+            Some(file) => read(file)?,
+            None => None,
+        };
         let mut macros = HashMap::new();
-        let top = root.join(".gitattributes");
-        let info = git_dir(root)?.map(|dir| dir.join("info").join("attributes"));
-        for file in [Some(top), info.clone()].into_iter().flatten() {
-            if let Some(text) = read(&file)? {
-                for raw in text.lines() {
-                    if let Some(Parsed::Macro { name, settings }) = parse(raw) {
-                        let state = encoding_in(&settings, &macros);
-                        macros.insert(name, state);
-                    }
+        for text in [&top, &info].into_iter().flatten() {
+            for raw in text.lines() {
+                if let Some(Parsed::Macro { name, settings }) = parse(raw) {
+                    let state = encoding_in(&settings, &macros);
+                    macros.insert(name, state);
                 }
             }
         }
-        let info = match info {
-            Some(file) => read_file(&file, root, &macros, shown_from, skipped)?,
-            None => None,
+        let mut files = HashMap::new();
+        let top = top.map(|text| rules_in(&text, &top_file, root, &macros, shown_from, skipped));
+        files.insert(root.to_path_buf(), top);
+        let info = match (info, &info_file) {
+            (Some(text), Some(file)) => {
+                Some(rules_in(&text, file, root, &macros, shown_from, skipped))
+            }
+            _ => None,
         };
         Ok(Repository {
-            files: HashMap::new(),
+            files,
             info,
             macros,
         })
@@ -204,9 +234,20 @@ fn read_file(
     shown_from: &Path,
     skipped: &mut Vec<String>,
 ) -> Result<Option<Attributes>, Error> {
-    let Some(text) = read(file)? else {
-        return Ok(None);
-    };
+    Ok(read(file)?.map(|text| rules_in(&text, file, base, macros, shown_from, skipped)))
+}
+
+/// The rules in `text`, the contents of `file`, that touch the encoding attribute, matched
+/// relative to `base`; a line that cannot be used is described in `skipped`, its file shown
+/// relative to `shown_from`.
+fn rules_in(
+    text: &str,
+    file: &Path,
+    base: &Path,
+    macros: &HashMap<String, Option<State>>,
+    shown_from: &Path,
+    skipped: &mut Vec<String>,
+) -> Attributes {
     let shown = crate::output::relative(file, shown_from);
     let mut rules = Vec::new();
     for (index, raw) in text.lines().enumerate() {
@@ -236,7 +277,7 @@ fn read_file(
             }
         }
     }
-    Ok(Some(Attributes { file: shown, rules }))
+    Attributes { file: shown, rules }
 }
 
 /// The git directory of the repository at `root`, where `info/attributes` is: `.git` itself, or
@@ -260,8 +301,16 @@ fn git_dir(root: &Path) -> Result<Option<PathBuf>, Error> {
     }))
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Every file `read` was asked for on this thread, so a test can count them.
+    static READS: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// A file's text, `None` if it does not exist.
 fn read(file: &Path) -> Result<Option<String>, Error> {
+    #[cfg(test)]
+    READS.with(|reads| reads.borrow_mut().push(file.to_path_buf()));
     match fs::read(file) {
         Ok(bytes) => Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
@@ -538,6 +587,91 @@ mod tests {
         assert!(
             skipped[0].starts_with("\".gitattributes\": line 1: "),
             "{skipped:?}"
+        );
+    }
+
+    #[test]
+    fn the_top_level_attributes_and_info_attributes_are_each_read_once() {
+        // Their macros and their rules come from one read, and later questions find them
+        // cached, however many files are asked about.
+        let dir = std::env::temp_dir().join(format!("quaffed-git-once-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join(".git/info")).unwrap();
+        fs::write(
+            dir.join(".gitattributes"),
+            "[attr]sjis working-tree-encoding=SHIFT-JIS\n*.c sjis\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join(".git/info/attributes"),
+            "*.h working-tree-encoding=EUC-JP\n",
+        )
+        .unwrap();
+        READS.with(|reads| reads.borrow_mut().clear());
+        let mut workspace = find(&dir).unwrap();
+        let names: Vec<_> = ["a.c", "b.c", "a.h", "sub/c.c"]
+            .iter()
+            .map(|path| {
+                workspace
+                    .declared_encoding(&dir.join(path), &dir)
+                    .unwrap()
+                    .map(|d| d.name)
+            })
+            .collect();
+        let reads = READS.with(|reads| reads.borrow().clone());
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(
+            names,
+            [
+                Some("SHIFT-JIS".to_owned()),
+                Some("SHIFT-JIS".to_owned()),
+                Some("EUC-JP".to_owned()),
+                Some("SHIFT-JIS".to_owned()),
+            ]
+        );
+        for file in [dir.join(".gitattributes"), dir.join(".git/info/attributes")] {
+            let count = reads.iter().filter(|read| **read == file).count();
+            assert_eq!(count, 1, "{} read {count} times: {reads:?}", file.display());
+        }
+    }
+
+    #[test]
+    fn the_ignore_files_are_the_directory_s_and_at_the_root_info_exclude() {
+        let dir = std::env::temp_dir().join(format!("quaffed-git-ignores-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join(".git")).unwrap();
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::create_dir_all(dir.join("pointer")).unwrap();
+        fs::write(dir.join("pointer/.git"), "not a pointer\n").unwrap();
+        let ignores = find(&dir).unwrap().ignore_files();
+        let at_root = ignores.in_dir(&dir).unwrap();
+        let below = ignores.in_dir(&dir.join("sub")).unwrap();
+        // A .git file that points nowhere is a repository's root with no info/exclude to read.
+        let no_git_dir = ignores.in_dir(&dir.join("pointer")).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(
+            at_root,
+            SystemIgnores {
+                file: dir.join(".gitignore"),
+                exclude: Some(dir.join(".git/info/exclude")),
+                repository_root: true,
+            }
+        );
+        assert_eq!(
+            below,
+            SystemIgnores {
+                file: dir.join("sub/.gitignore"),
+                exclude: None,
+                repository_root: false,
+            }
+        );
+        assert_eq!(
+            no_git_dir,
+            SystemIgnores {
+                file: dir.join("pointer/.gitignore"),
+                exclude: None,
+                repository_root: true,
+            }
         );
     }
 
