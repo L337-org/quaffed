@@ -355,8 +355,9 @@ correct.
 1. Read the failing job's summary for the budget, its limit, what was measured and the run
    judged for it, and download the `budgets` artefact.
 2. Compare the trace with main's - the latest run of the job on main has its own artefact.  For
-   instructions, `callgrind_annotate` the profiles of the runs judged for instructions, or diff their `.callgrind.txt`
-   reports, and find where the count rose; for files, diff the `.files.txt` lists.
+   instructions, `callgrind_annotate` the profiles of the runs judged for instructions, or diff
+   their `.callgrind.txt` reports, and find where the count rose; for files, diff the
+   `.files.txt` lists.
 3. Decide whether that is what the change should do.  If not, it is a defect: fix the code, not
    the limit.
 4. If it is, set the limit in `budgets.toml` to the summary's *Limit to set*, which is the

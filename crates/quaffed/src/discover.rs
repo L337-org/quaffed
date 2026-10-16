@@ -592,8 +592,8 @@ mod tests {
                     .into_owned()
             })
             .collect();
-        // The good lines still apply beneath it; the bad one is noted once, though the file is
-        // the rules for every entry under the root.
+        // The good lines still apply beneath it; the bad one is noted once, though the root's
+        // .gitignore is consulted for every entry beneath the root.
         assert_eq!(names, ["build/b.py"]);
         assert_eq!(found.skipped_rules.len(), 1, "{:?}", found.skipped_rules);
         assert!(

@@ -258,6 +258,8 @@ def worst(name, runs):
     # Each budget with a margin is judged on its worst run, named so its traces can be found:
     # the most instructions for the profile to read, and the most memory.
     measured = dict(runs[0])
+    # Not the run judged: each budget below names its own.
+    del measured["run"]
     for budget in ("instructions", "peak_memory_kib"):
         values = [r[budget] for r in runs]
         worst_run = max(runs, key=lambda r: r[budget])
