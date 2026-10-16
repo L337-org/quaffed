@@ -8,15 +8,19 @@
 //! `.gitignore` and `.git/info/exclude` - and nothing else of the system's: no configuration, so
 //! no global excludes file.  They are read and matched here rather than by the `ignore` crate's
 //! walker, which would read them up to the filesystem root; this reads none above the project.
+//! The walk is quaff's own as well, so that a directory is listed only once it is to be entered.
 //! Hidden files are searched.  Version-control metadata is skipped by name.
 
 use std::collections::HashMap;
 use std::fmt;
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
+use crate::contents::Contents;
 use crate::workspace::{IgnoreFiles, Workspace};
 
 /// Directory and file names that hold version-control metadata, never searched.
@@ -42,11 +46,25 @@ pub struct Found {
     pub skipped_rules: Vec<String>,
 }
 
+impl Found {
+    /// Counts an entry that is not a directory: a regular file to search, or a symbolic link or
+    /// a special file, which are not read.
+    fn count(&mut self, path: &Path, kind: fs::FileType) {
+        if kind.is_symlink() {
+            self.links_not_followed += 1;
+        } else if kind.is_file() {
+            self.files.push(path.to_path_buf());
+        } else {
+            self.special_files += 1;
+        }
+    }
+}
+
 /// Discovery could not finish, and a search over part of the scope must not pass for a search
 /// over all of it.
 #[derive(Debug)]
 pub struct Error {
-    /// What the walker reported, verbatim.
+    /// What could not be read, with the system's own error, verbatim.
     pub cause: ignore::Error,
     /// The directory paths in the message are made relative to, as every other message's are.
     pub cwd: PathBuf,
@@ -62,29 +80,20 @@ impl fmt::Display for Error {
     }
 }
 
-/// Whether `err` is only ignore-file lines that could not be parsed, which cost one rule each,
-/// rather than something that stops the walk.
+/// Whether `err` is an ignore-file line that could not be parsed, which costs that one rule,
+/// rather than something that stops the walk.  Each is reported on its own, tagged with its
+/// file and line, as the rules are read.
 fn is_rule_error(err: &ignore::Error) -> bool {
     match err {
         ignore::Error::Glob { .. } => true,
-        ignore::Error::WithPath { err, .. }
-        | ignore::Error::WithLineNumber { err, .. }
-        | ignore::Error::WithDepth { err, .. } => is_rule_error(err),
-        ignore::Error::Partial(errs) => errs.iter().all(is_rule_error),
+        ignore::Error::WithPath { err, .. } | ignore::Error::WithLineNumber { err, .. } => {
+            is_rule_error(err)
+        }
         _ => false,
     }
 }
 
-/// The separate errors inside `err`: one per unparseable line, however the walker grouped them.
-fn each_error(err: &ignore::Error) -> Vec<&ignore::Error> {
-    match err {
-        ignore::Error::Partial(errs) => errs.iter().flat_map(each_error).collect(),
-        ignore::Error::WithDepth { err, .. } => each_error(err),
-        other => vec![other],
-    }
-}
-
-/// The walker's error in quaff's form: a path relative to `cwd` and quoted, a line number
+/// A discovery error in quaff's form: a path relative to `cwd` and quoted, a line number
 /// where there is one, and the underlying error's own words.
 fn describe(err: &ignore::Error, cwd: &Path) -> String {
     match err {
@@ -99,11 +108,6 @@ fn describe(err: &ignore::Error, cwd: &Path) -> String {
             format!("line {line}: {}", describe(err, cwd))
         }
         ignore::Error::WithDepth { err, .. } => describe(err, cwd),
-        ignore::Error::Partial(errs) => errs
-            .iter()
-            .map(|err| describe(err, cwd))
-            .collect::<Vec<_>>()
-            .join("; "),
         // walkdir wraps the system's error in one of its own, whose message repeats the
         // absolute path already given above; the system's error is the one to quote.
         ignore::Error::Io(io) => io
@@ -131,71 +135,164 @@ impl std::error::Error for Error {
 ///
 /// # Errors
 ///
-/// Returns an [`Error`] for anything the walker cannot read - a directory, or an ignore file
-/// it could not parse - rather than searching the rest and reporting a short answer as complete.
-pub fn files(scope: &Path, cwd: &Path, workspace: Option<&dyn Workspace>) -> Result<Found, Error> {
+/// Returns an [`Error`] for anything that cannot be read - a directory, or an ignore file - rather
+/// than searching the rest and reporting a short answer as complete.
+pub fn files(
+    scope: &Path,
+    cwd: &Path,
+    workspace: Option<&dyn Workspace>,
+    contents: &Contents,
+) -> Result<Found, Error> {
     let boundary = workspace.map_or(cwd, |w| w.root());
     let mut found = Found::default();
-    // The walker reads its ignore files from every directory above where it starts, up to the
-    // filesystem root, and cannot be told to stop at the project's.  So it reads none: it walks
-    // from the boundary, narrowed to the scope, and the rules are read and matched here, as
-    // each directory is met, ranked as the walker ranks its own.  A file scope is walked on its
-    // own, as naming it is asking for it whatever ignores it.
-    let rules = Arc::new(Rules::new(boundary, workspace.map(Workspace::ignore_files)));
-    let start = if scope.is_dir() { boundary } else { scope };
-    let narrow_to = scope.to_path_buf();
-    let matcher = Arc::clone(&rules);
-    let mut walker = ignore::WalkBuilder::new(start);
-    walker
-        .standard_filters(false)
-        .follow_links(false)
-        .sort_by_file_name(std::cmp::Ord::cmp)
-        .filter_entry(move |entry| {
-            let path = entry.path();
-            if entry
-                .file_name()
-                .to_str()
-                .is_some_and(|name| VCS_METADATA.contains(&name))
-            {
-                return false;
-            }
-            // On the way down to the scope, and the scope itself, nothing is ignored: those are
-            // the boundaries naming the scope crosses.  Beside the way, nothing is searched.
-            if narrow_to.starts_with(path) {
-                return true;
-            }
-            if !path.starts_with(&narrow_to) {
-                return false;
-            }
-            let is_dir = entry.file_type().is_some_and(|kind| kind.is_dir());
-            !matcher.ignored(path, is_dir)
-        });
-    for entry in walker.build() {
-        // The walker reads no ignore file, so what it reports is never a line that could not be
-        // parsed: it is a directory that could not be listed, and stops the run.
-        let entry = entry.map_err(|cause| Error {
-            cause,
-            cwd: cwd.to_path_buf(),
-        })?;
-        let Some(kind) = entry.file_type() else {
-            continue;
-        };
-        if !entry.path().starts_with(scope) {
-            continue;
-        }
-        if kind.is_symlink() {
-            found.links_not_followed += 1;
-        } else if kind.is_file() {
-            found.files.push(entry.into_path());
-        } else if !kind.is_dir() {
-            found.special_files += 1;
-        }
+    // The rules are read and matched here, as each directory is met, ranked as the ignore
+    // crate's walker ranks its own, and none above the boundary is read.  The walk is quaff's
+    // own too: a directory is listed only once it is to be entered, so an ignored one - or one
+    // beside the way to the scope - is never opened, where a walker that filters what it has
+    // already listed would read every name in it.
+    let rules = Rules::new(boundary, workspace.map(Workspace::ignore_files), contents);
+    if scope.is_dir() {
+        walk(boundary, scope, &rules, cwd, &mut found)?;
+    } else {
+        // A file scope is searched on its own, as naming it is asking for it whatever ignores
+        // it.
+        let kind = fs::symlink_metadata(scope)
+            .map_err(|cause| io_error(scope, cause, cwd))?
+            .file_type();
+        found.count(scope, kind);
     }
     for cause in rules.take_errors() {
         tolerate(cause, cwd, &mut found)?;
     }
     found.files.sort();
     Ok(found)
+}
+
+/// Walks from `start`, the boundary, down to and through `scope`, adding what is found under
+/// `scope` to `found`, in name order.  The directories on the way to the scope, and the scope,
+/// are entered whatever ignores them: those are the boundaries naming the scope crosses.
+/// Nothing beside the way is entered, and nothing under the scope that the rules ignore.
+fn walk(
+    start: &Path,
+    scope: &Path,
+    rules: &Rules,
+    cwd: &Path,
+    found: &mut Found,
+) -> Result<(), Error> {
+    // Each directory to list, and whether it is in the scope: the scope and everything under it
+    // are, so its entries are matched against the rules without comparing each with the scope.
+    let mut dirs = vec![(start.to_path_buf(), start == scope)];
+    while let Some((dir, inside)) = dirs.pop() {
+        #[cfg(test)]
+        LISTED.with(|listed| listed.borrow_mut().push(dir.clone()));
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(&dir).map_err(|cause| io_error(&dir, cause, cwd))? {
+            let entry = entry.map_err(|cause| io_error(&dir, cause, cwd))?;
+            let path = entry.path();
+            // The entry's own type: a symbolic link is a link, never what it points to.
+            let kind = entry
+                .file_type()
+                .map_err(|cause| io_error(&path, cause, cwd))?;
+            entries.push((entry.file_name(), path, kind));
+        }
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        let chain = inside.then(|| rules.chain(&dir));
+        let mut deeper = Vec::new();
+        for (name, path, kind) in entries {
+            if name
+                .to_str()
+                .is_some_and(|name| VCS_METADATA.contains(&name))
+            {
+                continue;
+            }
+            let child_inside = if let Some(chain) = &chain {
+                if Rules::ignored_in(chain, &path, kind.is_dir()) {
+                    continue;
+                }
+                true
+            } else if scope.starts_with(&path) {
+                // On the way to the scope, or the scope itself: entered whatever ignores it.
+                path == scope
+            } else {
+                // Beside the way to the scope.
+                continue;
+            };
+            if kind.is_dir() {
+                deeper.push((path, child_inside));
+            } else if child_inside {
+                found.count(&path, kind);
+            }
+        }
+        // Last pushed is walked first, so the directories go in reverse to keep name order.
+        dirs.extend(deeper.into_iter().rev());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Every directory the walk listed on this thread, so a test can see what it opened.
+    static LISTED: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// An error reading `path`, which stops the run: a directory that cannot be listed or an entry
+/// whose type cannot be read, named with the system's own words.
+fn io_error(path: &Path, cause: io::Error, cwd: &Path) -> Error {
+    Error {
+        cause: ignore::Error::WithPath {
+            path: path.to_path_buf(),
+            err: Box::new(ignore::Error::Io(cause)),
+        },
+        cwd: cwd.to_path_buf(),
+    }
+}
+
+/// The rules in `bytes`, the contents of the ignore file `file`, matched relative to `dir`, and
+/// what could not be used, each error tagged with the file and its line.
+///
+/// Parsed as `GitignoreBuilder::add` parses a file it opens itself, which a test holds it to:
+/// by line, a line's CR and LF dropped, a UTF-8 byte-order mark dropped from the first line, and
+/// a line that is not UTF-8 ending the file, as it ends `add`'s reading.  quaff parses the bytes
+/// rather than letting `add` open the file, so that a file also searched is read once.
+fn parse_ignore_file(dir: &Path, file: &Path, bytes: &[u8]) -> (Gitignore, Vec<ignore::Error>) {
+    let mut builder = GitignoreBuilder::new(dir);
+    let mut errors = Vec::new();
+    let mut lines: Vec<&[u8]> = bytes.split(|&b| b == b'\n').collect();
+    if lines.last().is_some_and(|last| last.is_empty()) {
+        lines.pop();
+    }
+    for (index, raw) in lines.into_iter().enumerate() {
+        let tagged = |err: ignore::Error| ignore::Error::WithPath {
+            path: file.to_path_buf(),
+            err: Box::new(ignore::Error::WithLineNumber {
+                line: index as u64 + 1,
+                err: Box::new(err),
+            }),
+        };
+        let raw = raw.strip_suffix(b"\r").unwrap_or(raw);
+        let Ok(line) = std::str::from_utf8(raw) else {
+            errors.push(tagged(ignore::Error::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "stream did not contain valid UTF-8",
+            ))));
+            break;
+        };
+        let line = if index == 0 {
+            line.trim_start_matches('\u{feff}')
+        } else {
+            line
+        };
+        if let Err(err) = builder.add_line(Some(file.to_path_buf()), line) {
+            errors.push(tagged(err));
+        }
+    }
+    match builder.build() {
+        Ok(matcher) => (matcher, errors),
+        Err(cause) => {
+            errors.push(cause);
+            (Gitignore::empty(), errors)
+        }
+    }
 }
 
 /// An error from reading ignore files, tolerated if it is only lines that could not be parsed:
@@ -212,11 +309,9 @@ fn tolerate(cause: ignore::Error, cwd: &Path, found: &mut Found) -> Result<(), E
             cwd: cwd.to_path_buf(),
         });
     }
-    for each in each_error(&cause) {
-        let described = describe(each, cwd);
-        if !found.skipped_rules.contains(&described) {
-            found.skipped_rules.push(described);
-        }
+    let described = describe(&cause, cwd);
+    if !found.skipped_rules.contains(&described) {
+        found.skipped_rules.push(described);
     }
     Ok(())
 }
@@ -232,6 +327,8 @@ struct Rules {
     chains: Mutex<HashMap<PathBuf, Arc<Vec<Arc<DirRules>>>>>,
     /// What reading them reported, in the order met, for the run to judge once the walk is done.
     errors: Mutex<Vec<ignore::Error>>,
+    /// Where they are read through, so one also searched is read once.
+    contents: Contents,
 }
 
 /// One directory's ignore rules, each file as a matcher, empty where there is no such file.
@@ -243,24 +340,26 @@ struct DirRules {
 }
 
 impl Rules {
-    fn new(boundary: &Path, system: Option<Box<dyn IgnoreFiles>>) -> Rules {
+    fn new(boundary: &Path, system: Option<Box<dyn IgnoreFiles>>, contents: &Contents) -> Rules {
+        contents.keep_named(".ignore");
         Rules {
             boundary: boundary.to_path_buf(),
             system,
             chains: Mutex::new(HashMap::new()),
             errors: Mutex::new(Vec::new()),
+            contents: contents.clone(),
         }
     }
 
-    /// Whether `path` is ignored, decided as the walker decides: in each kind of ignore file,
-    /// the nearest directory with a rule that matches decides that kind, and the kinds then rank
-    /// `.ignore` above the system's own files above its exclude file.  The system's files stop
-    /// at the nearest repository root, so a nested repository's own rules alone apply in it;
-    /// `.ignore` files apply up to the boundary.  None above the boundary is ever read.
-    fn ignored(&self, path: &Path, is_dir: bool) -> bool {
-        // Only what is beneath the scope is asked about, so it always has a parent within the
-        // boundary.
-        let dirs = self.chain(path.parent().unwrap_or(path));
+    /// Whether `path`, in the directory whose chain of rules is `dirs`, is ignored, decided as
+    /// the `ignore` crate's walker decides: in each kind of ignore file, the nearest directory
+    /// with a rule that matches decides that kind, and the kinds then rank `.ignore` above the
+    /// system's own files above its exclude file.  The system's files stop at the nearest
+    /// repository root, so a nested repository's own rules alone apply in it; `.ignore` files
+    /// apply up to the boundary.  None above the boundary is ever read.
+    ///
+    /// The walk fetches a directory's chain once, for everything the directory holds.
+    fn ignored_in(dirs: &[Arc<DirRules>], path: &Path, is_dir: bool) -> bool {
         let decide = |matched: ignore::Match<&ignore::gitignore::Glob>| {
             if matched.is_ignore() {
                 Some(true)
@@ -272,7 +371,7 @@ impl Rules {
         };
         let (mut dot_ignore, mut system, mut exclude) = (None, None, None);
         let mut past_repository = false;
-        for rules in dirs.iter() {
+        for rules in dirs {
             if dot_ignore.is_none() {
                 dot_ignore = decide(rules.dot_ignore.matched(path, is_dir));
             }
@@ -340,17 +439,21 @@ impl Rules {
         let Some(file) = file.filter(|file| file.is_file()) else {
             return Gitignore::empty();
         };
-        let mut builder = GitignoreBuilder::new(dir);
-        if let Some(cause) = builder.add(&file) {
+        let bytes = match self.contents.read(&file) {
+            Ok(bytes) => bytes,
+            Err(cause) => {
+                self.report(ignore::Error::WithPath {
+                    path: file,
+                    err: Box::new(ignore::Error::Io(cause)),
+                });
+                return Gitignore::empty();
+            }
+        };
+        let (matcher, errors) = parse_ignore_file(dir, &file, &bytes);
+        for cause in errors {
             self.report(cause);
         }
-        match builder.build() {
-            Ok(matcher) => matcher,
-            Err(cause) => {
-                self.report(cause);
-                Gitignore::empty()
-            }
-        }
+        matcher
     }
 
     fn report(&self, cause: ignore::Error) {
@@ -372,8 +475,9 @@ mod tests {
 
     /// Discovery as a run does it: with the workspace found from `cwd`, if there is one.
     fn files_in(scope: &Path, cwd: &Path) -> Result<Found, Error> {
-        let workspace = crate::workspace::find(cwd);
-        files(scope, cwd, workspace.as_deref())
+        let contents = Contents::default();
+        let workspace = crate::workspace::find(cwd, &contents);
+        files(scope, cwd, workspace.as_deref(), &contents)
     }
 
     struct Tree(PathBuf);
@@ -777,6 +881,216 @@ mod tests {
         let found = files_in(&dir, &dir).unwrap();
         assert_eq!(found.files.len(), 1);
         assert!(found.skipped_rules.is_empty(), "{:?}", found.skipped_rules);
+    }
+
+    #[test]
+    fn an_ignore_file_that_is_not_utf8_stops_discovery_naming_its_line() {
+        // As the ignore crate reads one: the lines before the bad one apply, and the run stops
+        // rather than guess what the rest of the file says.
+        let tree = Tree::new("not-utf8", &[(".git/HEAD", ""), ("a.py", "")]);
+        fs::write(tree.0.join(".ignore"), b"*.log\nbad\xff\n").unwrap();
+        let message = files_in(&tree.0, &tree.0)
+            .expect_err("an ignore file that is not UTF-8 must stop discovery")
+            .to_string();
+        assert!(
+            message.starts_with("finding the files to search: \".ignore\": line 2: "),
+            "{message}"
+        );
+        assert!(message.contains("valid UTF-8"), "{message}");
+    }
+
+    /// Each error in `err`, as `GitignoreBuilder::add` groups several into one.
+    fn flattened(err: ignore::Error) -> Vec<String> {
+        match err {
+            ignore::Error::Partial(errs) => errs.into_iter().flat_map(flattened).collect(),
+            other => vec![other.to_string()],
+        }
+    }
+
+    #[test]
+    fn ignore_files_are_parsed_from_their_bytes_as_the_ignore_crate_parses_them() {
+        // GitignoreBuilder::add is the reference: for each file, the same paths ignored, the
+        // same whitelisted, and the same errors, as the crate's own reading of the same file.
+        let dir = std::env::temp_dir().join(format!("quaffed-parse-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let cases: &[&[u8]] = &[
+            b"\xef\xbb\xbf*.log\nbuild/\n",
+            b"*.log\r\n!keep.log\r\nbuild/\r\n",
+            b"*.tmp\nno-final-newline.c",
+            b"*.log\na{b\n[z-a]\n*.bak\n",
+            b"*.log\nbad\xff\n*.bak\n",
+            b"# a comment\n\n  \n\\#literal\ntrailing\\ \n",
+            b"",
+        ];
+        let paths = [
+            "a.log",
+            "keep.log",
+            "build",
+            "x.tmp",
+            "no-final-newline.c",
+            "y.bak",
+            "#literal",
+            "trailing ",
+            "other.py",
+        ];
+        for (number, bytes) in cases.iter().enumerate() {
+            let file = dir.join(format!("case{number}.ignore"));
+            fs::write(&file, bytes).unwrap();
+            let mut reference = GitignoreBuilder::new(&dir);
+            let reference_errors = reference.add(&file).map(flattened).unwrap_or_default();
+            let reference = reference.build().unwrap();
+            let (ours, our_errors) = parse_ignore_file(&dir, &file, bytes);
+            let our_errors: Vec<String> = our_errors.into_iter().flat_map(flattened).collect();
+            assert_eq!(our_errors, reference_errors, "case {number}: {bytes:?}");
+            for path in paths {
+                for is_dir in [false, true] {
+                    let path = dir.join(path);
+                    let (got, want) = (
+                        ours.matched(&path, is_dir),
+                        reference.matched(&path, is_dir),
+                    );
+                    assert_eq!(
+                        (got.is_ignore(), got.is_whitelist()),
+                        (want.is_ignore(), want.is_whitelist()),
+                        "case {number} {bytes:?}: {} as a {}",
+                        path.display(),
+                        if is_dir { "directory" } else { "file" }
+                    );
+                }
+            }
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_byte_order_marked_ignore_file_still_applies_its_first_line() {
+        let tree = Tree::new("bom", &[(".git/HEAD", ""), ("a.log", ""), ("b.py", "")]);
+        fs::write(tree.0.join(".ignore"), b"\xef\xbb\xbf*.log\n").unwrap();
+        assert_eq!(tree.found("."), [".ignore", "b.py"]);
+    }
+
+    /// Every answer `scripts/generate-ignore-cases` recorded from git, for the same trees
+    /// rebuilt here: discovery must list exactly the files git lists, for each scope asked.
+    #[test]
+    fn discovery_agrees_with_git_on_which_files_it_lists() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/ignores.txt");
+        let data = fs::read_to_string(path).unwrap_or_else(|err| panic!("reading {path}: {err}"));
+        let base = std::env::temp_dir().join(format!("quaffed-ignores-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let mut root: Option<PathBuf> = None;
+        // The scope being collected, and git's answer for it so far.
+        let mut pending: Option<(String, Vec<String>)> = None;
+        let mut checked = 0;
+        let check = |root: &Path, scope: &str, want: &[String]| {
+            let root = fs::canonicalize(root).unwrap();
+            let target = if scope == "." {
+                root.clone()
+            } else {
+                root.join(scope)
+            };
+            let found = files_in(&target, &root).unwrap();
+            let got: Vec<String> = found
+                .files
+                .iter()
+                .map(|p| {
+                    p.strip_prefix(&root)
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect();
+            assert_eq!(got, want, "{} scope {scope}", root.display());
+        };
+        for (number, line) in data.lines().enumerate() {
+            if line.starts_with('#') || line.is_empty() {
+                continue;
+            }
+            let fields: Vec<&str> = line.split('\t').collect();
+            let at = format!("{path}:{}", number + 1);
+            match fields.as_slice() {
+                ["case", name] => {
+                    if let (Some(root), Some((scope, want))) = (&root, pending.take()) {
+                        check(root, &scope, &want);
+                        checked += 1;
+                    }
+                    let dir = base.join(name);
+                    fs::create_dir_all(dir.join(".git")).unwrap();
+                    root = Some(dir);
+                }
+                ["repository", dir] => {
+                    let root = root.as_ref().expect("a case first");
+                    fs::create_dir_all(root.join(dir).join(".git")).unwrap();
+                }
+                ["file", file, hex] => {
+                    let bytes: Vec<u8> = (0..hex.len())
+                        .step_by(2)
+                        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("hex"))
+                        .collect();
+                    let target = root.as_ref().expect("a case first").join(file);
+                    fs::create_dir_all(target.parent().unwrap()).unwrap();
+                    fs::write(target, bytes).unwrap();
+                }
+                ["scope", scope] => {
+                    if let (Some(root), Some((scope, want))) = (&root, pending.take()) {
+                        check(root, &scope, &want);
+                        checked += 1;
+                    }
+                    pending = Some(((*scope).to_owned(), Vec::new()));
+                }
+                ["listed", file] => {
+                    pending
+                        .as_mut()
+                        .expect("a scope first")
+                        .1
+                        .push((*file).to_owned());
+                }
+                _ => panic!("{at}: cannot read {line:?}"),
+            }
+        }
+        if let (Some(root), Some((scope, want))) = (&root, pending.take()) {
+            check(root, &scope, &want);
+            checked += 1;
+        }
+        let _ = fs::remove_dir_all(&base);
+        // A file that held no answers would pass having checked nothing.
+        assert!(checked >= 10, "only {checked} scopes in {path}");
+    }
+
+    #[test]
+    fn an_ignored_directory_and_one_beside_the_scope_are_never_listed() {
+        // Listing an ignored node_modules/ would read every name in it to throw them away.
+        let tree = Tree::new(
+            "never-listed",
+            &[
+                (".git/HEAD", ""),
+                (".gitignore", "node_modules/\n"),
+                ("node_modules/pkg/index.js", ""),
+                ("beside/x.py", ""),
+                ("src/deeper/a.py", ""),
+            ],
+        );
+        let root = fs::canonicalize(&tree.0).unwrap();
+        for (scope, expected) in [
+            (".", vec![".", "beside", "src", "src/deeper"]),
+            ("src", vec![".", "src", "src/deeper"]),
+        ] {
+            LISTED.with(|listed| listed.borrow_mut().clear());
+            files_in(&root.join(scope), &root).unwrap();
+            let listed: Vec<String> = LISTED.with(|listed| {
+                listed
+                    .borrow()
+                    .iter()
+                    .map(
+                        |dir| match dir.strip_prefix(&root).unwrap().to_string_lossy() {
+                            name if name.is_empty() => ".".to_owned(),
+                            name => name.into_owned(),
+                        },
+                    )
+                    .collect()
+            });
+            assert_eq!(listed, expected, "scope {scope}");
+        }
     }
 
     #[test]

@@ -20,6 +20,7 @@ use quaffed_representation::span::{Source, Span, Spanned};
 use quaffed_script::{ErrorKind, location, parse_source};
 
 use crate::cli::{self, SourceArg, UsageError};
+use crate::contents::Contents;
 use crate::discover;
 use crate::editorconfig::EditorConfig;
 use crate::output;
@@ -200,7 +201,10 @@ pub fn run(
     out: &mut impl Write,
     notes: &mut impl Write,
 ) -> Result<Outcome, Failure> {
-    let mut built = build(sources, stdin)?;
+    // One store for the whole run, so a file read before the search or for its rules, and
+    // searched as well, is read once.
+    let contents = Contents::default();
+    let mut built = build(sources, stdin, &contents)?;
     built.program.narrow_to = scope.map(PathBuf::from);
     if built.program.body().is_empty() {
         return Err(Failure::Empty {
@@ -226,13 +230,14 @@ pub fn run(
         path: cwd.to_path_buf(),
         cause,
     })?;
-    let workspace = workspace::find(&cwd);
+    let workspace = workspace::find(&cwd, &contents);
     let scope = resolve_scope(
         built.program.narrow_to.as_deref(),
         &cwd,
         workspace.as_deref(),
     )?;
-    let found = discover::files(&scope, &cwd, workspace.as_deref()).map_err(Failure::Discovery)?;
+    let found = discover::files(&scope, &cwd, workspace.as_deref(), &contents)
+        .map_err(Failure::Discovery)?;
 
     let searching: Vec<Searching> = steps.iter().flat_map(Step::patterns).collect();
     let patterns: Vec<&TextPattern> = searching.iter().map(|s| s.pattern).collect();
@@ -243,8 +248,9 @@ pub fn run(
         .map_or_else(|| cwd.clone(), |w| w.root().to_path_buf());
     let mut declarations = Declarations {
         workspace,
-        editorconfig: EditorConfig::new(&boundary),
+        editorconfig: EditorConfig::new(&boundary, &contents),
         cwd: cwd.clone(),
+        contents,
     };
     let locale = locale();
     let searched = search_files(
@@ -332,7 +338,11 @@ fn name(source: &Source) -> String {
 }
 
 /// Reads and parses each source in turn into one program.
-fn build(sources: Vec<SourceArg>, stdin: &mut impl Read) -> Result<Built, Failure> {
+fn build(
+    sources: Vec<SourceArg>,
+    stdin: &mut impl Read,
+    contents: &Contents,
+) -> Result<Built, Failure> {
     let mut built = Built {
         program: Program::default(),
         texts: Vec::new(),
@@ -347,7 +357,13 @@ fn build(sources: Vec<SourceArg>, stdin: &mut impl Read) -> Result<Built, Failur
             SourceArg::File(path) => {
                 let path = PathBuf::from(path);
                 let source = Source::File(path.clone());
-                let text = script_text(fs::read(&path), &source)?;
+                // Kept under its canonical path, as the walker names files, so that a script in
+                // the scope is not read again when it is searched.  A path that cannot be
+                // canonicalised is read as given, and fails with the system's own error.
+                let key = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+                contents.keep_path(&key);
+                let read = contents.read(&key).map(|bytes| bytes.to_vec());
+                let text = script_text(read, &source)?;
                 (source, text)
             }
             SourceArg::Stdin => {
@@ -599,11 +615,14 @@ fn search_files(
     };
     for file in files {
         let shown = output::relative(file, cwd);
-        let bytes = fs::read(file).map_err(|cause| Failure::Io {
-            doing: "reading",
-            path: shown.clone(),
-            cause,
-        })?;
+        let bytes = declarations
+            .contents
+            .read(file)
+            .map_err(|cause| Failure::Io {
+                doing: "reading",
+                path: shown.clone(),
+                cause,
+            })?;
         // Decided once, whatever the number of patterns.
         let resolution = resolve::resolve(
             &resolve::File {
@@ -1098,6 +1117,146 @@ mod tests {
     }
 
     #[test]
+    fn every_file_is_read_from_disk_once_whatever_reads_it() {
+        // Each rules file is in the scope as well, so it is both read for its rules - by
+        // discovery or a declaration reader - and searched for the query.
+        let dir = std::env::temp_dir().join(format!("quaffed-run-once-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        for (path, text) in [
+            (".git/info/attributes", "*.md text\n"),
+            (".gitignore", "*.log\n"),
+            (".ignore", "*.tmp\n"),
+            (".gitattributes", "*.c text\n"),
+            (".editorconfig", "root = true\n"),
+            ("sub/.gitignore", "*.bak\n"),
+            ("sub/.editorconfig", "[*]\n"),
+            ("sub/a.txt", "TODO\n"),
+            ("b.py", "TODO = 1\n"),
+        ] {
+            let path = dir.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        }
+        let dir = fs::canonicalize(&dir).unwrap();
+        crate::contents::DISK_READS.with(|reads| reads.borrow_mut().clear());
+        let outcome = run(
+            vec![SourceArg::Query(cli::Query {
+                text: "TODO".into(),
+                source: cli::Source::Positional,
+            })],
+            None,
+            &dir,
+            &mut io::empty(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+        );
+        let reads = crate::contents::DISK_READS.with(|reads| reads.borrow().clone());
+        let _ = fs::remove_dir_all(&dir);
+        assert!(outcome.is_ok(), "{outcome:?}");
+        let twice: Vec<_> = reads
+            .iter()
+            .filter(|path| reads.iter().filter(|read| read == path).count() > 1)
+            .collect();
+        assert!(twice.is_empty(), "read more than once: {twice:?}");
+        for rules in [
+            ".gitignore",
+            ".ignore",
+            ".gitattributes",
+            ".editorconfig",
+            "sub/.gitignore",
+        ] {
+            assert!(
+                reads.contains(&dir.join(rules)),
+                "{rules} never read: {reads:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_git_pointer_file_is_read_from_disk_once() {
+        // A linked worktree's .git is a file naming its own git directory, whose commondir names
+        // the main one, where info/ is; both are read for the repository's info/exclude and
+        // again for its info/attributes.
+        let dir = std::env::temp_dir().join(format!("quaffed-run-pointer-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let gitdir = dir.join("gitdir");
+        let project = dir.join("project");
+        for (path, text) in [
+            ("gitdir/info/attributes", "*.md text\n"),
+            ("gitdir/info/exclude", "*.tmp\n"),
+            ("gitdir/worktrees/project/commondir", "../..\n"),
+            ("project/a.txt", "TODO\n"),
+        ] {
+            let path = dir.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        }
+        let worktree = gitdir.join("worktrees/project");
+        fs::write(
+            project.join(".git"),
+            format!("gitdir: {}\n", worktree.display()),
+        )
+        .unwrap();
+        let project = fs::canonicalize(&project).unwrap();
+        crate::contents::DISK_READS.with(|reads| reads.borrow_mut().clear());
+        let outcome = run(
+            vec![SourceArg::Query(cli::Query {
+                text: "TODO".into(),
+                source: cli::Source::Positional,
+            })],
+            None,
+            &project,
+            &mut io::empty(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+        );
+        let reads = crate::contents::DISK_READS.with(|reads| reads.borrow().clone());
+        let _ = fs::remove_dir_all(&dir);
+        assert!(outcome.is_ok(), "{outcome:?}");
+        for pointer in [project.join(".git"), worktree.join("commondir")] {
+            let count = reads.iter().filter(|read| **read == pointer).count();
+            assert_eq!(
+                count,
+                1,
+                "{} read {count} times: {reads:?}",
+                pointer.display()
+            );
+        }
+    }
+
+    #[test]
+    fn a_script_in_the_scope_is_read_from_disk_once() {
+        // `quaff -f scripts/fix.quaff` from the project's root: the script is read to run it,
+        // and is in the scope, so searched as well.
+        let dir = std::env::temp_dir().join(format!("quaffed-run-script-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join(".git")).unwrap();
+        fs::create_dir_all(dir.join("scripts")).unwrap();
+        fs::write(dir.join("scripts/fix.quaff"), "find \"TODO\"\n").unwrap();
+        fs::write(dir.join("a.txt"), "TODO\n").unwrap();
+        let dir = fs::canonicalize(&dir).unwrap();
+        let script = dir.join("scripts/fix.quaff");
+        crate::contents::DISK_READS.with(|reads| reads.borrow_mut().clear());
+        let mut out = Vec::new();
+        let outcome = run(
+            vec![SourceArg::File(script.clone().into_os_string())],
+            None,
+            &dir,
+            &mut io::empty(),
+            &mut out,
+            &mut Vec::new(),
+        );
+        let reads = crate::contents::DISK_READS.with(|reads| reads.borrow().clone());
+        let _ = fs::remove_dir_all(&dir);
+        assert!(outcome.is_ok(), "{outcome:?}");
+        // The script holds "TODO" too, so it was searched as well as run.
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.contains("fix.quaff"), "{out}");
+        let count = reads.iter().filter(|read| **read == script).count();
+        assert_eq!(count, 1, "the script read {count} times: {reads:?}");
+    }
+
+    #[test]
     fn a_file_without_matches_is_not_listed_for_a_pattern() {
         let dir = std::env::temp_dir().join(format!("quaffed-run-{}", std::process::id()));
         fs::create_dir_all(&dir).expect("creating the directory");
@@ -1108,8 +1267,9 @@ mod tests {
         let pattern = TextPattern::literal("TODO");
         let mut declarations = Declarations {
             workspace: None,
-            editorconfig: EditorConfig::new(&dir),
+            editorconfig: EditorConfig::new(&dir, &Contents::default()),
             cwd: dir.clone(),
+            contents: Contents::default(),
         };
         let searched = search_files(&[with, without], &dir, &[&pattern], &mut declarations, None);
         let _ = fs::remove_dir_all(&dir);

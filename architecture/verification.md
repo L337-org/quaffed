@@ -313,9 +313,8 @@ runner's speed.
   - `paths_opened` and `bytes_read`: exactly how many paths in the project quaff opens,
     directories included, and how many bytes it reads from them, traced with `strace`.  These
     have no margin: a change in either is a change in behaviour.
-- **No path in the project may be opened twice**, except a file both read for its rules and
-  searched, which `budgets.toml` names under `[inside]`; **nothing outside the project may be
-  opened** but what it allows under `[outside]`, each with its reason.
+- **No path in the project may be opened twice**, and **nothing outside the project may be
+  opened** but what `budgets.toml` allows under `[outside]`, each with its reason.
 - **The job runs each scenario more than once**, as many times as its `--repeat` says, and judges
   each budget with a margin on its worst run, which the summary names, so it shows how much the
   counts moved; the file access must be identical every time, or nothing is judged.
@@ -383,6 +382,13 @@ and runs `packaging/deb/install-test/check` there, which:
 5. searches a small project it writes, whose exact output is known, and checks a failed
    assertion there exits 2 saying what it expected and what it found, so a binary that runs but
    answers wrongly fails too.
+
+Building each distribution's image pulls its pinned base image from a registry outside the
+test's control.  A registry server error, 5xx, says nothing about the package, so it alone is
+retried, twice, after a pause that `TEST_DEB_RETRY_PAUSE` sets and that doubles; each retry says
+what the registry answered.  Any other failure, or a third server error, fails with docker's own
+words.  `crates/quaffed/tests/test_deb.rs` runs the script against a stand-in `docker` to hold
+it to that.
 
 Each step is named before it runs, and a failure ends `check: FAILED at: <step>`.  Each
 distribution's whole output is kept beside the package as

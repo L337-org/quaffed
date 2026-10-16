@@ -16,13 +16,13 @@
 //! attributes from that repository's files alone.
 
 use std::collections::HashMap;
-use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
 use super::{Declared, Error, IgnoreFiles, Origin, SystemIgnores, Workspace};
+use crate::contents::Contents;
 
 /// The name whose presence marks a project root.
 ///
@@ -41,6 +41,8 @@ pub struct Git {
     /// The repository each directory asked about is in, by the nearest `.git` at or above it.
     owners: HashMap<PathBuf, PathBuf>,
     skipped: Vec<String>,
+    /// Where files are read through, so one also searched is read once.
+    contents: Contents,
 }
 
 /// One repository's attributes files, read as they are needed.
@@ -55,11 +57,11 @@ struct Repository {
 }
 
 /// Finds the nearest directory at or above `start` holding `.git`, if any.
-pub(super) fn find(start: &Path) -> Option<Box<dyn Workspace>> {
+pub(super) fn find(start: &Path, contents: &Contents) -> Option<Box<dyn Workspace>> {
     start
         .ancestors()
         .find(|dir| is_root(dir))
-        .map(|root| Box::new(Git::new(root)) as Box<dyn Workspace>)
+        .map(|root| Box::new(Git::new(root, contents)) as Box<dyn Workspace>)
 }
 
 /// Whether `dir` holds `.git`.
@@ -74,7 +76,9 @@ impl Workspace for Git {
     }
 
     fn ignore_files(&self) -> Box<dyn IgnoreFiles> {
-        Box::new(GitIgnores)
+        Box::new(GitIgnores {
+            contents: self.contents.clone(),
+        })
     }
 
     fn declared_encoding(
@@ -89,7 +93,8 @@ impl Workspace for Git {
         // repository alone, as git does when it works there.
         let root = self.owner(dir);
         if !self.repositories.contains_key(&root) {
-            let repository = Repository::read(&root, shown_from, &mut self.skipped)?;
+            let repository =
+                Repository::read(&root, &self.contents, shown_from, &mut self.skipped)?;
             self.repositories.insert(root.clone(), repository);
         }
         let repository = self
@@ -108,6 +113,7 @@ impl Workspace for Git {
         {
             if !repository.files.contains_key(dir) {
                 let attributes = read_file(
+                    &self.contents,
                     &dir.join(".gitattributes"),
                     dir,
                     &repository.macros,
@@ -136,13 +142,15 @@ impl Workspace for Git {
 
 /// git's ignore files: each directory's `.gitignore`, and at each repository's root its
 /// `info/exclude`, never the configuration's global excludes file.
-struct GitIgnores;
+struct GitIgnores {
+    contents: Contents,
+}
 
 impl IgnoreFiles for GitIgnores {
     fn in_dir(&self, dir: &Path) -> Result<SystemIgnores, Error> {
         let repository_root = is_root(dir);
         let exclude = if repository_root {
-            git_dir(dir)?.map(|git_dir| git_dir.join("info").join("exclude"))
+            git_dir(dir, &self.contents)?.map(|git_dir| git_dir.join("info").join("exclude"))
         } else {
             None
         };
@@ -155,12 +163,20 @@ impl IgnoreFiles for GitIgnores {
 }
 
 impl Git {
-    fn new(root: &Path) -> Git {
+    fn new(root: &Path, contents: &Contents) -> Git {
+        // The first two may also be searched, and the pointer files - a linked worktree's or a
+        // submodule's .git, and a worktree's commondir - are read both to find info/exclude and
+        // to find info/attributes, so all are kept for whichever reads them second.
+        contents.keep_named(".gitattributes");
+        contents.keep_named(".gitignore");
+        contents.keep_named(MARKER);
+        contents.keep_named("commondir");
         Git {
             root: root.to_path_buf(),
             repositories: HashMap::new(),
             owners: HashMap::new(),
             skipped: Vec::new(),
+            contents: contents.clone(),
         }
     }
 
@@ -188,14 +204,15 @@ impl Repository {
     /// never reads it again.
     fn read(
         root: &Path,
+        contents: &Contents,
         shown_from: &Path,
         skipped: &mut Vec<String>,
     ) -> Result<Repository, Error> {
         let top_file = root.join(".gitattributes");
-        let info_file = git_dir(root)?.map(|dir| dir.join("info").join("attributes"));
-        let top = read(&top_file)?;
+        let info_file = git_dir(root, contents)?.map(|dir| dir.join("info").join("attributes"));
+        let top = read(contents, &top_file)?;
         let info = match &info_file {
-            Some(file) => read(file)?,
+            Some(file) => read(contents, file)?,
             None => None,
         };
         let mut macros = HashMap::new();
@@ -228,13 +245,14 @@ impl Repository {
 /// if there is no such file; a line that cannot be used is described in `skipped`, its file
 /// shown relative to `shown_from`.
 fn read_file(
+    contents: &Contents,
     file: &Path,
     base: &Path,
     macros: &HashMap<String, Option<State>>,
     shown_from: &Path,
     skipped: &mut Vec<String>,
 ) -> Result<Option<Attributes>, Error> {
-    Ok(read(file)?.map(|text| rules_in(&text, file, base, macros, shown_from, skipped)))
+    Ok(read(contents, file)?.map(|text| rules_in(&text, file, base, macros, shown_from, skipped)))
 }
 
 /// The rules in `text`, the contents of `file`, that touch the encoding attribute, matched
@@ -283,19 +301,19 @@ fn rules_in(
 /// The git directory of the repository at `root`, where `info/attributes` is: `.git` itself, or
 /// the one a `.git` file points to, or the common directory a linked worktree's points to in
 /// turn.
-fn git_dir(root: &Path) -> Result<Option<PathBuf>, Error> {
+fn git_dir(root: &Path, contents: &Contents) -> Result<Option<PathBuf>, Error> {
     let marker = root.join(MARKER);
     if marker.is_dir() {
         return Ok(Some(marker));
     }
-    let Some(text) = read(&marker)? else {
+    let Some(text) = read(contents, &marker)? else {
         return Ok(None);
     };
     let Some(pointed) = text.lines().next().and_then(|l| l.strip_prefix("gitdir:")) else {
         return Ok(None);
     };
     let dir = root.join(pointed.trim());
-    Ok(Some(match read(&dir.join("commondir"))? {
+    Ok(Some(match read(contents, &dir.join("commondir"))? {
         Some(common) => dir.join(common.trim()),
         None => dir,
     }))
@@ -308,10 +326,10 @@ thread_local! {
 }
 
 /// A file's text, `None` if it does not exist.
-fn read(file: &Path) -> Result<Option<String>, Error> {
+fn read(contents: &Contents, file: &Path) -> Result<Option<String>, Error> {
     #[cfg(test)]
     READS.with(|reads| reads.borrow_mut().push(file.to_path_buf()));
-    match fs::read(file) {
+    match contents.read(file) {
         Ok(bytes) => Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
         // A `.git` file's directory, or a path under a file, is not there to read.
@@ -525,6 +543,7 @@ fn unquote(quoted: &str) -> Option<(String, &str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     fn settings(line: &str) -> Vec<Setting> {
         match parse(line) {
@@ -578,7 +597,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join(".git")).unwrap();
         fs::write(dir.join(".gitattributes"), "a{b working-tree-encoding=X\n").unwrap();
-        let mut workspace = find(&dir).unwrap();
+        let mut workspace = find(&dir, &Contents::default()).unwrap();
         let declared = workspace.declared_encoding(&dir.join("x.c"), &dir).unwrap();
         let skipped = workspace.skipped().to_vec();
         let _ = fs::remove_dir_all(&dir);
@@ -608,7 +627,7 @@ mod tests {
         )
         .unwrap();
         READS.with(|reads| reads.borrow_mut().clear());
-        let mut workspace = find(&dir).unwrap();
+        let mut workspace = find(&dir, &Contents::default()).unwrap();
         let names: Vec<_> = ["a.c", "b.c", "a.h", "sub/c.c"]
             .iter()
             .map(|path| {
@@ -643,7 +662,7 @@ mod tests {
         fs::create_dir_all(dir.join("sub")).unwrap();
         fs::create_dir_all(dir.join("pointer")).unwrap();
         fs::write(dir.join("pointer/.git"), "not a pointer\n").unwrap();
-        let ignores = find(&dir).unwrap().ignore_files();
+        let ignores = find(&dir, &Contents::default()).unwrap().ignore_files();
         let at_root = ignores.in_dir(&dir).unwrap();
         let below = ignores.in_dir(&dir.join("sub")).unwrap();
         // A .git file that points nowhere is a repository's root with no info/exclude to read.
@@ -681,7 +700,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join(".git"), "not a pointer\n").unwrap();
-        let declared = find(&dir)
+        let declared = find(&dir, &Contents::default())
             .unwrap()
             .declared_encoding(&dir.join("x.c"), &dir)
             .unwrap();
@@ -692,7 +711,10 @@ mod tests {
     #[test]
     fn the_workspace_names_where_it_declares_encodings_and_its_errors() {
         let dir = std::env::temp_dir();
-        assert_eq!(Git::new(&dir).declares_encodings_in(), ".gitattributes");
+        assert_eq!(
+            Git::new(&dir, &Contents::default()).declares_encodings_in(),
+            ".gitattributes"
+        );
         let err = Error {
             path: "a/.gitattributes".into(),
             cause: io::Error::from(io::ErrorKind::PermissionDenied),

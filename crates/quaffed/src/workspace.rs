@@ -15,6 +15,8 @@ use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::contents::Contents;
+
 /// What a version control system tells quaff about a project.
 pub trait Workspace {
     /// The project root, which a search covers when no scope narrows it.
@@ -113,7 +115,7 @@ impl std::error::Error for Error {
 }
 
 /// How a version control system finds its project root at or above a directory, if there is one.
-type Find = fn(&Path) -> Option<Box<dyn Workspace>>;
+type Find = fn(&Path, &Contents) -> Option<Box<dyn Workspace>>;
 
 /// Each version control system quaff knows.
 const SYSTEMS: &[Find] = &[git::find];
@@ -124,11 +126,11 @@ const SYSTEMS: &[Find] = &[git::find];
 /// With no project, there is no root and no declarations; the caller searches from where it is
 /// instead, and that is not an error.
 #[must_use]
-pub fn find(start: &Path) -> Option<Box<dyn Workspace>> {
+pub fn find(start: &Path, contents: &Contents) -> Option<Box<dyn Workspace>> {
     // The nearest root wins, whichever system finds it, so a project nested in another is its
     // own project.
     SYSTEMS
         .iter()
-        .filter_map(|system| system(start))
+        .filter_map(|system| system(start, contents))
         .max_by_key(|workspace| workspace.root().components().count())
 }

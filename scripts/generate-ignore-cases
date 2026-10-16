@@ -1,0 +1,255 @@
+#!/usr/bin/env python3
+"""Record which files git lists in a set of project trees, for quaff's discovery to be held to.
+
+quaff reads `.gitignore` and `info/exclude` itself, ranked as the `ignore` crate ranks them and
+bounded by the project root.  This builds each case's tree in a temporary directory with
+`git init`, asks git which untracked files it would list - `git ls-files --others
+--exclude-standard`, run inside each repository, so a nested repository is listed by its own
+rules - and writes crates/quaffed/tests/data/ignores.txt.  A test in the quaffed crate rebuilds
+the same trees and holds discovery to every answer recorded, so it is checked against git itself
+rather than against expectations written by hand, or against the crate it copies.
+
+Only what git decides is asked: no `.ignore` files, which are ripgrep's and not git's; no
+directory quaff skips by name as another system's metadata; and a scope is asked about only
+where git does not ignore it, since naming an ignored directory is quaff's own rule.  git runs
+with no global or system configuration, so no global excludes file can change an answer.
+
+A path ending `/.git/` in a case makes a nested repository there.  File contents are written
+as given, so a case may hold a byte-order mark or CRLF line endings.
+
+It is run by hand when a case is added or git's behaviour is to be followed, and its output is
+committed.
+
+Usage: scripts/generate-ignore-cases [--output FILE]
+
+architecture/search.md describes discovery; add a case below for any behaviour to pin.
+"""
+
+import argparse
+import os
+import pathlib
+import subprocess
+import sys
+import tempfile
+
+# Each case: a name, its files as bytes, and the scopes to ask about, "" for the whole project.
+CASES = [
+    (
+        "patterns",
+        {
+            ".gitignore": b"*.log\n/top.txt\ndir/\n!keep.log\nsrc/*.c\n**/gen/\n*.o\n!important.o\n"
+            b"docs/**/*.md\n\\#hash\ntrailing\\ \n",
+            "a.log": b"",
+            "keep.log": b"",
+            "top.txt": b"",
+            "sub/top.txt": b"",
+            "dir/x": b"",
+            "sub/dir/y": b"",
+            "x.py": b"",
+            "src/a.c": b"",
+            "src/sub/b.c": b"",
+            "lib/src/c.c": b"",
+            "gen/a": b"",
+            "src/gen/b": b"",
+            "x.o": b"",
+            "important.o": b"",
+            "docs/a.md": b"",
+            "docs/sub/b.md": b"",
+            "docs/c.txt": b"",
+            "#hash": b"",
+            "trailing ": b"",
+            "out": b"",
+        },
+        ["", "sub", "src", "docs"],
+    ),
+    (
+        "deeper-files-override",
+        {
+            ".gitignore": b"*.tmp\n",
+            "sub/.gitignore": b"!keep.tmp\n*.py\n",
+            "a.tmp": b"",
+            "sub/keep.tmp": b"",
+            "sub/b.tmp": b"",
+            "sub/c.py": b"",
+            "d.py": b"",
+            "sub/deeper/e.py": b"",
+            "sub/deeper/keep.tmp": b"",
+        },
+        ["", "sub", "sub/deeper"],
+    ),
+    (
+        "an-ignored-directory-cannot-be-reentered",
+        {
+            ".gitignore": b"build/\n!build/keep.txt\n",
+            "build/keep.txt": b"",
+            "build/other.txt": b"",
+            "other.txt": b"",
+        },
+        [""],
+    ),
+    (
+        "directory-patterns-and-files-of-the-same-name",
+        {
+            ".gitignore": b"out/\n",
+            "out": b"",
+            "sub/out/x": b"",
+            "sub/y": b"",
+        },
+        ["", "sub"],
+    ),
+    (
+        "info-exclude-ranks-below-gitignore",
+        {
+            ".git/info/exclude": b"*.bak\nlocal/\n",
+            ".gitignore": b"!special.bak\n",
+            "a.bak": b"",
+            "special.bak": b"",
+            "c.txt": b"",
+            "local/d.txt": b"",
+            "sub/e.bak": b"",
+        },
+        ["", "sub"],
+    ),
+    (
+        "a-nested-repository-has-its-own-rules",
+        {
+            ".gitignore": b"*.log\n",
+            ".git/info/exclude": b"*.tmp\n",
+            "top.log": b"",
+            "top.tmp": b"",
+            "top.c": b"",
+            "vendor/lib/.git/": b"",
+            "vendor/lib/.gitignore": b"out/\n",
+            "vendor/lib/x.log": b"",
+            "vendor/lib/y.tmp": b"",
+            "vendor/lib/out/a.c": b"",
+            "vendor/lib/z.c": b"",
+        },
+        ["", "vendor", "vendor/lib"],
+    ),
+    (
+        "byte-order-mark-and-crlf",
+        {
+            ".gitignore": b"\xef\xbb\xbf*.log\r\n*.tmp\r\n!keep.tmp\r\n",
+            "a.log": b"",
+            "b.tmp": b"",
+            "keep.tmp": b"",
+            "c.c": b"",
+        },
+        [""],
+    ),
+]
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    repo = pathlib.Path(__file__).resolve().parent.parent
+    parser.add_argument(
+        "--output", type=pathlib.Path, default=repo / "crates/quaffed/tests/data/ignores.txt"
+    )
+    args = parser.parse_args(argv)
+    git = run(["git", "--version"], pathlib.Path.cwd(), {}).strip()
+    lines = [
+        f"# Which files {git} lists in each case's tree, for each scope asked about.",
+        "# Generated by scripts/generate-ignore-cases; regenerate rather than editing.",
+        "# Fields are separated by tabs, as a path may hold a space.  case NAME, then each nested",
+        "# repository as repository DIR, each file as file PATH HEX, then for each scope scope DIR",
+        "# (. for the whole project) followed by listed PATH for each file git lists under it.",
+    ]
+    with tempfile.TemporaryDirectory(prefix="quaffed-ignores-") as scratch:
+        home = pathlib.Path(scratch) / "home"
+        home.mkdir()
+        # No global or system git configuration: a repository's own files only.
+        env = {
+            "HOME": str(home),
+            "XDG_CONFIG_HOME": str(home),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "PATH": os.environ.get("PATH", ""),
+        }
+        for name, files, scopes in CASES:
+            root = pathlib.Path(scratch) / name
+            root.mkdir()
+            run(["git", "init", "-q", str(root)], root, env)
+            repositories = [root]
+            lines.append(f"case\t{name}")
+            for path, data in sorted(files.items()):
+                target = root / path
+                if path.endswith("/.git/"):
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    run(["git", "init", "-q", str(target.parent)], root, env)
+                    repositories.append(target.parent)
+                    lines.append(f"repository\t{path[: -len('/.git/')]}")
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(data)
+                lines.append(f"file\t{path}\t{data.hex()}")
+            listed = list_files(root, repositories, env)
+            for scope in scopes:
+                if scope and ignored(root, scope, env):
+                    return fail(f"{name}: scope {scope!r} is ignored by git, so git cannot answer")
+                lines.append(f"scope\t{scope or '.'}")
+                prefix = f"{scope}/" if scope else ""
+                for path in listed:
+                    if path.startswith(prefix):
+                        lines.append(f"listed\t{path}")
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"generate-ignore-cases: wrote {len(CASES)} cases to {str(args.output)!r}")
+    return 0
+
+
+def list_files(root, repositories, env):
+    """Every file git lists in the tree: each repository's untracked, not-ignored files, as that
+    repository's own rules decide, relative to the case's root and sorted."""
+    listed = []
+    for repository in repositories:
+        out = run(["git", "ls-files", "--others", "--exclude-standard", "-z"], repository, env)
+        for entry in filter(None, out.split("\0")):
+            # A nested repository is listed as its directory; its files are its own to list.
+            if entry.endswith("/"):
+                continue
+            listed.append(str((repository / entry).relative_to(root)))
+    return sorted(listed)
+
+
+def ignored(root, path, env):
+    """Whether git ignores `path`, asked of the repository holding it."""
+    done = subprocess.run(
+        ["git", "check-ignore", "-q", "--", path],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+    if done.returncode not in (0, 1):
+        sys.exit(
+            f"generate-ignore-cases: git check-ignore {path!r} exited {done.returncode}: "
+            f"{done.stderr.decode('utf-8', 'replace').strip()!r}"
+        )
+    return done.returncode == 0
+
+
+def run(command, cwd, env):
+    """A command's output, stopping with its own words if it fails."""
+    try:
+        done = subprocess.run(
+            command, cwd=cwd, env=env or None, capture_output=True, timeout=60, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired) as err:
+        sys.exit(f"generate-ignore-cases: running {command!r}: {err!r}")
+    if done.returncode != 0:
+        sys.exit(
+            f"generate-ignore-cases: {command!r} in {str(cwd)!r} exited "
+            f"{done.returncode}: {done.stderr.decode('utf-8', 'replace').strip()!r}"
+        )
+    return done.stdout.decode("utf-8", "replace")
+
+
+def fail(message):
+    print(f"generate-ignore-cases: {message}", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -313,6 +313,7 @@ mod tests {
 
     use std::path::Path;
 
+    use crate::contents::Contents;
     use crate::editorconfig::EditorConfig;
     use crate::resolve::{Declarations, File, Resolution, resolve};
 
@@ -323,8 +324,9 @@ mod tests {
         let nowhere = Path::new("/nonexistent-quaffed-search-test");
         let mut declarations = Declarations {
             workspace: None,
-            editorconfig: EditorConfig::new(nowhere),
+            editorconfig: EditorConfig::new(nowhere, &Contents::default()),
             cwd: nowhere.to_path_buf(),
+            contents: Contents::default(),
         };
         let file = File {
             path: &nowhere.join("file.txt"),

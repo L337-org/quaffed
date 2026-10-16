@@ -11,10 +11,10 @@
 //! `.editorconfig` above the project cannot change an answer.  Only `charset` is read.
 
 use std::collections::HashMap;
-use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::contents::Contents;
 use crate::workspace::{Declared, Error, Origin};
 
 /// The file `EditorConfig` keeps its settings in.
@@ -28,6 +28,8 @@ pub struct EditorConfig {
     /// The directory the search stops at: the project root, or where quaff runs.
     boundary: PathBuf,
     files: HashMap<PathBuf, Option<File>>,
+    /// Where files are read through, so an `.editorconfig` also searched is read once.
+    contents: Contents,
 }
 
 /// One `.editorconfig` file's `root` setting and its sections that set `charset`.
@@ -40,11 +42,14 @@ struct File {
 }
 
 impl EditorConfig {
-    /// Reads `.editorconfig` files at or below `boundary` as they are asked for.
-    pub fn new(boundary: &Path) -> Self {
+    /// Reads `.editorconfig` files at or below `boundary` as they are asked for, through
+    /// `contents`.
+    pub fn new(boundary: &Path, contents: &Contents) -> Self {
+        contents.keep_named(FILE);
         EditorConfig {
             boundary: boundary.to_path_buf(),
             files: HashMap::new(),
+            contents: contents.clone(),
         }
     }
 
@@ -67,7 +72,7 @@ impl EditorConfig {
         // the search.
         for dir in dirs {
             if !self.files.contains_key(&dir) {
-                let file = read(&dir, shown_from)?;
+                let file = read(&self.contents, &dir, shown_from)?;
                 self.files.insert(dir.clone(), file);
             }
             let Some(Some(file)) = self.files.get(&dir) else {
@@ -107,9 +112,9 @@ impl EditorConfig {
 }
 
 /// Reads `dir`'s `.editorconfig`, `None` if it has none.
-fn read(dir: &Path, shown_from: &Path) -> Result<Option<File>, Error> {
+fn read(contents: &Contents, dir: &Path, shown_from: &Path) -> Result<Option<File>, Error> {
     let path = dir.join(FILE);
-    let text = match fs::read(&path) {
+    let text = match contents.read(&path) {
         Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(cause) => return Err(Error { path, cause }),
@@ -400,6 +405,7 @@ fn match_from(glob: &[Node], text: &[char], at: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     fn glob_matches(glob: &str, path: &str) -> bool {
         matches(&compile(glob), &path.chars().collect::<Vec<_>>())
@@ -470,7 +476,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         // A directory where the file should be cannot be read as one.
         fs::create_dir_all(dir.join(FILE)).unwrap();
-        let err = EditorConfig::new(&dir)
+        let err = EditorConfig::new(&dir, &Contents::default())
             .charset(&dir.join("a.txt"), &dir)
             .unwrap_err();
         let _ = fs::remove_dir_all(&dir);
@@ -488,7 +494,7 @@ mod tests {
             "no equals sign here\nindent_style = tab\n[*]\nindent_size = 4\ncharset = latin1\n",
         )
         .unwrap();
-        let declared = EditorConfig::new(&dir)
+        let declared = EditorConfig::new(&dir, &Contents::default())
             .charset(&dir.join("a.txt"), &dir)
             .unwrap();
         let _ = fs::remove_dir_all(&dir);
