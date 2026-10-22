@@ -14,9 +14,10 @@ It is written in Rust and licensed GPL-3.0-or-later.
 `architecture/search.md` the command line, the search and the exit codes;
 `architecture/encoding.md` how a file's encoding is decided and its bytes read;
 `architecture/representation.md` the operation representation scripts are parsed into;
-`architecture/script.md` the script language.  It never describes what is not built, and it is
-not a record of everything that is.  A construct that parses but is not built is refused with
-exit 5, and those pages list which.
+`architecture/script.md` the script language; `architecture/syntax.md` the arena a parsed file
+becomes; `architecture/python.md` the Python adapter that builds it.  It never describes what is
+not built, and it is not a record of everything that is.  A construct that parses but is not
+built is refused with exit 5, and those pages list which.
 
 - **Do not implement features from a recollection of the design.**  When a piece of it settles,
   the intent a contributor needs lands in `architecture/` in the same change as the code, and
@@ -44,7 +45,9 @@ the work instead.  The shared hygiene check that CI runs fails on either.
 | discovery's ignore rules, or `scripts/generate-ignore-cases` | the discovery section of [architecture/search.md](architecture/search.md) |
 | `crates/representation/`: what a program means, the checker, or its lint configuration | [architecture/representation.md](architecture/representation.md) |
 | `crates/script/`: the script language's operands, grammar, errors or locations | [architecture/script.md](architecture/script.md) |
+| `crates/syntax/`: the arena a parsed file becomes, for every language | [architecture/syntax.md](architecture/syntax.md) |
 | `crates/python/`, or a `ruff_*` dependency or its version | [architecture/python.md](architecture/python.md) |
+| `crates/python/tests/round_trip.rs`, or how the corpus is judged by the oracle | the round trip section of [architecture/verification.md](architecture/verification.md) |
 | `corpus/`, `scripts/fetch-corpus` or `scripts/check-synthetic`, or adding Python to the synthetic corpus | the corpus sections of [architecture/verification.md](architecture/verification.md) |
 | `packaging/`, `scripts/build-deb`, the package or release workflows, or a dependency the binary links | [architecture/release.md](architecture/release.md) |
 | `scripts/test-deb`, `scripts/break-deb` or `packaging/deb/install-test/`, or adding a target distribution | the package install test section of [architecture/verification.md](architecture/verification.md) |

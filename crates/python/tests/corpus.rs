@@ -7,70 +7,27 @@
 //! fails naming each kind of node that no file contains.  `architecture/verification.md` says
 //! how to add to the corpus.
 
+mod common;
+
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
+use common::{GROUPS, Mode, files, group_files, synthetic};
 use quaffed_python::{Kind, all_kinds, kinds_in_expression, kinds_in_ipython, kinds_in_module};
-
-/// Fewer files than this means the corpus was not found or was emptied, not that it is complete.
-const MODULE_FLOOR: usize = 8;
-const EXPRESSION_FLOOR: usize = 2;
-const IPYTHON_FLOOR: usize = 1;
-
-fn corpus() -> PathBuf {
-    // CARGO_MANIFEST_DIR is crates/python; the workspace root is two levels up.
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("crates/python has a grandparent")
-        .join("corpus/synthetic")
-}
-
-/// The files under `dir` with `extension`, sorted, so failures read the same on every run.
-fn files(dir: &Path, extension: &str) -> Vec<PathBuf> {
-    let mut found: Vec<PathBuf> = fs::read_dir(dir)
-        .unwrap_or_else(|err| panic!("listing {}: {err}", dir.display()))
-        .map(|entry| entry.expect("reading a directory entry").path())
-        .filter(|path| path.extension().is_some_and(|e| e == extension))
-        .collect();
-    found.sort();
-    found
-}
 
 /// Every kind found across the corpus, failing on any file that does not parse.
 fn kinds_in_corpus() -> BTreeSet<Kind> {
-    let root = corpus();
-    let modules = files(&root.join("modules"), "py");
-    let expressions = files(&root.join("expressions"), "pyexpr");
-    let ipython = files(&root.join("ipython"), "ipy");
-    assert!(
-        modules.len() >= MODULE_FLOOR,
-        "found {} module files under {}, fewer than the floor of {MODULE_FLOOR}",
-        modules.len(),
-        root.join("modules").display()
-    );
-    assert!(
-        expressions.len() >= EXPRESSION_FLOOR,
-        "found {} expression files under {}, fewer than the floor of {EXPRESSION_FLOOR}",
-        expressions.len(),
-        root.join("expressions").display()
-    );
-    assert!(
-        ipython.len() >= IPYTHON_FLOOR,
-        "found {} IPython files under {}, fewer than the floor of {IPYTHON_FLOOR}",
-        ipython.len(),
-        root.join("ipython").display()
-    );
     let mut found = BTreeSet::new();
-    for path in &modules {
-        found.extend(parsed(path, kinds_in_module));
-    }
-    for path in &expressions {
-        found.extend(parsed(path, kinds_in_expression));
-    }
-    for path in &ipython {
-        found.extend(parsed(path, kinds_in_ipython));
+    for group in &GROUPS {
+        let parse: Parser = match group.mode {
+            Mode::Module => kinds_in_module,
+            Mode::Expression => kinds_in_expression,
+            Mode::Ipython => kinds_in_ipython,
+        };
+        for path in group_files(group) {
+            found.extend(parsed(&path, parse));
+        }
     }
     found
 }
@@ -123,7 +80,7 @@ fn removing_a_kind_from_what_was_found_fails_the_check() {
 
 /// The bytes of every module file, by name, so a form can be looked for in the raw file.
 fn module_bytes() -> Vec<(String, Vec<u8>)> {
-    files(&corpus().join("modules"), "py")
+    files(&synthetic().join("modules"), "py")
         .into_iter()
         .map(|path| {
             let name = path
