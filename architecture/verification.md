@@ -104,9 +104,10 @@ not judged, and the run says so.
 
 Real Python, as a check on what the synthetic corpus did not think to write: **CPython's own
 `Lib/test` at the release tag matching the oracle**, a large body of Python written to exercise
-the language.  It is **used for round-tripping, and as input when profiling by hand**, never by
-a gate, a budget or a benchmark, so its contents cannot move one.  Nothing that gates reads
-`target/corpus/`.
+the language.  It is **used for the round trip, and as input when profiling by hand**, never by
+a budget or a benchmark, so its contents cannot move a measured number.  Nothing that measures
+reads `target/corpus/`.  A file it holds can fail a pull request through the round trip, but
+only by not round-tripping or by disagreeing with the oracle.
 
 It is **fetched, not checked in**: it is CPython's code, under the PSF licence, and far larger
 than the rest of the repository.  `corpus/real-world.toml` pins it, and is the one place that
@@ -149,16 +150,16 @@ running the oracle, so it is generated with the files rather than kept in step b
 
 The **Real-world corpus** job in `premerge.yaml` runs `scripts/check-synthetic` and
 `scripts/fetch-corpus` with the oracle's Python, reusing a fetch whose manifest and script are
-unchanged.  `crates/quaffed/tests/fetch_corpus.rs` tests the fetch script itself in
-the ordinary run, against small archives it builds: only the path is extracted, a changed hash
-is refused, a member with a `..` step or a link escaping the directory is refused, the floor
-fails saying how many it read, another Python is refused, a completed fetch is reused, a changed
-pin is fetched again, a failed download leaves nothing behind, and a failed refetch keeps the
-previous tree.  `crates/quaffed/tests/check_synthetic.rs` tests the oracle check the same way: a
-refused file fails naming it in its parse mode, another Python is refused, and an empty group
-fails rather than passing having checked nothing.  Neither has a test of the overall download
-deadline or of a rename failing mid-replacement, which would need a slow server and fault
-injection.
+unchanged, and then the round trip over the fetched tree, below.
+`crates/quaffed/tests/fetch_corpus.rs` tests the fetch script itself in the ordinary run, against
+small archives it builds: only the path is extracted, a changed hash is refused, a member with a
+`..` step or a link escaping the directory is refused, the floor fails saying how many it read,
+another Python is refused, a completed fetch is reused, a changed pin is fetched again, a failed
+download leaves nothing behind, and a failed refetch keeps the previous tree.
+`crates/quaffed/tests/check_synthetic.rs` tests the oracle check the same way: a refused file fails
+naming it in its parse mode, another Python is refused, and an empty group fails rather than passing
+having checked nothing.  Neither has a test of the overall download deadline or of a rename failing
+mid-replacement, which would need a slow server and fault injection.
 
 ### Checklist: moving the pin to a new CPython release
 
@@ -170,6 +171,54 @@ injection.
    that release.
 4. Raise `floor` if the release has many more files, keeping it below the count the fetch
    prints.
+5. Run the round trip against the new release, `cargo test -p quaffed-python --test round_trip
+   -- --ignored`.  A newer `Lib/test` can carry syntax the new oracle accepts and the pinned
+   Ruff refuses, reported as refused but expected to parse.  If it does, upgrade Ruff first, by
+   the checklist in `python.md`, then move the pin.
+
+## The round trip
+
+`crates/python/tests/round_trip.rs` holds the Python front end to two promises: **it loses no
+byte, and it agrees with CPython on what parses.**  For each file it does what quaff does - it
+decodes the bytes in the file's declared encoding (`encoding.md`), parses the text into an
+arena (`syntax.md`) - then prints the arena back and encodes the result in the same encoding.
+The printer emits each node's children in order with the text between them, and the text
+before and after the root, so the bytes come back only if the arena's ranges keep their
+invariants and decoding and encoding lose nothing.
+
+- **The synthetic corpus** runs in the ordinary test run.  Every file must round-trip, each
+  group parsed in its own mode.  `ipython/` is not Python, so the oracle does not judge it, but
+  it must round-trip like the rest.
+- **The real-world corpus** is fetched, so its test is `#[ignore]`d in the ordinary run, and
+  the **Real-world corpus** job runs it with `--ignored` after the fetch.  Every file the oracle
+  accepts must round-trip, and **every file in `refused.txt` must be refused**, by the decoder or
+  the parser; one that parses fails, naming the oracle's reason.  The oracle decides, never our
+  parser.  The job's step also fails unless exactly one test ran: if the test lost its
+  `#[ignore]`, `--ignored` would run nothing and pass.  A second ignored test in the file trips
+  the same check, so adding one means changing the step's count with it.
+- **A failure names the file and the first byte that differs**, with the bytes around it on
+  each side, and every failure in the run is listed, not only the first.
+- **It cannot pass having read nothing**: a synthetic group below its floor fails, a fetched
+  source whose count of `.py` files differs from the count the oracle read fails, a missing
+  fetch fails, and a file `refused.txt` lists that is not there fails.
+
+**What it does not prove: that every construct is a node.**  A construct an adapter leaves out
+prints as the text between nodes, and the bytes still come back.  The synthetic corpus's
+coverage check, above, is what requires every kind.
+
+It is shown to fail by a printer that drops the text between nodes, the one way an arena of
+ranges can lose bytes: it must fail on every synthetic file.  Small fetched sources it writes
+show the rest: a refused file that parses, an accepted file that is refused, an empty source, a
+wrong count and a missing file each fail, a non-UTF-8 file and one with a byte-order mark and
+every kind of line ending round-trip, and a range out of place prints nothing rather than
+panicking.
+
+To run the real-world half locally, fetch first:
+
+```bash
+python3.X scripts/fetch-corpus        # 3.X: the oracle in corpus/real-world.toml
+cargo test -p quaffed-python --test round_trip -- --ignored
+```
 
 ## docker-mcp is never in either corpus
 

@@ -293,12 +293,14 @@ jobs:
     # member that would land outside its directory, or fewer files than the floor.  The fetched
     # tree and the oracle's verdicts are cached on a hash of the manifest and the script, so
     # this costs a cache restore until either changes.  The oracle's version is read from the
-    # manifest, so no Python version is named here.
+    # manifest, so no Python version is named here.  Then every file of the real-world corpus is
+    # parsed into an arena and printed back byte for byte, and every file the oracle refuses must
+    # be refused: the round trip's ignored test in crates/python, which needs the fetched tree.
     runs-on: [ubuntu-latest]
     name: Real-world corpus
     # Longer than scripts/fetch-corpus's download deadline plus one read's wait, with room for the
-    # setup, the parse and check-synthetic, so a stalled download ends in the script's own error
-    # rather than a bare cancellation.
+    # setup, the parse, check-synthetic and building and running the round trip, so a stalled
+    # download ends in the script's own error rather than a bare cancellation.
     timeout-minutes: 20
     steps:
       - name: Check out source repository
@@ -332,3 +334,19 @@ jobs:
         env:
           PYTHON: ${{ steps.python.outputs.python-path }}
         run: '"$PYTHON" scripts/fetch-corpus'
+
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+
+      - name: Every file round-trips, and every file the oracle refuses is refused
+        # --ignored runs nothing, and passes, if the test loses its #[ignore], so the step also
+        # requires that exactly one test ran.  A second ignored test in the file trips this too:
+        # change the count with it.
+        run: |
+          set -o pipefail
+          cargo test --locked -p quaffed-python --test round_trip -- --ignored --nocapture 2>&1 \
+            | tee "$RUNNER_TEMP/round-trip.log"
+          if ! grep -q '^test result: ok\. 1 passed;' "$RUNNER_TEMP/round-trip.log"; then
+            echo "::error::the real-world round trip did not run exactly one test" >&2
+            exit 1
+          fi

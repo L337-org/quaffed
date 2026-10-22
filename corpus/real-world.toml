@@ -1,5 +1,5 @@
-# The real-world corpus: real Python, fetched rather than checked in, and used for round-tripping
-# only - never by a gate, a budget or a benchmark.  scripts/fetch-corpus reads this file;
+# The real-world corpus: real Python, fetched rather than checked in, and used for the round trip
+# only - never by a budget or a benchmark.  scripts/fetch-corpus reads this file;
 # architecture/verification.md describes it.
 
 [cpython]

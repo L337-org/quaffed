@@ -3,7 +3,8 @@
 How the Cargo workspace is laid out, what pins what, and the conventions that are enforced
 mechanically.  Each member's design is in its own note: textual search in
 `search.md`, encodings in `encoding.md`, the operation representation in `representation.md`,
-the script language in `script.md`, and the Python adapter in `python.md`.
+the script language in `script.md`, the syntax arena in `syntax.md`, and the Python adapter in
+`python.md`.
 
 ## Layout
 
@@ -33,7 +34,8 @@ the script language in `script.md`, and the Python adapter in `python.md`.
 │   ├── encoding/         # quaffed-encoding: what a file's bytes are, Python's declared encodings; see encoding.md
 │   ├── python/           # quaffed-python: the Python adapter, the only crate naming Ruff; see python.md
 │   ├── representation/   # quaffed-representation: what a program means; see representation.md
-│   └── script/           # quaffed-script: the script language, text to program; see script.md
+│   ├── script/           # quaffed-script: the script language, text to program; see script.md
+│   └── syntax/           # quaffed-syntax: the arena a parsed file becomes, for every language; see syntax.md
 ├── corpus/
 │   ├── synthetic/        # the synthetic Python corpus, checked in; see verification.md
 │   └── real-world.toml   # pins the fetched real-world corpus; see verification.md
@@ -41,15 +43,17 @@ the script language in `script.md`, and the Python adapter in `python.md`.
 ```
 
 **The members.**  `quaffed` builds the `quaff` binary, matching the name decision.
-`quaffed-encoding` decides what a file's bytes are and reads Python's declared encodings, a
-crate of its own so that the binary can read them without linking the Python adapter, and Ruff
-with it, and the adapter can take text decoded the same way.  `quaffed-representation` is the
-operation representation, a crate of its own so that its
-lint configuration - no hash maps or sets - applies to it alone, and so that it can depend on
-no parser.  `quaffed-script` parses the script language into it.  `quaffed-python` is the Python
-adapter, the one crate allowed to depend on a `ruff_*` crate, so that Ruff's API changes stop
-there.  `members = ["crates/*"]` picks up a new member without an edit, and it inherits the
-version, edition, licence and lints from `[workspace.package]` and `[workspace.lints]`.
+`quaffed-encoding` decides what a file's bytes are and reads Python's declared encodings, a crate of
+its own so that the binary can read them without linking the Python adapter, and Ruff with it, and
+the adapter can take text decoded the same way.  `quaffed-representation` is the operation
+representation, a crate of its own so that its lint configuration - no hash maps or sets - applies
+to it alone, and so that it can depend on no parser.  `quaffed-script` parses the script language
+into it.  `quaffed-syntax` is the arena a parsed file becomes, the same for every language and
+depending on nothing, so that the engine can read one shape whichever parser built it.
+`quaffed-python` is the Python adapter, the one crate allowed to depend on a `ruff_*` crate, so that
+Ruff's API changes stop there; it builds arenas.  `members = ["crates/*"]` picks up a new member
+without an edit, and it inherits the version, edition, licence and lints from `[workspace.package]`
+and `[workspace.lints]`.
 
 **`publish = false`** on every member.  Nothing is published until a release decides where and
 how, and an accidental `cargo publish` of a placeholder is not undoable.

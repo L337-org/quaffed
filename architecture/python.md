@@ -8,15 +8,24 @@ Ruff warns "will have frequent breaking changes", is absorbed here and reaches n
 
 ## What it offers
 
+- **`parse_module(source)`**, **`parse_expression(source)`** and **`parse_ipython(source)`**:
+  source parsed into a syntax arena (`syntax.md`), as a module, as a single expression, or as
+  `IPython` source with its `%magic` and `!shell` escape commands.  Every arena carries the
+  language `PYTHON`.  Source that does not parse is `ParseError::Invalid`, carrying Ruff's
+  message verbatim and the byte offset; text too long for an arena's offsets is
+  `ParseError::TooLong`, refused before Ruff sees it.  Never a partial arena.
+- **`kinds_in_module(source)`**, **`kinds_in_expression(source)`** and
+  **`kinds_in_ipython(source)`**: the kinds of node in the arena, which the synthetic corpus's
+  coverage check reads.
 - **`all_kinds()`**: every kind of node in Python's grammar as the pinned Ruff knows it, each
   once, in Ruff's order.  `every_kind_is_listed_once_by_ruffs_name` asserts how many.
-- **`kinds_in_module(source)`**, **`kinds_in_expression(source)`** and
-  **`kinds_in_ipython(source)`**: the kinds of node a piece of source contains, parsed as a
-  module, as a single expression, or as `IPython` source with its `%magic` and `!shell` escape
-  commands.  Source that does not parse is a `ParseError` carrying Ruff's message verbatim and
-  the byte offset, never a partial answer.
-- **`Kind`**: a kind, by the name Ruff gives it - `StmtFunctionDef`, `ExprCall` - so nothing
-  outside the adapter sees Ruff's own enum.
+- **`Kind`**, re-exported from `quaffed-syntax`: a kind by the name Ruff gives it -
+  `StmtFunctionDef`, `ExprCall` - so nothing outside the adapter sees Ruff's own enum.
+
+The arena is built in one walk of Ruff's tree, `enter` on the way in and `leave` on the way out.
+A module's root runs from the start of the text to its end; an expression's starts at its first
+token, so blank lines before it are the arena's leading text.
+`ruffs_root_spans_the_text_but_blank_lines_before_an_expression` pins both.
 
 It takes source as text.  Decoding a file is `quaffed-encoding`'s (`encoding.md`), so that the
 adapter and a textual search read a file's bytes the same way, as CPython does.
@@ -33,16 +42,19 @@ same identifiers, so they are Ruff's own.
 
 - **A format spec is invisible to Ruff's walk.**  `InterpolatedElement::visit_source_order`
   visits a format spec's parts but never enters the `InterpolatedStringFormatSpec` node, so the
-  adapter records that kind wherever an element has a spec.
+  arena would hang the parts on the element with no spec around them.  The builder in
+  `src/parse.rs` walks such an element's children itself - the expression, then the spec
+  entered around its parts - and `a_format_spec_is_a_node_around_its_parts` checks the result.
   `ruffs_walk_still_skips_the_format_spec` pins the quirk: an upgrade that fixes it fails that
   test, which says to delete the workaround.
 
 ## Pins
 
-`ruff_python_ast` and `ruff_python_parser` are pinned with `=` in this crate's `Cargo.toml`, and
-`Cargo.lock` holds them.  An upgrade is deliberate work in this crate, never a lock-file refresh.
+`ruff_python_ast`, `ruff_python_parser` and `ruff_text_size`, which gives a node its range, are
+pinned with `=` in this crate's `Cargo.toml`, and `Cargo.lock` holds them.  An upgrade is
+deliberate work in this crate, never a lock-file refresh.
 
-The two move together.  `ruff_python_parser` depends on `ruff_python_ast` at its own version, so
+The three move together.  `ruff_python_parser` depends on `ruff_python_ast` at its own version, so
 bumping one alone puts two copies of `ruff_python_ast` in the build, and the adapter fails to
 compile with *"there are multiple different versions of crate `ruff_python_ast` in the
 dependency graph"*.  `.github/dependabot.yml` keeps the `ruff_*` crates in a group of their own
@@ -51,12 +63,15 @@ on green.
 
 ## Checklist: upgrading Ruff
 
-1. Read Ruff's changelog for both crates between the two versions.
-2. Change both `=` pins together.
+1. Read Ruff's changelog for the three crates between the two versions.
+2. Change all three `=` pins together.
 3. Build.  A new or renamed node kind fails the kind list's `match`: list it in `src/kinds.rs`,
    and update the count in `every_kind_is_listed_once_by_ruffs_name`.
 4. Run `cargo test -p quaffed-python`.  A new kind the synthetic corpus does not produce fails
-   its coverage check; add Python that produces it, as `verification.md` describes.
-5. Each quirk above is pinned by a test that fails when it stops holding; delete the workaround
+   its coverage check; add Python that produces it, as `verification.md` describes.  A change
+   in where Ruff's root starts or ends fails the root test above.
+5. Run the round trip over the real-world corpus (`verification.md`): a change in Ruff's
+   ranges that breaks the arena's invariants fails it, naming the file and the byte.
+6. Each quirk above is pinned by a test that fails when it stops holding; delete the workaround
    that test names.  Record any new quirk here, with a test of its own.
-6. Update this page in the same change.
+7. Update this page in the same change.
