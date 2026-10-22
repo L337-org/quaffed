@@ -9,7 +9,7 @@
 use std::fs;
 use std::path::Path;
 
-/// Dependencies the crate may have.  None, so far.
+/// Dependencies the crate may have, by name.
 const ALLOWED: &[&str] = &[];
 
 /// The dependencies the manifest text declares, by name, in `[dependencies]`,

@@ -49,6 +49,7 @@ same identifiers, so they are Ruff's own.
   test, which says to delete the workaround.
 
 ## Pins
+
 `ruff_python_ast`, `ruff_python_parser` and `ruff_text_size`, which gives a node its range, are
 pinned with `=` in this crate's `Cargo.toml`, and `Cargo.lock` holds them.  An upgrade is
 deliberate work in this crate, never a lock-file refresh.
