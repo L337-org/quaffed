@@ -40,6 +40,14 @@ pub enum PatternError {
     NoShape,
     /// The pattern has no code at all: it is empty, or only whitespace and comments.
     Empty,
+    /// One name is both a hole for one node and a sequence, `$x` and `$x...`, which cannot
+    /// both hold.
+    MixedHole {
+        /// The name.
+        name: String,
+        /// Where in the pattern its second spelling is.
+        offset: usize,
+    },
     /// The pattern is longer than an arena's offsets reach.
     TooLong(quaffed_syntax::TooLong),
 }
@@ -58,6 +66,11 @@ impl fmt::Display for PatternError {
             PatternError::NoShape => f.write_str(
                 "the pattern is only holes, so it has no shape to match: write the code around \
                  them, as in \"handle_request($a, $b)\"",
+            ),
+            PatternError::MixedHole { name, offset } => write!(
+                f,
+                "\"${name}\" is used both for one node and, at byte {offset}, for a sequence: a \
+                 name is one or the other, so give the sequence a name of its own"
             ),
             PatternError::Empty => {
                 f.write_str("the pattern has no code in it, only whitespace or comments")
@@ -155,6 +168,16 @@ fn claim(text: &str) -> Result<Vec<Claim>, PatternError> {
         }
         if name == Some("_") && sequence {
             return Err(PatternError::UnboundNamedSequence { offset: start });
+        }
+        if let Some(name) = name.filter(|n| *n != "_")
+            && claims.iter().any(|c: &Claim| {
+                c.hole.name.as_deref() == Some(name) && c.hole.sequence != sequence
+            })
+        {
+            return Err(PatternError::MixedHole {
+                name: name.to_owned(),
+                offset: start,
+            });
         }
         claims.push(Claim {
             written: start..end,
@@ -437,6 +460,25 @@ mod tests {
             err.to_string(),
             "\"$_...\" at byte 5 is not a hole: a sequence that binds nothing is written \"$...\""
         );
+    }
+
+    #[test]
+    fn one_name_as_both_a_node_and_a_sequence_is_refused() {
+        let err = compile_pattern("f($x, g($x...))").unwrap_err();
+        assert_eq!(
+            err,
+            PatternError::MixedHole {
+                name: "x".into(),
+                offset: 8
+            }
+        );
+        assert!(
+            err.to_string()
+                .starts_with("\"$x\" is used both for one node and, at byte 8")
+        );
+        assert!(compile_pattern("f($x, $x)").is_ok());
+        assert!(compile_pattern("f($x..., g($x...))").is_ok());
+        assert!(compile_pattern("f($_, $...)").is_ok());
     }
 
     #[test]

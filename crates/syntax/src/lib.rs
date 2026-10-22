@@ -9,8 +9,10 @@
 //! crate depends on nothing: `tests/no_dependencies.rs` holds that.  `architecture/syntax.md`
 //! describes it.
 
+mod matching;
 mod pattern;
 
+pub use matching::{Match, find};
 pub use pattern::{Hole, Pattern};
 
 use std::borrow::Cow;
@@ -91,6 +93,27 @@ pub struct Arena<'text> {
     language: Language,
     text: Cow<'text, str>,
     nodes: Vec<Node>,
+    tokens: Vec<Token>,
+    values: Vec<(NodeId, String)>,
+}
+
+/// One token the matcher compares: the parser's tokens that carry meaning, with comments,
+/// whitespace, line breaks, indentation and redundant parentheses left out by the adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Token {
+    start: u32,
+    end: u32,
+    compare: TokenText,
+}
+
+/// What a token is compared by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenText {
+    /// Its text in the source.
+    Source,
+    /// A fixed text standing for the token whatever its source says: the opening of an
+    /// f-string compares the same whatever its prefix and quotes, as a string's content does.
+    Fixed(&'static str),
 }
 
 impl<'text> Arena<'text> {
@@ -178,7 +201,47 @@ impl<'text> Arena<'text> {
             language: self.language,
             text: Cow::Owned(self.text.into_owned()),
             nodes: self.nodes,
+            tokens: self.tokens,
+            values: self.values,
         }
+    }
+
+    /// The tokens the adapter kept that lie inside `range`, in source order.
+    #[must_use]
+    pub fn tokens_in(&self, range: Range<usize>) -> &[Token] {
+        let first = self
+            .tokens
+            .partition_point(|t| widen(t.start) < range.start);
+        let past = self.tokens.partition_point(|t| widen(t.start) < range.end);
+        let past = past.max(first);
+        let kept = &self.tokens[first..past];
+        let inside = kept.partition_point(|t| widen(t.end) <= range.end);
+        &kept[..inside]
+    }
+
+    /// The byte range of `token` in the text.
+    #[must_use]
+    pub fn token_range(&self, token: &Token) -> Range<usize> {
+        widen(token.start)..widen(token.end)
+    }
+
+    /// What `token` is compared by: its source text, or the fixed text the adapter gave it.
+    #[must_use]
+    pub fn token_text(&self, token: &Token) -> &str {
+        match token.compare {
+            TokenText::Source => &self.text[self.token_range(token)],
+            TokenText::Fixed(text) => text,
+        }
+    }
+
+    /// The value `node` compares by in place of its children, if the adapter gave it one: a
+    /// string literal's content, its quotes and prefix taking no part.
+    #[must_use]
+    pub fn value(&self, node: NodeId) -> Option<&str> {
+        self.values
+            .binary_search_by_key(&node, |(n, _)| *n)
+            .ok()
+            .map(|at| self.values[at].1.as_str())
     }
 
     fn node(&self, node: NodeId) -> &Node {
@@ -236,6 +299,8 @@ pub struct Builder<'text> {
     text: &'text str,
     nodes: Vec<Node>,
     open: Vec<usize>,
+    tokens: Vec<Token>,
+    values: Vec<(NodeId, String)>,
 }
 
 impl<'text> Builder<'text> {
@@ -260,6 +325,8 @@ impl<'text> Builder<'text> {
             text,
             nodes: Vec::new(),
             open: Vec::new(),
+            tokens: Vec::new(),
+            values: Vec::new(),
         })
     }
 
@@ -301,14 +368,50 @@ impl<'text> Builder<'text> {
     ///
     /// If no root was entered or a node is still open, which is a defect in the adapter.
     #[must_use]
-    pub fn finish(self) -> Arena<'text> {
+    pub fn finish(mut self) -> Arena<'text> {
         assert!(self.open.is_empty(), "an adapter left nodes open");
         assert!(!self.nodes.is_empty(), "an adapter entered no root");
+        self.values.sort_by_key(|(node, _)| *node);
         Arena {
             language: self.language,
             text: Cow::Borrowed(self.text),
             nodes: self.nodes,
+            tokens: self.tokens,
+            values: self.values,
         }
+    }
+
+    /// Gives the node open now a value it compares by in place of its children.
+    ///
+    /// # Panics
+    ///
+    /// If no node is open, which is a defect in the adapter.
+    pub fn value(&mut self, value: String) {
+        let open = *self
+            .open
+            .last()
+            .expect("an adapter gave a value with no node open");
+        self.values.push((NodeId(narrow(open)), value));
+    }
+
+    /// Adds a token the matcher compares, covering `range`.  Tokens are added in source order.
+    ///
+    /// # Panics
+    ///
+    /// If `range` starts before the end of the token added last, which is a defect in the
+    /// adapter.
+    pub fn token(&mut self, range: Range<usize>, compare: TokenText) {
+        assert!(
+            self.tokens
+                .last()
+                .is_none_or(|last| widen(last.end) <= range.start),
+            "an adapter added a token out of order"
+        );
+        self.tokens.push(Token {
+            start: narrow(range.start),
+            end: narrow(range.end),
+            compare,
+        });
     }
 }
 

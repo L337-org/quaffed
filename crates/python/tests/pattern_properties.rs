@@ -54,9 +54,12 @@ proptest! {
 
     #[test]
     fn every_hole_in_code_is_one_hole_in_order(
-        names in prop::collection::vec(name(), 1..5),
+        names in prop::collection::btree_set(name(), 1..5),
         sequence in any::<bool>(),
     ) {
+        // Distinct names: one name as both a node and a sequence is refused, which another
+        // test covers.
+        let names: Vec<String> = names.into_iter().collect();
         let last = names.len() - 1;
         let arguments: Vec<String> = names
             .iter()
