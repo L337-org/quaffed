@@ -37,6 +37,14 @@ spells that; so is one name used both for one node and for a sequence; and so is
 code, or with nothing but holes.  The script parser carries the operand as written; compiling it is
 the language adapter's, which `python.md` describes for Python.
 
+**A string literal in a pattern matches by its content**: what lies between its delimiters,
+exactly as written, the parts of an implicit concatenation joined.  The quotes, the prefix and
+the quote style take no part, so `"x"` matches `'x'` and `r"x"`; escapes are compared as written,
+so `"\n"` matches `r"\n"`, both being a backslash and an `n` in the file.  This is the same
+content a `where` comparison uses, so that a script says what a string says without spelling any
+one language's quoting.  A string's decoded value is not compared: escapes would become
+characters that are not in the file, and an interpolated string cannot be decoded at all.
+
 ## Statements (`src/parser.rs`)
 
 ```

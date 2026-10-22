@@ -9,9 +9,9 @@ use std::fmt;
 use quaffed_syntax::{Arena, Builder, Kind, Language, TokenText, TooLong};
 use ruff_python_ast::token::{TokenKind, Tokens, parentheses_iterator};
 use ruff_python_ast::visitor::source_order::{
-    SourceOrderVisitor, TraversalSignal, walk_interpolated_string_element, walk_node,
+    SourceOrderVisitor, TraversalSignal, walk_body, walk_interpolated_string_element, walk_node,
 };
-use ruff_python_ast::{AnyNodeRef, NodeKind, StringFlags};
+use ruff_python_ast::{AnyNodeRef, NodeKind, Stmt, StringFlags};
 use ruff_python_parser::{Mode, ParseOptions};
 use ruff_text_size::{Ranged, TextRange, TextSize};
 
@@ -208,6 +208,14 @@ fn build<'text>(
             self.open.pop();
             self.builder.leave();
         }
+
+        // Each statement list - a module's, a function's, a branch's, an else or finally - is
+        // marked, so that a run of statements or a sequence hole stays in one block.
+        fn visit_body(&mut self, body: &'a [Stmt]) {
+            self.builder.begin_list();
+            walk_body(self, body);
+            self.builder.end_list();
+        }
     }
 
     let mut build = Build {
@@ -271,6 +279,20 @@ fn string_content(node: AnyNodeRef<'_>, source: &str) -> Option<String> {
                     })
                 })
                 .collect(),
+        ),
+        // A plain part of an f-string's concatenation compares by its content too; inside a
+        // plain string or bytes literal the whole literal's value is compared first.
+        AnyNodeRef::StringLiteral(part) => Some(
+            between(part.range, &|| {
+                (part.flags.opener_len(), part.flags.closer_len())
+            })
+            .to_owned(),
+        ),
+        AnyNodeRef::BytesLiteral(part) => Some(
+            between(part.range, &|| {
+                (part.flags.opener_len(), part.flags.closer_len())
+            })
+            .to_owned(),
         ),
         AnyNodeRef::ExprBytesLiteral(literal) => Some(
             literal

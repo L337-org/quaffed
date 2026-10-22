@@ -54,13 +54,17 @@ proptest! {
 
     #[test]
     fn every_hole_in_code_is_one_hole_in_order(
-        names in prop::collection::btree_set(name(), 1..5),
+        names in prop::collection::vec(name(), 1..5),
         sequence in any::<bool>(),
     ) {
-        // Distinct names: one name as both a node and a sequence is refused, which another
-        // test covers.
-        let names: Vec<String> = names.into_iter().collect();
+        // A name may repeat, but one used both for a node and for a sequence is refused, which
+        // another test covers; so the sequence, if there is one, gets a name of its own, which
+        // a capital letter makes, since the generated names have none.
+        let mut names = names;
         let last = names.len() - 1;
+        if sequence {
+            names[last] = format!("{}S", names[last]);
+        }
         let arguments: Vec<String> = names
             .iter()
             .enumerate()

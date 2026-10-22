@@ -1,10 +1,10 @@
 //! Structural matching of Python patterns against Python source.
 //!
 //! Each test is a pattern, some source, and the text of every match in source order, so a case
-//! reads as what it asserts.  The cases are the story's: operators that differ only in the
-//! token between children, comments and whitespace that take no part, holes inside strings,
-//! and each kind of hole; and the rules decided for the matcher: a name used twice, a match
-//! inside a match, a string's content, redundant parentheses, and runs of statements.
+//! reads as what it asserts: operators that differ only in the token between children, comments
+//! and whitespace that take no part, holes inside strings, each kind of hole, a name used twice,
+//! a match inside a match, a string's content, redundant parentheses, and runs of statements
+//! that stay in one block.
 
 use quaffed_python::{compile_pattern, parse_module};
 use quaffed_syntax::find;
@@ -76,6 +76,11 @@ fn a_string_matches_by_its_content_not_its_quotes_or_prefix() {
     assert_eq!(matches("f(\"ab\")", "f(\"a\" 'b')\n"), ["f(\"a\" 'b')"]);
     // A bytes literal is not a string.
     assert_eq!(matches("f(\"x\")", "f(b\"x\")\n"), none());
+    // A plain part of an f-string's concatenation matches by its content too.
+    assert_eq!(
+        matches("f(\"a\" f\"{$x}\")", "f('a' f\"{y}\")\n"),
+        ["f('a' f\"{y}\")"]
+    );
     // An f-string's quotes and prefix take no part either; its literal text does.
     assert_eq!(matches("f\"a{$x}\"", "f'a{y}'\nf\"b{y}\"\n"), ["f'a{y}'"]);
 }
@@ -168,6 +173,54 @@ fn statements_in_a_row_match_where_they_stand_together_in_one_block() {
             "def h(a, b):\n    return a\n"
         ),
         ["def h(a, b):\n    return a"]
+    );
+}
+
+#[test]
+fn a_run_of_statements_or_a_sequence_stays_in_one_block() {
+    // Not from a function's name or parameters into its body.
+    assert_eq!(
+        matches(
+            "$pre...\nreturn $x\n",
+            "def f(a):\n    y = 1\n    return a\n"
+        ),
+        ["y = 1\n    return a"]
+    );
+    assert_eq!(
+        matches("$pre...\nx()\n", "if c:\n    w()\n    x()\n"),
+        ["w()\n    x()"]
+    );
+    // Not from a branch into its else clause.
+    assert_eq!(
+        matches("if $c:\n    $body...\n", "if a:\n    x()\nelse:\n    y()\n"),
+        none()
+    );
+    assert_eq!(
+        matches("x = 1\n$rest...\n", "if c:\n    x = 1\nelse:\n    z()\n"),
+        none()
+    );
+    // Not across a for's else, nor from a try's body over its handlers.
+    assert_eq!(
+        matches(
+            "for $x in $y:\n    $body...\n",
+            "for i in j:\n    p()\nelse:\n    q()\n"
+        ),
+        none()
+    );
+    assert_eq!(
+        matches(
+            "try:\n    $body...\nfinally:\n    $f...\n",
+            "try:\n    a()\nexcept E:\n    b()\nfinally:\n    c()\n"
+        ),
+        none()
+    );
+    // Within its own block it still takes every statement.
+    assert_eq!(
+        matches(
+            "for $x in $y:\n    $body...\n",
+            "for i in j:\n    p()\n    q()\n"
+        ),
+        ["for i in j:\n    p()\n    q()"]
     );
 }
 

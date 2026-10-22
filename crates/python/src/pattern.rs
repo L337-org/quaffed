@@ -47,6 +47,8 @@ pub enum PatternError {
         name: String,
         /// Where in the pattern its second spelling is.
         offset: usize,
+        /// Whether the spelling at `offset` is the sequence, `$x...`, or the single node, `$x`.
+        sequence: bool,
     },
     /// The pattern is longer than an arena's offsets reach.
     TooLong(quaffed_syntax::TooLong),
@@ -67,11 +69,22 @@ impl fmt::Display for PatternError {
                 "the pattern is only holes, so it has no shape to match: write the code around \
                  them, as in \"handle_request($a, $b)\"",
             ),
-            PatternError::MixedHole { name, offset } => write!(
-                f,
-                "\"${name}\" is used both for one node and, at byte {offset}, for a sequence: a \
-                 name is one or the other, so give the sequence a name of its own"
-            ),
+            PatternError::MixedHole {
+                name,
+                offset,
+                sequence,
+            } => {
+                let (first, here) = if *sequence {
+                    ("one node", "a sequence")
+                } else {
+                    ("a sequence", "one node")
+                };
+                write!(
+                    f,
+                    "\"${name}\" is used for {first} and, at byte {offset}, for {here}: a name is \
+                     one or the other, so give the sequence a name of its own"
+                )
+            }
             PatternError::Empty => {
                 f.write_str("the pattern has no code in it, only whitespace or comments")
             }
@@ -177,6 +190,7 @@ fn claim(text: &str) -> Result<Vec<Claim>, PatternError> {
             return Err(PatternError::MixedHole {
                 name: name.to_owned(),
                 offset: start,
+                sequence,
             });
         }
         claims.push(Claim {
@@ -469,12 +483,20 @@ mod tests {
             err,
             PatternError::MixedHole {
                 name: "x".into(),
-                offset: 8
+                offset: 8,
+                sequence: true
             }
         );
         assert!(
             err.to_string()
-                .starts_with("\"$x\" is used both for one node and, at byte 8")
+                .starts_with("\"$x\" is used for one node and, at byte 8, for a sequence")
+        );
+        // The other order names the use at the offset.
+        let err = compile_pattern("f($x..., $x)").unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "\"$x\" is used for a sequence and, at byte 9, for one node: a name is one or the \
+             other, so give the sequence a name of its own"
         );
         assert!(compile_pattern("f($x, $x)").is_ok());
         assert!(compile_pattern("f($x..., g($x...))").is_ok());

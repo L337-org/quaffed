@@ -68,6 +68,11 @@ value is its content as the script language defines it for comparing: what lies 
 part's delimiters as written, the parts of an implicit concatenation joined, by Ruff's own
 `opener_len` and `closer_len`.
 
+Each statement list Ruff's walk visits - a module's, a function's, a branch's, an `else` or a
+`finally` - is marked as a list, so `$body...` never takes in an `else:` clause and a run of
+statements never starts in a function's header.  A plain string part inside an f-string's
+concatenation is given its content too.
+
 The pattern compiler also refuses one name used both for one node and for a sequence, `$x` and
 `$x...`, which cannot both hold.
 

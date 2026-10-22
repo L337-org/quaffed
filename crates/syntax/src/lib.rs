@@ -81,6 +81,9 @@ struct Node {
     start: u32,
     end: u32,
     after: u32,
+    /// The list among its parent's children it belongs to, if the adapter marked one - a
+    /// block's statements - so that a run of children never crosses from one into another.
+    list: u32,
 }
 
 /// A parsed file: every node in pre-order, over the text the parser was given.
@@ -156,6 +159,16 @@ impl<'text> Arena<'text> {
     #[must_use]
     pub fn kind(&self, node: NodeId) -> Kind {
         self.node(node).kind
+    }
+
+    /// The list among its parent's children `node` belongs to, a block's statements, or `None`
+    /// if the adapter marked none.  Two siblings in one list share it.
+    #[must_use]
+    pub fn list(&self, node: NodeId) -> Option<u32> {
+        match self.node(node).list {
+            0 => None,
+            list => Some(list),
+        }
     }
 
     /// The byte range of `node` in the text.
@@ -301,6 +314,10 @@ pub struct Builder<'text> {
     open: Vec<usize>,
     tokens: Vec<Token>,
     values: Vec<(NodeId, String)>,
+    /// The lists begun and not yet ended: each one's number, and how many nodes were open when
+    /// it began, so that only the open node's children join it.
+    lists: Vec<(u32, usize)>,
+    next_list: u32,
 }
 
 impl<'text> Builder<'text> {
@@ -327,6 +344,8 @@ impl<'text> Builder<'text> {
             open: Vec::new(),
             tokens: Vec::new(),
             values: Vec::new(),
+            lists: Vec::new(),
+            next_list: 1,
         })
     }
 
@@ -340,13 +359,36 @@ impl<'text> Builder<'text> {
             !self.open.is_empty() || self.nodes.is_empty(),
             "an adapter entered a second root"
         );
+        let list = match self.lists.last() {
+            Some(&(list, depth)) if depth == self.open.len() => list,
+            _ => 0,
+        };
         self.open.push(self.nodes.len());
         self.nodes.push(Node {
             kind,
             start: narrow(range.start),
             end: narrow(range.end),
             after: 0,
+            list,
         });
+    }
+
+    /// Begins a list among the open node's children - a block's statements - which every child
+    /// entered until [`end_list`](Builder::end_list) belongs to.
+    pub fn begin_list(&mut self) {
+        self.lists.push((self.next_list, self.open.len()));
+        self.next_list += 1;
+    }
+
+    /// Ends the list begun last.
+    ///
+    /// # Panics
+    ///
+    /// If no list was begun, which is a defect in the adapter.
+    pub fn end_list(&mut self) {
+        self.lists
+            .pop()
+            .expect("an adapter ended a list it never began");
     }
 
     /// Ends the node entered last.
@@ -532,6 +574,26 @@ mod tests {
     #[should_panic(expected = "an adapter entered no root")]
     fn no_root_is_a_defect() {
         let _ = Builder::new(TOY, "").unwrap().finish();
+    }
+
+    #[test]
+    #[should_panic(expected = "an adapter added a token out of order")]
+    fn a_token_out_of_order_is_a_defect() {
+        let mut builder = Builder::new(TOY, "ab").unwrap();
+        builder.token(1..2, TokenText::Source);
+        builder.token(0..1, TokenText::Source);
+    }
+
+    #[test]
+    #[should_panic(expected = "an adapter gave a value with no node open")]
+    fn a_value_with_no_node_open_is_a_defect() {
+        Builder::new(TOY, "").unwrap().value(String::new());
+    }
+
+    #[test]
+    #[should_panic(expected = "an adapter ended a list it never began")]
+    fn ending_a_list_never_begun_is_a_defect() {
+        Builder::new(TOY, "").unwrap().end_list();
     }
 
     #[test]

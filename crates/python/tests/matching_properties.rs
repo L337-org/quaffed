@@ -7,7 +7,7 @@
 //! - **A different operator does not match**: swapping one operator for another stops it.
 
 use proptest::prelude::*;
-use quaffed_python::{compile_pattern, parse_module};
+use quaffed_python::{PatternError, compile_pattern, parse_module};
 use quaffed_syntax::find;
 
 /// A small expression: names, numbers, strings, calls, attributes, subscripts, unary and binary
@@ -121,9 +121,12 @@ fn swap_an_operator(expr: &Expr) -> Option<Expr> {
 
 /// Whether `pattern` matches all of `source`, a single expression statement.
 fn matches_whole(pattern: &str, source: &str) -> bool {
-    let Ok(pattern) = compile_pattern(pattern) else {
-        // Only a pattern of nothing but a hole fails to compile here, and has nothing to say.
-        return true;
+    let pattern = match compile_pattern(pattern) {
+        Ok(pattern) => pattern,
+        // A bare name replaced by a hole is a pattern of nothing but a hole, which has nothing
+        // to say; any other refusal is a failure of the compiler or of the writer.
+        Err(PatternError::NoShape) => return true,
+        Err(err) => panic!("{pattern:?} did not compile: {err}"),
     };
     let arena = parse_module(source).unwrap_or_else(|err| panic!("{source:?}: {err}"));
     find(&pattern, &arena)

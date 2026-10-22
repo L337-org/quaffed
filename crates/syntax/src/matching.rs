@@ -12,6 +12,7 @@
 
 use std::collections::BTreeMap;
 use std::ops::Range;
+use std::rc::Rc;
 
 use crate::{Arena, Hole, NodeId, Pattern, Token};
 
@@ -58,20 +59,32 @@ pub fn find(pattern: &Pattern, target: &Arena<'_>) -> Vec<Match> {
             let available = parts(target, node);
             for (start, first) in available.iter().enumerate() {
                 let Part::Child(first) = first else { continue };
-                // The shortest run from each start that matches, so that a run is reported once.
-                for (end, last) in available.iter().enumerate().skip(start) {
-                    let Part::Child(last) = last else { continue };
-                    let mut bindings = Bindings::new();
-                    if Matcher::new(pattern, target).parts(
-                        &wanted,
-                        &available[start..=end],
-                        &mut bindings,
-                    ) {
-                        found.push(Match {
-                            range: target.range(*first).start..target.range(*last).end,
-                        });
-                        break;
-                    }
+                // A run of statements stays in one list - one block's statements - so it never
+                // takes in a header, a clause, or another block.
+                let Some(block) = target.list(*first) else {
+                    continue;
+                };
+                let limit = available[start..]
+                    .iter()
+                    .position(
+                        |part| matches!(part, Part::Child(c) if target.list(*c) != Some(block)),
+                    )
+                    .map_or(available.len(), |offset| start + offset);
+                // Matched from this start as far as the pattern goes, the shortest way: one try
+                // per start, whatever the run's length.
+                let mut bindings = Bindings::new();
+                if let Some(taken) = Matcher::new(pattern, target).consume(
+                    &wanted,
+                    &available[start..limit],
+                    &mut bindings,
+                    false,
+                ) {
+                    let Part::Child(last) = available[start + taken - 1] else {
+                        unreachable!("a run of statements ends at a statement");
+                    };
+                    found.push(Match {
+                        range: target.range(*first).start..target.range(last).end,
+                    });
                 }
             }
         }
@@ -123,10 +136,15 @@ fn between_first_and_last<'a>(all: &[Part<'a>]) -> Vec<Part<'a>> {
     all[first..=last].to_vec()
 }
 
-/// What a named hole matched, as the parts it covers: one child for a hole, a run of a node's
-/// parts for a sequence.  A name is one or the other throughout a pattern, which its compiler
-/// checks, so two bindings of a name are always of the same form.
-type Bound<'a> = Vec<Part<'a>>;
+/// What a named hole matched: one child for a hole, a run of a node's parts for a sequence.  A
+/// name is one or the other throughout a pattern, which its compiler checks, so two bindings of
+/// a name are always of the same form.  A run shares the parts it was cut from, so trying a
+/// longer one costs nothing to bind.
+#[derive(Debug, Clone)]
+enum Bound<'a> {
+    Node(NodeId),
+    Run(Rc<[Part<'a>]>, Range<usize>),
+}
 
 type Bindings<'a> = BTreeMap<String, Bound<'a>>;
 
@@ -152,7 +170,7 @@ impl<'p, 't> Matcher<'p, 't> {
 
     fn node(&self, wanted: NodeId, node: NodeId, bindings: &mut Bindings<'t>) -> bool {
         if let Some(hole) = self.hole(wanted) {
-            return bind(self.target, hole, vec![Part::Child(node)], bindings);
+            return bind(self.target, hole, Bound::Node(node), bindings);
         }
         if self.shape.kind(wanted) != self.target.kind(node) {
             return false;
@@ -163,6 +181,12 @@ impl<'p, 't> Matcher<'p, 't> {
         }
         let wanted_parts = parts(self.shape, wanted);
         let node_parts = parts(self.target, node);
+        // A node with nothing to compare inside it - no children, no tokens, no value - compares
+        // by its text, so that an adapter that kept no token for a leaf cannot make every leaf
+        // of a kind alike.
+        if wanted_parts.is_empty() && node_parts.is_empty() {
+            return self.shape.source(wanted) == self.target.source(node);
+        }
         self.parts(&wanted_parts, &node_parts, bindings)
     }
 
@@ -172,52 +196,72 @@ impl<'p, 't> Matcher<'p, 't> {
         available: &[Part<'t>],
         bindings: &mut Bindings<'t>,
     ) -> bool {
+        self.consume(wanted, available, bindings, true).is_some()
+    }
+
+    /// Matches `wanted` against the start of `available`, and says how many of its parts the
+    /// match took, the shortest way; with `whole`, only a match that takes them all counts.
+    fn consume(
+        &self,
+        wanted: &[Part<'_>],
+        available: &[Part<'t>],
+        bindings: &mut Bindings<'t>,
+        whole: bool,
+    ) -> Option<usize> {
         let Some((first, rest)) = wanted.split_first() else {
-            return available.is_empty();
+            return (!whole || available.is_empty()).then_some(0);
         };
         match first {
             Part::Token(token) => match available.split_first() {
-                Some((Part::Token(other), others)) => {
-                    self.shape.token_text(token) == self.target.token_text(other)
-                        && self.parts(rest, others, bindings)
+                Some((Part::Token(other), others))
+                    if self.shape.token_text(token) == self.target.token_text(other) =>
+                {
+                    self.consume(rest, others, bindings, whole).map(|n| n + 1)
                 }
-                _ => false,
+                _ => None,
             },
             Part::Child(child) => match self.hole(*child) {
                 Some(hole) if hole.sequence => {
                     // One or more of the available parts, from a child to a child, shortest
                     // first; whichever split matches first is kept.
-                    if !matches!(available.first(), Some(Part::Child(_))) {
-                        return false;
-                    }
+                    let Some(Part::Child(first)) = available.first() else {
+                        return None;
+                    };
+                    // A run stays in one list, so `$body...` never takes in a clause or a header.
+                    let block = self.target.list(*first);
+                    let shared: Rc<[Part<'t>]> = available.into();
                     for end in 0..available.len() {
-                        if !matches!(available[end], Part::Child(_)) {
+                        let Part::Child(last) = available[end] else {
                             continue;
+                        };
+                        if self.target.list(last) != block {
+                            break;
                         }
                         let mut attempt = bindings.clone();
-                        let run = available[..=end].to_vec();
+                        let run = Bound::Run(Rc::clone(&shared), 0..end + 1);
                         if bind(self.target, hole, run, &mut attempt)
-                            && self.parts(rest, &available[end + 1..], &mut attempt)
+                            && let Some(n) =
+                                self.consume(rest, &available[end + 1..], &mut attempt, whole)
                         {
                             *bindings = attempt;
-                            return true;
+                            return Some(end + 1 + n);
                         }
                     }
-                    false
+                    None
                 }
                 _ => match available.split_first() {
                     Some((Part::Child(node), others)) => {
                         let mut attempt = bindings.clone();
                         if self.node(*child, *node, &mut attempt)
-                            && self.parts(rest, others, &mut attempt)
+                            && let Some(n) = self.consume(rest, others, &mut attempt, whole)
                         {
                             *bindings = attempt;
-                            true
+                            Some(n + 1)
                         } else {
-                            false
+                            None
                         }
                     }
-                    _ => false,
+                    _ => None,
                 },
             },
         }
@@ -246,7 +290,13 @@ fn bind<'t>(
 
 /// Whether two places in one arena hold equal code, by the same comparison as a match.
 fn equal(target: &Arena<'_>, a: &Bound<'_>, b: &Bound<'_>) -> bool {
-    Same { arena: target }.parts(a, b)
+    let same = Same { arena: target };
+    match (a, b) {
+        (Bound::Node(a), Bound::Node(b)) => same.node(*a, *b),
+        (Bound::Run(a, x), Bound::Run(b, y)) => same.parts(&a[x.clone()], &b[y.clone()]),
+        // A name is one form throughout a pattern, so the two never differ.
+        _ => unreachable!("a name bound both as one node and as a run"),
+    }
 }
 
 /// The comparison with no holes, both sides in one arena.
@@ -262,7 +312,11 @@ impl Same<'_, '_> {
         if let Some(value) = self.arena.value(a) {
             return self.arena.value(b) == Some(value);
         }
-        self.parts(&parts(self.arena, a), &parts(self.arena, b))
+        let (a_parts, b_parts) = (parts(self.arena, a), parts(self.arena, b));
+        if a_parts.is_empty() && b_parts.is_empty() {
+            return self.arena.source(a) == self.arena.source(b);
+        }
+        self.parts(&a_parts, &b_parts)
     }
 
     fn parts(&self, a: &[Part<'_>], b: &[Part<'_>]) -> bool {
@@ -274,5 +328,168 @@ impl Same<'_, '_> {
                 (Part::Child(x), Part::Child(y)) => self.node(*x, *y),
                 _ => false,
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Builder, Kind, Language, TokenText};
+
+    const TOY: Language = Language::new("toy");
+
+    /// A toy call, `name(args)`, as an arena: a Call over a Name and its arguments, each a
+    /// Name, with `(`, `,` and `)` kept as tokens.  A `$` before an argument makes it a hole in a
+    /// pattern; `$...` a sequence hole.
+    fn call(text: &str) -> (Arena<'static>, Vec<(NodeId, Hole)>) {
+        let open = text.find('(').unwrap();
+        let mut builder = Builder::new(TOY, text).unwrap();
+        builder.enter(Kind::new("Call"), 0..text.len());
+        builder.enter(Kind::new("Name"), 0..open);
+        builder.leave();
+        builder.token(open..open + 1, TokenText::Source);
+        let mut holes = Vec::new();
+        let mut at = open + 1;
+        let close = text.len() - 1;
+        let mut index = 2;
+        while at < close {
+            let end = text[at..close].find(',').map_or(close, |i| at + i);
+            let arg = text[at..end].trim();
+            let start = at + text[at..end].find(arg).unwrap();
+            builder.enter(Kind::new("Name"), start..start + arg.len());
+            builder.leave();
+            if let Some(name) = arg.strip_prefix('$') {
+                let (name, sequence) = match name.strip_suffix("...") {
+                    Some(name) => (name, true),
+                    None => (name, false),
+                };
+                let name = (!name.is_empty() && name != "_").then(|| name.to_owned());
+                holes.push((NodeId(index), Hole { name, sequence }));
+            }
+            index += 1;
+            if end < close {
+                builder.token(end..end + 1, TokenText::Source);
+            }
+            at = end + 1;
+        }
+        builder.token(close..close + 1, TokenText::Source);
+        builder.leave();
+        (builder.finish().into_owned(), holes)
+    }
+
+    /// A pattern over a root holding one toy call.
+    fn pattern(text: &str) -> Pattern {
+        let (inner, holes) = call(text);
+        // Wrap the call in a root, as a language's pattern compiler does with a module.
+        let mut builder = Builder::new(TOY, inner.text()).unwrap();
+        builder.enter(Kind::new("Root"), 0..text.len());
+        build_copy(&inner, inner.root(), &mut builder);
+        builder.leave();
+        let arena = builder.finish().into_owned();
+        let shifted = holes
+            .into_iter()
+            .map(|(n, h)| (NodeId(n.0 + 1), h))
+            .collect();
+        Pattern::new(arena, shifted)
+    }
+
+    fn build_copy(from: &Arena<'_>, node: NodeId, builder: &mut Builder<'_>) {
+        builder.enter(from.kind(node), from.range(node));
+        let children: Vec<_> = from.children(node).collect();
+        let tokens = from.tokens_in(from.range(node));
+        let mut tokens = tokens.iter().peekable();
+        for child in children {
+            while let Some(t) =
+                tokens.next_if(|t| from.token_range(t).end <= from.range(child).start)
+            {
+                builder.token(from.token_range(t), TokenText::Source);
+            }
+            build_copy(from, child, builder);
+        }
+        for t in tokens {
+            builder.token(from.token_range(t), TokenText::Source);
+        }
+        builder.leave();
+    }
+
+    fn found(pattern_text: &str, target_text: &str) -> Vec<String> {
+        let (target, _) = call(target_text);
+        find(&pattern(pattern_text), &target)
+            .into_iter()
+            .map(|m| target_text[m.range].to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn a_shape_matches_with_its_holes_and_not_otherwise() {
+        assert_eq!(found("f(a,b)", "f(a,b)"), ["f(a,b)"]);
+        assert_eq!(found("f(a,b)", "f(a,c)"), Vec::<String>::new());
+        assert_eq!(found("f($x,b)", "f(q,b)"), ["f(q,b)"]);
+        assert_eq!(found("f($x,$x)", "f(q,q)"), ["f(q,q)"]);
+        assert_eq!(found("f($x,$x)", "f(q,r)"), Vec::<String>::new());
+        assert_eq!(found("f($...)", "f(a,b,c)"), ["f(a,b,c)"]);
+        assert_eq!(found("f(a,$rest...)", "f(a,b,c)"), ["f(a,b,c)"]);
+        assert_eq!(found("f(a,$rest...)", "f(a)"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn tokens_and_values_are_read_back_as_given() {
+        let mut builder = Builder::new(TOY, "'x' + \"x\"").unwrap();
+        builder.enter(Kind::new("Sum"), 0..9);
+        builder.enter(Kind::new("Text"), 0..3);
+        builder.value("x".into());
+        builder.leave();
+        builder.token(4..5, TokenText::Source);
+        builder.enter(Kind::new("Text"), 6..9);
+        builder.value("x".into());
+        builder.leave();
+        builder.leave();
+        let arena = builder.finish();
+        let nodes: Vec<_> = arena.nodes().collect();
+        assert_eq!(arena.value(nodes[1]), Some("x"));
+        assert_eq!(arena.value(nodes[0]), None);
+        let tokens = arena.tokens_in(0..9);
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(arena.token_text(&tokens[0]), "+");
+        assert_eq!(arena.tokens_in(0..4), &[]);
+        let fixed = Token {
+            start: 0,
+            end: 1,
+            compare: TokenText::Fixed("open"),
+        };
+        assert_eq!(arena.token_text(&fixed), "open");
+    }
+
+    #[test]
+    fn a_run_never_crosses_from_one_list_into_another() {
+        // Two lists under one node: a, b in the first, c in the second.
+        let text = "abc";
+        let mut builder = Builder::new(TOY, text).unwrap();
+        builder.enter(Kind::new("Block"), 0..3);
+        builder.begin_list();
+        for i in 0..2 {
+            builder.enter(Kind::new("S"), i..i + 1);
+            builder.leave();
+        }
+        builder.end_list();
+        builder.begin_list();
+        builder.enter(Kind::new("S"), 2..3);
+        builder.leave();
+        builder.end_list();
+        builder.leave();
+        let target = builder.finish();
+        let nodes: Vec<_> = target.nodes().collect();
+        assert_eq!(target.list(nodes[0]), None);
+        assert_eq!(target.list(nodes[1]), target.list(nodes[2]));
+        assert_ne!(target.list(nodes[2]), target.list(nodes[3]));
+    }
+
+    #[test]
+    #[should_panic(expected = "a pattern was matched against another language's arena")]
+    fn a_pattern_of_another_language_is_a_defect() {
+        let mut builder = Builder::new(Language::new("other"), "f()").unwrap();
+        builder.enter(Kind::new("Call"), 0..3);
+        builder.leave();
+        let _ = find(&pattern("f(a)"), &builder.finish());
     }
 }
