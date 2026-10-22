@@ -57,19 +57,15 @@ pub fn find(pattern: &Pattern, target: &Arena<'_>) -> Vec<Match> {
         let wanted = between_first_and_last(&parts(shape, shape.root()));
         for node in target.nodes() {
             let available = parts(target, node);
+            let limits = list_ends(target, &available);
             for (start, first) in available.iter().enumerate() {
                 let Part::Child(first) = first else { continue };
                 // A run of statements stays in one list - one block's statements - so it never
                 // takes in a header, a clause, or another block.
-                let Some(block) = target.list(*first) else {
+                if target.list(*first).is_none() {
                     continue;
-                };
-                let limit = available[start..]
-                    .iter()
-                    .position(
-                        |part| matches!(part, Part::Child(c) if target.list(*c) != Some(block)),
-                    )
-                    .map_or(available.len(), |offset| start + offset);
+                }
+                let limit = limits[start];
                 // Matched from this start as far as the pattern goes, the shortest way: one try
                 // per start, whatever the run's length.
                 let mut bindings = Bindings::new();
@@ -92,6 +88,28 @@ pub fn find(pattern: &Pattern, target: &Arena<'_>) -> Vec<Match> {
     found.sort_by_key(|m| (m.range.start, m.range.end));
     found.dedup();
     found
+}
+
+/// For each of a node's parts, where the list its child belongs to ends: the index of the first
+/// child of another list after it, or the end.  Found in one pass from the back, so that each
+/// start of a run need not look ahead for it.
+fn list_ends(arena: &Arena<'_>, available: &[Part<'_>]) -> Vec<usize> {
+    let mut ends = vec![available.len(); available.len()];
+    let mut end = available.len();
+    let mut later: Option<(usize, Option<u32>)> = None;
+    for (i, part) in available.iter().enumerate().rev() {
+        if let Part::Child(child) = part {
+            let list = arena.list(*child);
+            if let Some((index, later_list)) = later
+                && later_list != list
+            {
+                end = index;
+            }
+            later = Some((i, list));
+        }
+        ends[i] = end;
+    }
+    ends
 }
 
 /// A node's parts, in source order: its children and the tokens the adapter kept between them.

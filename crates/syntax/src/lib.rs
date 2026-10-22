@@ -386,9 +386,15 @@ impl<'text> Builder<'text> {
     ///
     /// If no list was begun, which is a defect in the adapter.
     pub fn end_list(&mut self) {
-        self.lists
+        let (_, depth) = self
+            .lists
             .pop()
             .expect("an adapter ended a list it never began");
+        assert_eq!(
+            depth,
+            self.open.len(),
+            "an adapter ended a list with a node inside it still open"
+        );
     }
 
     /// Ends the node entered last.
@@ -412,6 +418,7 @@ impl<'text> Builder<'text> {
     #[must_use]
     pub fn finish(mut self) -> Arena<'text> {
         assert!(self.open.is_empty(), "an adapter left nodes open");
+        assert!(self.lists.is_empty(), "an adapter left a list open");
         assert!(!self.nodes.is_empty(), "an adapter entered no root");
         self.values.sort_by_key(|(node, _)| *node);
         Arena {
@@ -588,6 +595,26 @@ mod tests {
     #[should_panic(expected = "an adapter gave a value with no node open")]
     fn a_value_with_no_node_open_is_a_defect() {
         Builder::new(TOY, "").unwrap().value(String::new());
+    }
+
+    #[test]
+    #[should_panic(expected = "an adapter left a list open")]
+    fn a_list_left_open_is_a_defect() {
+        let mut builder = Builder::new(TOY, "a").unwrap();
+        builder.enter(Kind::new("A"), 0..1);
+        builder.begin_list();
+        builder.leave();
+        let _ = builder.finish();
+    }
+
+    #[test]
+    #[should_panic(expected = "an adapter ended a list with a node inside it still open")]
+    fn ending_a_list_inside_a_child_is_a_defect() {
+        let mut builder = Builder::new(TOY, "ab").unwrap();
+        builder.enter(Kind::new("A"), 0..2);
+        builder.begin_list();
+        builder.enter(Kind::new("B"), 1..2);
+        builder.end_list();
     }
 
     #[test]
