@@ -681,8 +681,11 @@ dependencies = [
 name = "quaffed-python"
 version = "0.1.0"
 dependencies = [
+ "quaffed-encoding",
+ "quaffed-syntax",
  "ruff_python_ast",
  "ruff_python_parser",
+ "ruff_text_size",
 ]
 
 [[package]]
@@ -696,6 +699,10 @@ dependencies = [
  "proptest",
  "quaffed-representation",
 ]
+
+[[package]]
+name = "quaffed-syntax"
+version = "0.1.0"
 
 [[package]]
 name = "quick-error"

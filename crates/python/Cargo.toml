@@ -18,3 +18,10 @@ workspace = true
 # upgrade is a deliberate piece of work through this crate, never a lock-file refresh.
 ruff_python_ast = "=0.0.18"
 ruff_python_parser = "=0.0.18"
+# For the trait that gives a node its range; released with the other two, and moves with them.
+ruff_text_size = "=0.0.18"
+quaffed-syntax = { path = "../syntax" }
+
+[dev-dependencies]
+# The round trip decodes each corpus file as quaff does, then encodes the printed text back.
+quaffed-encoding = { path = "../encoding" }
