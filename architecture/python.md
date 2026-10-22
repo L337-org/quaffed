@@ -49,9 +49,9 @@ same identifiers, so they are Ruff's own.
   test, which says to delete the workaround.
 
 ## Pins
-
 `ruff_python_ast`, `ruff_python_parser` and `ruff_text_size`, which gives a node its range, are
-pinned with `=` in this crate's `Cargo.toml`, and `Cargo.lock` holds them.  An upgrade is deliberate work in this crate, never a lock-file refresh.
+pinned with `=` in this crate's `Cargo.toml`, and `Cargo.lock` holds them.  An upgrade is
+deliberate work in this crate, never a lock-file refresh.
 
 The three move together.  `ruff_python_parser` depends on `ruff_python_ast` at its own version, so
 bumping one alone puts two copies of `ruff_python_ast` in the build, and the adapter fails to

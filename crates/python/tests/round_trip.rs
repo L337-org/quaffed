@@ -42,14 +42,15 @@ enum Step {
     Leave(quaffed_syntax::NodeId),
 }
 
-/// The arena's text as `printer` prints it.  It never panics on a bad range: a range that runs
-/// backwards, past the text or through a character prints nothing, so the result differs.
+/// The arena's text as `printer` prints it.  It never panics on a bad range, the root's
+/// included: a range that runs backwards, past the text or through a character prints nothing,
+/// so the result differs and the file is reported with the rest.
 fn print(arena: &Arena<'_>, printer: Printer) -> String {
     let text = arena.text();
     let slice = |from: usize, to: usize| text.get(from..to).unwrap_or_default();
     let mut out = String::with_capacity(text.len());
     if printer == Printer::Faithful {
-        out.push_str(arena.leading());
+        out.push_str(slice(0, arena.range(arena.root()).start));
     }
     // A node is finished when it is left, so the walk keeps, for each open node, where its text
     // has been printed up to.
@@ -83,7 +84,7 @@ fn print(arena: &Arena<'_>, printer: Printer) -> String {
         }
     }
     if printer == Printer::Faithful {
-        out.push_str(arena.trailing());
+        out.push_str(slice(arena.range(arena.root()).end, text.len()));
     }
     out
 }
@@ -546,4 +547,13 @@ fn a_range_out_of_place_prints_nothing_rather_than_panicking() {
     builder.leave();
     let arena = builder.finish();
     assert_eq!(print(&arena, Printer::Faithful), "a");
+
+    // A root past the text, or through a character, is reported rather than panicking.
+    for (text, root) in [("ab", 1..9), ("\u{e9}x", 1..3)] {
+        let mut builder = quaffed_syntax::Builder::new(quaffed_python::PYTHON, text).unwrap();
+        builder.enter(quaffed_syntax::Kind::new("Root"), root);
+        builder.leave();
+        let arena = builder.finish();
+        assert_ne!(print(&arena, Printer::Faithful), text);
+    }
 }

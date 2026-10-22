@@ -339,8 +339,9 @@ jobs:
         run: rustup toolchain install
 
       - name: Every file round-trips, and every file the oracle refuses is refused
-        # --ignored runs nothing, and passes, if the test is renamed or loses its #[ignore], so
-        # the step also requires that exactly one test ran.
+        # --ignored runs nothing, and passes, if the test loses its #[ignore], so the step also
+        # requires that exactly one test ran.  A second ignored test in the file trips this too:
+        # change the count with it.
         run: |
           set -o pipefail
           cargo test --locked -p quaffed-python --test round_trip -- --ignored --nocapture 2>&1 \

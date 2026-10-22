@@ -5,8 +5,9 @@
 //! every language.
 //!
 //! Each language's adapter parses with its own parser and builds an [`Arena`] with a
-//! [`Builder`]; the engine reads arenas and never a parser's own types.  This crate depends on
-//! no parser.  `architecture/syntax.md` describes it.
+//! [`Builder`].  The engine is to read arenas and never a parser's own types, which is why this
+//! crate depends on nothing: `tests/no_dependencies.rs` holds that.  `architecture/syntax.md`
+//! describes it.
 
 use std::fmt;
 use std::ops::Range;

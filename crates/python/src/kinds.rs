@@ -67,8 +67,9 @@ mod tests {
         assert_eq!(all[93].to_string(), "Identifier");
     }
 
-    /// Pins the quirk the arena builder in `parse.rs` works around.  If a Ruff upgrade makes its walk enter the
-    /// format spec, this fails: delete the workaround, this test and the quirk in `python.md`.
+    /// Pins the quirk the arena builder in `parse.rs` works around.  If a Ruff upgrade makes its
+    /// walk enter the format spec, this fails: delete the workaround, this test and the quirk in
+    /// `python.md`.
     #[test]
     fn ruffs_walk_still_skips_the_format_spec() {
         struct Entered(Vec<NodeKind>);

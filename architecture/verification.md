@@ -106,8 +106,8 @@ Real Python, as a check on what the synthetic corpus did not think to write: **C
 `Lib/test` at the release tag matching the oracle**, a large body of Python written to exercise
 the language.  It is **used for the round trip, and as input when profiling by hand**, never by
 a budget or a benchmark, so its contents cannot move a measured number.  Nothing that measures
-reads `target/corpus/`.  The round trip over it is a required check: a file it holds can fail a
-pull request, but only by not round-tripping or by disagreeing with the oracle.
+reads `target/corpus/`.  A file it holds can fail a pull request through the round trip, but
+only by not round-tripping or by disagreeing with the oracle.
 
 It is **fetched, not checked in**: it is CPython's code, under the PSF licence, and far larger
 than the rest of the repository.  `corpus/real-world.toml` pins it, and is the one place that
@@ -150,16 +150,16 @@ running the oracle, so it is generated with the files rather than kept in step b
 
 The **Real-world corpus** job in `premerge.yaml` runs `scripts/check-synthetic` and
 `scripts/fetch-corpus` with the oracle's Python, reusing a fetch whose manifest and script are
-unchanged, and then the round trip over the fetched tree, below.  `crates/quaffed/tests/fetch_corpus.rs` tests the fetch script itself in
-the ordinary run, against small archives it builds: only the path is extracted, a changed hash
-is refused, a member with a `..` step or a link escaping the directory is refused, the floor
-fails saying how many it read, another Python is refused, a completed fetch is reused, a changed
-pin is fetched again, a failed download leaves nothing behind, and a failed refetch keeps the
-previous tree.  `crates/quaffed/tests/check_synthetic.rs` tests the oracle check the same way: a
-refused file fails naming it in its parse mode, another Python is refused, and an empty group
-fails rather than passing having checked nothing.  Neither has a test of the overall download
-deadline or of a rename failing mid-replacement, which would need a slow server and fault
-injection.
+unchanged, and then the round trip over the fetched tree, below.
+`crates/quaffed/tests/fetch_corpus.rs` tests the fetch script itself in the ordinary run, against
+small archives it builds: only the path is extracted, a changed hash is refused, a member with a
+`..` step or a link escaping the directory is refused, the floor fails saying how many it read,
+another Python is refused, a completed fetch is reused, a changed pin is fetched again, a failed
+download leaves nothing behind, and a failed refetch keeps the previous tree.
+`crates/quaffed/tests/check_synthetic.rs` tests the oracle check the same way: a refused file fails
+naming it in its parse mode, another Python is refused, and an empty group fails rather than passing
+having checked nothing.  Neither has a test of the overall download deadline or of a rename failing
+mid-replacement, which would need a slow server and fault injection.
 
 ### Checklist: moving the pin to a new CPython release
 
@@ -171,6 +171,10 @@ injection.
    that release.
 4. Raise `floor` if the release has many more files, keeping it below the count the fetch
    prints.
+5. Run the round trip against the new release, `cargo test -p quaffed-python --test round_trip
+   -- --ignored`.  A newer `Lib/test` can carry syntax the new oracle accepts and the pinned
+   Ruff refuses, reported as refused but expected to parse.  If it does, upgrade Ruff first, by
+   the checklist in `python.md`, then move the pin.
 
 ## The round trip
 
@@ -189,8 +193,9 @@ invariants and decoding and encoding lose nothing.
   the **Real-world corpus** job runs it with `--ignored` after the fetch.  Every file the oracle
   accepts must round-trip, and **every file in `refused.txt` must be refused**, by the decoder or
   the parser; one that parses fails, naming the oracle's reason.  The oracle decides, never our
-  parser.  The job's step also fails unless exactly one test ran, since `--ignored` passes having
-  run nothing if the test is renamed or loses its `#[ignore]`.
+  parser.  The job's step also fails unless exactly one test ran: if the test lost its
+  `#[ignore]`, `--ignored` would run nothing and pass.  A second ignored test in the file trips
+  the same check, so adding one means changing the step's count with it.
 - **A failure names the file and the first byte that differs**, with the bytes around it on
   each side, and every failure in the run is listed, not only the first.
 - **It cannot pass having read nothing**: a synthetic group below its floor fails, a fetched

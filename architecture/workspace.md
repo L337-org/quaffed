@@ -43,16 +43,17 @@ the script language in `script.md`, the syntax arena in `syntax.md`, and the Pyt
 ```
 
 **The members.**  `quaffed` builds the `quaff` binary, matching the name decision.
-`quaffed-encoding` decides what a file's bytes are and reads Python's declared encodings, a
-crate of its own so that the binary can read them without linking the Python adapter, and Ruff
-with it, and the adapter can take text decoded the same way.  `quaffed-representation` is the
-operation representation, a crate of its own so that its
-lint configuration - no hash maps or sets - applies to it alone, and so that it can depend on
-no parser.  `quaffed-script` parses the script language into it.  `quaffed-syntax` is the arena a parsed
-file becomes, the same for every language and depending on no parser, so that the engine reads
-one shape whichever parser built it.  `quaffed-python` is the Python adapter, the one crate
-allowed to depend on a `ruff_*` crate, so that Ruff's API changes stop there; it builds arenas.  `members = ["crates/*"]` picks up a new member without an edit, and it inherits the
-version, edition, licence and lints from `[workspace.package]` and `[workspace.lints]`.
+`quaffed-encoding` decides what a file's bytes are and reads Python's declared encodings, a crate of
+its own so that the binary can read them without linking the Python adapter, and Ruff with it, and
+the adapter can take text decoded the same way.  `quaffed-representation` is the operation
+representation, a crate of its own so that its lint configuration - no hash maps or sets - applies
+to it alone, and so that it can depend on no parser.  `quaffed-script` parses the script language
+into it.  `quaffed-syntax` is the arena a parsed file becomes, the same for every language and
+depending on nothing, so that the engine can read one shape whichever parser built it.
+`quaffed-python` is the Python adapter, the one crate allowed to depend on a `ruff_*` crate, so that
+Ruff's API changes stop there; it builds arenas.  `members = ["crates/*"]` picks up a new member
+without an edit, and it inherits the version, edition, licence and lints from `[workspace.package]`
+and `[workspace.lints]`.
 
 **`publish = false`** on every member.  Nothing is published until a release decides where and
 how, and an accidental `cargo publish` of a placeholder is not undoable.

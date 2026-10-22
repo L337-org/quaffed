@@ -2,9 +2,10 @@
 
 `crates/syntax`, the `quaffed-syntax` crate: a parsed file as node kinds and byte ranges over
 its text, **the same shape for every language**.  Each language's adapter parses with the parser
-chosen for that language and builds an arena; the engine - matching, rewriting, the invariant
-checks - reads arenas and never a parser's own types.  This crate depends on no parser, so a
-second language's adapter depends on it and not on the Python adapter.
+chosen for that language and builds an arena.  The rule for the engine - matching, rewriting,
+the invariant checks - is that it reads arenas and never a parser's own types.  This crate
+depends on nothing, so a second language's adapter depends on it and not on the Python adapter
+or its parser; `tests/no_dependencies.rs` fails on any dependency it does not name.
 
 ## The shape
 
@@ -17,9 +18,7 @@ second language's adapter depends on it and not on the Python adapter.
 - **A node's identity is its index**, a `NodeId`, meaningful only in that arena.  Nothing
   survives an edit and a re-parse.
 - **There are no tokens.**  The text between a node's children is read from the ranges and the
-  shared text.  If the matcher needs to tell a comment from an operator in that text, the
-  parser's tokens are added beside the nodes as their own flat array, sorted by position,
-  without changing the node layout.
+  shared text.
 
 ## What the ranges mean
 
