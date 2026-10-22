@@ -48,6 +48,16 @@ Offsets are `u32`, as the parsers' own are.  `Builder::new` refuses text longer 
 whole rather than partly searched or edited.  This limits structural work only: a textual search
 never builds an arena.
 
+## Patterns
+
+A `Pattern` is a snippet of a language compiled into an arena of its own, with some of its
+nodes marked as holes: each with the name it binds, if any, and whether it stands for one node
+or a sequence.  A hole is a node of the pattern's arena where the hole was written, so the
+matcher reads a pattern with the same walks as a file.  Compiling one is the language's job,
+because how a hole survives the language's parser differs between languages; `python.md`
+describes Python's.  A pattern owns its text, through `Arena::into_owned`, so it outlives the
+text it was compiled from.
+
 ## Building one
 
 An adapter makes a `Builder` over the text, then walks its parser's tree once, calling `enter`

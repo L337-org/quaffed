@@ -681,6 +681,7 @@ dependencies = [
 name = "quaffed-python"
 version = "0.1.0"
 dependencies = [
+ "proptest",
  "quaffed-encoding",
  "quaffed-syntax",
  "ruff_python_ast",

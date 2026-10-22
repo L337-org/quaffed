@@ -25,3 +25,4 @@ quaffed-syntax = { path = "../syntax" }
 [dev-dependencies]
 # The round trip decodes each corpus file as quaff does, then encodes the printed text back.
 quaffed-encoding = { path = "../encoding" }
+proptest = "=1.12.0"

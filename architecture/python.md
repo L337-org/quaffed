@@ -14,6 +14,7 @@ Ruff warns "will have frequent breaking changes", is absorbed here and reaches n
   language `PYTHON`.  Source that does not parse is `ParseError::Invalid`, carrying Ruff's
   message verbatim and the byte offset; text too long for an arena's offsets is
   `ParseError::TooLong`, refused before Ruff sees it.  Never a partial arena.
+- **`compile_pattern(text)`**: a structural pattern compiled into a `Pattern`, below.
 - **`kinds_in_module(source)`**, **`kinds_in_expression(source)`** and
   **`kinds_in_ipython(source)`**: the kinds of node in the arena, which the synthetic corpus's
   coverage check reads.
@@ -29,6 +30,28 @@ token, so blank lines before it are the arena's leading text.
 
 It takes source as text.  Decoding a file is `quaffed-encoding`'s (`encoding.md`), so that the
 adapter and a textual search read a file's bytes the same way, as CPython does.
+
+## Patterns
+
+`compile_pattern(text)` turns a structural pattern - `handle_request($a, $b)`, a `-p` argument or
+a backticked operand - into a `Pattern` (`syntax.md`).  A hole is not Python, so it takes two
+stages, as the script language specifies:
+
+1. **Claim before parsing.**  Every `$name`, `$_`, `$name...` and `$...` is replaced by a
+   placeholder identifier, on a stem the pattern does not contain so a placeholder never meets
+   a name the pattern wrote.  A `$` not followed by a name or `...` is left as written, so
+   `${HOME}` is never claimed.  A name is a Python identifier.
+2. **Let the grammar decide.**  The result is parsed - as a single expression if it is one,
+   otherwise as statements - and a placeholder is a hole when a node below the root spans
+   exactly it.  Where several nodes do, the outermost is the hole, so a hole at statement level
+   is the statement.  A placeholder no node spans lies inside a string or a comment: it is
+   literal text, and is put back as written before the pattern is parsed again, which a
+   string's or comment's content cannot change the shape of.  A hole in an f-string's field is
+   in an expression, so it is a hole.
+
+It refuses `$_...`, since a sequence that binds nothing is spelt `$...`, and a pattern that is
+only holes, which has no shape to match.  An error that is Ruff's is placed in the pattern as
+written, not in the text with placeholders.
 
 ## The kind list is held to Ruff's enum by the compiler
 
