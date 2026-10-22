@@ -109,8 +109,8 @@ fn positions(text: &str, offsets: &[usize]) -> BTreeMap<usize, Position> {
             line += 1;
             column = 1;
         }
-        while next.next_if(|&&o| o <= offset).is_some() {
-            placed.insert(offset, Position { line, column });
+        while let Some(&o) = next.next_if(|&&o| o <= offset) {
+            placed.insert(o, Position { line, column });
         }
         if next.peek().is_none() {
             return placed;
@@ -137,6 +137,8 @@ fn positions(text: &str, offsets: &[usize]) -> BTreeMap<usize, Position> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+    use quaffed_encoding::Encoding;
     use quaffed_python::compile_pattern;
 
     fn pos(line: usize, column: usize) -> Position {
@@ -175,6 +177,39 @@ mod tests {
         assert_eq!(placed[&21], pos(3, 6));
         // The end of the text, after a final CR.
         assert_eq!(positions("a\r", &[2])[&2], pos(2, 1));
+    }
+
+    proptest! {
+        /// The two tiers place a match alike: by its first and last character, over any mix of
+        /// line endings and characters of any width.
+        #[test]
+        fn a_match_is_placed_as_a_textual_search_places_it(
+            chars in prop::collection::vec(
+                prop::sample::select(vec!['a', ' ', 'é', '€', '😀', '\r', '\n']),
+                1..40,
+            ),
+            cuts in prop::collection::vec(any::<prop::sample::Index>(), 2..8),
+        ) {
+            let text: String = chars.iter().collect();
+            let starts: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
+            let mut bounds: Vec<usize> = cuts.iter().map(|c| *c.get(&starts)).collect();
+            bounds.push(text.len());
+            bounds.sort_unstable();
+            bounds.dedup();
+            // Consecutive bounds are non-empty ranges in order, as a textual search finds them.
+            let ranges: Vec<(usize, usize)> = bounds.windows(2).map(|w| (w[0], w[1])).collect();
+            let textual = crate::search::positions(text.as_bytes(), Encoding::Utf8, &ranges);
+            let wanted: Vec<usize> = ranges
+                .iter()
+                .flat_map(|&(start, end)| [start, last_char(&text, &(start..end))])
+                .collect();
+            let placed = positions(&text, &wanted);
+            for (&(start, end), textual) in ranges.iter().zip(textual) {
+                prop_assert_eq!(placed[&start], textual.start, "start of {:?}", start..end);
+                let last = last_char(&text, &(start..end));
+                prop_assert_eq!(placed[&last], textual.end, "end of {:?}", start..end);
+            }
+        }
     }
 
     #[test]

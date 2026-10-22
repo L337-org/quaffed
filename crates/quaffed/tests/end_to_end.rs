@@ -1159,11 +1159,29 @@ fn a_scope_with_no_python_says_so_rather_than_finding_nothing() {
 }
 
 #[test]
+fn a_scope_whose_python_cannot_be_searched_says_so_rather_than_finding_nothing() {
+    let mut project = Project::new(&[(".git/HEAD", ""), ("README.md", "f(x)\n")]);
+    // Python is in scope, but in an encoding quaff does not read: the run says no Python file
+    // could be searched, not that none has structure, and the file's own note says why.
+    project.add_bytes("gbk.py", b"# -*- coding: gbk -*-\nf(x)\n");
+    assert_quaff_snapshot!(project.quaff(&["-p", "f($a)"]));
+    assert_quaff_snapshot!(project.quaff(&["-e", "find `f($a)` expect none"]));
+    project.assert_unchanged();
+}
+
+#[test]
 fn a_python_file_that_does_not_parse_refuses_a_structural_search_with_exit_9() {
     let mut project = Project::new(STRUCTURAL);
     project.add_bytes("src/broken.py", b"def handle(:\n");
     // A file CPython refuses to read does not parse either.
     project.add_bytes("src/bad_coding.py", b"# -*- coding: uft-8 -*-\nx = 1\n");
+    // Nor does one holding a byte its declared encoding lacks, though a lossy decoding would
+    // parse, nor UTF-16, which CPython refuses for its NUL bytes.
+    project.add_bytes(
+        "src/bad_byte.py",
+        b"# coding: utf-8\nx = '\xff'\nhandle_request(x, y)\n",
+    );
+    project.add_bytes("src/wide.py", b"\xff\xfex\x00\n\x00");
     // Nothing is printed, every such file is named with where and why, and the way to exclude
     // them is said.
     assert_quaff_snapshot!(project.quaff(&["-p", "handle_request($a, $b)"]));
@@ -1181,18 +1199,11 @@ fn a_python_file_is_searched_in_its_declared_encoding() {
     // after the é starts in column 13, not 14.
     project.add_bytes(
         "latin1.py",
-        b"# -*- coding: latin-1 -*-
-name = '\xe9'; f(name)
-",
+        b"# -*- coding: latin-1 -*-\nname = '\xe9'; f(name)\n",
     );
     // GBK, declared: quaff does not read it, so it is said not to have been searched rather
     // than refusing the run.
-    project.add_bytes(
-        "gbk.py",
-        b"# -*- coding: gbk -*-
-f(x)
-",
-    );
+    project.add_bytes("gbk.py", b"# -*- coding: gbk -*-\nf(x)\n");
     assert_quaff_snapshot!(project.quaff(&["-p", "f($a)"]));
     project.assert_unchanged();
 }
@@ -1204,5 +1215,7 @@ fn a_pattern_that_cannot_be_compiled_exits_3_saying_where() {
     assert_quaff_snapshot!(project.quaff(&["-p", "$x"]));
     assert_quaff_snapshot!(project.quaff(&["-e", "find `f($_...)`"]));
     assert_quaff_snapshot!(project.quaff(&["-e", "find `f($x, $x...)`"]));
+    // Placed past a longer fence and the space that pads it, at the `$`, character 12.
+    assert_quaff_snapshot!(project.quaff(&["-e", "find ``` f($_...) ```"]));
     project.assert_unchanged();
 }

@@ -102,18 +102,21 @@ advice to use a longer fence, because it is almost always an operand that held i
 delimiter.
 
 **Locations** (`src/location.rs`) name the source: `refactor.quaff:12:5` for a file,
-`<stdin>:12:5` for standard input, `-e expression 2, at character 10` for an inline script.
-Lines and columns count from 1, columns in characters.  A script file or standard input is read
-as UTF-8, and a leading byte-order mark is dropped before parsing, so line 1, column 1 is the
-first visible character; the command line does that (`crates/quaffed/src/run.rs`), and the
-parser never sees the mark.
+`<stdin>:12:5` for standard input, `-e expression 2, at character 10` for an inline script,
+and `-p, at character 4` for a `-p` pattern, the one command-line query that can be wrong at a
+place in it.  Lines and columns count from 1, columns in characters.  A script file or standard
+input is read as UTF-8, and a leading byte-order mark is dropped before parsing, so line 1,
+column 1 is the first visible character; the command line does that
+(`crates/quaffed/src/run.rs`), and the parser never sees the mark.
 
 ## Running a script
 
 The command line (`crates/quaffed/src/run.rs`) reads each source in order - `-s` and the bare
-query become a `find` of their text - parses it into one `Program`, runs the checker, then
-refuses anything this build cannot yet run: a backticked pattern, an `in` or `where` clause, and
-`replace` and `delete`, each exit 5 at where it was written.  Only then does it look at a file.
+query become a `find` of their text, and `-p` a `find` of its pattern - parses it into one
+`Program`, runs the checker, then refuses anything this build cannot yet run: an `in` or `where`
+clause, and `replace` and `delete`, each exit 5 at where it was written.  It compiles every
+backticked pattern, so one that is not a pattern is exit 3 there too.  Only then does it look at
+a file.
 Every file is read once, for every query in the program, and the statements are evaluated in
 order over the results.  Output, notes, assertion failures and exit codes are in `search.md`.
 

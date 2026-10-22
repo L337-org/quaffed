@@ -10,7 +10,7 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
-use quaffed_encoding::{self as encoding, Encoding, Named, Refusal};
+use quaffed_encoding::{self as encoding, Encoding, Named, Refusal, python};
 use quaffed_python::compile_pattern;
 use quaffed_representation::check;
 use quaffed_representation::program::{
@@ -262,7 +262,11 @@ pub fn run(
         .iter()
         .map(|(written, span)| {
             compile_pattern(written).map_err(|err| Failure::Script {
-                location: built.locate(*span, span.start),
+                location: built.locate(
+                    *span,
+                    err.offset()
+                        .map_or(span.start, |at| built.content_start(*span, written) + at),
+                ),
                 message: err.to_string(),
             })
         })
@@ -365,6 +369,16 @@ struct Built {
 }
 
 impl Built {
+    /// Where in its source the operand at `span`, whose content is `written`, starts that
+    /// content: after any backtick fence, and the one space a fence of three or more may pad it
+    /// with.  A `-p` pattern is its whole source, so starts at its start.
+    fn content_start(&self, span: Span, written: &str) -> usize {
+        let raw = &self.texts[span.source][span.start..span.end];
+        let fence = raw.bytes().take_while(|&b| b == b'`').count();
+        let inside = &raw[fence..raw.len() - fence];
+        span.start + fence + usize::from(inside != written)
+    }
+
     /// Where byte `offset` of the source `span` is in, as a diagnostic names it.
     fn locate(&self, span: Span, offset: usize) -> String {
         location::describe(
@@ -659,13 +673,15 @@ struct Searched {
     /// Python files a structural search needs that do not parse, by the paths a message shows,
     /// with where and why.
     unparsed: Vec<(PathBuf, String)>,
+    /// Python files in scope, binary ones aside, when a structural pattern is wanted.
+    python: usize,
     /// Python files searched for the structural patterns.
     structural: usize,
     /// Other files, which have no structure quaff reads, so no structural pattern applies.
     not_applicable: usize,
     /// Python files in an encoding quaff does not read, so not searched for a structural
     /// pattern, with why.
-    unread: Vec<(PathBuf, Unknown)>,
+    unread: Vec<(PathBuf, String)>,
     /// For each pattern, the files of unknown encoding holding bytes it would match, by the
     /// paths a message shows, with the lines they are on and why the encoding is unknown.  Never
     /// counted, and never edited.
@@ -725,6 +741,7 @@ fn search_files(
     let mut searched = Searched {
         matches: (0..patterns.len()).map(|_| Vec::new()).collect(),
         unparsed: Vec::new(),
+        python: 0,
         structural: 0,
         not_applicable: 0,
         unread: Vec::new(),
@@ -762,34 +779,36 @@ fn search_files(
             path: output::relative(&err.path, cwd),
             cause: err.cause,
         })?;
-        let python = resolve::is_python(file);
-        if !shapes.is_empty() && !python && !matches!(resolution, Resolution::Binary) {
-            searched.not_applicable += 1;
+        let binary = matches!(resolution, Resolution::Binary);
+        if !shapes.is_empty() && !binary {
+            if resolve::is_python(file) {
+                // The text Ruff parses is the text CPython would run, decoded as CPython decodes
+                // it, whatever else declares the file's encoding for the textual tier.
+                searched.python += 1;
+                match python::Source::decode(&bytes) {
+                    Ok(source) => searched.python(&shown, &source.text, &structural, &shapes),
+                    // quaff's own limit, not Python's: the file may well parse.
+                    Err(refusal @ Refusal::Unread { .. }) => {
+                        searched.unread.push((shown.clone(), refusal.to_string()));
+                    }
+                    // A Python file CPython refuses to read does not parse, whatever it holds.
+                    Err(refusal) => searched.unparsed.push((shown.clone(), refusal.to_string())),
+                }
+            } else {
+                searched.not_applicable += 1;
+            }
         }
         match resolution {
             Resolution::Binary => searched.binary += 1,
-            Resolution::Refused(refusal) => {
-                // A Python file CPython refuses to read does not parse, whatever it holds.
-                if !shapes.is_empty() {
-                    searched.unparsed.push((shown.clone(), refusal.to_string()));
-                }
-                searched.refused.push((shown, refusal));
-            }
+            Resolution::Refused(refusal) => searched.refused.push((shown, refusal)),
             Resolution::Known { encoding, body, .. } => {
                 searched.known(&shown, &bytes[body..], encoding, &textual);
-                if python && !shapes.is_empty() {
-                    let text = decode(&bytes[body..], encoding);
-                    searched.python(&shown, &text, &structural, &shapes);
-                }
             }
             Resolution::Unknown(reason) => {
                 if reason == Unknown::NotUtf8
                     && locale.is_some_and(|(_, encoding)| encoding.reads_cleanly(&bytes))
                 {
                     searched.hinted.push(shown.clone());
-                }
-                if python && !shapes.is_empty() {
-                    searched.unread.push((shown.clone(), reason.clone()));
                 }
                 searched.unknown(&shown, &bytes, &reason, &textual);
             }
@@ -894,21 +913,6 @@ impl Searched {
     }
 }
 
-/// A file's text, decoded from `bytes` in `encoding`, as a structural search parses it.
-fn decode(bytes: &[u8], encoding: Encoding) -> String {
-    if encoding == Encoding::Utf8
-        && let Ok(text) = std::str::from_utf8(bytes)
-    {
-        return text.to_owned();
-    }
-    let mut text = String::with_capacity(bytes.len());
-    encoding.each_char(bytes, |_, c| {
-        text.push(c);
-        true
-    });
-    text
-}
-
 /// Walking the steps in order over what the search found.
 struct Evaluation<'s> {
     searched: &'s Searched,
@@ -1007,16 +1011,18 @@ impl Evaluation<'_> {
     }
 
     /// Why `pattern` could not be looked for anywhere, if that is so: a structural pattern in a
-    /// scope with no Python file to search.
+    /// scope with no Python file, or none that could be searched.
     fn nothing_applicable(&self, pattern: Wanted) -> Option<String> {
+        let searched = self.searched;
         match pattern {
-            Wanted::Structural { .. } if self.searched.structural == 0 => Some(format!(
+            Wanted::Structural { .. } if searched.python == 0 => Some(format!(
                 "no file in scope has structural support; {} not searched",
-                count(
-                    self.searched.not_applicable,
-                    "text-tier file",
-                    "text-tier files"
-                )
+                count(searched.not_applicable, "text-tier file", "text-tier files")
+            )),
+            // Each file's own note says why it was not searched.
+            Wanted::Structural { .. } if searched.structural == 0 => Some(format!(
+                "no Python file in scope could be searched; {} not searched",
+                count(searched.python, "Python file", "Python files")
             )),
             _ => None,
         }
@@ -1179,7 +1185,8 @@ fn structural_notes(searched: &Searched, evaluated: &[Searching]) -> Vec<String>
     {
         return notes;
     }
-    if searched.structural > 0 && searched.not_applicable > 0 {
+    // With no Python in scope, the run's own message counts these instead.
+    if searched.python > 0 && searched.not_applicable > 0 {
         notes.push(format!(
             "{} not searched for structural patterns, which apply to Python files only",
             count(searched.not_applicable, "text-tier file", "text-tier files")

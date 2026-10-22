@@ -11,4 +11,4 @@ exit_code: 3
 ----- stdout -----
 
 ----- stderr -----
-quaff: -e expression 1, at character 6: "$_..." at byte 2 is not a hole: a sequence that binds nothing is written "$..."
+quaff: -e expression 1, at character 9: "$_..." is not a hole: a sequence that binds nothing is written "$..."

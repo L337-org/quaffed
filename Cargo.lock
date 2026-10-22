@@ -665,6 +665,7 @@ dependencies = [
  "insta-cmd",
  "memchr",
  "mimalloc",
+ "proptest",
  "quaffed-encoding",
  "quaffed-python",
  "quaffed-representation",

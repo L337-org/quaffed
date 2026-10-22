@@ -162,24 +162,32 @@ match is a match of its own.  **Which files it applies to follows the units rule
 MVP a unit is a whole file** (`src/structural.rs`, and the file loop in `src/run.rs`):
 
 - **A Python file** - `.py`, `.pyi` or `.pyw`, by name alone, as `resolve::is_python` decides
-  for an encoding too - is decoded in the encoding its declarations give, parsed, and searched.
+  for an encoding too - is decoded as `CPython` decodes it (`python::Source::decode` in
+  `quaffed-encoding`), parsed, and searched.  An `.editorconfig` or version-control declaration
+  that gives the textual tier another encoding does not change the text Ruff is given, since it
+  does not change the text Python runs.
 - **Any other file is not applicable**: it is never matched as text instead, and never an error.
   A note counts the text-tier files not searched.  **When no file in scope is Python, the run
   says so in words** - `no file in scope has structural support; 12 text-tier files not
   searched` - rather than reporting nothing found: a `find` exits 1, and a `find ... expect`
   fails, exit 2, whatever it asks, because an assertion about structure that could not be looked
-  for is not a passed one.
+  for is not a passed one.  **When Python is in scope but none of it could be searched** -
+  every file binary or in an encoding quaff does not read - the same holds, worded `no Python
+  file in scope could be searched; 2 Python files not searched`, each file's note saying why.
 - **A Python file that does not parse refuses the whole run**, exit 9, before anything is
   printed, naming each such file with where its first error is and Ruff's message, and saying how
   to leave it out: an entry in `.ignore`, or a narrower scope.  A file `CPython` refuses to read -
   a bad encoding declaration, say - does not parse either.  A count that silently skipped a file
   could not be trusted.  Textual searches still run over such files, since they need no parse.
 - **A binary Python file** is skipped and counted, as any binary file is; **one in an encoding
-  quaff does not read** is noted as not searched.
+  quaff does not read** - a declared GBK, say, which `CPython` reads - is noted as not
+  searched.
 
 **A pattern is compiled before any file is read**, so one that is not Python, spells `$_...`,
-is nothing but holes, or uses a name both ways, is a script error, exit 3, at where it was
-written, and nothing is searched.
+is nothing but holes, or uses a name both ways, is a script error, exit 3, and nothing is
+searched.  It is placed where in the pattern the fault is, counted in its source's terms -
+`-p, at character 6`, or a script's line and column past the backtick fence - rather than as a
+byte offset into the pattern; a fault with no one place is at the pattern's start.
 
 ## Output
 

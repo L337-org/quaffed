@@ -11,4 +11,4 @@ exit_code: 3
 ----- stdout -----
 
 ----- stderr -----
-quaff: -e expression 1, at character 6: "$x" is used for one node and, at byte 6, for a sequence: a name is one or the other, so give the sequence a name of its own
+quaff: -e expression 1, at character 13: "$x" is used for one node and, here, for a sequence: a name is one or the other, so give the sequence a name of its own

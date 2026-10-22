@@ -11,4 +11,4 @@ exit_code: 3
 ----- stdout -----
 
 ----- stderr -----
-quaff: -p: the pattern is only holes, so it has no shape to match: write the code around them, as in "handle_request($a, $b)"
+quaff: -p, at character 1: the pattern is only holes, so it has no shape to match: write the code around them, as in "handle_request($a, $b)"

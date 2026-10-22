@@ -1,0 +1,16 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-p"
+    - f($a)
+---
+success: false
+exit_code: 1
+----- stdout -----
+
+----- stderr -----
+quaff: no Python file in scope could be searched; 1 Python file not searched, so `f($a)` was not searched for
+quaff: 1 text-tier file not searched for structural patterns, which apply to Python files only
+quaff: "gbk.py" not searched for structural patterns: line 1 declares the encoding "gbk", Python's "gbk", which Python reads and quaff does not
