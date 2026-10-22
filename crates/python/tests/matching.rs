@@ -155,6 +155,68 @@ fn a_name_used_twice_matches_equal_code_both_times() {
 }
 
 #[test]
+fn a_name_used_twice_matches_the_same_code_whatever_its_role() {
+    // An argument and a keyword, a name and an attribute, a parameter and a name.
+    assert_eq!(matches("f($k=$k)", "f(a=a)\nf(a=b)\n"), ["f(a=a)"]);
+    assert_eq!(
+        matches("$x = $o.$x", "name = self.name\nname = self.other\n"),
+        ["name = self.name"]
+    );
+    assert_eq!(
+        matches(
+            "def $f($p):\n    return $p\n",
+            "def g(a):\n    return a\n\ndef h(a):\n    return b\n"
+        ),
+        ["def g(a):\n    return a"]
+    );
+}
+
+#[test]
+fn a_trailing_comma_or_a_semicolon_takes_no_part() {
+    assert_eq!(matches("f($a, $b)", "f(x, y,)\n"), ["f(x, y,)"]);
+    assert_eq!(
+        matches(
+            "handle_request($args...)",
+            "handle_request(\n    a,\n    b,\n)\n"
+        ),
+        ["handle_request(\n    a,\n    b,\n)"]
+    );
+    assert_eq!(
+        matches("def $f($a, $b):\n    pass\n", "def g(a, b,):\n    pass\n").len(),
+        1
+    );
+    assert_eq!(matches("[1, 2]", "[1, 2,]\n"), ["[1, 2,]"]);
+    assert_eq!(
+        matches("x = 1\ny = 2\n", "x = 1; y = 2\n"),
+        ["x = 1; y = 2"]
+    );
+    assert_eq!(
+        matches("return 1", "def f():\n    return 1;\n"),
+        ["return 1"]
+    );
+    // A one-element tuple stays a tuple, and a tuple index stays apart from a name index.
+    assert_eq!(matches("($a,)", "(x,)\n(x)\n"), ["(x,)"]);
+    assert_eq!(matches("$s[1]", "a[1,]\na[1]\n"), ["a[1]"]);
+}
+
+#[test]
+fn a_sequence_at_the_edge_of_statements_takes_the_rest_of_its_block() {
+    let source = "def f():\n    x = 1\n    a()\n    b()\n";
+    assert_eq!(
+        matches("x = 1\n$rest...\n", source),
+        ["x = 1\n    a()\n    b()"]
+    );
+    let source = "w()\nw()\nx()\nx()\n";
+    // A leading sequence starts at the block's first statement and takes all it can.
+    assert_eq!(matches("$pre...\nx()\n", source), ["w()\nw()\nx()\nx()"]);
+    // Between the edges a sequence still takes only what the pattern needs, and at least one.
+    assert_eq!(
+        matches("w()\n$mid...\nx()\n", source),
+        ["w()\nw()\nx()", "w()\nx()\nx()"]
+    );
+}
+
+#[test]
 fn a_match_inside_a_match_is_its_own_match() {
     assert_eq!(matches("f($x)", "f(f(1))\n"), ["f(f(1))", "f(1)"]);
 }

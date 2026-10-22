@@ -60,13 +60,16 @@ error that is Ruff's is placed in the pattern as written, not in the text with p
 ## What a match compares
 
 The arena keeps Ruff's own tokens, less those that carry no meaning in Python: comments, line
-breaks, indentation, the end of the file, and redundant parentheses - those
-`ruff_python_ast::token::parentheses_iterator` finds around an expression, which excludes a
-call's own, since they are its arguments'.  An f-string's or t-string's opening and closing
-compare by a fixed text, so their prefix and quotes take no part.  A string or bytes literal's
-value is its content as the script language defines it for comparing: what lies between each
-part's delimiters as written, the parts of an implicit concatenation joined, by Ruff's own
-`opener_len` and `closer_len`.
+breaks, indentation, the end of the file, semicolons between statements, a comma just before a
+closing bracket - the one Black adds when it splits a call - and redundant parentheses, those
+`ruff_python_ast::token::parentheses_iterator` finds around an expression, which excludes a call's
+own, since they are its arguments'.  A one-element tuple, `(x,)`, needs no exception: it is a tuple
+and `(x)` a name, so their trees differ already.  An f-string's or t-string's opening and closing
+compare by a fixed text, so their prefix and quotes take no part.  A string or bytes literal's value
+is its content as the script language defines it for comparing: what lies between each part's
+delimiters as written, the parts of an implicit concatenation joined, by Ruff's own `opener_len` and
+`closer_len`.  An f-string's parts are compared one by one; unlike a plain string's, an implicit
+concatenation of them is not joined.
 
 Each statement list Ruff's walk visits - a module's, a function's, a branch's, an `else` or a
 `finally` - is marked as a list, so `$body...` never takes in an `else:` clause and a run of

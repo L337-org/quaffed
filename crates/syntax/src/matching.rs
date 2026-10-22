@@ -55,31 +55,50 @@ pub fn find(pattern: &Pattern, target: &Arena<'_>) -> Vec<Match> {
         }
     } else {
         let wanted = between_first_and_last(&parts(shape, shape.root()));
+        // A sequence hole at either edge of the pattern takes as much of the block as it can: a
+        // leading one from the block's first statement, a trailing one to its last.
+        let edge = |part: Option<&Part<'_>>| match part {
+            Some(Part::Child(child)) => pattern.hole(*child).is_some_and(|hole| hole.sequence),
+            _ => false,
+        };
+        let leading = edge(wanted.first());
+        let mut greedy = Vec::new();
+        for part in [wanted.first(), wanted.last()] {
+            if edge(part)
+                && let Some(Part::Child(child)) = part
+            {
+                greedy.push(*child);
+            }
+        }
         for node in target.nodes() {
             let available = parts(target, node);
             let limits = list_ends(target, &available);
+            let mut previous = None;
             for (start, first) in available.iter().enumerate() {
                 let Part::Child(first) = first else { continue };
+                let list = target.list(*first);
+                let begins_list = previous != Some(list);
+                previous = Some(list);
                 // A run of statements stays in one list - one block's statements - so it never
                 // takes in a header, a clause, or another block.
-                if target.list(*first).is_none() {
+                if list.is_none() || (leading && !begins_list) {
                     continue;
                 }
                 let limit = limits[start];
-                // Matched from this start as far as the pattern goes, the shortest way: one try
-                // per start, whatever the run's length.
+                // Matched from this start as far as the pattern goes: one try per start, whatever
+                // the run's length.
                 let mut bindings = Bindings::new();
-                if let Some(taken) = Matcher::new(pattern, target).consume(
+                if let Some(taken) = Matcher::new(pattern, target).greedy(&greedy).consume(
                     &wanted,
                     &available[start..limit],
                     &mut bindings,
                     false,
                 ) {
-                    let Part::Child(last) = available[start + taken - 1] else {
+                    let Part::Child(end) = available[start + taken - 1] else {
                         unreachable!("a run of statements ends at a statement");
                     };
                     found.push(Match {
-                        range: target.range(*first).start..target.range(last).end,
+                        range: target.range(*first).start..target.range(end).end,
                     });
                 }
             }
@@ -171,6 +190,9 @@ struct Matcher<'p, 't> {
     shape: &'p Arena<'static>,
     pattern: &'p Pattern,
     target: &'t Arena<'t>,
+    /// The sequence holes that take the longest run they can rather than the shortest: those at
+    /// the edges of a pattern of several statements.
+    greedy: Vec<NodeId>,
 }
 
 impl<'p, 't> Matcher<'p, 't> {
@@ -179,7 +201,13 @@ impl<'p, 't> Matcher<'p, 't> {
             shape: pattern.arena(),
             pattern,
             target,
+            greedy: Vec::new(),
         }
+    }
+
+    fn greedy(mut self, holes: &[NodeId]) -> Self {
+        self.greedy = holes.to_vec();
+        self
     }
 
     fn hole(&self, node: NodeId) -> Option<&'p Hole> {
@@ -248,12 +276,20 @@ impl<'p, 't> Matcher<'p, 't> {
                     // A run stays in one list, so `$body...` never takes in a clause or a header.
                     let block = self.target.list(*first);
                     let shared: Rc<[Part<'t>]> = available.into();
-                    for end in 0..available.len() {
-                        let Part::Child(last) = available[end] else {
+                    // Within a run's own list, so the longest a greedy hole tries is the rest of
+                    // the block.
+                    let within = available
+                        .iter()
+                        .position(|p| matches!(p, Part::Child(c) if self.target.list(*c) != block))
+                        .unwrap_or(available.len());
+                    let ends: Box<dyn Iterator<Item = usize>> = if self.greedy.contains(child) {
+                        Box::new((0..within).rev())
+                    } else {
+                        Box::new(0..within)
+                    };
+                    for end in ends {
+                        if !matches!(available[end], Part::Child(_)) {
                             continue;
-                        };
-                        if self.target.list(last) != block {
-                            break;
                         }
                         let mut attempt = bindings.clone();
                         let run = Bound::Run(Rc::clone(&shared), 0..end + 1);
@@ -306,46 +342,60 @@ fn bind<'t>(
     }
 }
 
-/// Whether two places in one arena hold equal code, by the same comparison as a match.
+/// Whether two places in one arena hold equal code: the same tokens, values and texts in the
+/// same order, whatever kinds of node hold them.
 fn equal(target: &Arena<'_>, a: &Bound<'_>, b: &Bound<'_>) -> bool {
-    let same = Same { arena: target };
-    match (a, b) {
-        (Bound::Node(a), Bound::Node(b)) => same.node(*a, *b),
-        (Bound::Run(a, x), Bound::Run(b, y)) => same.parts(&a[x.clone()], &b[y.clone()]),
-        // A name is one form throughout a pattern, so the two never differ.
-        _ => unreachable!("a name bound both as one node and as a run"),
+    fn as_parts<'b>(bound: &Bound<'b>) -> Vec<Part<'b>> {
+        match bound {
+            Bound::Node(node) => vec![Part::Child(*node)],
+            Bound::Run(parts, range) => parts[range.clone()].to_vec(),
+        }
     }
+    Same { arena: target }.parts(&as_parts(a), &as_parts(b))
 }
 
-/// The comparison with no holes, both sides in one arena.
+/// The code of a place in an arena, as a match compares it, with no kinds in it: each kept
+/// token's text, each value, and the text of a node with nothing inside it, in source order.
+/// Two places with the same code are equal whatever role they stand in, so a name used twice
+/// matches `a` as an argument, a keyword, an attribute and a parameter alike.
+#[derive(Debug, PartialEq, Eq)]
+enum Code<'a> {
+    Token(&'a str),
+    Value(&'a str),
+    Text(&'a str),
+}
+
+/// Both sides of a comparison with no holes, in one arena.
 struct Same<'a, 't> {
     arena: &'a Arena<'t>,
 }
 
-impl Same<'_, '_> {
-    fn node(&self, a: NodeId, b: NodeId) -> bool {
-        if self.arena.kind(a) != self.arena.kind(b) {
-            return false;
-        }
-        if let Some(value) = self.arena.value(a) {
-            return self.arena.value(b) == Some(value);
-        }
-        let (a_parts, b_parts) = (parts(self.arena, a), parts(self.arena, b));
-        if a_parts.is_empty() && b_parts.is_empty() {
-            return self.arena.source(a) == self.arena.source(b);
-        }
-        self.parts(&a_parts, &b_parts)
+impl<'a> Same<'a, '_> {
+    fn parts(&self, a: &[Part<'_>], b: &[Part<'_>]) -> bool {
+        let (mut x, mut y) = (Vec::new(), Vec::new());
+        self.code(a, &mut x);
+        self.code(b, &mut y);
+        x == y
     }
 
-    fn parts(&self, a: &[Part<'_>], b: &[Part<'_>]) -> bool {
-        a.len() == b.len()
-            && a.iter().zip(b).all(|pair| match pair {
-                (Part::Token(x), Part::Token(y)) => {
-                    self.arena.token_text(x) == self.arena.token_text(y)
+    fn code(&self, of: &[Part<'_>], out: &mut Vec<Code<'a>>) {
+        for part in of {
+            match part {
+                Part::Token(token) => out.push(Code::Token(self.arena.token_text(token))),
+                Part::Child(child) => {
+                    if let Some(value) = self.arena.value(*child) {
+                        out.push(Code::Value(value));
+                        continue;
+                    }
+                    let inner = parts(self.arena, *child);
+                    if inner.is_empty() {
+                        out.push(Code::Text(self.arena.source(*child)));
+                    } else {
+                        self.code(&inner, out);
+                    }
                 }
-                (Part::Child(x), Part::Child(y)) => self.node(*x, *y),
-                _ => false,
-            })
+            }
+        }
     }
 }
 

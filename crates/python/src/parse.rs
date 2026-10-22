@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use quaffed_syntax::{Arena, Builder, Kind, Language, TokenText, TooLong};
-use ruff_python_ast::token::{TokenKind, Tokens, parentheses_iterator};
+use ruff_python_ast::token::{Token, TokenKind, Tokens, parentheses_iterator};
 use ruff_python_ast::visitor::source_order::{
     SourceOrderVisitor, TraversalSignal, walk_body, walk_interpolated_string_element, walk_node,
 };
@@ -231,18 +231,36 @@ fn build<'text>(
         redundant,
         ..
     } = build;
-    for token in tokens {
+    let kept: Vec<&Token> = tokens
+        .iter()
+        .filter(|token| {
+            let kind = token.kind();
+            !(matches!(
+                kind,
+                TokenKind::Comment
+                    | TokenKind::Newline
+                    | TokenKind::NonLogicalNewline
+                    | TokenKind::Indent
+                    | TokenKind::Dedent
+                    | TokenKind::EndOfFile
+                    // A semicolon only separates statements, as a line break does.
+                    | TokenKind::Semi
+            ) || (matches!(kind, TokenKind::Lpar | TokenKind::Rpar)
+                && redundant.contains(&token.start())))
+        })
+        .collect();
+    for (i, token) in kept.iter().enumerate() {
         let kind = token.kind();
-        if matches!(
-            kind,
-            TokenKind::Comment
-                | TokenKind::Newline
-                | TokenKind::NonLogicalNewline
-                | TokenKind::Indent
-                | TokenKind::Dedent
-                | TokenKind::EndOfFile
-        ) || (matches!(kind, TokenKind::Lpar | TokenKind::Rpar)
-            && redundant.contains(&token.start()))
+        // A comma just before a closing bracket - `f(x, y,)`, the comma Black adds to a call it
+        // splits - changes nothing.  A one-element tuple's `(x,)` differs from `(x)` already in
+        // its tree, so it needs no exception.
+        if kind == TokenKind::Comma
+            && kept.get(i + 1).is_some_and(|next| {
+                matches!(
+                    next.kind(),
+                    TokenKind::Rpar | TokenKind::Rsqb | TokenKind::Rbrace
+                )
+            })
         {
             continue;
         }

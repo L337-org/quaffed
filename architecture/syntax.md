@@ -68,13 +68,14 @@ text it was compiled from.
 
 ## Matching
 
-`find(pattern, arena)` gives every place a pattern's shape occurs, in source order, a match
-inside another match among them.  Two nodes match when they are of one kind and their **parts**
-match in order, a part being a child or a token between children; a node with a value matches
-by its value alone, and one with nothing inside it at all by its text.  A hole matches any node;
-a sequence hole one or more consecutive children of one node, in one list, with the tokens
-between them; and a name used twice matches only where both hold equal code, by the same
-comparison.  A pattern of one node matches any node of that shape; one of several - statements
+`find(pattern, arena)` gives every place a pattern's shape occurs, in source order, a match inside
+another match among them.  Two nodes match when they are of one kind and their **parts** match in
+order, a part being a child or a token between children; a node with a value matches by its value
+alone, and one with nothing inside it at all by its text.  A hole matches any node; a sequence hole
+one or more consecutive children of one node, in one list, with the tokens between them; and a name
+used twice matches only where both hold equal code - the same tokens, values and texts in order,
+whatever kinds of node hold them, so the same name matches as an argument, a keyword, an attribute
+or a parameter.  A pattern of one node matches any node of that shape; one of several - statements
 in a row - matches them standing consecutively in one marked list.
 
 **What takes no part is what the adapter leaves out of the tokens**: comments, whitespace, line
@@ -84,11 +85,10 @@ arena holds and knows no language; an adapter decides, for its language, which t
 meaning.
 
 A run of statements is matched once from each place it could start, as far as the pattern
-goes, so a pattern that starts with code costs one try per statement.  **A pattern that starts
-with a sequence hole matches a run ending at every later place the rest matches**, and those
-runs overlap: over one long block it does work, and reports matches, in proportion to the
-square of the block's length.  That is what such a pattern asks for, so it is accepted rather
-than avoided.
+goes.  **A sequence hole at an edge of such a pattern takes the rest of its block on that side**:
+a leading one starts at the block's first statement, so it gives one match per block, and a
+trailing one runs to the block's last, so `x = 1` then `$rest...` covers everything after it.
+A sequence anywhere else takes the fewest children that let the rest match, and at least one.
 
 ## Building one
 
