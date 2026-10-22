@@ -34,24 +34,28 @@ adapter and a textual search read a file's bytes the same way, as CPython does.
 ## Patterns
 
 `compile_pattern(text)` turns a structural pattern - `handle_request($a, $b)`, a `-p` argument or
-a backticked operand - into a `Pattern` (`syntax.md`).  A hole is not Python, so it takes two
-stages, as the script language specifies:
+a backticked operand - into a `Pattern` (`syntax.md`), keeping the rules for holes `script.md`
+gives.  A hole is not Python, so it takes two stages:
 
 1. **Claim before parsing.**  Every `$name`, `$_`, `$name...` and `$...` is replaced by a
    placeholder identifier, on a stem the pattern does not contain so a placeholder never meets
    a name the pattern wrote.  A `$` not followed by a name or `...` is left as written, so
-   `${HOME}` is never claimed.  A name is a Python identifier.
+   `${HOME}` is never claimed.  A name ends where Python's would, by the identifier rules
+   Ruff's own lexer uses: `_` or `XID_Start`, then `XID_Continue`.
 2. **Let the grammar decide.**  The result is parsed - as a single expression if it is one,
    otherwise as statements - and a placeholder is a hole when a node below the root spans
    exactly it.  Where several nodes do, the outermost is the hole, so a hole at statement level
-   is the statement.  A placeholder no node spans lies inside a string or a comment: it is
-   literal text, and is put back as written before the pattern is parsed again, which a
-   string's or comment's content cannot change the shape of.  A hole in an f-string's field is
-   in an expression, so it is a hole.
+   is the statement.  A placeholder spanned by none, or by a string's literal text - an
+   f-string's literal part is a node of its own, so `f"$x"` has one spanning just the
+   placeholder - lies inside a string or a comment: it is literal text, and is put back as
+   written before the pattern is parsed again, which a string's or comment's content cannot
+   change the shape of.  A hole in an f-string's field is in an expression, so it is a hole.
+   A hole written against a name, `x$a`, merges with it so that no node spans it either; it is
+   put back too, and the pattern fails to parse.
 
-It refuses `$_...`, since a sequence that binds nothing is spelt `$...`, and a pattern that is
-only holes, which has no shape to match.  An error that is Ruff's is placed in the pattern as
-written, not in the text with placeholders.
+It refuses `$_...`, since a sequence that binds nothing is spelt `$...`; a pattern with no code,
+only whitespace or comments; and a pattern that is only holes, which has no shape to match.  An
+error that is Ruff's is placed in the pattern as written, not in the text with placeholders.
 
 ## The kind list is held to Ruff's enum by the compiler
 

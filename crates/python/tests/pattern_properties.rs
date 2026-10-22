@@ -3,7 +3,8 @@
 //! - **Nothing makes it panic**: every input is a pattern or an error.
 //! - **A pattern without a hole keeps its text exactly**, so it matches what was written.
 //! - **Every hole written in code becomes one hole, in order**, whatever names it carries.
-//! - **A hole written inside a string literal is literal text**, restored as written.
+//! - **A hole written inside a string literal is literal text**, restored as written, whatever
+//!   the string's prefix, an f-string's or t-string's literal text included.
 
 use proptest::prelude::*;
 use quaffed_python::compile_pattern;
@@ -78,8 +79,9 @@ proptest! {
         hole in name(),
         after in "[a-z ]{0,5}",
         quote in prop::sample::select(vec!["\"", "'", "'''", "\"\"\""]),
+        prefix in prop::sample::select(vec!["", "r", "b", "f", "t", "rf"]),
     ) {
-        let text = format!("f({quote}{before}${hole}{after}{quote})");
+        let text = format!("f({prefix}{quote}{before}${hole}{after}{quote})");
         let pattern = compile_pattern(&text).unwrap();
         prop_assert_eq!(pattern.holes().count(), 0);
         prop_assert_eq!(pattern.arena().text(), text.as_str());

@@ -38,6 +38,8 @@ pub enum PatternError {
     /// Every part of the pattern is a hole, so there is no shape to match: `$x` alone would
     /// match every node in every file.
     NoShape,
+    /// The pattern has no code at all: it is empty, or only whitespace and comments.
+    Empty,
     /// The pattern is longer than an arena's offsets reach.
     TooLong(quaffed_syntax::TooLong),
 }
@@ -57,6 +59,9 @@ impl fmt::Display for PatternError {
                 "the pattern is only holes, so it has no shape to match: write the code around \
                  them, as in \"handle_request($a, $b)\"",
             ),
+            PatternError::Empty => {
+                f.write_str("the pattern has no code in it, only whitespace or comments")
+            }
             PatternError::TooLong(err) => err.fmt(f),
         }
     }
@@ -111,6 +116,9 @@ pub fn compile_pattern(text: &str) -> Result<Pattern, PatternError> {
         })
         .collect();
     let content: Vec<NodeId> = arena.children(arena.root()).collect();
+    if content.is_empty() {
+        return Err(PatternError::Empty);
+    }
     if content
         .iter()
         .all(|node| holes.iter().any(|(hole, _)| hole == node))
@@ -160,16 +168,16 @@ fn claim(text: &str) -> Result<Vec<Claim>, PatternError> {
     Ok(claims)
 }
 
-/// The length in bytes of the Python identifier `text` starts with: a letter or `_`, then
-/// letters, digits or `_`.
+/// The length in bytes of the Python identifier `text` starts with, by the rules Ruff's lexer
+/// uses: `_` or `XID_Start`, then `XID_Continue`.
 fn identifier_len(text: &str) -> usize {
     let mut chars = text.char_indices();
     match chars.next() {
-        Some((_, c)) if c == '_' || c.is_alphabetic() => {}
+        Some((_, c)) if c == '_' || unicode_ident::is_xid_start(c) => {}
         _ => return 0,
     }
     chars
-        .find(|(_, c)| !(*c == '_' || c.is_alphanumeric()))
+        .find(|(_, c)| !unicode_ident::is_xid_continue(*c))
         .map_or(text.len(), |(i, _)| i)
 }
 
@@ -267,14 +275,29 @@ fn parse_as(text: &str, mode: Mode) -> Result<Arena<'_>, ParseError> {
     parse_from(Builder::new(PYTHON, text), text, mode)
 }
 
-/// The outermost node below the root whose range is exactly `range`, if one is.  The root
-/// never is: a pattern that is one placeholder parses to a root spanning just that, and its
-/// content, not the root, is the hole.
+/// The kinds whose text is a string's literal text, whatever their range.  Ruff makes an
+/// f-string's literal parts, and so a format spec's, nodes of their own, so a placeholder that
+/// is a whole literal part - `f"$x"`, `f"{a:$w}"` - is spanned by one; it is still literal.
+const LITERAL_TEXT: &[&str] = &[
+    "InterpolatedStringLiteralElement",
+    "StringLiteral",
+    "BytesLiteral",
+];
+
+/// The hole a placeholder spanning `range` is: the outermost node below the root whose range is
+/// exactly `range`, unless one of those nodes is a string's literal text, in which case it is
+/// no hole at all.  The root never is the hole: a pattern that is one placeholder parses to a
+/// root spanning just that, and its content, not the root, is the hole.
 fn node_spanning(arena: &Arena<'_>, range: &Range<usize>) -> Option<NodeId> {
-    arena
+    let mut spanning = arena
         .nodes()
         .skip(1)
-        .find(|&node| arena.range(node) == *range)
+        .filter(|&node| arena.range(node) == *range)
+        .peekable();
+    let outermost = *spanning.peek()?;
+    spanning
+        .all(|node| !LITERAL_TEXT.contains(&arena.kind(node).name()))
+        .then_some(outermost)
 }
 
 #[cfg(test)]
@@ -341,12 +364,29 @@ mod tests {
             "f(b\"$x\")",
             "f(r'$x')",
             "f(f\"cost $x\")",
+            "f(f\"$x\")",
+            "f(f\"$x{y}\")",
+            "f(f\"{y}$x\")",
+            "f(f\"{a:$w}\")",
+            "f(t\"$x\")",
             "f(x)  # $x",
         ] {
             let pattern = compiled(text);
             assert_eq!(holes(&pattern), Vec::<String>::new(), "{text:?}");
             // Restored as written, so the pattern matches that text.
             assert_eq!(pattern.arena().text(), text);
+        }
+    }
+
+    #[test]
+    fn a_hole_joined_to_the_name_beside_it_is_not_python() {
+        // The placeholder merges with the name before it, so no node spans it; it is put back as
+        // written, and `x$a` is not Python.
+        for text in ["f(x$a)", "f($a$b)"] {
+            assert!(
+                matches!(compile_pattern(text), Err(PatternError::Invalid { .. })),
+                "{text:?}"
+            );
         }
     }
 
@@ -371,11 +411,18 @@ mod tests {
 
     #[test]
     fn names_follow_pythons_identifiers() {
-        let claims = claim("$a1 $_x $é $9").unwrap();
+        let claims = claim("$a1 $_x $é $9 $a² $e\u{301}").unwrap();
         let names: Vec<_> = claims.iter().map(|c| c.hole.name.clone()).collect();
+        // A superscript digit is not XID_Continue; a combining accent is.
         assert_eq!(
             names,
-            [Some("a1".into()), Some("_x".into()), Some("é".into())]
+            [
+                Some("a1".into()),
+                Some("_x".into()),
+                Some("é".into()),
+                Some("a".into()),
+                Some("e\u{301}".into())
+            ]
         );
         assert_eq!(identifier_len("abc def"), 3);
         assert_eq!(identifier_len("abc"), 3);
@@ -394,7 +441,7 @@ mod tests {
 
     #[test]
     fn a_pattern_of_nothing_but_holes_is_refused() {
-        for text in ["$x", "$_", "$x...", "$...", "$a\n$b\n", ""] {
+        for text in ["$x", "$_", "$x...", "$...", "$a\n$b\n"] {
             assert_eq!(
                 compile_pattern(text).unwrap_err(),
                 PatternError::NoShape,
@@ -408,6 +455,21 @@ mod tests {
         );
         assert!(compile_pattern("$a\nx = 1\n").is_ok());
         assert!(compile_pattern("$a + 1").is_ok());
+    }
+
+    #[test]
+    fn a_pattern_with_no_code_says_so_rather_than_blaming_holes() {
+        for text in ["", "   ", "# $x", "\n# only a comment\n"] {
+            assert_eq!(
+                compile_pattern(text).unwrap_err(),
+                PatternError::Empty,
+                "{text:?}"
+            );
+        }
+        assert_eq!(
+            PatternError::Empty.to_string(),
+            "the pattern has no code in it, only whitespace or comments"
+        );
     }
 
     #[test]
