@@ -39,6 +39,7 @@ pub fn describe(source: &Source, text: &str, offset: usize) -> String {
             format!("-e expression {n}, at character {at}")
         }
         Source::StringOption => "-s".into(),
+        Source::PatternOption => "-p".into(),
         Source::Positional => "the query".into(),
         _ => "an unnamed source".into(),
     }
@@ -72,6 +73,7 @@ mod tests {
             "-e expression 2, at character 10"
         );
         assert_eq!(describe(&Source::StringOption, "x", 0), "-s");
+        assert_eq!(describe(&Source::PatternOption, "f($a)", 2), "-p");
         assert_eq!(describe(&Source::Positional, "x", 0), "the query");
     }
 }

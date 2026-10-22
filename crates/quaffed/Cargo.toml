@@ -31,5 +31,7 @@ mimalloc = "=0.1.52"
 ignore = "=0.4.33"
 memchr = "=2.8.3"
 quaffed-encoding = { path = "../encoding" }
+quaffed-python = { path = "../python" }
 quaffed-representation = { path = "../representation" }
 quaffed-script = { path = "../script" }
+quaffed-syntax = { path = "../syntax" }

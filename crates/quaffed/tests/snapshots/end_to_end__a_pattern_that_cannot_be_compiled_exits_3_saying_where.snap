@@ -1,0 +1,14 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-p"
+    - handle_request($a
+---
+success: false
+exit_code: 3
+----- stdout -----
+
+----- stderr -----
+quaff: -p: the pattern is not Python, at byte 17: unexpected EOF while parsing

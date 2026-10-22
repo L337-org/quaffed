@@ -666,8 +666,10 @@ dependencies = [
  "memchr",
  "mimalloc",
  "quaffed-encoding",
+ "quaffed-python",
  "quaffed-representation",
  "quaffed-script",
+ "quaffed-syntax",
 ]
 
 [[package]]

@@ -42,7 +42,7 @@ pub enum SourceArg {
     Stdin,
 }
 
-/// One textual query and where on the command line it came from.
+/// One query - textual, or for `-p` structural - and where on the command line it came from.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Query {
     /// The text searched for, exactly as given: nothing in it is special.
@@ -58,6 +58,8 @@ pub enum Source {
     Positional,
     /// The argument of a `-s` or `--string` option.
     StringOption,
+    /// The argument of a `-p` or `--pattern` option: a structural pattern.
+    PatternOption,
 }
 
 impl fmt::Display for Source {
@@ -65,6 +67,7 @@ impl fmt::Display for Source {
         f.write_str(match self {
             Source::Positional => "the query",
             Source::StringOption => "-s",
+            Source::PatternOption => "-p",
         })
     }
 }
@@ -93,14 +96,7 @@ pub enum UsageError {
 }
 
 /// Options in the MVP whose stories have not landed, so saying "unknown" would be wrong.
-const NOT_BUILT_YET: &[&str] = &[
-    "-p",
-    "--pattern",
-    "-o",
-    "--output",
-    "--dry-run",
-    "--version",
-];
+const NOT_BUILT_YET: &[&str] = &["-o", "--output", "--dry-run", "--version"];
 
 impl fmt::Display for UsageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -120,9 +116,15 @@ impl fmt::Display for UsageError {
                 };
                 write!(f, "{option:?} needs a value: {wanted}")
             }
-            UsageError::EmptyQuery(source) => {
-                write!(f, "{source} is empty: give the text to search for")
-            }
+            UsageError::EmptyQuery(source) => write!(
+                f,
+                "{source} is empty: give the {} to search for",
+                if *source == Source::PatternOption {
+                    "pattern"
+                } else {
+                    "text"
+                }
+            ),
             UsageError::NotUtf8 { what, argument } => {
                 write!(f, "{what} {argument:?} is not valid UTF-8")
             }
@@ -151,6 +153,7 @@ impl fmt::Display for UsageError {
 
 /// The options that take a value, by their short and long names.
 const STRING: (&str, &str) = ("-s", "--string");
+const PATTERN: (&str, &str) = ("-p", "--pattern");
 const EXPRESSION: (&str, &str) = ("-e", "--expression");
 const FILE: (&str, &str) = ("-f", "--file");
 
@@ -185,7 +188,7 @@ where
             Some((name, value)) if name.starts_with("--") => (name, Some(value)),
             _ => (text, None),
         };
-        let option = [STRING, EXPRESSION, FILE]
+        let option = [STRING, PATTERN, EXPRESSION, FILE]
             .into_iter()
             .find(|(short, long)| name == *long || (inline.is_none() && name == *short));
         if let Some(option) = option {
@@ -201,7 +204,7 @@ where
         match name {
             "--" if inline.is_none() => options_ended = true,
             "-h" | "--help" if inline.is_none() => return Ok(Invocation::Help),
-            // `--pattern=X` is the not-built option as surely as `--pattern X` is.
+            // `--output=X` is the not-built option as surely as `--output X` is.
             _ if NOT_BUILT_YET.contains(&name) => {
                 return Err(UsageError::NotBuiltYet(name.to_owned()));
             }
@@ -236,6 +239,9 @@ fn source(
 ) -> Result<SourceArg, UsageError> {
     if option == STRING {
         return Ok(SourceArg::Query(query(value, Source::StringOption)?));
+    }
+    if option == PATTERN {
+        return Ok(SourceArg::Query(query(value, Source::PatternOption)?));
     }
     if option == EXPRESSION {
         let number = 1 + sources
@@ -434,19 +440,37 @@ mod tests {
     }
 
     #[test]
+    fn a_pattern_option_is_a_structural_query() {
+        assert_eq!(
+            parse_strs(&["-p", "handle($a, $b)"]),
+            Ok(run(
+                vec![query_arg("handle($a, $b)", Source::PatternOption)],
+                None
+            ))
+        );
+        assert_eq!(
+            parse_strs(&["--pattern=f($x)", "src"]),
+            Ok(run(
+                vec![query_arg("f($x)", Source::PatternOption)],
+                Some("src")
+            ))
+        );
+    }
+
+    #[test]
     fn each_usage_error() {
         assert_eq!(parse_strs(&[]), Err(UsageError::NoArguments));
-        assert_eq!(
-            parse_strs(&["-p", "x"]),
-            Err(UsageError::NotBuiltYet("-p".into()))
-        );
         assert_eq!(
             parse_strs(&["--version"]),
             Err(UsageError::NotBuiltYet("--version".into()))
         );
         assert_eq!(
-            parse_strs(&["--pattern=handle($a)"]),
-            Err(UsageError::NotBuiltYet("--pattern".into()))
+            parse_strs(&["--output=json"]),
+            Err(UsageError::NotBuiltYet("--output".into()))
+        );
+        assert_eq!(
+            parse_strs(&["-p", ""]),
+            Err(UsageError::EmptyQuery(Source::PatternOption))
         );
         assert_eq!(
             parse_strs(&["--explain"]),
@@ -543,8 +567,8 @@ mod tests {
             "nothing to run: give a query, or a script with -e or -f"
         );
         assert_eq!(
-            UsageError::NotBuiltYet("-p".into()).to_string(),
-            "\"-p\" is not built yet"
+            UsageError::NotBuiltYet("-o".into()).to_string(),
+            "\"-o\" is not built yet"
         );
     }
 }

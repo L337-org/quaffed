@@ -1,0 +1,17 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-p"
+    - "handle_request($a, $b)"
+    - src/app.py
+---
+success: true
+exit_code: 0
+----- stdout -----
+src/app.py:2:12-3:13: handle_request(req, resp)
+src/app.py:7:1-7:39: handle_request(handle_request(a, b), c)
+src/app.py:7:16-7:35: handle_request(a, b)
+
+----- stderr -----

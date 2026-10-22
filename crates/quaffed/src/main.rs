@@ -16,6 +16,7 @@ mod output;
 mod resolve;
 mod run;
 mod search;
+mod structural;
 mod workspace;
 
 use std::io::Write;

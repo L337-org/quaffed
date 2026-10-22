@@ -4,11 +4,11 @@ info:
   program: quaff
   args:
     - "-e"
-    - "find `f($a)`"
+    - "replace `f($a)` with `g($a)` expect 1"
 ---
 success: false
 exit_code: 5
 ----- stdout -----
 
 ----- stderr -----
-quaff: -e expression 1, at character 6: a structural pattern - a backticked operand - is not built yet
+quaff: -e expression 1, at character 1: replace is not built yet

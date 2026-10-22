@@ -3,11 +3,11 @@ source: crates/quaffed/tests/end_to_end.rs
 info:
   program: quaff
   args:
-    - "--pattern=handle($a)"
+    - "--output=json"
 ---
 success: false
 exit_code: 3
 ----- stdout -----
 
 ----- stderr -----
-quaff: "--pattern" is not built yet
+quaff: "--output" is not built yet
