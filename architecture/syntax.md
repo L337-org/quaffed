@@ -17,8 +17,16 @@ or its parser; `tests/no_dependencies.rs` fails on any dependency it does not na
   language once, and kinds are compared only within one language.
 - **A node's identity is its index**, a `NodeId`, meaningful only in that arena.  Nothing
   survives an edit and a re-parse.
-- **There are no tokens.**  The text between a node's children is read from the ranges and the
-  shared text.
+- **Tokens beside the nodes.**  The tokens a match compares - the parser's own, less what
+  carries no meaning - are a flat array of their own, sorted by position, so the node layout
+  does not depend on them.  Each is compared by its text, or by a fixed text the adapter gives
+  it where its spelling takes no part: an f-string's opening, whatever its prefix and quotes.
+  What is left out is the adapter's to decide, by the rule *Matching* below.
+- **Lists among children.**  A node's children may hold several lists - a function's name and
+  parameters, then its body's statements - so an adapter marks each list, such as a block's
+  statements, and a sequence hole or a run of statements stays inside one.
+- **A value in place of children.**  A node may carry a value it compares by instead of its
+  parts: a string literal's content, so that its quotes and prefix take no part.
 
 ## What the ranges mean
 
@@ -58,13 +66,39 @@ because how a hole survives the language's parser differs between languages; `py
 describes Python's.  A pattern owns its text, through `Arena::into_owned`, so it outlives the
 text it was compiled from.
 
+## Matching
+
+`find(pattern, arena)` gives every place a pattern's shape occurs, in source order, a match inside
+another match among them.  Two nodes match when they are of one kind and their **parts** match in
+order, a part being a child or a token between children; a node with a value matches by its value
+alone, and one with nothing inside it at all by its text.  A hole matches any node; a sequence hole
+one or more consecutive children of one node, in one list, with the tokens between them; and a name
+used twice matches only where both hold equal code - the same tokens, values and texts in order,
+whatever kinds of node hold them, so the same name matches as an argument, a keyword, an attribute
+or a parameter.  A pattern of one node matches any node of that shape; one of several - statements
+in a row - matches them standing consecutively in one marked list.
+
+**What takes no part is what the adapter leaves out of the tokens**: comments, whitespace, line
+breaks, indentation, and parentheses that only wrap an expression, so `f((x))` matches `f($a)`
+but `(a + b) * c` does not match `a + b * c`, whose tree differs.  The matcher compares what the
+arena holds and knows no language; an adapter decides, for its language, which tokens carry
+meaning.
+
+A run of statements is matched once from each place it could start, as far as the pattern
+goes.  **A sequence hole at an edge of such a pattern takes the rest of its block on that side**:
+a leading one starts at the block's first statement, so it gives one match per block, and a
+trailing one runs to the block's last, so `x = 1` then `$rest...` covers everything after it.
+A sequence anywhere else takes the fewest children that let the rest match, and at least one.
+
 ## Building one
 
-An adapter makes a `Builder` over the text, then walks its parser's tree once, calling `enter`
-with a node's kind and range, then its children, then `leave`.  `finish` gives the arena.  A
-second root, a `leave` with nothing open, or a node left open is a defect in the adapter and
-panics.  The builder does not check the range invariants, which would cost every parse; the
-round trip checks them over both corpora.
+An adapter makes a `Builder` over the text, then walks its parser's tree once, calling `enter` with
+a node's kind and range, then its children, then `leave`.  `finish` gives the arena.  A second root,
+a `leave` with nothing open, or a node left open is a defect in the adapter and panics.  `value`
+gives the node open now its value, `token` adds a token, in source order, and `begin_list` and
+`end_list` mark a list among the open node's children.  The builder does not
+check the range invariants, which would cost every parse; the round trip checks them over both
+corpora.
 
 ## Adding a language
 
@@ -75,3 +109,6 @@ round trip checks them over both corpora.
    compiler where it has one.
 4. Build arenas with `Builder`, keeping the range invariants above, and check them with a round
    trip over a corpus for that language.
+5. Keep the tokens that carry meaning in that language, give a string literal its content as
+   its value, and compile patterns, as `python.md` does for Python; hold the result with
+   matching tests and properties like Python's.

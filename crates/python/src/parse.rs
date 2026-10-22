@@ -6,13 +6,14 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use quaffed_syntax::{Arena, Builder, Kind, Language, TooLong};
+use quaffed_syntax::{Arena, Builder, Kind, Language, TokenText, TooLong};
+use ruff_python_ast::token::{Token, TokenKind, Tokens, parentheses_iterator};
 use ruff_python_ast::visitor::source_order::{
-    SourceOrderVisitor, TraversalSignal, walk_interpolated_string_element, walk_node,
+    SourceOrderVisitor, TraversalSignal, walk_body, walk_interpolated_string_element, walk_node,
 };
-use ruff_python_ast::{AnyNodeRef, NodeKind};
+use ruff_python_ast::{AnyNodeRef, NodeKind, Stmt, StringFlags};
 use ruff_python_parser::{Mode, ParseOptions};
-use ruff_text_size::Ranged;
+use ruff_text_size::{Ranged, TextRange, TextSize};
 
 use crate::kinds::kind_of;
 
@@ -106,7 +107,12 @@ pub(crate) fn parse_from<'text>(
 ) -> Result<Arena<'text>, ParseError> {
     let builder = builder?;
     let parsed = ruff_python_parser::parse(source, ParseOptions::from(mode))?;
-    Ok(build(builder, AnyNodeRef::from(parsed.syntax())))
+    Ok(build(
+        builder,
+        AnyNodeRef::from(parsed.syntax()),
+        parsed.tokens(),
+        source,
+    ))
 }
 
 /// Every kind of node in `source`, parsed as a module.
@@ -141,13 +147,41 @@ fn kinds_in(arena: &Arena<'_>) -> BTreeSet<Kind> {
     arena.nodes().map(|node| arena.kind(node)).collect()
 }
 
-/// The arena of `root` and every node beneath it, in one walk of Ruff's tree.
-fn build<'text>(builder: Builder<'text>, root: AnyNodeRef<'_>) -> Arena<'text> {
-    struct Build<'text>(Builder<'text>);
+/// The arena of `root` and every node beneath it, in one walk of Ruff's tree, with the tokens
+/// a match compares: Ruff's own, less comments, line breaks, indentation and the parentheses
+/// that only wrap an expression.
+fn build<'text>(
+    builder: Builder<'text>,
+    root: AnyNodeRef<'_>,
+    tokens: &Tokens,
+    source: &str,
+) -> Arena<'text> {
+    struct Build<'text, 'a> {
+        builder: Builder<'text>,
+        tokens: &'a Tokens,
+        source: &'a str,
+        /// The nodes entered and not yet left, so each node knows its parent.
+        open: Vec<AnyNodeRef<'a>>,
+        /// Where each redundant parenthesis starts: an opening one, and a closing one.
+        redundant: BTreeSet<TextSize>,
+    }
 
-    impl<'a> SourceOrderVisitor<'a> for Build<'_> {
+    impl<'a> SourceOrderVisitor<'a> for Build<'_, 'a> {
         fn enter_node(&mut self, node: AnyNodeRef<'a>) -> TraversalSignal {
-            self.0.enter(kind_of(node.kind()), node.range().into());
+            self.builder
+                .enter(kind_of(node.kind()), node.range().into());
+            if let (Some(expr), Some(parent)) = (node.as_expr_ref(), self.open.last()) {
+                // Parentheses around an expression that its parent's syntax does not need -
+                // `f((x))`'s inner pair - change nothing, so they take no part in a match.
+                for around in parentheses_iterator(expr, Some(*parent), self.tokens) {
+                    self.redundant.insert(around.start());
+                    self.redundant.insert(around.end() - TextSize::new(1));
+                }
+            }
+            if let Some(content) = string_content(node, self.source) {
+                self.builder.value(content);
+            }
+            self.open.push(node);
             // Ruff's source-order walk visits a format spec's parts but never enters the spec
             // itself (`InterpolatedElement::visit_source_order`), so the spec would be missing
             // from the arena, its parts hung on the element.  The element's children are walked
@@ -157,27 +191,140 @@ fn build<'text>(builder: Builder<'text>, root: AnyNodeRef<'_>) -> Arena<'text> {
                 && let Some(spec) = &element.format_spec
             {
                 self.visit_expr(&element.expression);
-                self.0.enter(
+                self.builder.enter(
                     kind_of(NodeKind::InterpolatedStringFormatSpec),
                     spec.range().into(),
                 );
                 for part in &spec.elements {
                     walk_interpolated_string_element(self, part);
                 }
-                self.0.leave();
+                self.builder.leave();
                 return TraversalSignal::Skip;
             }
             TraversalSignal::Traverse
         }
 
         fn leave_node(&mut self, _node: AnyNodeRef<'a>) {
-            self.0.leave();
+            self.open.pop();
+            self.builder.leave();
+        }
+
+        // Each statement list - a module's, a function's, a branch's, an else or finally - is
+        // marked, so that a run of statements or a sequence hole stays in one block.
+        fn visit_body(&mut self, body: &'a [Stmt]) {
+            self.builder.begin_list();
+            walk_body(self, body);
+            self.builder.end_list();
         }
     }
 
-    let mut build = Build(builder);
+    let mut build = Build {
+        builder,
+        tokens,
+        source,
+        open: Vec::new(),
+        redundant: BTreeSet::new(),
+    };
     walk_node(&mut build, root);
-    build.0.finish()
+    let Build {
+        mut builder,
+        redundant,
+        ..
+    } = build;
+    let kept: Vec<&Token> = tokens
+        .iter()
+        .filter(|token| {
+            let kind = token.kind();
+            !(matches!(
+                kind,
+                TokenKind::Comment
+                    | TokenKind::Newline
+                    | TokenKind::NonLogicalNewline
+                    | TokenKind::Indent
+                    | TokenKind::Dedent
+                    | TokenKind::EndOfFile
+                    // A semicolon only separates statements, as a line break does.
+                    | TokenKind::Semi
+            ) || (matches!(kind, TokenKind::Lpar | TokenKind::Rpar)
+                && redundant.contains(&token.start())))
+        })
+        .collect();
+    for (i, token) in kept.iter().enumerate() {
+        let kind = token.kind();
+        // A comma just before a closing bracket - `f(x, y,)`, the comma Black adds to a call it
+        // splits - changes nothing.  A one-element tuple's `(x,)` differs from `(x)` already in
+        // its tree, so it needs no exception.
+        if kind == TokenKind::Comma
+            && kept.get(i + 1).is_some_and(|next| {
+                matches!(
+                    next.kind(),
+                    TokenKind::Rpar | TokenKind::Rsqb | TokenKind::Rbrace
+                )
+            })
+        {
+            continue;
+        }
+        // An f-string's or t-string's opening holds its prefix and quotes, and its closing its
+        // quotes; neither takes part, as a plain string's quotes take no part in its content.
+        let compare = match kind {
+            TokenKind::FStringStart => TokenText::Fixed("f-string start"),
+            TokenKind::FStringEnd => TokenText::Fixed("f-string end"),
+            TokenKind::TStringStart => TokenText::Fixed("t-string start"),
+            TokenKind::TStringEnd => TokenText::Fixed("t-string end"),
+            _ => TokenText::Source,
+        };
+        builder.token(token.range().into(), compare);
+    }
+    builder.finish()
+}
+
+/// A string or bytes literal's content, as the script language defines it for comparing: what
+/// lies between each part's delimiters exactly as written, the parts of an implicit
+/// concatenation joined.  The quotes and the prefix take no part.
+fn string_content(node: AnyNodeRef<'_>, source: &str) -> Option<String> {
+    let between = |range: TextRange, flags: &dyn Fn() -> (TextSize, TextSize)| {
+        let (opener, closer) = flags();
+        &source[usize::from(range.start() + opener)..usize::from(range.end() - closer)]
+    };
+    match node {
+        AnyNodeRef::ExprStringLiteral(literal) => Some(
+            literal
+                .value
+                .iter()
+                .map(|part| {
+                    between(part.range, &|| {
+                        (part.flags.opener_len(), part.flags.closer_len())
+                    })
+                })
+                .collect(),
+        ),
+        // A plain part of an f-string's concatenation compares by its content too; inside a
+        // plain string or bytes literal the whole literal's value is compared first.
+        AnyNodeRef::StringLiteral(part) => Some(
+            between(part.range, &|| {
+                (part.flags.opener_len(), part.flags.closer_len())
+            })
+            .to_owned(),
+        ),
+        AnyNodeRef::BytesLiteral(part) => Some(
+            between(part.range, &|| {
+                (part.flags.opener_len(), part.flags.closer_len())
+            })
+            .to_owned(),
+        ),
+        AnyNodeRef::ExprBytesLiteral(literal) => Some(
+            literal
+                .value
+                .iter()
+                .map(|part| {
+                    between(part.range, &|| {
+                        (part.flags.opener_len(), part.flags.closer_len())
+                    })
+                })
+                .collect(),
+        ),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
