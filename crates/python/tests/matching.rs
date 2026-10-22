@@ -217,6 +217,30 @@ fn a_sequence_at_the_edge_of_statements_takes_the_rest_of_its_block() {
 }
 
 #[test]
+fn sequences_at_both_edges_take_their_block_and_each_keeps_one() {
+    let source = "w()\nx()\ny()\nz()\n";
+    // A leading and a trailing sequence around one statement take everything either side.
+    assert_eq!(
+        matches("$a...\nx()\n$b...\n", source),
+        ["w()\nx()\ny()\nz()"]
+    );
+    // The trailing one still gets at least one statement when the leading one is greedy.
+    assert_eq!(matches("$a...\nz()\n$b...\n", source), none());
+    assert_eq!(
+        matches("$a...\ny()\n$b...\n", source),
+        ["w()\nx()\ny()\nz()"]
+    );
+    // A leading sequence gives one match per list, never one reaching into the else clause.
+    assert_eq!(
+        matches(
+            "$pre...\nx()\n",
+            "if c:\n    w()\n    x()\nelse:\n    v()\n    x()\n"
+        ),
+        ["w()\n    x()", "v()\n    x()"]
+    );
+}
+
+#[test]
 fn a_match_inside_a_match_is_its_own_match() {
     assert_eq!(matches("f($x)", "f(f(1))\n"), ["f(f(1))", "f(1)"]);
 }

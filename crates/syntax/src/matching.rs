@@ -185,6 +185,9 @@ enum Bound<'a> {
 
 type Bindings<'a> = BTreeMap<String, Bound<'a>>;
 
+/// The ends a sequence hole tries, in the order it tries them.
+type Ends<'a> = Box<dyn Iterator<Item = usize> + 'a>;
+
 /// A pattern and the arena it is matched against.
 struct Matcher<'p, 't> {
     shape: &'p Arena<'static>,
@@ -246,7 +249,8 @@ impl<'p, 't> Matcher<'p, 't> {
     }
 
     /// Matches `wanted` against the start of `available`, and says how many of its parts the
-    /// match took, the shortest way; with `whole`, only a match that takes them all counts.
+    /// match took: each sequence hole the shortest way, or a greedy one the longest; with
+    /// `whole`, only a match that takes them all counts.
     fn consume(
         &self,
         wanted: &[Part<'_>],
@@ -268,31 +272,43 @@ impl<'p, 't> Matcher<'p, 't> {
             },
             Part::Child(child) => match self.hole(*child) {
                 Some(hole) if hole.sequence => {
-                    // One or more of the available parts, from a child to a child, shortest
-                    // first; whichever split matches first is kept.
+                    // One or more of the available parts, from a child to a child.  A hole tries
+                    // the shortest run first and keeps the first that lets the rest match; a greedy
+                    // one, at an edge of a pattern of statements, tries the longest first.
                     let Some(Part::Child(first)) = available.first() else {
                         return None;
                     };
                     // A run stays in one list, so `$body...` never takes in a clause or a header.
                     let block = self.target.list(*first);
-                    let shared: Rc<[Part<'t>]> = available.into();
-                    // Within a run's own list, so the longest a greedy hole tries is the rest of
-                    // the block.
-                    let within = available
-                        .iter()
-                        .position(|p| matches!(p, Part::Child(c) if self.target.list(*c) != block))
-                        .unwrap_or(available.len());
-                    let ends: Box<dyn Iterator<Item = usize>> = if self.greedy.contains(child) {
-                        Box::new((0..within).rev())
+                    let in_block = |part: &Part<'_>| !matches!(part, Part::Child(c) if self.target.list(*c) != block);
+                    let greedy = self.greedy.contains(child);
+                    // A greedy hole may try many lengths, so it finds the list's end once and shares
+                    // one copy of the parts; a shortest-first one usually stops at its first try, so
+                    // it walks forward and copies only the run it tries.
+                    let (ends, shared): (Ends<'_>, Option<Rc<[Part<'t>]>>) = if greedy {
+                        let within = available
+                            .iter()
+                            .position(|p| !in_block(p))
+                            .unwrap_or(available.len());
+                        (
+                            Box::new((0..within).rev()),
+                            Some(available[..within].into()),
+                        )
                     } else {
-                        Box::new(0..within)
+                        // Stops at the list's end as it reaches it, not before it starts.
+                        let forward =
+                            (0..available.len()).take_while(move |&i| in_block(&available[i]));
+                        (Box::new(forward), None)
                     };
                     for end in ends {
                         if !matches!(available[end], Part::Child(_)) {
                             continue;
                         }
                         let mut attempt = bindings.clone();
-                        let run = Bound::Run(Rc::clone(&shared), 0..end + 1);
+                        let run = match &shared {
+                            Some(shared) => Bound::Run(Rc::clone(shared), 0..end + 1),
+                            None => Bound::Run(available[..=end].into(), 0..end + 1),
+                        };
                         if bind(self.target, hole, run, &mut attempt)
                             && let Some(n) =
                                 self.consume(rest, &available[end + 1..], &mut attempt, whole)
