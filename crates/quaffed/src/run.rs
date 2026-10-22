@@ -18,7 +18,7 @@ use quaffed_representation::program::{
     TextPattern,
 };
 use quaffed_representation::span::{Source, Span, Spanned};
-use quaffed_script::{ErrorKind, location, parse_source};
+use quaffed_script::{ErrorKind, lexer, location, parse_source};
 use quaffed_syntax::Pattern;
 
 use crate::cli::{self, SourceArg, UsageError};
@@ -265,7 +265,7 @@ pub fn run(
                 location: built.locate(
                     *span,
                     err.offset()
-                        .map_or(span.start, |at| built.content_start(*span, written) + at),
+                        .map_or(span.start, |at| built.content_start(*span) + at),
                 ),
                 message: err.to_string(),
             })
@@ -369,14 +369,14 @@ struct Built {
 }
 
 impl Built {
-    /// Where in its source the operand at `span`, whose content is `written`, starts that
-    /// content: after any backtick fence, and the one space a fence of three or more may pad it
-    /// with.  A `-p` pattern is its whole source, so starts at its start.
-    fn content_start(&self, span: Span, written: &str) -> usize {
-        let raw = &self.texts[span.source][span.start..span.end];
-        let fence = raw.bytes().take_while(|&b| b == b'`').count();
-        let inside = &raw[fence..raw.len() - fence];
-        span.start + fence + usize::from(inside != written)
+    /// Where in its source the pattern operand at `span` starts its content: past the backtick
+    /// fence and any padding space in a script, as the lexer cuts it, and at its start for `-p`,
+    /// whose source is the pattern alone.
+    fn content_start(&self, span: Span) -> usize {
+        if matches!(self.program.sources[span.source], Source::PatternOption) {
+            return span.start;
+        }
+        span.start + lexer::content_start(&self.texts[span.source][span.start..span.end])
     }
 
     /// Where byte `offset` of the source `span` is in, as a diagnostic names it.

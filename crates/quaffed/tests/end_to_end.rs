@@ -1217,5 +1217,7 @@ fn a_pattern_that_cannot_be_compiled_exits_3_saying_where() {
     assert_quaff_snapshot!(project.quaff(&["-e", "find `f($x, $x...)`"]));
     // Placed past a longer fence and the space that pads it, at the `$`, character 12.
     assert_quaff_snapshot!(project.quaff(&["-e", "find ``` f($_...) ```"]));
+    // A -p pattern has no fence, so a backtick it starts with is its first character.
+    assert_quaff_snapshot!(project.quaff(&["-p", "`f(x)"]));
     project.assert_unchanged();
 }
