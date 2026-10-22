@@ -45,7 +45,8 @@ pub enum SourceArg {
 /// One query - textual, or for `-p` structural - and where on the command line it came from.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Query {
-    /// The text searched for, exactly as given: nothing in it is special.
+    /// The text searched for, exactly as given.  Nothing in it is special for a textual query;
+    /// for `-p` it is a structural pattern, whose holes are `$name` and `$name...`.
     pub text: String,
     /// Where it came from, so that a diagnostic can name it.
     pub source: Source,

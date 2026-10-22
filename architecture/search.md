@@ -227,8 +227,8 @@ src/app.py:12:5-12:22: def connect(self):
   held files its query could not be searched in also names those files; the count is of hits
   only, never of possible matches.  A message names a pattern by its text quoted, a line break
   as `\n`, with any anchors outside the quotes as a script writes them: `^"x"$`; a structural
-  pattern in backticks: `` `f($a)` ``.  Statements
-  after a failed block do not run, so they add no notes.
+  pattern in backticks, a line break there too as `\n`: `` `f($a)` ``.  Statements after a
+  failed block do not run, so they add no notes.
 - A closed standard output - piping into `head` - stops the printing quietly.  Assertions are
   still evaluated, so the exit code is still the answer.
 

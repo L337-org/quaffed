@@ -673,7 +673,7 @@ struct Searched {
     /// Python files a structural search needs that do not parse, by the paths a message shows,
     /// with where and why.
     unparsed: Vec<(PathBuf, String)>,
-    /// Python files in scope, binary ones aside, when a structural pattern is wanted.
+    /// Python files in scope, binary ones included, when a structural pattern is wanted.
     python: usize,
     /// Python files searched for the structural patterns.
     structural: usize,
@@ -780,11 +780,18 @@ fn search_files(
             cause: err.cause,
         })?;
         let binary = matches!(resolution, Resolution::Binary);
-        if !shapes.is_empty() && !binary {
-            if resolve::is_python(file) {
+        let python = resolve::is_python(file);
+        if !shapes.is_empty() {
+            if python {
+                // A binary one too: it is in scope, so the run does not say there is no Python,
+                // though it is counted with the binary files rather than searched.
+                searched.python += 1;
+            } else if !binary {
+                searched.not_applicable += 1;
+            }
+            if python && !binary {
                 // The text Ruff parses is the text CPython would run, decoded as CPython decodes
                 // it, whatever else declares the file's encoding for the textual tier.
-                searched.python += 1;
                 match python::Source::decode(&bytes) {
                     Ok(source) => searched.python(&shown, &source.text, &structural, &shapes),
                     // quaff's own limit, not Python's: the file may well parse.
@@ -794,8 +801,6 @@ fn search_files(
                     // A Python file CPython refuses to read does not parse, whatever it holds.
                     Err(refusal) => searched.unparsed.push((shown.clone(), refusal.to_string())),
                 }
-            } else {
-                searched.not_applicable += 1;
             }
         }
         match resolution {
@@ -1053,7 +1058,10 @@ fn quoted(pattern: Wanted) -> String {
             display(pattern),
             if pattern.end_anchor { "$" } else { "" }
         ),
-        Wanted::Structural { written, .. } => format!("`{written}`"),
+        // A line break as `\n`, as for text, so that a note stays on one line.
+        Wanted::Structural { written, .. } => {
+            format!("`{}`", written.replace('\r', "\\r").replace('\n', "\\n"))
+        }
     }
 }
 
@@ -1175,8 +1183,8 @@ fn skipped(
 }
 
 /// The notes for structural patterns, once for the run however many there are: the text-tier
-/// files they do not apply to, where some Python was searched - with none, the search or the
-/// assertion already said so - and Python files in an encoding quaff does not read.
+/// files they do not apply to, where some Python is in scope - with none, the search or the
+/// assertion already counted them - and Python files in an encoding quaff does not read.
 fn structural_notes(searched: &Searched, evaluated: &[Searching]) -> Vec<String> {
     let mut notes = Vec::new();
     if !evaluated

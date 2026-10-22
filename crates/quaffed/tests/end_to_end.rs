@@ -1166,6 +1166,16 @@ fn a_scope_whose_python_cannot_be_searched_says_so_rather_than_finding_nothing()
     project.add_bytes("gbk.py", b"# -*- coding: gbk -*-\nf(x)\n");
     assert_quaff_snapshot!(project.quaff(&["-p", "f($a)"]));
     assert_quaff_snapshot!(project.quaff(&["-e", "find `f($a)` expect none"]));
+    // A binary Python file is in scope too, and counted with the binary files.
+    project.add_bytes("compiled.py", b"f(x)\x00\n");
+    assert_quaff_snapshot!(project.quaff(&["-p", "f($a)"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_structural_pattern_with_a_line_break_is_named_on_one_line() {
+    let project = Project::new(STRUCTURAL);
+    assert_quaff_snapshot!(project.quaff(&["-p", "if $c:\n    return 1"]));
     project.assert_unchanged();
 }
 

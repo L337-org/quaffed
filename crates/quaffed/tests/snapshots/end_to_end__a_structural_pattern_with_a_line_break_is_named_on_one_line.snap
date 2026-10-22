@@ -1,0 +1,15 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-p"
+    - "if $c:\n    return 1"
+---
+success: false
+exit_code: 1
+----- stdout -----
+
+----- stderr -----
+quaff: no matches for `if $c:\n    return 1`
+quaff: 1 text-tier file not searched for structural patterns, which apply to Python files only
