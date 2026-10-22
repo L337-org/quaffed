@@ -99,7 +99,7 @@ pub fn parse_expression(source: &str) -> Result<Arena<'_>, ParseError> {
 
 /// `source` parsed in `mode` into the arena `builder` starts, or the builder's refusal of text
 /// too long for it, before Ruff sees the text.
-fn parse_from<'text>(
+pub(crate) fn parse_from<'text>(
     builder: Result<Builder<'text>, TooLong>,
     source: &'text str,
     mode: Mode,

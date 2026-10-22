@@ -9,6 +9,11 @@
 //! crate depends on nothing: `tests/no_dependencies.rs` holds that.  `architecture/syntax.md`
 //! describes it.
 
+mod pattern;
+
+pub use pattern::{Hole, Pattern};
+
+use std::borrow::Cow;
 use std::fmt;
 use std::ops::Range;
 
@@ -84,7 +89,7 @@ struct Node {
 #[derive(Debug, Clone)]
 pub struct Arena<'text> {
     language: Language,
-    text: &'text str,
+    text: Cow<'text, str>,
     nodes: Vec<Node>,
 }
 
@@ -97,8 +102,8 @@ impl<'text> Arena<'text> {
 
     /// The whole text the parser was given.
     #[must_use]
-    pub fn text(&self) -> &'text str {
-        self.text
+    pub fn text(&self) -> &str {
+        &self.text
     }
 
     /// How many nodes it holds; at least one, the root.
@@ -139,7 +144,7 @@ impl<'text> Arena<'text> {
 
     /// The text of `node`.
     #[must_use]
-    pub fn source(&self, node: NodeId) -> &'text str {
+    pub fn source(&self, node: NodeId) -> &str {
         &self.text[self.range(node)]
     }
 
@@ -155,14 +160,25 @@ impl<'text> Arena<'text> {
 
     /// The text before the root.
     #[must_use]
-    pub fn leading(&self) -> &'text str {
+    pub fn leading(&self) -> &str {
         &self.text[..self.range(self.root()).start]
     }
 
     /// The text after the root.
     #[must_use]
-    pub fn trailing(&self) -> &'text str {
+    pub fn trailing(&self) -> &str {
         &self.text[self.range(self.root()).end..]
+    }
+
+    /// The same arena, owning a copy of its text, so that it can outlive the text it was
+    /// built over.  A pattern keeps its arena this way.
+    #[must_use]
+    pub fn into_owned(self) -> Arena<'static> {
+        Arena {
+            language: self.language,
+            text: Cow::Owned(self.text.into_owned()),
+            nodes: self.nodes,
+        }
     }
 
     fn node(&self, node: NodeId) -> &Node {
@@ -290,7 +306,7 @@ impl<'text> Builder<'text> {
         assert!(!self.nodes.is_empty(), "an adapter entered no root");
         Arena {
             language: self.language,
-            text: self.text,
+            text: Cow::Borrowed(self.text),
             nodes: self.nodes,
         }
     }

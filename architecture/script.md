@@ -28,6 +28,15 @@ otherwise trim.
 The unit tests check every spelling the design lists, and a property test checks that any
 content read back from its shortest spelling is unchanged.
 
+**Holes in a pattern.**  Inside a backticked operand, `$name` is a hole that binds one node,
+`$_` one node bound to nothing, `$name...` a sequence of one or more nodes, and `$...` such a
+sequence bound to nothing; a hole never matches nothing.  Whether a `$name` is a hole is the
+target language's grammar's to decide, not the script parser's: one that lands in code is a
+hole, and one inside a string literal or a comment is literal text.  `$_...` is refused, since
+`$...` already spells that, and so is a pattern with no code, or with nothing but holes.  The
+script parser carries the operand as written; compiling it is the language adapter's, which
+`python.md` describes for Python.
+
 ## Statements (`src/parser.rs`)
 
 ```
