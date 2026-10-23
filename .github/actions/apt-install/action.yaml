@@ -1,0 +1,124 @@
+name: 'Install apt packages'
+description: 'Install packages from the runner image''s apt sources, with the downloaded package files cached.'
+
+# A job that installs from apt does it with this action, so a slow Ubuntu mirror costs a cache
+# restore rather than the download.  The cache holds only the .deb files: apt still reads the
+# package lists from the mirror, and installs the versions they name, so what is installed is
+# what an uncached install would get.
+#
+# The key is what apt is about to install - each package, version and architecture, from a
+# simulated install - so an update published to the mirror makes a new key, and the files it
+# brings are saved, rather than downloaded again on every run.  The prefix restore brings back
+# an older entry's files for what has not changed, and the rest are deleted unused.
+#
+# apt checks only the size of a file already in its archive directory, not its content: it
+# hands a file of the right size to dpkg as it finds it.  So before installing, each restored
+# file is checked against the SHA-256 the signed index lists for its package, version and
+# architecture, and deleted if it does not match, which leaves a cached file held to the same
+# check as a downloaded one.
+inputs:
+  packages:
+    description: 'The packages to install, separated by spaces.'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # apt's own archive directory, made the runner's so the cache can restore into it; apt
+    # writes into it as root, and its partial downloads go to a subdirectory it owns.
+    - name: Let the cache restore into apt's archive directory
+      shell: bash
+      run: sudo chown "$USER" /var/cache/apt/archives
+
+    - name: Read the package lists, and name what apt will install
+      id: plan
+      shell: bash
+      # Through the environment rather than interpolated into the script, so the package names
+      # are data to the shell, never code.
+      env:
+        PACKAGES: ${{ inputs.packages }}
+      run: |
+        read -ra packages <<<"$PACKAGES"
+        sudo apt-get update
+        simulated="$(apt-get -s install --no-install-recommends "${packages[@]}")"
+        # An Inst line reads `Inst NAME [OLD] (VERSION ORIGIN... [ARCH])`, sometimes followed by a
+        # bracketed list, ` []`; kept as NAME VERSION ARCH, which is how an archive file is named.
+        sed -nE 's/^Inst ([^ ]+) (\[[^]]*\] )?\(([^ ]+) .*\[([^] ]+)\]\)( \[[^]]*\])?$/\1 \3 \4/p' <<<"$simulated" \
+          | sort >"$RUNNER_TEMP/apt-install-plan"
+        # A line the pattern misses, say from a new apt's output, would leave its file unchecked
+        # and deleted as unused, and every run would download it, all without failing.
+        inst="$(grep -c '^Inst ' <<<"$simulated" || true)"
+        planned="$(wc -l <"$RUNNER_TEMP/apt-install-plan")"
+        if (( inst != planned )); then
+          echo "::error::apt-install: apt's simulated install has $inst Inst lines, but only $planned read as NAME VERSION ARCH, so its output format has changed; the lines were:"
+          grep '^Inst ' <<<"$simulated"
+          exit 1
+        fi
+        echo "apt-install: apt will install $planned packages"
+        # The key once, here, so the restore and the warning that names it cannot differ.
+        prefix="apt-$RUNNER_ARCH-$PACKAGES-"
+        {
+          echo "prefix=$prefix"
+          echo "key=$prefix$(sha256sum "$RUNNER_TEMP/apt-install-plan" | cut -c1-16)"
+        } >>"$GITHUB_OUTPUT"
+
+    - name: Restore the downloaded packages
+      id: restore
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: /var/cache/apt/archives/*.deb
+        key: ${{ steps.plan.outputs.key }}
+        restore-keys: |
+          ${{ steps.plan.outputs.prefix }}
+
+    - name: Install
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+        KEY: ${{ steps.plan.outputs.key }}
+        HIT: ${{ steps.restore.outputs.cache-hit }}
+      run: |
+        read -ra packages <<<"$PACKAGES"
+
+        shopt -s nullglob
+        kept=0 unused=0
+        for deb in /var/cache/apt/archives/*.deb; do
+          name="$(basename "$deb" .deb)"
+          IFS=_ read -r package version arch <<<"$name"
+          version="${version//%3a/:}"
+          if ! grep -qxF "$package $version $arch" "$RUNNER_TEMP/apt-install-plan"; then
+            # Routine: an older entry's file for a version apt no longer installs.
+            rm -f "$deb"
+            unused=$((unused + 1))
+            continue
+          fi
+          actual="$(sha256sum "$deb" | cut -d' ' -f1)"
+          # Read whole before searching: grep -q stops at its match, and under pipefail
+          # apt-cache's broken pipe would then count as no match.
+          listed="$(apt-cache show "$package:$arch=$version" | sed -n 's/^SHA256: //p')"
+          if grep -qxF "$actual" <<<"$listed"; then
+            kept=$((kept + 1))
+          else
+            # apt resolved this exact version, so the index lists it: a different hash means
+            # the cached file is not the one the index signs for.  An entry is never
+            # overwritten, so after an exact hit only deleting it stops this recurring.
+            case "$HIT" in
+              true) repair="this key's entry was restored exactly and is never overwritten, so delete it, with a token that has actions: write: gh cache delete $(printf %q "$KEY")" ;;
+              false) repair="it came from an older entry, so this job saves the good copy apt downloads under $(printf %q "$KEY") when it succeeds" ;;
+              *) repair="the cache step reported no result, so whether $(printf %q "$KEY") is saved is unknown: check its post step" ;;
+            esac
+            echo "::warning::apt-install: deleting cached $(printf %q "$name.deb"): its SHA-256 is $actual, but the index lists $(tr '\n' ' ' <<<"$listed")for $package $version $arch; $repair"
+            rm -f "$deb"
+          fi
+        done
+        echo "apt-install: $kept cached package files match the index; $unused older ones deleted unused"
+
+        sudo apt-get install -y --no-install-recommends "${packages[@]}"
+
+        # The cache saves what is left here, so an image that deletes downloaded packages would
+        # leave nothing to save and every run would download again, unnoticed.  A warning, not a
+        # failure: it also happens, rightly, when the image already has every package.
+        debs=(/var/cache/apt/archives/*.deb)
+        if (( ${#debs[@]} == 0 )); then
+          echo "::warning::apt-install: no package file is left in /var/cache/apt/archives, so nothing will be cached: either the image has every package already, or its apt configuration deletes downloads (Keep-Downloaded-Packages, or a clean hook)"
+        fi

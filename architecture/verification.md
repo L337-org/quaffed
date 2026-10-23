@@ -637,6 +637,35 @@ that way on Linux and checks each pinned version against cargo's own record of t
 costs a cache restore until `tools.toml` changes, and then builds what changed, so a bad pin
 fails on the pull request that introduces it rather than in the first job to use the tool.
 
+**Packages from apt go through `.github/actions/apt-install`**, which caches the downloaded
+`.deb` files, so a slow Ubuntu mirror costs a cache restore rather than minutes of download:
+
+```yaml
+      - name: Install Valgrind, strace, GNU time and the musl C toolchain
+        uses: ./.github/actions/apt-install
+        with:
+          packages: valgrind strace time musl-tools
+```
+
+Only the package files are cached.  apt still reads the package lists from the mirror and
+installs the versions they name, so the cache changes how fast a package arrives, never which
+version: the Budgets job's Valgrind is the one an uncached install would get.  The key is what
+apt is about to install - each package, version and architecture, from a simulated install - so
+an update published to the mirror makes a new key and its files are saved, rather than
+downloaded again on every run.  An older entry is restored by prefix for what has not changed,
+and its files for versions apt no longer installs are deleted unused.
+
+**A restored file is checked before it is installed.**  apt checks only the size of a file
+already in its archive directory, not its content: a file of the right size goes to dpkg as
+found.  So the action compares each restored file's SHA-256 with the one the signed index lists
+for its package, version and architecture, and deletes any that differ, with a warning naming
+both hashes, since apt resolved that exact version and a different hash means the file is not
+the one the index signs for.  apt then downloads it, so a cached package is held to the same
+check as a downloaded one.  An entry is never overwritten, so when the bad file came from an exact
+hit the warning names the `gh cache delete` that removes it; from an older entry, the job's own
+save replaces it.  A simulated install whose `Inst` lines the action cannot all read fails the
+job, rather than leave files unchecked.
+
 ## What the tests enforce
 
 `crates/quaffed/tests/tool_manifest.rs`, in the ordinary test run:
@@ -648,6 +677,7 @@ fails on the pull request that introduces it rather than in the first job to use
   fails, and says what is missing when cargo, rustup or a named entry is;
 - no workflow or local action calls `cargo install`, `cargo binstall` or an install action,
   names a toolchain or a dated nightly, or names a version of a manifest tool;
+- no workflow or local action but `.github/actions/apt-install` installs from apt;
 - `gungraun-runner` in the manifest and `gungraun` in `Cargo.lock` are either both absent or
   both present at one version, because gungraun refuses to run against a runner of a different
   version.

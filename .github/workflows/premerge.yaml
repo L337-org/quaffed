@@ -237,7 +237,9 @@ jobs:
         run: rustup target add x86_64-unknown-linux-musl
 
       - name: Install Valgrind, strace, GNU time and the musl C toolchain
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends valgrind strace time musl-tools
+        uses: ./.github/actions/apt-install
+        with:
+          packages: valgrind strace time musl-tools
 
       # The package's build - musl, mimalloc, the dist profile's optimisation - with its
       # symbols kept, so callgrind's report names every function.
