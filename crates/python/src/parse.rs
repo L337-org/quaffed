@@ -147,9 +147,57 @@ fn kinds_in(arena: &Arena<'_>) -> BTreeSet<Kind> {
     arena.nodes().map(|node| arena.kind(node)).collect()
 }
 
+/// Where the comma of `node` starts, if it is a one-element tuple: the first comma after its
+/// element, since the element's own commas lie inside it.
+fn tuple_comma(node: AnyNodeRef<'_>, tokens: &Tokens) -> Option<TextSize> {
+    let AnyNodeRef::ExprTuple(tuple) = node else {
+        return None;
+    };
+    let [element] = tuple.elts.as_slice() else {
+        return None;
+    };
+    tokens
+        .after(element.range().end())
+        .iter()
+        .take_while(|token| token.start() < tuple.range().end())
+        .find(|token| token.kind() == TokenKind::Comma)
+        .map(Token::start)
+}
+
+/// Where each parenthesis that takes no part in a match around or of `node` starts, an
+/// opening one and a closing one.
+///
+/// Parentheses around an expression that its parent's syntax does not need - `f((x))`'s inner
+/// pair - change nothing.  Nor do a tuple's or a generator's own, which Ruff counts among the
+/// node's tokens rather than the redundant: `a, b` and `(a, b)` are one tree to `CPython`, as
+/// are `f(x for x in y)` and `f((x for x in y))`.  Where they change the meaning, the tree
+/// changes too - `f((a, b))` passes one argument and `f(a, b)` two.  An empty tuple's are its
+/// only spelling, and stay.
+fn redundant_parentheses(
+    node: AnyNodeRef<'_>,
+    parent: Option<AnyNodeRef<'_>>,
+    tokens: &Tokens,
+) -> Vec<TextSize> {
+    let mut found = Vec::new();
+    if let (Some(expr), Some(parent)) = (node.as_expr_ref(), parent) {
+        for around in parentheses_iterator(expr, Some(parent), tokens) {
+            found.extend([around.start(), around.end() - TextSize::new(1)]);
+        }
+    }
+    let wears_its_own = match node {
+        AnyNodeRef::ExprTuple(tuple) => tuple.parenthesized && !tuple.elts.is_empty(),
+        AnyNodeRef::ExprGenerator(generator) => generator.parenthesized,
+        _ => false,
+    };
+    if wears_its_own {
+        found.extend([node.range().start(), node.range().end() - TextSize::new(1)]);
+    }
+    found
+}
+
 /// The arena of `root` and every node beneath it, in one walk of Ruff's tree, with the tokens
 /// a match compares: Ruff's own, less comments, line breaks, indentation and the parentheses
-/// that only wrap an expression.
+/// that only wrap an expression or that a tuple or generator wears.
 fn build<'text>(
     builder: Builder<'text>,
     root: AnyNodeRef<'_>,
@@ -164,20 +212,18 @@ fn build<'text>(
         open: Vec<AnyNodeRef<'a>>,
         /// Where each redundant parenthesis starts: an opening one, and a closing one.
         redundant: BTreeSet<TextSize>,
+        /// Where each one-element tuple's comma starts, which is the tuple, not layout.
+        tuple_commas: BTreeSet<TextSize>,
     }
 
     impl<'a> SourceOrderVisitor<'a> for Build<'_, 'a> {
         fn enter_node(&mut self, node: AnyNodeRef<'a>) -> TraversalSignal {
             self.builder
                 .enter(kind_of(node.kind()), node.range().into());
-            if let (Some(expr), Some(parent)) = (node.as_expr_ref(), self.open.last()) {
-                // Parentheses around an expression that its parent's syntax does not need -
-                // `f((x))`'s inner pair - change nothing, so they take no part in a match.
-                for around in parentheses_iterator(expr, Some(*parent), self.tokens) {
-                    self.redundant.insert(around.start());
-                    self.redundant.insert(around.end() - TextSize::new(1));
-                }
-            }
+            let parent = self.open.last().copied();
+            self.redundant
+                .extend(redundant_parentheses(node, parent, self.tokens));
+            self.tuple_commas.extend(tuple_comma(node, self.tokens));
             if let Some(content) = string_content(node, self.source) {
                 self.builder.value(content);
             }
@@ -224,13 +270,28 @@ fn build<'text>(
         source,
         open: Vec::new(),
         redundant: BTreeSet::new(),
+        tuple_commas: BTreeSet::new(),
     };
     walk_node(&mut build, root);
     let Build {
         mut builder,
         redundant,
+        tuple_commas,
         ..
     } = build;
+    add_tokens(&mut builder, tokens, &redundant, &tuple_commas);
+    builder.finish()
+}
+
+/// Adds to `builder` the tokens a match compares: Ruff's own, less comments, line breaks,
+/// indentation, the end of the file, semicolons, the `redundant` parentheses, and a comma just
+/// before a closing bracket unless it is one of the `tuple_commas`.
+fn add_tokens(
+    builder: &mut Builder<'_>,
+    tokens: &Tokens,
+    redundant: &BTreeSet<TextSize>,
+    tuple_commas: &BTreeSet<TextSize>,
+) {
     let kept: Vec<&Token> = tokens
         .iter()
         .filter(|token| {
@@ -252,9 +313,10 @@ fn build<'text>(
     for (i, token) in kept.iter().enumerate() {
         let kind = token.kind();
         // A comma just before a closing bracket - `f(x, y,)`, the comma Black adds to a call it
-        // splits - changes nothing.  A one-element tuple's `(x,)` differs from `(x)` already in
-        // its tree, so it needs no exception.
+        // splits - changes nothing.  A one-element tuple's comma is the tuple, so it stays:
+        // without it `x[a,]` would read as `x[a]`.
         if kind == TokenKind::Comma
+            && !tuple_commas.contains(&token.start())
             && kept.get(i + 1).is_some_and(|next| {
                 matches!(
                     next.kind(),
@@ -275,7 +337,6 @@ fn build<'text>(
         };
         builder.token(token.range().into(), compare);
     }
-    builder.finish()
 }
 
 /// A string or bytes literal's content, as the script language defines it for comparing: what

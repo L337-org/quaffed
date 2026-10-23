@@ -69,14 +69,20 @@ terms its reader knows.
 The arena keeps Ruff's own tokens, less those that carry no meaning in Python: comments, line
 breaks, indentation, the end of the file, semicolons between statements, a comma just before a
 closing bracket - the one Black adds when it splits a call - and redundant parentheses, those
-`ruff_python_ast::token::parentheses_iterator` finds around an expression, which excludes a call's
-own, since they are its arguments'.  A one-element tuple, `(x,)`, needs no exception: it is a tuple
-and `(x)` a name, so their trees differ already.  An f-string's or t-string's opening and closing
-compare by a fixed text, so their prefix and quotes take no part.  A string or bytes literal's value
-is its content as the script language defines it for comparing: what lies between each part's
-delimiters as written, the parts of an implicit concatenation joined, by Ruff's own `opener_len` and
-`closer_len`.  An f-string's parts are compared one by one; unlike a plain string's, an implicit
-concatenation of them is not joined.
+`ruff_python_ast::token::parentheses_iterator` finds around an expression, which excludes a
+call's own, since they are its arguments'.  A tuple's or a generator's own parentheses are left
+out too, though Ruff puts them inside the node rather than among the redundant: `a, b` and `(a,
+b)` are one tree to CPython, as are `f(x for x in y)` and `f((x for x in y))`, and where the
+parentheses change the meaning - `f((a, b))` passes one argument, `f(a, b)` two - the tree
+changes too.  An empty tuple keeps its, as its only spelling.  A one-element tuple keeps the
+comma after its element even before a closing bracket, as `tuple_comma` finds it: it is the
+tuple's only spelling, and without it `x[a,]`, a subscript by a tuple, would hold the same code as
+`x[a]`, a subscript by a name, to a name used twice.  An f-string's or
+t-string's opening and closing compare by a fixed text, so their prefix and quotes take no
+part.  A string or bytes literal's value is its content as the script language defines it for
+comparing: what lies between each part's delimiters as written, the parts of an implicit
+concatenation joined, by Ruff's own `opener_len` and `closer_len`.  An f-string's parts are
+compared one by one; unlike a plain string's, an implicit concatenation of them is not joined.
 
 Each statement list Ruff's walk visits - a module's, a function's, a branch's, an `else` or a
 `finally` - is marked as a list, so `$body...` never takes in an `else:` clause and a run of
@@ -119,15 +125,23 @@ on green.
 
 ## Checklist: upgrading Ruff
 
-1. Read Ruff's changelog for the three crates between the two versions.
-2. Change all three `=` pins together.
-3. Build.  A new or renamed node kind fails the kind list's `match`: list it in `src/kinds.rs`,
-   and update the count in `every_kind_is_listed_once_by_ruffs_name`.
-4. Run `cargo test -p quaffed-python`.  A new kind the synthetic corpus does not produce fails
-   its coverage check; add Python that produces it, as `verification.md` describes.  A change
+1. **Read the changelog.**  Read Ruff's changelog for the three crates between the two
+   versions, for changes to node kinds, ranges, tokens and the parser's modes.
+2. **Bump the pin.**  Change all three `=` pins together.  `ruff_containment.rs` fails if any is
+   not exact, or the three differ.
+3. **Fix the adapter.**  Build.  A new or renamed node kind fails the kind list's `match`: list
+   it in `src/kinds.rs`, and update the count in `every_kind_is_listed_once_by_ruffs_name`.
+   Run `cargo test -p quaffed-python`: a new kind the synthetic corpus does not produce fails its
+   coverage check, so add Python that produces it, as `verification.md` describes, and a change
    in where Ruff's root starts or ends fails the root test above.
-5. Run the round trip over the real-world corpus (`verification.md`): a change in Ruff's
-   ranges that breaks the arena's invariants fails it, naming the file and the byte.
-6. Each quirk above is pinned by a test that fails when it stops holding; delete the workaround
-   that test names.  Record any new quirk here, with a test of its own.
-7. Update this page in the same change.
+4. **Run the invariant harness and the CPython oracle** over the real-world corpus, as the
+   Real-world corpus CI job does (`verification.md`): `scripts/fetch-corpus` with the oracle's
+   Python, then the round trip, which fails on a change in Ruff's ranges that breaks the arena's
+   invariants, naming the file and the byte; then `scripts/count-structural` and
+   `real_world_matches.rs`, which fail on a change in what a pattern matches, naming the pattern
+   and both counts.
+5. **Check the quirks.**  Each quirk above is pinned by a test that fails when it stops holding;
+   delete the workaround that test names.  Record any new quirk here, with a test of its own.
+6. **Record what changed**: in the commit message, what in Ruff moved and what the adapter did
+   about it, and on this page anything a later change must know.  Update this page in the same
+   change.

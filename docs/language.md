@@ -406,6 +406,11 @@ play/nested.py:5:5-5:13: a + b * c
 
 `$a + $b * $c` does not match `( (a + b) ) * c`, because there `a + b` is multiplied by `c`.
 
+**A tuple's or a generator's own parentheses** take no part either, since they are only how it
+is written: `return $a, $b` matches `return (a, b)`, and `h(q for q in r)` matches
+`h((q for q in r))`.  Where they change the meaning the shape changes too, so `f(($a, $b))`, a
+call with one tuple argument, does not match `f(a, b)`, a call with two.
+
 **Operators do take part.**  `$a + $b` matches `subtotal + tax` but not `price - price * rate`.
 The same goes for `<` and `>`, and `not` and `-`.
 
@@ -657,6 +662,10 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
   call a formatter has split over lines and ended with a comma.
 - **Implicitly concatenated plain strings are joined, but f-strings are not**: `"abc"` matches
   `"ab" "c"`, while `f"{a}{b}"` does not match `f"{a}" f"{b}"`, which `f"{$x}" f"{$y}"` does.
+- **A tuple's parentheses are layout**, as CPython's tree has them: `a, b = f()` then
+  `return (a, b)` returns the name it assigned.  The comma of a one-element tuple is not, so
+  `x[$a,]` matches `x[a,]` but not `x[a]`, and a name used twice still tells `a, (b, c)` from
+  `(a, b), c`.
 - **A string's escapes are compared as written**, so `"\n"` and `r"\n"` match each other but not
   a string holding an actual newline.
 - **A repeated hole name compares code, whatever role it plays**: an argument, a keyword, an
