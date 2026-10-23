@@ -5,6 +5,7 @@
 //! - **Every hole written in code becomes one hole, in order**, whatever names it carries.
 //! - **A hole written inside a string literal is literal text**, restored as written, whatever
 //!   the string's prefix, an f-string's or t-string's literal text included.
+//! - **A sequence hole in a run of statements is refused at its two ends and only there.**
 
 use proptest::prelude::*;
 use quaffed_python::{PatternError, compile_pattern};

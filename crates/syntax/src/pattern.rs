@@ -202,6 +202,14 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "a pattern compiler let through a sequence hole at the edge")]
+    fn matching_a_pattern_with_an_unbounded_sequence_is_a_defect() {
+        let pattern = run_of_two(&[1]);
+        let target = run_of_two(&[]).arena().clone();
+        let _ = crate::find(&pattern, &target);
+    }
+
+    #[test]
     #[should_panic(expected = "a pattern compiler named one node as two holes")]
     fn one_node_named_twice_is_a_defect() {
         let arena = call();

@@ -143,7 +143,8 @@ struct Claim {
 /// # Errors
 ///
 /// Returns a [`PatternError`] if the pattern is not Python, spells a hole `$_...`, is nothing
-/// but holes, starts or ends a run of statements with a sequence hole, or is too long.  Nothing partial is returned.
+/// but holes, starts or ends a run of statements with a sequence hole, or is too long.  Nothing
+/// partial is returned.
 ///
 /// # Panics
 ///

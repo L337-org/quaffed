@@ -633,8 +633,8 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
 - **A run of statements never crosses into another block.**
 - **A sequence hole may not start or end a run of statements**, because nothing would stop it
   short of the edge of its block, so one match would cover far more than the pattern spells.  Put
-  fixed code on both sides of it.  Deleting every statement after a `return` with `return $x` then `$dead...`
-  is not possible for that reason.
+  fixed code on both sides of it.  So `return $x` then `$dead...`, every statement after a
+  `return`, cannot be written.
 - **Structural patterns ignore non-Python files rather than falling back to text**, and say so.
 - **A Python file Python cannot read stops a structural search** (exit 9), but not a textual one.
 - **A Python file with no coding line is UTF-8 to a structural search, whatever `.editorconfig`
