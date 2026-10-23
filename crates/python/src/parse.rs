@@ -3,7 +3,7 @@
 
 //! Python source parsed into a syntax arena, and the kinds of node a piece of source contains.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use quaffed_syntax::{Arena, Builder, Kind, Language, TokenText, TooLong};
@@ -164,6 +164,98 @@ fn tuple_comma(node: AnyNodeRef<'_>, tokens: &Tokens) -> Option<TextSize> {
         .map(Token::start)
 }
 
+/// Where the comma ending a tuple of two or more elements starts, if it has one: `a, b,` is the
+/// tuple `a, b` to `CPython`, so the comma is layout, as one before a closing bracket is.
+fn trailing_tuple_comma(node: AnyNodeRef<'_>, tokens: &Tokens) -> Option<TextSize> {
+    let AnyNodeRef::ExprTuple(tuple) = node else {
+        return None;
+    };
+    let [_, .., last] = tuple.elts.as_slice() else {
+        return None;
+    };
+    tokens
+        .after(last.range().end())
+        .iter()
+        .take_while(|token| token.start() < tuple.range().end())
+        .find(|token| token.kind() == TokenKind::Comma)
+        .map(Token::start)
+}
+
+/// Whether `node` is the empty argument list of a class, `class A():`, which `CPython`'s tree
+/// does not record: `class A():` and `class A:` are one class, so the list is left out of the
+/// arena and its parentheses take no part.
+fn empty_class_arguments(node: AnyNodeRef<'_>, parent: Option<AnyNodeRef<'_>>) -> bool {
+    matches!(
+        (node, parent),
+        (AnyNodeRef::Arguments(arguments), Some(AnyNodeRef::StmtClassDef(_)))
+            if arguments.args.is_empty() && arguments.keywords.is_empty()
+    )
+}
+
+/// Where the parentheses around a statement's list start, an opening one and a closing one,
+/// where `CPython`'s tree does not record them: `from x import (a, b)` imports what `from x
+/// import a, b` does, and `with (open(p), open(q)):` opens what the same without them does.
+/// Neither is around an expression, so neither is found as one that only wraps an expression.
+fn statement_parentheses(node: AnyNodeRef<'_>, tokens: &Tokens) -> Vec<TextSize> {
+    let (first, last) = match node {
+        AnyNodeRef::StmtImportFrom(import) => match (import.names.first(), import.names.last()) {
+            (Some(first), Some(last)) => (first.range(), last.range()),
+            _ => return Vec::new(),
+        },
+        AnyNodeRef::StmtWith(with) => match (with.items.first(), with.items.last()) {
+            (Some(first), Some(last)) => (first.range(), last.range()),
+            _ => return Vec::new(),
+        },
+        _ => return Vec::new(),
+    };
+    let open = tokens
+        .after(node.range().start())
+        .iter()
+        .take_while(|token| token.start() < first.start())
+        .find(|token| token.kind() == TokenKind::Lpar);
+    // After the last name or item, up to the end of the import or the `:` of the `with`.
+    let close = tokens
+        .after(last.end())
+        .iter()
+        .take_while(|token| token.start() < node.range().end() && token.kind() != TokenKind::Colon)
+        .find(|token| token.kind() == TokenKind::Rpar);
+    match (open, close) {
+        (Some(open), Some(close)) => vec![open.start(), close.start()],
+        _ => Vec::new(),
+    }
+}
+
+/// For an f-string or t-string field that prints itself, `{v = }`, the ranges its `{` and `=`
+/// tokens take in, so that the spacing around the expression, which is printed, takes part in a
+/// match: the `{` with the text before the expression, and the `=` with the text from the
+/// expression to the conversion, the format spec or the `}`.
+fn self_documenting(node: AnyNodeRef<'_>, tokens: &Tokens) -> Vec<(TextSize, TextRange)> {
+    let AnyNodeRef::InterpolatedElement(element) = node else {
+        return Vec::new();
+    };
+    let Some(debug) = &element.debug_text else {
+        return Vec::new();
+    };
+    let open = element.range().start();
+    let after = element.expression.range().end();
+    let mut widened = vec![(
+        open,
+        TextRange::at(open, TextSize::of(debug.leading()) + TextSize::new(1)),
+    )];
+    if let Some(equal) = tokens
+        .after(after)
+        .iter()
+        .take_while(|token| token.start() < element.range().end())
+        .find(|token| token.kind() == TokenKind::Equal)
+    {
+        widened.push((
+            equal.start(),
+            TextRange::at(after, TextSize::of(debug.trailing())),
+        ));
+    }
+    widened
+}
+
 /// Where each parenthesis that takes no part in a match around or of `node` starts, an
 /// opening one and a closing one.
 ///
@@ -214,16 +306,30 @@ fn build<'text>(
         redundant: BTreeSet<TextSize>,
         /// Where each one-element tuple's comma starts, which is the tuple, not layout.
         tuple_commas: BTreeSet<TextSize>,
+        /// Where each comma that ends a tuple of several elements starts, which is layout.
+        trailing_commas: BTreeSet<TextSize>,
+        /// Tokens that take in the text around them, by where each starts.
+        widened: BTreeMap<TextSize, TextRange>,
     }
 
     impl<'a> SourceOrderVisitor<'a> for Build<'_, 'a> {
         fn enter_node(&mut self, node: AnyNodeRef<'a>) -> TraversalSignal {
+            let parent = self.open.last().copied();
+            if empty_class_arguments(node, parent) {
+                self.redundant
+                    .extend([node.range().start(), node.range().end() - TextSize::new(1)]);
+                return TraversalSignal::Skip;
+            }
             self.builder
                 .enter(kind_of(node.kind()), node.range().into());
-            let parent = self.open.last().copied();
             self.redundant
                 .extend(redundant_parentheses(node, parent, self.tokens));
+            self.redundant
+                .extend(statement_parentheses(node, self.tokens));
             self.tuple_commas.extend(tuple_comma(node, self.tokens));
+            self.trailing_commas
+                .extend(trailing_tuple_comma(node, self.tokens));
+            self.widened.extend(self_documenting(node, self.tokens));
             if let Some(content) = string_content(node, self.source) {
                 self.builder.value(content);
             }
@@ -250,7 +356,11 @@ fn build<'text>(
             TraversalSignal::Traverse
         }
 
-        fn leave_node(&mut self, _node: AnyNodeRef<'a>) {
+        fn leave_node(&mut self, node: AnyNodeRef<'a>) {
+            // Ruff's walk leaves a node it was told to skip, which was never entered.
+            if empty_class_arguments(node, self.open.last().copied()) {
+                return;
+            }
             self.open.pop();
             self.builder.leave();
         }
@@ -271,33 +381,49 @@ fn build<'text>(
         open: Vec::new(),
         redundant: BTreeSet::new(),
         tuple_commas: BTreeSet::new(),
+        trailing_commas: BTreeSet::new(),
+        widened: BTreeMap::new(),
     };
     walk_node(&mut build, root);
     let Build {
         mut builder,
         redundant,
         tuple_commas,
+        trailing_commas,
+        widened,
         ..
     } = build;
-    add_tokens(&mut builder, tokens, &redundant, &tuple_commas);
+    let layout = Layout {
+        redundant,
+        tuple_commas,
+        trailing_commas,
+        widened,
+    };
+    add_tokens(&mut builder, tokens, &layout);
     builder.finish()
 }
 
+/// What [`build`] found of a file's layout among its tokens.
+struct Layout {
+    /// Where each parenthesis that takes no part starts.
+    redundant: BTreeSet<TextSize>,
+    /// Where each one-element tuple's comma starts, which is the tuple.
+    tuple_commas: BTreeSet<TextSize>,
+    /// Where each comma ending a tuple of several elements starts, which is layout.
+    trailing_commas: BTreeSet<TextSize>,
+    /// Tokens that take in the text around them, by where each starts.
+    widened: BTreeMap<TextSize, TextRange>,
+}
+
 /// Adds to `builder` the tokens a match compares: Ruff's own, less comments, line breaks,
-/// indentation, the end of the file, semicolons, the `redundant` parentheses, and a comma just
-/// before a closing bracket unless it is one of the `tuple_commas`.
-fn add_tokens(
-    builder: &mut Builder<'_>,
-    tokens: &Tokens,
-    redundant: &BTreeSet<TextSize>,
-    tuple_commas: &BTreeSet<TextSize>,
-) {
-    let kept: Vec<&Token> = tokens
+/// indentation, the end of the file, semicolons, the parentheses that take no part, a comma
+/// just before a closing bracket unless it is a one-element tuple's, and a comma ending a tuple.
+fn add_tokens(builder: &mut Builder<'_>, tokens: &Tokens, layout: &Layout) {
+    let meaningful: Vec<&Token> = tokens
         .iter()
         .filter(|token| {
-            let kind = token.kind();
-            !(matches!(
-                kind,
+            !matches!(
+                token.kind(),
                 TokenKind::Comment
                     | TokenKind::Newline
                     | TokenKind::NonLogicalNewline
@@ -306,23 +432,29 @@ fn add_tokens(
                     | TokenKind::EndOfFile
                     // A semicolon only separates statements, as a line break does.
                     | TokenKind::Semi
-            ) || (matches!(kind, TokenKind::Lpar | TokenKind::Rpar)
-                && redundant.contains(&token.start())))
+            )
         })
         .collect();
-    for (i, token) in kept.iter().enumerate() {
+    for (i, token) in meaningful.iter().enumerate() {
         let kind = token.kind();
+        if matches!(kind, TokenKind::Lpar | TokenKind::Rpar)
+            && layout.redundant.contains(&token.start())
+        {
+            continue;
+        }
         // A comma just before a closing bracket - `f(x, y,)`, the comma Black adds to a call it
-        // splits - changes nothing.  A one-element tuple's comma is the tuple, so it stays:
-        // without it `x[a,]` would read as `x[a]`.
+        // splits - changes nothing, whether or not the bracket itself takes part, as a tuple's
+        // own does not.  A one-element tuple's comma is the tuple, so it stays: without it
+        // `x[a,]` would read as `x[a]`.  A comma ending a tuple of several, `a, b,`, is layout.
         if kind == TokenKind::Comma
-            && !tuple_commas.contains(&token.start())
-            && kept.get(i + 1).is_some_and(|next| {
-                matches!(
-                    next.kind(),
-                    TokenKind::Rpar | TokenKind::Rsqb | TokenKind::Rbrace
-                )
-            })
+            && !layout.tuple_commas.contains(&token.start())
+            && (layout.trailing_commas.contains(&token.start())
+                || meaningful.get(i + 1).is_some_and(|next| {
+                    matches!(
+                        next.kind(),
+                        TokenKind::Rpar | TokenKind::Rsqb | TokenKind::Rbrace
+                    )
+                }))
         {
             continue;
         }
@@ -335,7 +467,12 @@ fn add_tokens(
             TokenKind::TStringEnd => TokenText::Fixed("t-string end"),
             _ => TokenText::Source,
         };
-        builder.token(token.range().into(), compare);
+        let range = layout
+            .widened
+            .get(&token.start())
+            .copied()
+            .unwrap_or(token.range());
+        builder.token(range.into(), compare);
     }
 }
 

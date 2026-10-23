@@ -77,7 +77,23 @@ parentheses change the meaning - `f((a, b))` passes one argument, `f(a, b)` two 
 changes too.  An empty tuple keeps its, as its only spelling.  A one-element tuple keeps the
 comma after its element even before a closing bracket, as `tuple_comma` finds it: it is the
 tuple's only spelling, and without it `x[a,]`, a subscript by a tuple, would hold the same code as
-`x[a]`, a subscript by a name, to a name used twice.  An f-string's or
+`x[a]`, a subscript by a name, to a name used twice.  A comma ending a tuple of several, `a, b,`,
+is layout, and so is one just before a closing bracket whether or not that bracket takes part, so
+`(a, b,)` is `a, b`.
+
+Three more pairs of parentheses `CPython`'s tree does not record take no part, though none is
+around an expression: those around a `from` import's names, `from x import (a, b)`
+(`statement_parentheses`); those around a `with` statement's items, `with (open(p),
+open(q)):`, found as the pair before the first item and after the last, which leaves `with (a,
+b) as c:`'s alone, since there they are the tuple's; and a class's empty argument list, `class
+A():`, which is left out of the arena altogether (`empty_class_arguments`), as `CPython` leaves
+it out of the tree.
+
+**A self-documenting field prints its own spacing**: `f"{v = }"` prints `v = 1`, and `f"{v=}"`
+`v=1`.  So in a field with `=`, the `{` token takes in the text before the expression and the
+`=` token the text from the expression to the conversion, the format spec or the `}`
+(`self_documenting`), and a match compares them as written.  In any other field the spacing is
+layout.  An f-string's or
 t-string's opening and closing compare by a fixed text, so their prefix and quotes take no
 part.  A string or bytes literal's value is its content as the script language defines it for
 comparing: what lies between each part's delimiters as written, the parts of an implicit

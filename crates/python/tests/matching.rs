@@ -448,3 +448,56 @@ fn a_statement_pattern_matches_a_statement_of_that_shape() {
     );
     assert_eq!(matches("$x = 0", "a = 0\nb = 1\n"), ["a = 0"]);
 }
+
+/// Whether `a` as a pattern matches the whole of `b`, and the other way round.
+fn alike(a: &str, b: &str) -> (bool, bool) {
+    let whole = |pattern: &str, source: &str| matches(pattern, source).iter().any(|m| m == source);
+    (whole(a, b), whole(b, a))
+}
+
+#[test]
+fn parentheses_and_commas_cpythons_tree_does_not_record_take_no_part() {
+    // Each pair is one tree to CPython 3.14.8, so each matches the other.
+    for (a, b) in [
+        ("from x import (a, b)", "from x import a, b"),
+        ("from x import (a, b,)", "from x import a, b"),
+        ("with (open(p), open(q)):\n    pass", "with open(p), open(q):\n    pass"),
+        ("with (open(p), open(q),):\n    pass", "with open(p), open(q):\n    pass"),
+        ("class A():\n    pass", "class A:\n    pass"),
+        ("x = (a, b,)", "x = a, b"),
+        ("x = a, b,", "x = a, b"),
+    ] {
+        assert_eq!(alike(a, b), (true, true), "{a:?} and {b:?}");
+    }
+    // And each of these is two trees to CPython, so neither matches the other.
+    for (a, b) in [
+        ("with (a, b) as c:\n    pass", "with a, b as c:\n    pass"),
+        ("class A(B):\n    pass", "class A:\n    pass"),
+        ("x = (a,)", "x = a"),
+    ] {
+        assert_eq!(alike(a, b), (false, false), "{a:?} and {b:?}");
+    }
+}
+
+#[test]
+fn the_spacing_a_self_documenting_field_prints_takes_part() {
+    // `f"{v = }"` prints `v = 1` where `f"{v=}"` prints `v=1`, and CPython's trees differ.
+    for (a, b) in [
+        ("print(f\"{v=}\")", "print(f\"{v = }\")"),
+        ("print(f\"{ v=}\")", "print(f\"{v=}\")"),
+        ("print(f\"{v=!r}\")", "print(f\"{v = !r}\")"),
+    ] {
+        assert_eq!(alike(a, b), (false, false), "{a:?} and {b:?}");
+    }
+    // Spacing in a field that does not print itself is still layout.
+    assert_eq!(alike("print(f\"{v}\")", "print(f\"{ v }\")"), (true, true));
+    assert_eq!(matches("print(f\"{$x = }\")", "print(f\"{v = }\")\n"), ["print(f\"{v = }\")"]);
+}
+
+#[test]
+fn implicitly_concatenated_f_strings_are_not_joined() {
+    // One tree to CPython, but quaff keeps an f-string's parts apart, as decided for the MVP.
+    let source = "f\"{a}\" f\"{b}\"\n";
+    assert_eq!(matches("f\"{$x}{$y}\"", source), none());
+    assert_eq!(matches("f\"{$x}\" f\"{$y}\"", source), ["f\"{a}\" f\"{b}\""]);
+}
