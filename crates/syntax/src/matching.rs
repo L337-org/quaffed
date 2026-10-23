@@ -36,6 +36,12 @@ pub struct Match {
 /// ([`Pattern::unbounded_sequence`]), which is a defect in its compiler.
 #[must_use]
 pub fn find(pattern: &Pattern, target: &Arena<'_>) -> Vec<Match> {
+    find_with(pattern, target, true)
+}
+
+/// [`find`], matching a run of statements by [`Run`]'s index where `indexed` and it can, and
+/// otherwise by backtracking alone: the slow way, which the fast one is held to.
+fn find_with(pattern: &Pattern, target: &Arena<'_>, indexed: bool) -> Vec<Match> {
     let shape = pattern.arena();
     assert_eq!(
         shape.language(),
@@ -61,9 +67,41 @@ pub fn find(pattern: &Pattern, target: &Arena<'_>) -> Vec<Match> {
         }
     } else {
         let wanted = between_first_and_last(&parts(shape, shape.root()));
+        let run = Run::new(pattern, &wanted).filter(|_| indexed);
         for node in target.nodes() {
             let available = parts(target, node);
-            let limits = list_ends(target, &available);
+            let in_a_list =
+                |part: &Part<'_>| matches!(part, Part::Child(c) if target.list(*c).is_some());
+            if !available.iter().any(in_a_list) {
+                continue;
+            }
+            // Jumping to a segment's next place relies on a block's statements standing with
+            // nothing between them, as they do in an arena that keeps no separator tokens.
+            let separated = separated(target, &available);
+            match &run {
+                Some(run) if !separated => run.find_in(pattern, target, &available, &mut found),
+                _ => backtrack(pattern, target, &wanted, &available, &mut found),
+            }
+        }
+    }
+    found.sort_by_key(|m| (m.range.start, m.range.end));
+    found.dedup();
+    found
+}
+
+/// Every match of a run of statements, `wanted`, among a node's parts, `available`, by trying it
+/// from each start and backtracking through each sequence's every length: what [`Run`] finds
+/// faster, and the way for a pattern it cannot index.
+fn backtrack<'t>(
+    pattern: &Pattern,
+    target: &'t Arena<'t>,
+    wanted: &[Part<'_>],
+    available: &[Part<'t>],
+    found: &mut Vec<Match>,
+) {
+    let limits = list_ends(target, available);
+    {
+        {
             for (start, first) in available.iter().enumerate() {
                 let Part::Child(first) = first else { continue };
                 // A run of statements stays in one list - one block's statements - so it never
@@ -76,7 +114,7 @@ pub fn find(pattern: &Pattern, target: &Arena<'_>) -> Vec<Match> {
                 // the run's length.
                 let mut bindings = Bindings::new();
                 if let Some(taken) = Matcher::new(pattern, target).consume(
-                    &wanted,
+                    wanted,
                     &available[start..limit],
                     &mut bindings,
                     false,
@@ -91,9 +129,336 @@ pub fn find(pattern: &Pattern, target: &Arena<'_>) -> Vec<Match> {
             }
         }
     }
-    found.sort_by_key(|m| (m.range.start, m.range.end));
-    found.dedup();
-    found
+}
+
+/// A run of statements split at its sequence holes into **segments**, the fixed code between
+/// them: `w()`, `$a...`, `x()`, `$b...`, `y()` is the segments `w()`, `x()` and `y()` with `$a`
+/// and `$b` between.  An edge is never a sequence, so there is a segment at each end.
+///
+/// Rather than trying every length of every sequence from every start, it finds once per block
+/// where each segment's shape stands, then matches from each start by jumping to the places after
+/// the run so far where the next segment stands, nearest first: a sequence takes the fewest
+/// statements that let the rest match.  So it finds the matches backtracking would, in the same
+/// order of preference.
+///
+/// Where the rest of the run fails after a segment's nearest place, it fails after every later
+/// place too - whatever stands after a later place also stands after this one - unless the
+/// choice of place changes what the rest is matched with.  It does when the step binds a name
+/// used further on, or when the sequence after the segment has a name used elsewhere, since that
+/// sequence then holds different code from a later start.  Only there are the later places
+/// tried, so a pattern without such names costs a binary search per segment per start.
+struct Run<'w> {
+    segments: Vec<Vec<Part<'w>>>,
+    /// The sequence hole before each segment after the first.
+    holes: Vec<NodeId>,
+    /// For each segment, whether a failure after its nearest place is a failure after every
+    /// later place, so that no later place need be tried.
+    settled: Vec<bool>,
+}
+
+impl<'w> Run<'w> {
+    /// The run `wanted` as segments, or `None` if two sequences stand together with no segment
+    /// between them to look for, or a segment starts or ends with a token, which only
+    /// backtracking can match.
+    fn new(pattern: &Pattern, wanted: &[Part<'w>]) -> Option<Run<'w>> {
+        let shape = pattern.arena();
+        let mut segments = vec![Vec::new()];
+        let mut holes = Vec::new();
+        for part in wanted {
+            match part {
+                Part::Child(child) if pattern.hole(*child).is_some_and(|hole| hole.sequence) => {
+                    holes.push(*child);
+                    segments.push(Vec::new());
+                }
+                _ => segments.last_mut().expect("begun with one").push(*part),
+            }
+        }
+        // A segment from a statement to a statement, so that the sequences between them are
+        // all that lies between: with a token at an edge, what a sequence may take would depend
+        // on the tokens beside it.
+        let bounded_by_statements = |segment: &Vec<Part<'_>>| {
+            matches!(segment.first(), Some(Part::Child(_)))
+                && matches!(segment.last(), Some(Part::Child(_)))
+        };
+        if !segments.iter().all(bounded_by_statements) {
+            return None;
+        }
+        // Each hole belongs to one part of the run: a sequence is a part of its own, and any other
+        // hole lies inside one of a segment's statements.
+        let part_of = |node: NodeId| -> usize {
+            if let Some(at) = holes.iter().position(|hole| *hole == node) {
+                return segments.len() + at;
+            }
+            let range = shape.range(node);
+            segments
+                .iter()
+                .position(|segment| {
+                    segment.iter().any(|part| {
+                        matches!(part, Part::Child(child)
+                            if shape.range(*child).start <= range.start
+                                && range.end <= shape.range(*child).end)
+                    })
+                })
+                .expect("every hole of a run lies in one of its parts")
+        };
+        // The parts of the run in order - segment 0, the sequence before segment 1, segment 1,
+        // and so on - and the first and last of them each name is used in.
+        let order = |part: usize| -> usize {
+            if part < segments.len() {
+                2 * part
+            } else {
+                2 * (part - segments.len()) + 1
+            }
+        };
+        let mut uses: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
+        for (node, hole) in pattern.holes() {
+            if let Some(name) = &hole.name {
+                let at = order(part_of(node));
+                let span = uses.entry(name).or_insert((at, at));
+                span.0 = span.0.min(at);
+                span.1 = span.1.max(at);
+            }
+        }
+        let settled = (0..segments.len())
+            .map(|i| {
+                // Placing segment `i` binds what the sequence before it and the segment
+                // themselves name first; none of it may be used further on.
+                let binds_for_later = uses.values().any(|&(first, last)| {
+                    (2 * i).saturating_sub(1) <= first && first <= 2 * i && last > 2 * i
+                });
+                // The sequence after it starts where it ends, so it must bind nothing used
+                // elsewhere.
+                let next_is_free = holes.get(i).is_none_or(|next| {
+                    pattern
+                        .hole(*next)
+                        .and_then(|hole| hole.name.as_deref())
+                        .is_none_or(|name| uses[name] == (2 * i + 1, 2 * i + 1))
+                });
+                !binds_for_later && next_is_free
+            })
+            .collect();
+        Some(Run {
+            segments,
+            holes,
+            settled,
+        })
+    }
+
+    /// Every match of the run among a node's parts, `available`, added to `found`.
+    fn find_in<'t>(
+        &self,
+        pattern: &Pattern,
+        target: &'t Arena<'t>,
+        available: &[Part<'t>],
+        found: &mut Vec<Match>,
+    ) {
+        let matcher = Matcher::new(pattern, target);
+        let limits = list_ends(target, available);
+        // Where each segment's shape stands, by the bindings it makes itself: a segment holds no
+        // sequence, so where it matches it takes exactly its own length.  A segment starts with a
+        // statement, so it stands only at a statement in a block.
+        let index: Vec<Vec<usize>> = self
+            .segments
+            .iter()
+            .map(|segment| {
+                (0..available.len())
+                    .filter(|&at| {
+                        matches!(available[at], Part::Child(c) if target.list(c).is_some())
+                            && matcher
+                                .consume(
+                                    segment,
+                                    &available[at..limits[at]],
+                                    &mut Bindings::new(),
+                                    false,
+                                )
+                                .is_some()
+                    })
+                    .collect()
+            })
+            .collect();
+        // One copy of the parts, which every run a named sequence binds is a range of.
+        let shared: Rc<[Part<'t>]> = available.into();
+        let search = Search {
+            run: self,
+            matcher: &matcher,
+            available,
+            index: &index,
+            shared: &shared,
+            codes: std::cell::OnceCell::new(),
+        };
+        for &start in &index[0] {
+            let limit = limits[start];
+            // The first segment's bindings start from nothing, as the index found them.
+            let mut bindings = Bindings::new();
+            let taken = matcher
+                .consume(
+                    &self.segments[0],
+                    &available[start..limit],
+                    &mut bindings,
+                    false,
+                )
+                .expect("the index found the first segment here with no bindings");
+            if let Some(end) = search.extend(1, start + taken, limit, &bindings) {
+                found.push(Match {
+                    range: target.range(statement(available, start)).start
+                        ..target.range(statement(available, end - 1)).end,
+                });
+            }
+        }
+    }
+}
+
+/// One node's parts, and where each segment of a run stands among them.
+struct Search<'s, 'w, 'p, 't> {
+    run: &'s Run<'w>,
+    matcher: &'s Matcher<'p, 't>,
+    available: &'s [Part<'t>],
+    index: &'s [Vec<usize>],
+    shared: &'s Rc<[Part<'t>]>,
+    /// The parts' code hashed, made when a name is first used twice.
+    codes: std::cell::OnceCell<Codes>,
+}
+
+impl<'t> Search<'_, '_, '_, 't> {
+    /// Where a run from `at` holding the same code as `earlier` ends, within the block that ends
+    /// at `limit`: the one place, since every part adds code; `None` if there is none, or it
+    /// does not start and end at a statement.
+    fn equal_run(&self, earlier: &Bound<'_>, at: usize, limit: usize) -> Option<usize> {
+        let Bound::Run(parts, range) = earlier else {
+            unreachable!("a compiler refuses one name for a node and a sequence");
+        };
+        let target = self.matcher.target;
+        let codes = self
+            .codes
+            .get_or_init(|| Codes::new(target, self.available));
+        // A run this search bound is a range of these same parts, whose code is hashed already.
+        let (length, hash) = if Rc::ptr_eq(parts, self.shared) {
+            (
+                codes.lengths[range.end] - codes.lengths[range.start],
+                codes.hash(range.clone()),
+            )
+        } else {
+            length_and_hash(target, &parts[range.clone()])
+        };
+        let end = codes
+            .lengths
+            .binary_search(&(codes.lengths[at] + length))
+            .ok()?;
+        // The run starts at a statement, `at` being one; it must end at one too, since a block
+        // runs up to the next and can end with tokens, such as an `else:` before its clause.
+        if end > limit
+            || !matches!(self.available[end - 1], Part::Child(_))
+            || codes.hash(at..end) != hash
+        {
+            return None;
+        }
+        Same { arena: target }
+            .parts(&parts[range.clone()], &self.available[at..end])
+            .then_some(end)
+    }
+
+    /// Matches segment `i` onwards, the run so far ending at `at` and its block at `limit`, and
+    /// says where the match ends.
+    fn extend(&self, i: usize, at: usize, limit: usize, bindings: &Bindings<'t>) -> Option<usize> {
+        let Some(segment) = self.run.segments.get(i) else {
+            return Some(at);
+        };
+        let hole = self
+            .matcher
+            .hole(self.run.holes[i - 1])
+            .expect("a run's sequences are holes");
+        let places = &self.index[i];
+        // Every segment from here on must still stand somewhere after `at`, or no choice of
+        // places here can complete the run.
+        if self.index[i..]
+            .iter()
+            .any(|later| later.last().is_none_or(|&last| last <= at))
+        {
+            return None;
+        }
+        // A name the run has already bound must take equal code again, which leaves it one end:
+        // where the code from `at` first equals the code it bound.  The segment stands there or
+        // nowhere.
+        if let Some(name) = &hole.name
+            && let Some(earlier) = bindings.get(name)
+        {
+            let place = self.equal_run(earlier, at, limit)?;
+            places.binary_search(&place).ok()?;
+            let mut attempt = bindings.clone();
+            let taken = self.matcher.consume(
+                segment,
+                &self.available[place..limit],
+                &mut attempt,
+                false,
+            )?;
+            return self.extend(i + 1, place + taken, limit, &attempt);
+        }
+        // The sequence before this segment takes at least one part, so the segment stands after
+        // `at`; and the first place it can stand is where the fewest are taken.
+        let from = places.partition_point(|&place| place <= at);
+        for &place in &places[from..] {
+            if place >= limit {
+                break;
+            }
+            // A run is from a statement to a statement: the index holds only statements, and a
+            // block searched this way has nothing between its statements.  A name bound here is
+            // bound for the first time, a name bound before having been dealt with above, so
+            // binding it always succeeds.
+            let mut attempt = bindings.clone();
+            let bound = bind(
+                self.matcher.target,
+                hole,
+                Bound::Run(Rc::clone(self.shared), at..place),
+                &mut attempt,
+            );
+            debug_assert!(bound, "a sequence's first binding always holds");
+            // A segment that does not match here with the bindings so far may match at a later
+            // place, so only a failure further on can settle it.
+            let Some(taken) =
+                self.matcher
+                    .consume(segment, &self.available[place..limit], &mut attempt, false)
+            else {
+                continue;
+            };
+            if let Some(end) = self.extend(i + 1, place + taken, limit, &attempt) {
+                return Some(end);
+            }
+            if self.run.settled[i] {
+                return None;
+            }
+        }
+        None
+    }
+}
+
+/// Whether a token stands between two statements of one block among a node's parts, as a
+/// separator would.  Tokens before a block's first statement or after its last - a `:`, an
+/// `else` - stand between blocks, not within one.
+fn separated(arena: &Arena<'_>, available: &[Part<'_>]) -> bool {
+    let mut previous: Option<u32> = None;
+    let mut token_since = false;
+    for part in available {
+        match part {
+            Part::Token(_) => token_since = true,
+            Part::Child(child) => {
+                let list = arena.list(*child);
+                if token_since && list.is_some() && list == previous {
+                    return true;
+                }
+                previous = list;
+                token_since = false;
+            }
+        }
+    }
+    false
+}
+
+/// The statement at `at` among a node's parts, where a run's index has put a statement.
+fn statement(available: &[Part<'_>], at: usize) -> NodeId {
+    match available[at] {
+        Part::Child(child) => child,
+        Part::Token(_) => unreachable!("a run of statements starts and ends at a statement"),
+    }
 }
 
 /// For each of a node's parts, where the list its child belongs to ends: the index of the first
@@ -356,11 +721,80 @@ fn equal(target: &Arena<'_>, a: &Bound<'_>, b: &Bound<'_>) -> bool {
 /// token's text, each value, and the text of a node with nothing inside it, in source order.
 /// Two places with the same code are equal whatever role they stand in, so a name used twice
 /// matches `a` as an argument, a keyword, an attribute and a parameter alike.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 enum Code<'a> {
     Token(&'a str),
     Value(&'a str),
     Text(&'a str),
+}
+
+/// The code of a node's parts, hashed once, so that whether a run holds the same code as a run
+/// a name bound costs a binary search and a hash rather than a comparison of every part.
+///
+/// The hashes are polynomial over each piece of code's own hash, wrapping at 64 bits, so two runs
+/// with equal code have equal hashes.  Two with different code can collide, so a run whose hash
+/// matches is still compared in full: a collision costs a comparison, never a wrong match.
+struct Codes {
+    /// How many pieces of code the parts before each index hold.
+    lengths: Vec<usize>,
+    /// The hash of the code of the parts before each index.
+    hashes: Vec<u64>,
+    /// `BASE` to each power up to the total number of pieces.
+    powers: Vec<u64>,
+}
+
+/// An odd multiplier, so that every power of it is odd and none is zero.
+const BASE: u64 = 0x9E37_79B9_7F4A_7C15;
+
+impl Codes {
+    fn new(arena: &Arena<'_>, available: &[Part<'_>]) -> Codes {
+        let same = Same { arena };
+        let mut codes = Codes {
+            lengths: vec![0],
+            hashes: vec![0],
+            powers: vec![1],
+        };
+        let (mut length, mut hash) = (0, 0u64);
+        let mut code = Vec::new();
+        for part in available {
+            code.clear();
+            same.code(std::slice::from_ref(part), &mut code);
+            for piece in &code {
+                hash = hash.wrapping_mul(BASE).wrapping_add(piece_hash(piece));
+                let last = *codes.powers.last().expect("begun with one");
+                codes.powers.push(last.wrapping_mul(BASE));
+                length += 1;
+            }
+            codes.lengths.push(length);
+            codes.hashes.push(hash);
+        }
+        codes
+    }
+
+    /// The hash of the code of the parts `range` indexes.
+    fn hash(&self, range: Range<usize>) -> u64 {
+        let pieces = self.lengths[range.end] - self.lengths[range.start];
+        self.hashes[range.end]
+            .wrapping_sub(self.hashes[range.start].wrapping_mul(self.powers[pieces]))
+    }
+}
+
+/// One piece of code's hash, by the standard library's hasher with its fixed keys.
+fn piece_hash(piece: &Code<'_>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    piece.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// The code `earlier` holds, as a number of pieces and their hash, as [`Codes`] counts them.
+fn length_and_hash(arena: &Arena<'_>, earlier: &[Part<'_>]) -> (usize, u64) {
+    let mut code = Vec::new();
+    Same { arena }.code(earlier, &mut code);
+    let hash = code.iter().fold(0u64, |hash, piece| {
+        hash.wrapping_mul(BASE).wrapping_add(piece_hash(piece))
+    });
+    (code.len(), hash)
 }
 
 /// Both sides of a comparison with no holes, in one arena.
@@ -557,5 +991,211 @@ mod tests {
         builder.enter(Kind::new("Call"), 0..3);
         builder.leave();
         let _ = find(&pattern("f(a)"), &builder.finish());
+    }
+}
+
+/// The indexed matcher held to backtracking over generated runs: blocks of three kinds of
+/// statement, in one list or two, and patterns of fixed statements, single holes and sequences,
+/// named or not, names repeated or not.
+#[cfg(test)]
+mod indexed_against_backtracking {
+    use super::*;
+    use crate::{Builder, Hole, Kind, Language};
+    use proptest::prelude::*;
+
+    const STATEMENTS: [&str; 3] = ["w", "x", "y"];
+
+    /// A target: statements in a module, split into two lists at `split`, like a branch and its
+    /// else clause.
+    fn target(statements: &[usize], split: usize) -> Arena<'static> {
+        let text: String = statements
+            .iter()
+            .map(|&s| STATEMENTS[s])
+            .collect::<Vec<_>>()
+            .join(" ");
+        let text: &'static str = Box::leak(text.into_boxed_str());
+        let mut builder = Builder::new(Language::new("toy"), text).unwrap();
+        builder.enter(Kind::new("Module"), 0..text.len());
+        builder.begin_list();
+        for (i, &s) in statements.iter().enumerate() {
+            if i == split {
+                builder.end_list();
+                builder.begin_list();
+            }
+            builder.enter(Kind::new("Statement"), i * 2..i * 2 + STATEMENTS[s].len());
+            builder.leave();
+        }
+        builder.end_list();
+        builder.leave();
+        builder.finish().into_owned()
+    }
+
+    /// One part of a generated pattern.
+    #[derive(Debug, Clone)]
+    enum Item {
+        Fixed(usize),
+        Single(Option<usize>),
+        Sequence(Option<usize>),
+    }
+
+    fn item() -> impl Strategy<Value = Item> {
+        let name = prop::option::of(0usize..2);
+        prop_oneof![
+            3 => (0usize..3).prop_map(Item::Fixed),
+            1 => name.clone().prop_map(Item::Single),
+            2 => name.prop_map(Item::Sequence),
+        ]
+    }
+
+    /// A pattern of the items as statements of a module, each a leaf whose text is its
+    /// statement, so that fixed ones compare by text and holes match anything.
+    fn pattern(items: &[Item]) -> Pattern {
+        let words: Vec<String> = items
+            .iter()
+            .enumerate()
+            .map(|(i, item)| match item {
+                Item::Fixed(s) => STATEMENTS[*s].to_owned(),
+                Item::Single(_) | Item::Sequence(_) => format!("h{i}"),
+            })
+            .collect();
+        let text: &'static str = Box::leak(words.join(" ").into_boxed_str());
+        let mut builder = Builder::new(Language::new("toy"), text).unwrap();
+        builder.enter(Kind::new("Module"), 0..text.len());
+        let mut at = 0;
+        for word in &words {
+            builder.enter(Kind::new("Statement"), at..at + word.len());
+            builder.leave();
+            at += word.len() + 1;
+        }
+        builder.leave();
+        let arena = builder.finish().into_owned();
+        let nodes: Vec<NodeId> = arena.children(arena.root()).collect();
+        let holes = items
+            .iter()
+            .zip(nodes)
+            .filter_map(|(item, node)| {
+                let (name, sequence) = match item {
+                    Item::Fixed(_) => return None,
+                    Item::Single(name) => (name, false),
+                    // A sequence's name is kept apart from a single hole's, as a compiler refuses
+                    // one name used both ways.
+                    Item::Sequence(name) => (&name.map(|n| n + 10), true),
+                };
+                Some((
+                    node,
+                    Hole {
+                        name: name.map(|n| format!("n{n}")),
+                        sequence,
+                    },
+                ))
+            })
+            .collect();
+        Pattern::new(arena, holes)
+    }
+
+    /// A block `a b` under a node, with a token before it - like the `:` of a `def` - and, if
+    /// `between`, one between its statements too, like a `;`.
+    fn block_with_tokens(between: bool) -> Arena<'static> {
+        let text = if between { ": a ; b" } else { ": a b" };
+        let mut builder = Builder::new(Language::new("toy"), text).unwrap();
+        builder.enter(Kind::new("Def"), 0..text.len());
+        builder.token(0..1, crate::TokenText::Source);
+        builder.begin_list();
+        builder.enter(Kind::new("Statement"), 2..3);
+        builder.leave();
+        if between {
+            builder.token(4..5, crate::TokenText::Source);
+        }
+        let b = text.len() - 1;
+        builder.enter(Kind::new("Statement"), b..b + 1);
+        builder.leave();
+        builder.end_list();
+        builder.leave();
+        builder.finish().into_owned()
+    }
+
+    #[test]
+    fn only_a_token_between_a_blocks_statements_separates_them() {
+        for (between, expected) in [(false, false), (true, true)] {
+            let arena = block_with_tokens(between);
+            let available = parts(&arena, arena.root());
+            assert_eq!(
+                separated(&arena, &available),
+                expected,
+                "between: {between}"
+            );
+        }
+    }
+
+    /// A sequence whose name is used again holds different code from a later start, so a failure
+    /// after the nearest place of the segment before it settles nothing: here `$b` is `x x` from
+    /// the first `x`, which does not repeat after `y`, and `x` from the next, which does.
+    #[test]
+    fn a_later_place_is_tried_when_the_next_sequence_is_named_again() {
+        let items = [
+            Item::Fixed(0),
+            Item::Sequence(None),
+            Item::Fixed(1),
+            Item::Sequence(Some(0)),
+            Item::Fixed(2),
+            Item::Sequence(Some(0)),
+            Item::Fixed(0),
+        ];
+        let pattern = pattern(&items);
+        let statements = [0, 2, 1, 1, 1, 2, 1, 0];
+        let target = target(&statements, statements.len());
+        let backtracked = find_with(&pattern, &target, false);
+        assert_eq!(backtracked.len(), 1);
+        assert_eq!(find_with(&pattern, &target, true), backtracked);
+    }
+
+    /// A segment that binds a name used further on changes what the rest is matched with, so a
+    /// failure after its nearest place settles nothing: here `$v` is `x` from the first place,
+    /// with no `x y` after it, and `w` from the next, with `w y` after it.
+    #[test]
+    fn a_later_place_is_tried_when_the_segment_binds_a_name_used_further_on() {
+        let items = [
+            Item::Fixed(0),
+            Item::Sequence(None),
+            Item::Single(Some(0)),
+            Item::Sequence(None),
+            Item::Single(Some(0)),
+            Item::Fixed(2),
+        ];
+        let pattern = pattern(&items);
+        let statements = [0, 0, 1, 0, 0, 0, 2];
+        let target = target(&statements, statements.len());
+        let backtracked = find_with(&pattern, &target, false);
+        assert_eq!(backtracked.len(), 2);
+        assert_eq!(find_with(&pattern, &target, true), backtracked);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(2000))]
+
+        #[test]
+        fn indexing_finds_what_backtracking_finds(
+            statements in prop::collection::vec(0usize..3, 1..24),
+            split in 0usize..24,
+            first in 0usize..3,
+            middle in prop::collection::vec(item(), 0..5),
+            last in 0usize..3,
+        ) {
+            // Fixed at both ends, as a compiler requires of a run of statements.
+            let items: Vec<Item> = std::iter::once(Item::Fixed(first))
+                .chain(middle)
+                .chain(std::iter::once(Item::Fixed(last)))
+                .collect();
+            let pattern = pattern(&items);
+            prop_assert_eq!(pattern.unbounded_sequence(), None);
+            let target = target(&statements, split.min(statements.len()));
+            prop_assert_eq!(
+                find_with(&pattern, &target, true),
+                find_with(&pattern, &target, false),
+                "{:?} over {:?}",
+                items,
+                statements
+            );
+        }
     }
 }

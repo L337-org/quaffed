@@ -160,6 +160,15 @@ fn a_name_used_twice_matches_equal_code_both_times() {
         ),
         ["f(1, 0) + g(1)", "f(1, 2, 0) + g(1, 2)"]
     );
+    // A name bound inside a statement - here a call's arguments - and used again as statements
+    // in the run compares their code: `x` as an argument and as a statement.
+    assert_eq!(
+        matches(
+            "f($a...)\nh()\n$a...\ng()\n",
+            "f(x)\nh()\nx\ng()\nf(x)\nh()\ny\ng()\n"
+        ),
+        ["f(x)\nh()\nx\ng()"]
+    );
     // And between statements, where the run is cut from a block: the second statement is
     // reached only once a one-statement try has failed.
     assert_eq!(

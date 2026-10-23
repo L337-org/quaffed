@@ -96,22 +96,39 @@ names such a hole; every language's compiler refuses the pattern, and `find` pan
 defect in its compiler.  A sequence inside one node - a call's arguments, a function's body - is
 bounded by that node, and between two statements by them.
 
-**Accepted limitation: a sequence between statements whose next statement does not follow costs
-time quadratic in its block's length, and each further such sequence in the pattern multiplies
-that by the block's length.**  The matcher backtracks without remembering what it has tried, so
-every start where the pattern's first statement matches tries every end of the first sequence up
-to the block's edge, and each of those tries every end of the next.  `w()` then `$mid...` then
-`x()` over a block of `w()` statements with no `x()` makes about half the block's length squared
-tries; `w()`, `$a...`, `x()`, `$b...`, `y()` over alternating `w()` and `x()` with no `y()`
-makes on the order of its cube.  A first try that matches looks no further than its own run.  A
-named sequence's first try copies only its own run, and once one has failed it binds each later
-try as a range of one shared copy of the block's parts; `$...` binds nothing.  So no try copies
-more than its own run, or the shared copy once.  Blocks are short in practice - a module's top
-level, a function's body - so this is left as it is.  Making it linear needs the matcher to
-remember, for each place in the pattern and each place in the block, whether the rest can match
-from there, which a name bound before a sequence and used after it complicates, since the answer
-then depends on the binding.  To measure it, time such a pattern over a file of that many
-statements with the release build.
+**A run of statements is matched by an index, not by trying lengths** (`Run` in
+`src/matching.rs`).  The run is split at its sequences into segments, the fixed statements
+between them, and each segment's places in a block - where its shape stands, with the bindings
+it makes itself - are found once per block.  A match then starts at each place of the first
+segment and jumps, for each sequence, to the nearest place of the next segment after it: taking
+the fewest statements is the same as taking the next occurrence.
+
+**A failure after a segment's nearest place settles the later places too**, since whatever
+stands after a later place also stands after this one, unless the choice of place changes what
+the rest is matched with.  It does in two cases.  The first is when placing the segment binds a
+name used further on: the sequence before it, or a hole in it, named first there and used again
+later.  The second is when the sequence after the segment has a name used elsewhere, since a
+later start gives it different code.  Only in those cases are the later places tried, in order,
+with the bindings so far, and a start is given up as soon as a later segment has no place left
+after the run so far.
+
+**A sequence whose name is already bound is not searched for**: it must hold the same code
+again, so its end is where the code from its start first equals what it bound.  The code of a
+block's parts is hashed once, with running totals of hashes and lengths, so that end is a binary
+search and a hash comparison (`Codes`).  A hash that matches is confirmed by comparing the code
+in full, so a collision costs a comparison, never a wrong match.
+
+**So the cost is about linear in a block's length** for a run with no name joining its parts,
+and quadratic where one step's choice matters further on, as with a sequence named twice; each
+further step whose choice matters multiplies it by the block's length.  A named sequence binds
+the run it takes as a range of one copy of the block's parts, so binding copies nothing.
+
+**Backtracking stays for what cannot be indexed**: two sequences with no statement between them,
+a segment that starts or ends with a token, and a block with a token between its statements,
+where a sequence could take the token.  It tries every length of each sequence from every
+start.  It is also what the index is held to: a property test runs both over generated runs and
+blocks, with names repeated and blocks split, and requires the same matches, and two tests hold
+the cases where a later place must be tried.
 
 ## Building one
 
