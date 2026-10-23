@@ -105,7 +105,7 @@ to the block's edge, and each of those tries every end of the next.  `w()` then 
 tries; `w()`, `$a...`, `x()`, `$b...`, `y()` over alternating `w()` and `x()` with no `y()`
 makes on the order of its cube.  A first try that matches looks no further than its own run.  A
 named sequence's first try copies only its own run, and once one has failed it binds each later
-try as a range of one shared copy of the block's parts; `$...` binds nothing. So no try copies
+try as a range of one shared copy of the block's parts; `$...` binds nothing.  So no try copies
 more than its own run, or the shared copy once.  Blocks are short in practice - a module's top
 level, a function's body - so this is left as it is.  Making it linear needs the matcher to
 remember, for each place in the pattern and each place in the block, whether the rest can match
