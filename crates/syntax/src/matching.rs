@@ -1642,6 +1642,21 @@ mod remembered_against_backtracking {
         assert_eq!(find_with(&pattern, &target, true), backtracked);
     }
 
+    /// A sequence takes children, and stops at one: where the code after it stands just past a
+    /// token - here `x` after a `;`, against a pattern written without them - it cannot stop
+    /// there, since it would end on the token.
+    #[test]
+    fn a_sequence_never_stops_on_a_token() {
+        use Item::{Fixed, Sequence};
+        let pattern = nested_pattern(&[Sequence(None), Fixed(1)], false);
+        let target = nested_target(&[0, 1], 2, true);
+        assert_eq!(find_with(&pattern, &target, false), []);
+        assert_eq!(find_with(&pattern, &target, true), []);
+        // Written with the token, it matches.
+        let separated = nested_pattern(&[Sequence(None), Fixed(1)], true);
+        assert_eq!(find_with(&separated, &target, true).len(), 1);
+    }
+
     /// Three unnamed sequences between fixed statements inside a node, which backtracking alone
     /// matches in time growing with the cube of the body's length, are matched in about its
     /// length: here a body of 2000 statements is searched well within the test's patience.

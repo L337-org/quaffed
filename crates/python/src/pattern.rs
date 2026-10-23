@@ -78,6 +78,14 @@ pub enum PatternError {
         /// Where in the pattern it is.
         offset: usize,
     },
+    /// A hole stands inside a name Python reads as one, such as a dotted module name,
+    /// `import a.$m`, so it is no node of its own and cannot be a hole.
+    InsideAName {
+        /// The hole, as written.
+        spelled: String,
+        /// Where in the pattern it is.
+        offset: usize,
+    },
     /// The pattern is longer than an arena's offsets reach.
     TooLong(quaffed_syntax::TooLong),
 }
@@ -139,6 +147,12 @@ impl fmt::Display for PatternError {
                  of the block or list it stands in, so a pattern may have one: give one of the \
                  names used twice a name of its own"
             ),
+            PatternError::InsideAName { spelled, .. } => write!(
+                f,
+                "\"{spelled}\" stands inside a name Python reads as one, such as a dotted module \
+                 name, so it cannot be a hole of its own: a hole can stand for the whole name, \
+                 as in \"import $m\", but not for part of it"
+            ),
             PatternError::TooLong(err) => err.fmt(f),
         }
     }
@@ -154,7 +168,8 @@ impl PatternError {
             | PatternError::MixedHole { offset, .. }
             | PatternError::UnboundedSequence { offset, .. }
             | PatternError::SequencesTogether { offset, .. }
-            | PatternError::SecondChoice { offset, .. } => Some(*offset),
+            | PatternError::SecondChoice { offset, .. }
+            | PatternError::InsideAName { offset, .. } => Some(*offset),
             PatternError::NoShape | PatternError::Empty | PatternError::TooLong(_) => None,
         }
     }
@@ -175,9 +190,10 @@ struct Claim {
 ///
 /// # Errors
 ///
-/// Returns a [`PatternError`] if the pattern is not Python, spells a hole `$_...`, is nothing
-/// but holes, starts or ends a run of statements with a sequence hole, has a run too costly to
-/// search ([`Pattern::costly`]), or is too long.  Nothing partial is returned.
+/// Returns a [`PatternError`] if the pattern is not Python, has no code at all, spells a hole
+/// `$_...`, uses one name for a node and a sequence, puts a hole inside a name Python reads as
+/// one, is nothing but holes, starts or ends a run of statements with a sequence hole, is too
+/// costly to search ([`Pattern::costly`]), or is too long.  Nothing partial is returned.
 ///
 /// # Panics
 ///
@@ -194,6 +210,25 @@ pub fn compile_pattern(text: &str) -> Result<Pattern, PatternError> {
         .iter()
         .map(|range| node_spanning(&arena, range).is_some())
         .collect();
+    // A claim no node spans is literal text inside a string or a comment, unless it is a token of
+    // its own outside any string: then it is code, part of a name Python reads as one, and
+    // restoring it would only give a parse error about a `$`.  An f-string's literal text can
+    // be a token of its own too, but a literal node spans it.
+    for ((claim, range), hole) in claims.iter().zip(&first.placeholders).zip(&is_hole) {
+        let own_token = arena
+            .tokens_in(range.clone())
+            .iter()
+            .any(|token| arena.token_range(token) == *range);
+        let literal = arena.nodes().any(|node| {
+            arena.range(node) == *range && LITERAL_TEXT.contains(&arena.kind(node).name())
+        });
+        if !hole && own_token && !literal {
+            return Err(PatternError::InsideAName {
+                spelled: text[claim.written.clone()].to_owned(),
+                offset: claim.written.start,
+            });
+        }
+    }
     // Second parse: a literal claim restored as written, so the pattern matches that text.  A
     // string or comment's content takes no part in the structure, so the shape is unchanged.
     let second = substitute(text, &claims, |i| is_hole[i], &placeholder);

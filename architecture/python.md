@@ -51,7 +51,10 @@ gives.  A hole is not Python, so it takes two stages:
    written before the pattern is parsed again, which a string's or comment's content cannot
    change the shape of.  A hole in an f-string's field is in an expression, so it is a hole.
    A hole written against a name, `x$a`, merges with it so that no node spans it either; it is
-   put back too, and the pattern fails to parse.
+   put back too, and the pattern fails to parse.  A placeholder that is a token of its own, outside
+   any string, but that no node spans is part of a name Python reads as one - a dotted module
+   name, `import a.$m` - and is refused as such (`PatternError::InsideAName`), rather than put
+   back to fail on its `$`.
 
 It refuses `$_...`, since a sequence that binds nothing is spelt `$...`; a pattern with no code,
 only whitespace or comments; a pattern that is only holes, which has no shape to match; a

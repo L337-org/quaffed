@@ -375,7 +375,14 @@ quaff: -p, at character 5: the pattern is not Python: unexpected EOF while parsi
 A pattern with no code at all, only whitespace or comments, is refused too, and so is one that
 starts or ends a run of statements with a sequence hole, puts two sequences together in one, or
 whose search could grow faster than the square of a block's or list's length ([Runs of
-statements](#runs-of-statements)).
+statements](#runs-of-statements)).  So is a hole inside a name Python reads as one, such as a
+dotted module name: `import $m` is a hole for the whole name, but `import a.$m` is refused, since
+`a.m` is one name, not two.
+
+**A pattern is parsed as a file is, so it starts at the left margin.**  Code copied from inside a
+function keeps its indentation, which Python refuses at the start of a file, and so does quaff:
+`-p '    f($x)'` is refused with `Unexpected indentation`.  Take the indentation off; a pattern
+matches the same code at any depth.
 
 ### What takes no part in a match
 

@@ -461,8 +461,14 @@ fn parentheses_and_commas_cpythons_tree_does_not_record_take_no_part() {
     for (a, b) in [
         ("from x import (a, b)", "from x import a, b"),
         ("from x import (a, b,)", "from x import a, b"),
-        ("with (open(p), open(q)):\n    pass", "with open(p), open(q):\n    pass"),
-        ("with (open(p), open(q),):\n    pass", "with open(p), open(q):\n    pass"),
+        (
+            "with (open(p), open(q)):\n    pass",
+            "with open(p), open(q):\n    pass",
+        ),
+        (
+            "with (open(p), open(q),):\n    pass",
+            "with open(p), open(q):\n    pass",
+        ),
         ("class A():\n    pass", "class A:\n    pass"),
         ("x = (a, b,)", "x = a, b"),
         ("x = a, b,", "x = a, b"),
@@ -491,7 +497,10 @@ fn the_spacing_a_self_documenting_field_prints_takes_part() {
     }
     // Spacing in a field that does not print itself is still layout.
     assert_eq!(alike("print(f\"{v}\")", "print(f\"{ v }\")"), (true, true));
-    assert_eq!(matches("print(f\"{$x = }\")", "print(f\"{v = }\")\n"), ["print(f\"{v = }\")"]);
+    assert_eq!(
+        matches("print(f\"{$x = }\")", "print(f\"{v = }\")\n"),
+        ["print(f\"{v = }\")"]
+    );
 }
 
 #[test]
@@ -499,5 +508,28 @@ fn implicitly_concatenated_f_strings_are_not_joined() {
     // One tree to CPython, but quaff keeps an f-string's parts apart, as decided for the MVP.
     let source = "f\"{a}\" f\"{b}\"\n";
     assert_eq!(matches("f\"{$x}{$y}\"", source), none());
-    assert_eq!(matches("f\"{$x}\" f\"{$y}\"", source), ["f\"{a}\" f\"{b}\""]);
+    assert_eq!(
+        matches("f\"{$x}\" f\"{$y}\"", source),
+        ["f\"{a}\" f\"{b}\""]
+    );
+}
+
+#[test]
+fn a_hole_inside_a_dotted_name_is_refused_saying_why() {
+    for (pattern, offset) in [("import a.$m", 9), ("from a.$m import x", 7)] {
+        match compile_pattern(pattern) {
+            Err(err @ PatternError::InsideAName { .. }) => {
+                assert_eq!(err.offset(), Some(offset), "{pattern}");
+                assert!(
+                    err.to_string()
+                        .contains("stands inside a name Python reads as one")
+                );
+            }
+            other => panic!("{pattern}: {other:?}"),
+        }
+    }
+    // A hole for the whole name, or in a string or comment, is not inside a name.
+    assert!(compile_pattern("import $m").is_ok());
+    assert!(compile_pattern("from $m import x").is_ok());
+    assert!(compile_pattern("f(\"a.$m\")  # a.$m").is_ok());
 }
