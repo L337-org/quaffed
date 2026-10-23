@@ -271,6 +271,6 @@ to do where there is something to do (`src/run.rs`).
 1. Change the code, and the unit tests in the module that owns the behaviour.
 2. Update the end-to-end snapshot that shows it, reviewing the new `.snap` before accepting it;
    `verification.md` says how.  A new message or exit path gets its own snapshot.
-3. Update this page in the same change.
+3. Update this page, and `docs/language.md`, in the same change.
 4. If the dependency graph changed, name every new crate in `packaging/deb/copyright`;
    `crates/quaffed/tests/packaging.rs` fails until it is there.

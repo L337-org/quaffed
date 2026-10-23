@@ -135,5 +135,5 @@ program a script parses to.
 5. When it becomes runnable, remove its refusal from `plan` in `crates/quaffed/src/run.rs`, and
    replace its end-to-end snapshot in `each_construct_not_built_yet_exits_5_naming_it` with one
    that runs it.
-6. Update this page, and `search.md` where it changes the output or the exit codes, in the same
-   change.
+6. Update this page, `search.md` where it changes the output or the exit codes, and
+   `docs/language.md`, in the same change.

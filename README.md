@@ -41,7 +41,8 @@ quaff -h                   # the rest
 
 Each match prints as `path:line:column-endline:endcolumn: text`.  With no assertion, the exit
 status is 0 when something was found and 1 when nothing was.  With assertions, it is 0 when
-every one held and 2 when one did not.  `quaff -h` lists the rest.
+every one held and 2 when one did not.  `quaff -h` lists the rest, and
+[docs/language.md](docs/language.md) is the full reference, with examples and edge cases.
 
 ## Contributing
 

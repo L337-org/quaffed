@@ -19,6 +19,12 @@ becomes; `architecture/python.md` the Python adapter that builds it.  It never d
 not built, and it is not a record of everything that is.  A construct that parses but is not
 built is refused with exit 5, and those pages list which.
 
+**`docs/language.md` is the reference for users**: what `quaff` does, with examples and the
+edge cases, for what is built.  **A change to anything a user can see - the command line, the
+script language, what matches, what is printed, an exit code - updates it in the same pull
+request**, adding to its _Peculiarities_ any edge case the change settles.  `architecture/` says
+how and why; `docs/language.md` says what.
+
 - **Do not implement features from a recollection of the design.**  When a piece of it settles,
   the intent a contributor needs lands in `architecture/` in the same change as the code, and
   that is what to build against.
