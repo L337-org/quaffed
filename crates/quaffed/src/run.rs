@@ -84,10 +84,11 @@ pub enum Failure {
     },
     /// The files to search could not all be found.  Exit 7.
     Discovery(discover::Error),
-    /// A structural search needs Python files that do not parse, so the run is refused: a count
-    /// that silently left them out could not be trusted.  Exit 9.
+    /// A structural search needs Python files quaff cannot parse - ones that do not parse, and
+    /// ones in an encoding Python reads and quaff does not - so the run is refused: a count that
+    /// left them out could not be trusted.  Exit 9.
     Unparseable {
-        /// Each such file, as the user would recognise it, and why it does not parse.
+        /// Each such file, as the user would recognise it, and why it cannot be parsed.
         files: Vec<(PathBuf, String)>,
     },
 }
@@ -148,10 +149,9 @@ impl fmt::Display for Failure {
             Failure::Unparseable { files } => {
                 write!(
                     f,
-                    "refused: {} in scope {} not parse, so a structural search cannot count \
+                    "refused: {} in scope cannot be parsed, so a structural search cannot count \
                      matches in {}:",
                     count(files.len(), "Python file", "Python files"),
-                    if files.len() == 1 { "does" } else { "do" },
                     if files.len() == 1 { "it" } else { "them" }
                 )?;
                 for (path, why) in files {
@@ -309,7 +309,8 @@ pub fn run(
         locale.as_ref(),
     )?;
     // A structural search over files it cannot parse would give a count that cannot be trusted,
-    // so the whole run is refused, naming each, before anything is printed.
+    // whether Python could parse them or not, so the whole run is refused, naming each, before
+    // anything is printed.
     if !searched.unparsed.is_empty() {
         return Err(Failure::Unparseable {
             files: searched.unparsed.clone(),
@@ -670,8 +671,8 @@ struct Hit {
 struct Searched {
     /// For each pattern, the files with matches, in discovery order.
     matches: Vec<Vec<(PathBuf, Vec<Hit>)>>,
-    /// Python files a structural search needs that do not parse, by the paths a message shows,
-    /// with where and why.
+    /// Python files a structural search needs that quaff cannot parse, by the paths a message
+    /// shows, with where and why.
     unparsed: Vec<(PathBuf, String)>,
     /// Python files in scope, binary ones included, when a structural pattern is wanted.
     python: usize,
@@ -679,9 +680,6 @@ struct Searched {
     structural: usize,
     /// Other files, which have no structure quaff reads, so no structural pattern applies.
     not_applicable: usize,
-    /// Python files in an encoding quaff does not read, so not searched for a structural
-    /// pattern, with why.
-    unread: Vec<(PathBuf, String)>,
     /// For each pattern, the files of unknown encoding holding bytes it would match, by the
     /// paths a message shows, with the lines they are on and why the encoding is unknown.  Never
     /// counted, and never edited.
@@ -744,7 +742,6 @@ fn search_files(
         python: 0,
         structural: 0,
         not_applicable: 0,
-        unread: Vec::new(),
         possible: vec![Vec::new(); patterns.len()],
         unspelled: vec![Vec::new(); patterns.len()],
         refused: Vec::new(),
@@ -794,11 +791,9 @@ fn search_files(
                 // it, whatever else declares the file's encoding for the textual tier.
                 match python::Source::decode(&bytes) {
                     Ok(source) => searched.python(&shown, &source.text, &structural, &shapes),
-                    // quaff's own limit, not Python's: the file may well parse.
-                    Err(refusal @ Refusal::Unread { .. }) => {
-                        searched.unread.push((shown.clone(), refusal.to_string()));
-                    }
-                    // A Python file CPython refuses to read does not parse, whatever it holds.
+                    // A Python file CPython refuses to read does not parse, whatever it holds, and
+                    // one in an encoding quaff does not read cannot be parsed by quaff: either
+                    // way a count without it could not be trusted.
                     Err(refusal) => searched.unparsed.push((shown.clone(), refusal.to_string())),
                 }
             }
@@ -1024,7 +1019,7 @@ impl Evaluation<'_> {
                 "no file in scope has structural support; {} not searched",
                 count(searched.not_applicable, "text-tier file", "text-tier files")
             )),
-            // Each file's own note says why it was not searched.
+            // Every Python file in scope is binary, which the binary count says.
             Wanted::Structural { .. } if searched.structural == 0 => Some(format!(
                 "no Python file in scope could be searched; {} not searched",
                 count(searched.python, "Python file", "Python files")
@@ -1184,7 +1179,7 @@ fn skipped(
 
 /// The notes for structural patterns, once for the run however many there are: the text-tier
 /// files they do not apply to, where some Python is in scope - with none, the search or the
-/// assertion already counted them - and Python files in an encoding quaff does not read.
+/// assertion already counted them.
 fn structural_notes(searched: &Searched, evaluated: &[Searching]) -> Vec<String> {
     let mut notes = Vec::new();
     if !evaluated
@@ -1198,11 +1193,6 @@ fn structural_notes(searched: &Searched, evaluated: &[Searching]) -> Vec<String>
         notes.push(format!(
             "{} not searched for structural patterns, which apply to Python files only",
             count(searched.not_applicable, "text-tier file", "text-tier files")
-        ));
-    }
-    for (path, reason) in &searched.unread {
-        notes.push(format!(
-            "{path:?} not searched for structural patterns: {reason}"
         ));
     }
     notes

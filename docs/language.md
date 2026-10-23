@@ -312,8 +312,8 @@ quaff: 1 text-tier file not searched for structural patterns, which apply to Pyt
 
 | hole | matches |
 | --- | --- |
-| `$name` | any one expression or statement, bound to `name` |
-| `$_` | any one expression or statement, bound to nothing |
+| `$name` | any one node - an expression, a statement, an argument, a parameter, a name - bound to `name` |
+| `$_` | any one node, bound to nothing |
 | `$name...` | one or more consecutive items - arguments, elements, statements - bound to `name` |
 | `$...` | one or more consecutive items, bound to nothing |
 
@@ -374,8 +374,15 @@ quaff: -p, at character 5: the pattern is not Python: unexpected EOF while parsi
 
 A pattern with no code at all, only whitespace or comments, is refused too, and so is one that
 starts or ends a run of statements with a sequence hole, puts two sequences together in one, or
-has a run whose search could grow faster than the square of a block's length ([Runs of
-statements](#runs-of-statements)).
+whose search could grow faster than the square of a block's or list's length ([Runs of
+statements](#runs-of-statements)).  So is a hole inside a name Python reads as one, such as a
+dotted module name: `import $m` is a hole for the whole name, but `import a.$m` is refused, since
+`a.m` is one name, not two.
+
+**A pattern is parsed as a file is, so it starts at the left margin.**  Code copied from inside a
+function keeps its indentation, which Python refuses at the start of a file, and so does quaff:
+`-p '    f($x)'` is refused with `Unexpected indentation`.  Take the indentation off; a pattern
+matches the same code at any depth.
 
 ### What takes no part in a match
 
@@ -409,7 +416,10 @@ play/nested.py:5:5-5:13: a + b * c
 **A tuple's or a generator's own parentheses** take no part either, since they are only how it
 is written: `return $a, $b` matches `return (a, b)`, and `h(q for q in r)` matches
 `h((q for q in r))`.  Where they change the meaning the shape changes too, so `f(($a, $b))`, a
-call with one tuple argument, does not match `f(a, b)`, a call with two.
+call with one tuple argument, does not match `f(a, b)`, a call with two.  Nor do the parentheses
+around a `from` import's names, `from x import (a, b)`, around a `with` statement's items, `with
+(open(p), open(q)):`, or of a class with no bases, `class A():`, which Python records no more
+than it does a tuple's.
 
 **Operators do take part.**  `$a + $b` matches `subtotal + tax` but not `price - price * rate`.
 The same goes for `<` and `>`, and `not` and `-`.
@@ -484,11 +494,14 @@ quaff: -p, at character 17: "$b..." follows another sequence with no statement b
 [exit 3]
 ```
 
-**A run of statements may have one place where the statement a sequence stops at decides what
-later code must match.**  A sequence named twice is one such place: `w()`, `$a...`, `x()`, `$a...`,
-`y()` is fine, and so is a name bound in one statement and used in a later one.  Each such place
-multiplies the work of a search by the length of the block, so a second is refused rather than
-left to make a search slow on a long file:
+**A pattern may have one place where what a sequence takes decides what later code must
+match.**  A sequence named twice is one such place: `w()`, `$a...`, `x()`, `$a...`, `y()` is fine,
+and so is a name bound in one statement and used in a later one.  The same goes inside a node, in
+a call's arguments or a function's body.  Two such places are fine when they are in lists that
+share no name, since neither then changes what the other is matched with: `f(g($a..., x,
+$a...), h($b..., y, $b...))` is accepted.  Each such place multiplies the work of a search by the
+length of the block or list it stands in, so a second is refused rather than left to make a
+search slow on a long file:
 
 ```
 $ quaff -p 'open_db()
@@ -500,12 +513,13 @@ $a...
 commit()
 $b...
 close_db()' play
-quaff: -p, at character 43: "$a..." makes a second place in this run of statements where the statement a sequence stops at decides what later code must match, and each such place multiplies the work of a search by the length of the block, so a pattern may have one: give one of the names used twice a name of its own
+quaff: -p, at character 43: "$a..." makes a second place where what a sequence takes decides what later code must match, and each such place multiplies the work of a search by the length of the block or list it stands in, so a pattern may have one: give one of the names used twice a name of its own
 [exit 3]
 ```
 
-Every pattern that is accepted searches a block in time at most proportional to the square of its
-length, and usually in proportion to its length.
+Every pattern that is accepted searches each block or list in time at most proportional to the
+square of its length, and usually in proportion to its length, whether the sequences stand in a
+run of statements or inside a node.
 
 ### Which files
 
@@ -522,29 +536,32 @@ alone.
   [exit 1]
   ```
 
-  When Python is in scope but none of it could be searched - binary, or in an encoding quaff does
-  not read - it says `no Python file in scope could be searched`, and each file's note says why.
-- **A Python file that does not parse refuses the whole run**, exit 9, before anything is printed,
+  When Python is in scope but none of it could be searched, because every such file is binary,
+  it says `no Python file in scope could be searched`, and counts the binary files.
+- **A Python file quaff cannot parse refuses the whole run**, exit 9, before anything is printed,
   because a count that silently skipped a file could not be trusted:
 
   With a directory `broken/` beside `play/` holding only `bad.py`, which is `def broken(:`:
 
   ```
   $ quaff -p 'wrap($x)' broken
-  quaff: refused: 1 Python file in scope does not parse, so a structural search cannot count matches in it:
+  quaff: refused: 1 Python file in scope cannot be parsed, so a structural search cannot count matches in it:
     "broken/bad.py": line 1, column 12: Expected a parameter or the end of the parameter list
   To search without it, list it in .ignore, or give a narrower scope on the command line
   [exit 9]
   ```
 
-  A textual search over the same files still runs, since it needs no parse.  A file Python
+  A textual search over the same files still runs, since it needs no parse - but not in a run
+  that also holds a structural pattern, since the refusal stops the whole run.  A file Python
   itself refuses to read - a bad encoding declaration, or a byte its encoding does not have -
-  does not parse either.  A binary Python file, one with a NUL byte in its first 8000 bytes, is
-  skipped and counted with the binary files instead, as any binary file is.
+  does not parse either, and nor, to quaff, does one in an encoding Python reads and quaff does
+  not, such as GBK: quaff cannot count matches in it.  A binary Python file, one with a NUL byte
+  in its first 8000 bytes, is skipped and counted with the binary files instead, as any binary
+  file is.
 - **A Python file is read as Python reads it**: in the encoding its coding line declares, or
   UTF-8.  An `.editorconfig` or git attribute that says otherwise does not change that, because it
   does not change what Python runs.  One in an encoding Python reads and quaff does not, such as
-  GBK, is noted as not searched.
+  GBK, refuses a structural search, as above.
 
 ## What is searched
 
@@ -622,7 +639,7 @@ src/app.py:16:5-17:32: return lookup(request.args["id"], default=None,)
 | 3 | a usage error, a malformed script or pattern, an empty program, or a scope outside the project |
 | 5 | a statement or construct this build does not have |
 | 7 | an I/O error, naming the path and quoting the system's error |
-| 9 | a structural search needs a Python file that does not parse |
+| 9 | a structural search needs a Python file quaff cannot parse |
 
 **A run that cannot give an answer - exit 3, 5, 7 or 9 - prints nothing on standard output**, so
 a partial answer never passes for a whole one.  The whole program is read and checked before any
@@ -663,9 +680,12 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
 - **Implicitly concatenated plain strings are joined, but f-strings are not**: `"abc"` matches
   `"ab" "c"`, while `f"{a}{b}"` does not match `f"{a}" f"{b}"`, which `f"{$x}" f"{$y}"` does.
 - **A tuple's parentheses are layout**, as CPython's tree has them: `a, b = f()` then
-  `return (a, b)` returns the name it assigned.  The comma of a one-element tuple is not, so
-  `x[$a,]` matches `x[a,]` but not `x[a]`, and a name used twice still tells `a, (b, c)` from
-  `(a, b), c`.
+  `return (a, b)` returns the name it assigned.  So is a comma ending a tuple, `a, b,`, and so are
+  the parentheses of `from x import (a, b)`, of `with (open(p), open(q)):` and of `class A():`.
+  The comma of a one-element tuple is not, so `x[$a,]` matches `x[a,]` but not `x[a]`, and a
+  name used twice still tells `a, (b, c)` from `(a, b), c`.
+- **A self-documenting f-string field keeps its spacing**: `f"{v=}"` does not match `f"{v = }"`,
+  since one prints `v=1` and the other `v = 1`.  Spacing in any other field takes no part.
 - **A string's escapes are compared as written**, so `"\n"` and `r"\n"` match each other but not
   a string holding an actual newline.
 - **A repeated hole name compares code, whatever role it plays**: an argument, a keyword, an
@@ -680,14 +700,18 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
   short of the edge of its block, so one match would cover far more than the pattern spells.  Put
   fixed code on both sides of it.  So `return $x` then `$dead...`, every statement after a
   `return`, cannot be written.
-- **A run of statements may have only one place where a sequence's stopping point decides what
-  later code must match**, and two sequences may not stand together in one.  Matching patterns
+- **A pattern may have only one place where what a sequence takes decides what later code must
+  match**, in a run of statements or inside a node, unless the two are in lists that share no
+  name, and two sequences may not stand together in a run of statements.  Matching patterns
   with names used more than once is, in general, a problem no algorithm solves quickly, so the
-  pattern is refused where its search could grow faster than the square of a block's length,
-  rather than accepted and left to run for minutes on a long file.  A sequence named twice is
-  fine; two sequences each named twice are not.
+  pattern is refused where its search could grow faster than the square of a block's or list's
+  length, rather than accepted and left to run for minutes on a long file.  A sequence named twice
+  is fine; two sequences each named twice in one list are not.  Two sequences together inside a
+  node, `f($a..., $b...)`, are fine: the node bounds them.
 - **Structural patterns ignore non-Python files rather than falling back to text**, and say so.
-- **A Python file Python cannot read stops a structural search** (exit 9), but not a textual one.
+- **A Python file quaff cannot parse stops a structural search** (exit 9): one Python refuses to
+  read, and one Python reads in an encoding quaff does not, such as GBK.  A textual query alone
+  still searches it, but one in the same run as a structural pattern is stopped with it.
 - **A Python file with no coding line is UTF-8 to a structural search, whatever `.editorconfig`
   or git attributes say**, since that is how Python reads it.  A textual search follows those
   declarations, as listed under [Encodings](#encodings), so with `charset = latin1` for `*.py`,

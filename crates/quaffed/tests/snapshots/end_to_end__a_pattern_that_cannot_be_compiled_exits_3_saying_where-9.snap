@@ -11,4 +11,4 @@ exit_code: 3
 ----- stdout -----
 
 ----- stderr -----
-quaff: -p, at character 25: "$a..." makes a second place in this run of statements where the statement a sequence stops at decides what later code must match, and each such place multiplies the work of a search by the length of the block, so a pattern may have one: give one of the names used twice a name of its own
+quaff: -p, at character 25: "$a..." makes a second place where what a sequence takes decides what later code must match, and each such place multiplies the work of a search by the length of the block or list it stands in, so a pattern may have one: give one of the names used twice a name of its own

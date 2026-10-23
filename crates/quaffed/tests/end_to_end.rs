@@ -1161,14 +1161,11 @@ fn a_scope_with_no_python_says_so_rather_than_finding_nothing() {
 #[test]
 fn a_scope_whose_python_cannot_be_searched_says_so_rather_than_finding_nothing() {
     let mut project = Project::new(&[(".git/HEAD", ""), ("README.md", "f(x)\n")]);
-    // Python is in scope, but in an encoding quaff does not read: the run says no Python file
-    // could be searched, not that none has structure, and the file's own note says why.
-    project.add_bytes("gbk.py", b"# -*- coding: gbk -*-\nf(x)\n");
-    assert_quaff_snapshot!(project.quaff(&["-p", "f($a)"]));
-    assert_quaff_snapshot!(project.quaff(&["-e", "find `f($a)` expect none"]));
-    // A binary Python file is in scope too, and counted with the binary files.
+    // Python is in scope, but binary, so counted with the binary files: the run says no Python
+    // file could be searched, not that none has structure.
     project.add_bytes("compiled.py", b"f(x)\x00\n");
     assert_quaff_snapshot!(project.quaff(&["-p", "f($a)"]));
+    assert_quaff_snapshot!(project.quaff(&["-e", "find `f($a)` expect none"]));
     project.assert_unchanged();
 }
 
@@ -1211,10 +1208,34 @@ fn a_python_file_is_searched_in_its_declared_encoding() {
         "latin1.py",
         b"# -*- coding: latin-1 -*-\nname = '\xe9'; f(name)\n",
     );
-    // GBK, declared: quaff does not read it, so it is said not to have been searched rather
-    // than refusing the run.
-    project.add_bytes("gbk.py", b"# -*- coding: gbk -*-\nf(x)\n");
     assert_quaff_snapshot!(project.quaff(&["-p", "f($a)"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_python_file_quaff_cannot_read_refuses_a_structural_search_with_exit_9() {
+    let mut project = Project::new(&[(".git/HEAD", ""), ("a.py", "f(x)\n")]);
+    // GBK, declared: Python reads it and quaff does not, so a count without it could not be
+    // trusted - CPython counts two calls here - and the run is refused rather than passed.
+    project.add_bytes("gbk.py", b"# -*- coding: gbk -*-\nf(y)\n");
+    assert_quaff_snapshot!(project.quaff(&["-p", "f($a)"]));
+    assert_quaff_snapshot!(project.quaff(&["-e", "find `f($a)` expect 1"]));
+    // A textual search needs no parse, so it still runs over the file.
+    assert_quaff_snapshot!(project.quaff(&["-s", "f("]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_run_holding_a_structural_pattern_is_refused_whole_textual_queries_included() {
+    let mut project = Project::new(STRUCTURAL);
+    project.add_bytes("src/broken.py", b"def handle(:\n");
+    // Alone, a textual query searches the broken file and the rest.
+    let alone = project.quaff(&["-s", "handle"]).output().unwrap();
+    assert_eq!(alone.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&alone.stdout).contains("src/broken.py:1:5-1:10: handle"));
+    // Beside a structural one, the run is refused before either prints anything.
+    assert_quaff_snapshot!(project.quaff(&["-s", "handle", "-p", "f($a)"]));
+    assert_quaff_snapshot!(project.quaff(&["-e", "find \"handle\"\nfind `f($a)`"]));
     project.assert_unchanged();
 }
 

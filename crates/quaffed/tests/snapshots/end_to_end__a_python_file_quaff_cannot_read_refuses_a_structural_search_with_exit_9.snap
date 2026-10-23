@@ -1,0 +1,16 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-p"
+    - f($a)
+---
+success: false
+exit_code: 9
+----- stdout -----
+
+----- stderr -----
+quaff: refused: 1 Python file in scope cannot be parsed, so a structural search cannot count matches in it:
+  "gbk.py": line 1 declares the encoding "gbk", Python's "gbk", which Python reads and quaff does not
+To search without it, list it in .ignore, or give a narrower scope on the command line

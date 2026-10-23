@@ -172,21 +172,22 @@ MVP a unit is a whole file** (`src/structural.rs`, and the file loop in `src/run
   searched` - rather than reporting nothing found: a `find` exits 1, and a `find ... expect`
   fails, exit 2, whatever it asks, because an assertion about structure that could not be looked
   for is not a passed one.  **When Python is in scope but none of it could be searched** -
-  every file binary or in an encoding quaff does not read - the same holds, worded `no Python
-  file in scope could be searched; 2 Python files not searched`, each file's note saying why.
-- **A Python file that does not parse refuses the whole run**, exit 9, before anything is
-  printed, naming each such file with where its first error is and Ruff's message, and saying how
-  to leave it out: an entry in `.ignore`, or a narrower scope.  A file `CPython` refuses to read -
-  a bad encoding declaration, say - does not parse either.  A count that silently skipped a file
-  could not be trusted.  Textual searches still run over such files, since they need no parse.
-- **A binary Python file** is skipped and counted, as any binary file is; **one in an encoding
-  quaff does not read** - a declared GBK, say, which `CPython` reads - is noted as not
-  searched.
+  every file binary - the same holds, worded `no Python file in scope could be searched; 2
+  Python files not searched`, the binary files counted.
+- **A Python file quaff cannot parse refuses the whole run**, exit 9, before anything is
+  printed, naming each such file with where its first error is and Ruff's message, or why it
+  cannot be read, and saying how to leave it out: an entry in `.ignore`, or a narrower scope.  A
+  file `CPython` refuses to read - a bad encoding declaration, say - does not parse either, and
+  one in an encoding quaff does not read - a declared GBK, which `CPython` reads - cannot be
+  parsed by quaff.  A count that skipped either could not be trusted.  A run with no structural
+  pattern still searches such files as text, since that needs no parse; a run with one is
+  refused whole, its textual queries included.
+- **A binary Python file** is skipped and counted, as any binary file is.
 
 **A pattern is compiled before any file is read**, so one that is not Python, spells `$_...`, is
 nothing but holes, uses a name both ways, starts or ends a run of statements with a sequence
-hole, or has a run whose search could grow faster than the square of a block's length, is a
-script error, exit 3, and nothing is searched.  It is placed where in the pattern the fault is,
+hole, or could take a search time growing faster than the square of a block's or list's length,
+is a script error, exit 3, and nothing is searched.  It is placed where in the pattern the fault is,
 counted in its source's terms - `-p, at character 6`, or a script's line and column past the
 backtick fence - rather than as a byte offset into the pattern; a fault with no one place is at
 the pattern's start.
@@ -244,7 +245,7 @@ src/app.py:12:5-12:22: def connect(self):
 | 3 | a usage error, a malformed script, a program with no statements, an edit with no `expect`, or a scope outside the project |
 | 5 | a statement or construct this build does not have: outside the MVP, or in it and not built yet |
 | 7 | an I/O error, naming the path and quoting the system's error |
-| 9 | a structural search needs a Python file that does not parse, naming each and how to leave it out |
+| 9 | a structural search needs a Python file quaff cannot parse, naming each and how to leave it out |
 
 **An assertion block** - a run of consecutive `find ... expect` statements - is evaluated to
 the end: every assertion in it is checked and each that fails is reported.  If any failed, the

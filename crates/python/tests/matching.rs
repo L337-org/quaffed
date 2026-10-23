@@ -327,8 +327,18 @@ fn a_run_whose_search_would_grow_faster_than_quadratic_is_refused() {
     assert!(compile_pattern("w()\n$a...\nx()\n$a...\ny()\n").is_ok());
     assert!(compile_pattern("f($v)\n$...\ng($v)\n$...\nh($v)\n").is_ok());
     assert!(compile_pattern("w()\n$...\nx()\n$...\ny()\n").is_ok());
-    // And two sequences inside one node are not a run of statements.
+    // Two sequences together inside one node are not a run of statements, and cost nothing.
     assert!(compile_pattern("f($a..., $b...)").is_ok());
+    // But choices inside a node count as they do in a run: `$b` after `x`, then `$a` again.
+    match compile_pattern("f(w, $a..., x, $b..., y, $a..., x, $b..., z)") {
+        Err(PatternError::SecondChoice { spelled, offset }) => {
+            assert_eq!((spelled.as_str(), offset), ("$a...", 25));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(
+        compile_pattern("def $f():\n    w()\n    $a...\n    x()\n    $a...\n    y()\n").is_ok()
+    );
 }
 
 #[test]
@@ -437,4 +447,102 @@ fn a_statement_pattern_matches_a_statement_of_that_shape() {
         ["return 1"]
     );
     assert_eq!(matches("$x = 0", "a = 0\nb = 1\n"), ["a = 0"]);
+}
+
+/// Whether `a` as a pattern matches the whole of `b`, and the other way round.
+fn alike(a: &str, b: &str) -> (bool, bool) {
+    let whole = |pattern: &str, source: &str| matches(pattern, source).iter().any(|m| m == source);
+    (whole(a, b), whole(b, a))
+}
+
+#[test]
+fn parentheses_and_commas_cpythons_tree_does_not_record_take_no_part() {
+    // Each pair is one tree to CPython, so each matches the other.
+    for (a, b) in [
+        ("from x import (a, b)", "from x import a, b"),
+        ("from x import (a, b,)", "from x import a, b"),
+        (
+            "with (open(p), open(q)):\n    pass",
+            "with open(p), open(q):\n    pass",
+        ),
+        (
+            "with (open(p), open(q),):\n    pass",
+            "with open(p), open(q):\n    pass",
+        ),
+        // The statement's pair, not the one around `b`, which only wraps it.
+        ("with (a, (b)):\n    pass", "with a, b:\n    pass"),
+        ("class A():\n    pass", "class A:\n    pass"),
+        ("x = (a, b,)", "x = a, b"),
+        ("x = a, b,", "x = a, b"),
+    ] {
+        assert_eq!(alike(a, b), (true, true), "{a:?} and {b:?}");
+    }
+    // And each of these is two trees to CPython, so neither matches the other.
+    for (a, b) in [
+        ("with (a, b) as c:\n    pass", "with a, b as c:\n    pass"),
+        ("class A(B):\n    pass", "class A:\n    pass"),
+        ("x = (a,)", "x = a"),
+    ] {
+        assert_eq!(alike(a, b), (false, false), "{a:?} and {b:?}");
+    }
+}
+
+#[test]
+fn the_spacing_a_self_documenting_field_prints_takes_part() {
+    // `f"{v = }"` prints `v = 1` where `f"{v=}"` prints `v=1`, and CPython's trees differ.
+    for (a, b) in [
+        ("print(f\"{v=}\")", "print(f\"{v = }\")"),
+        ("print(f\"{ v=}\")", "print(f\"{v=}\")"),
+        ("print(f\"{v=!r}\")", "print(f\"{v = !r}\")"),
+    ] {
+        assert_eq!(alike(a, b), (false, false), "{a:?} and {b:?}");
+    }
+    // Spacing in a field that does not print itself is still layout.
+    assert_eq!(alike("print(f\"{v}\")", "print(f\"{ v }\")"), (true, true));
+    assert_eq!(
+        matches("print(f\"{$x = }\")", "print(f\"{v = }\")\n"),
+        ["print(f\"{v = }\")"]
+    );
+}
+
+#[test]
+fn implicitly_concatenated_f_strings_are_not_joined() {
+    // One tree to CPython, but quaff keeps an f-string's parts apart, as decided for the MVP.
+    let source = "f\"{a}\" f\"{b}\"\n";
+    assert_eq!(matches("f\"{$x}{$y}\"", source), none());
+    assert_eq!(
+        matches("f\"{$x}\" f\"{$y}\"", source),
+        ["f\"{a}\" f\"{b}\""]
+    );
+}
+
+#[test]
+fn a_hole_inside_a_dotted_name_is_refused_saying_why() {
+    for (pattern, offset) in [("import a.$m", 9), ("from a.$m import x", 7)] {
+        match compile_pattern(pattern) {
+            Err(err @ PatternError::InsideAName { .. }) => {
+                assert_eq!(err.offset(), Some(offset), "{pattern}");
+                assert!(
+                    err.to_string()
+                        .contains("stands inside a name Python reads as one")
+                );
+            }
+            other => panic!("{pattern}: {other:?}"),
+        }
+    }
+    // A hole for the whole name, or in a string or comment, is not inside a name.
+    assert!(compile_pattern("import $m").is_ok());
+    assert!(compile_pattern("from $m import x").is_ok());
+    assert!(compile_pattern("f(\"a.$m\")  # a.$m").is_ok());
+}
+
+#[test]
+fn an_indented_pattern_is_refused_as_python_refuses_an_indented_file() {
+    match compile_pattern("    f($x)") {
+        Err(err @ PatternError::Invalid { .. }) => {
+            assert_eq!(err.offset(), Some(0));
+            assert!(err.to_string().contains("Unexpected indentation"), "{err}");
+        }
+        other => panic!("{other:?}"),
+    }
 }

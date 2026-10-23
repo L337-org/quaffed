@@ -51,16 +51,19 @@ gives.  A hole is not Python, so it takes two stages:
    written before the pattern is parsed again, which a string's or comment's content cannot
    change the shape of.  A hole in an f-string's field is in an expression, so it is a hole.
    A hole written against a name, `x$a`, merges with it so that no node spans it either; it is
-   put back too, and the pattern fails to parse.
+   put back too, and the pattern fails to parse.  A placeholder that is a token of its own, outside
+   any string, but that no node spans is part of a name Python reads as one - a dotted module
+   name, `import a.$m` - and is refused as such (`PatternError::InsideAName`), rather than put
+   back to fail on its `$`.
 
 It refuses `$_...`, since a sequence that binds nothing is spelt `$...`; a pattern with no code,
 only whitespace or comments; a pattern that is only holes, which has no shape to match; a
 sequence hole that starts or ends a run of statements, which nothing would bound (`syntax.md`),
-naming the hole and suggesting code on both sides of it; and a run of statements whose search
-could grow faster than the square of a block's length (`syntax.md`), naming the hole that makes
-it so: two sequences together, or a second place where the statement a sequence stops at decides
-later code.  An error that is Ruff's is placed in the pattern as written, not in the text with
-placeholders.  Each error with a place carries it as a byte offset into the pattern, which
+naming the hole and suggesting code on both sides of it; and a pattern whose search could grow
+faster than the square of a block's or list's length (`syntax.md`), naming the hole that makes it
+so: two sequences together in a run of statements, or a second place where what a sequence takes
+decides later code.  An error that is Ruff's is placed in the pattern as written, not in the
+text with placeholders.  Each error with a place carries it as a byte offset into the pattern, which
 `PatternError::offset` returns, and its message leaves it out: the caller says where, in the
 terms its reader knows.
 
@@ -77,7 +80,23 @@ parentheses change the meaning - `f((a, b))` passes one argument, `f(a, b)` two 
 changes too.  An empty tuple keeps its, as its only spelling.  A one-element tuple keeps the
 comma after its element even before a closing bracket, as `tuple_comma` finds it: it is the
 tuple's only spelling, and without it `x[a,]`, a subscript by a tuple, would hold the same code as
-`x[a]`, a subscript by a name, to a name used twice.  An f-string's or
+`x[a]`, a subscript by a name, to a name used twice.  A comma ending a tuple of several, `a, b,`,
+is layout, and so is one just before a closing bracket whether or not that bracket takes part, so
+`(a, b,)` is `a, b`.
+
+Three more pairs of parentheses `CPython`'s tree does not record take no part, though none is
+around an expression: those around a `from` import's names, `from x import (a, b)`
+(`statement_parentheses`); those around a `with` statement's items, `with (open(p),
+open(q)):`, found as the pair before the first item and after the last, which leaves `with (a,
+b) as c:`'s alone, since there they are the tuple's; and a class's empty argument list, `class
+A():`, which is left out of the arena altogether (`empty_class_arguments`), as `CPython` leaves
+it out of the tree.
+
+**A self-documenting field prints its own spacing**: `f"{v = }"` prints `v = 1`, and `f"{v=}"`
+`v=1`.  So in a field with `=`, the `{` token takes in the text before the expression and the
+`=` token the text from the expression to the conversion, the format spec or the `}`
+(`self_documenting`), and a match compares them as written.  In any other field the spacing is
+layout.  An f-string's or
 t-string's opening and closing compare by a fixed text, so their prefix and quotes take no
 part.  A string or bytes literal's value is its content as the script language defines it for
 comparing: what lies between each part's delimiters as written, the parts of an implicit
