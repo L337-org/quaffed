@@ -27,12 +27,12 @@ through `stacker` and `psm`'s assembly, so this stays a requirement whatever hap
 linked into the binary with its copyright and licence, because the binary distributes it.
 `crates/quaffed/tests/packaging.rs` reads the binary's dependency graph for both packaged targets
 with `cargo tree` and fails naming any crate the file does not mention, so adding a dependency means
-adding it there.  It leaves out build scripts' dependencies and every crate reached only through a
-procedural macro: those run inside the compiler, and none of their code is in the binary.  **What
-comes with the Rust toolchain rather than as a crate - the musl C library and LLVM's libunwind - is
-outside that graph, so the test cannot see it**, and nor is data in the
-source tree derived from someone else's work - the codec tables generated from CPython
-(`encoding.md`).  Both are kept by hand: check the first when the toolchain's musl target changes.
+adding it there.  It leaves out build scripts' dependencies, which run inside the compiler, but
+not procedural macros or the crates they are built from: the code a derive generates is compiled
+into the binary, and the graph cannot tell which macros' output ships.  **What comes with the Rust
+toolchain rather than as a crate - the musl C library and LLVM's libunwind - is outside that graph,
+so the test cannot see it**, and nor is data in the source tree derived from someone else's work -
+the codec tables generated from CPython (`encoding.md`).  Both are kept by hand: check the first when the toolchain's musl target changes.
 For the second, `packaging.rs` fails if the attribution does not name the CPython release the tables
 were generated from.
 

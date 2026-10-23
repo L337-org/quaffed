@@ -25,8 +25,10 @@ fn workspace_root() -> PathBuf {
 
 /// Returns `(name, version)` for every crate linked into `quaff` built for `target`.
 ///
-/// Normal dependencies only, and none reached only through a procedural macro: build scripts'
-/// dependencies and macros run inside the compiler, so their code is not in the binary.
+/// Normal dependencies only: build scripts' dependencies run inside the compiler and none of
+/// their code is in the binary.  Procedural macros and the crates they are built from are
+/// included, because the code a derive generates is compiled into the binary, and the graph
+/// cannot tell which macros' output ships.
 /// Not offline, because a host build never downloads the crates only a musl target uses.
 fn linked_crates(target: &str) -> Vec<(String, String)> {
     let output = Command::new(env!("CARGO"))
@@ -34,7 +36,7 @@ fn linked_crates(target: &str) -> Vec<(String, String)> {
             "tree",
             "--locked",
             "-e",
-            "normal,no-proc-macro",
+            "normal",
             "-p",
             "quaffed",
             "--target",
