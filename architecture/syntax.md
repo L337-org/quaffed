@@ -96,17 +96,22 @@ names such a hole; every language's compiler refuses the pattern, and `find` pan
 defect in its compiler.  A sequence inside one node - a call's arguments, a function's body - is
 bounded by that node, and between two statements by them.
 
-**Accepted limitation: a sequence between statements costs time quadratic in its block's
-length** when the statement after it does not follow.  Every start where the pattern's first
-statement matches tries every end up to the block's edge, so `w()` then `$mid...` then `x()`
-over a block of `w()` statements with no `x()` makes about half the block's length squared
-tries.  A named sequence's first try copies only its own run, and once one has failed it binds
-each later try as a range of one shared copy of the block's parts; `$...` binds nothing.  So no
-try copies more than its own run, or the shared copy once.  Blocks are short in practice - a
-module's top level, a function's body - so this is left as it is; making it linear needs a pass
-that finds where the rest of the pattern can match once per block, then reuses it from every
-start, which a name bound before the sequence and used after it complicates.  To measure it, time
-such a pattern over a file of that many statements with the release build.
+**Accepted limitation: a sequence between statements whose next statement does not follow costs
+time quadratic in its block's length, and each further such sequence in the pattern multiplies
+that by the block's length.**  The matcher backtracks without remembering what it has tried, so
+every start where the pattern's first statement matches tries every end of the first sequence up
+to the block's edge, and each of those tries every end of the next.  `w()` then `$mid...` then
+`x()` over a block of `w()` statements with no `x()` makes about half the block's length squared
+tries; `w()`, `$a...`, `x()`, `$b...`, `y()` over alternating `w()` and `x()` with no `y()`
+makes on the order of its cube.  A first try that matches looks no further than its own run.  A
+named sequence's first try copies only its own run, and once one has failed it binds each later
+try as a range of one shared copy of the block's parts; `$...` binds nothing. So no try copies
+more than its own run, or the shared copy once.  Blocks are short in practice - a module's top
+level, a function's body - so this is left as it is.  Making it linear needs the matcher to
+remember, for each place in the pattern and each place in the block, whether the rest can match
+from there, which a name bound before a sequence and used after it complicates, since the answer
+then depends on the binding.  To measure it, time such a pattern over a file of that many
+statements with the release build.
 
 ## Building one
 

@@ -162,8 +162,9 @@ fn between_first_and_last<'a>(all: &[Part<'a>]) -> Vec<Part<'a>> {
 
 /// What a named hole matched: one child for a hole, a run of a node's parts for a sequence.  A
 /// name is one or the other throughout a pattern, which its compiler checks, so two bindings of
-/// a name are always of the same form.  A run is a range of one shared copy of the parts it was
-/// cut from, so trying a longer one costs nothing to bind.
+/// a name are always of the same form.  A run is a range of a copy of the parts it was cut from:
+/// its own, for a sequence's first try, and then one copy shared by every longer try, so trying a
+/// longer one costs nothing to bind.
 #[derive(Debug, Clone)]
 enum Bound<'a> {
     Node(NodeId),
@@ -255,10 +256,6 @@ impl<'p, 't> Matcher<'p, 't> {
                     // A run stays in one list, so `$body...` never takes in a clause or a header.
                     let block = self.target.list(*first);
                     let in_block = |part: &Part<'_>| !matches!(part, Part::Child(c) if self.target.list(*c) != block);
-                    let within = available
-                        .iter()
-                        .position(|part| !in_block(part))
-                        .unwrap_or(available.len());
                     // A named hole binds a run.  The first try - usually the one that matches -
                     // copies only its own run; once one has failed, every longer run is a prefix
                     // of one copy of the list's parts, so a try binds without copying, and a run
@@ -266,7 +263,12 @@ impl<'p, 't> Matcher<'p, 't> {
                     // `$...` binds nothing, so it copies nothing.
                     let mut shared: Option<Rc<[Part<'t>]>> = None;
                     let mut tried = false;
-                    for end in 0..within {
+                    // Walked forward, stopping at the list's end as it reaches it, so a first try
+                    // that matches looks no further.
+                    for end in 0..available.len() {
+                        if !in_block(&available[end]) {
+                            break;
+                        }
                         if !matches!(available[end], Part::Child(_)) {
                             continue;
                         }
@@ -275,8 +277,13 @@ impl<'p, 't> Matcher<'p, 't> {
                             true
                         } else {
                             let run = if tried {
-                                let shared =
-                                    shared.get_or_insert_with(|| available[..within].into());
+                                let shared = shared.get_or_insert_with(|| {
+                                    let within = available
+                                        .iter()
+                                        .position(|part| !in_block(part))
+                                        .unwrap_or(available.len());
+                                    available[..within].into()
+                                });
                                 Bound::Run(Rc::clone(shared), 0..end + 1)
                             } else {
                                 Bound::Run(available[..=end].into(), 0..end + 1)
