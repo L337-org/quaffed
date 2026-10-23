@@ -1,10 +1,8 @@
 # The quaff language
 
-A working reference to what `quaff` does: the command line, scripts, textual and structural
-search, what is searched, what is printed, and the edge cases.  It describes only what is built.
-It is deliberately rough - a record kept up to date as the language is refined, from which a
-proper manual will be distilled - so it favours completeness and examples over polish.
-`quaff -h` is the short summary.
+A reference to what `quaff` does, as built: the command line, scripts, textual and structural
+search, what is searched, what is printed, and the edge cases, with examples.  `quaff -h` is the
+short summary.
 
 The examples run against this small project, a git repository with `src/` and `docs/`:
 
@@ -218,7 +216,8 @@ escaped**: a backslash is always a backslash.
   ```
 
 - **A fence of three or more trims one space from each end** when the content starts and ends
-  with one, so `""" "x" """` is `"x"`.  A single-delimiter operand is never trimmed.
+  with one and is at least two characters long, so `""" "x" """` is `"x"`, while `""" """` is
+  a single space.  A single-delimiter operand is never trimmed.
 - **`""` is the empty operand**, so a run of two never opens a fence.
 - **An operand may span lines.**
 
@@ -471,17 +470,20 @@ alone.
 - **A Python file that does not parse refuses the whole run**, exit 9, before anything is printed,
   because a count that silently skipped a file could not be trusted:
 
+  With a directory `broken/` beside `play/` holding only `bad.py`, which is `def broken(:`:
+
   ```
-  $ quaff -p 'wrap($x)' play
+  $ quaff -p 'wrap($x)' broken
   quaff: refused: 1 Python file in scope does not parse, so a structural search cannot count matches in it:
-    "play/bad.py": line 1, column 12: Expected a parameter or the end of the parameter list
+    "broken/bad.py": line 1, column 12: Expected a parameter or the end of the parameter list
   To search without it, list it in .ignore, or give a narrower scope on the command line
   [exit 9]
   ```
 
   A textual search over the same files still runs, since it needs no parse.  A file Python
-  itself refuses to read - a bad encoding declaration, a byte its encoding does not have, a NUL
-  byte - does not parse either.
+  itself refuses to read - a bad encoding declaration, or a byte its encoding does not have -
+  does not parse either.  A binary Python file, one with a NUL byte in its first 8000 bytes, is
+  skipped and counted with the binary files instead, as any binary file is.
 - **A Python file is read as Python reads it**: in the encoding its coding line declares, or
   UTF-8.  An `.editorconfig` or git attribute that says otherwise does not change that, because it
   does not change what Python runs.  One in an encoding Python reads and quaff does not, such as
@@ -607,6 +609,8 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
   a string holding an actual newline.
 - **A repeated hole name compares code, whatever role it plays**: an argument, a keyword, an
   attribute or a parameter.
+- **`""" """` is a single space**: a fence trims its padding only from content of two characters
+  or more, so a lone space survives.
 - **A hole always matches at least one thing**, so `f($a...)` does not match `f()`.
 - **A method call is a different shape from a plain call**: `handle_request($a, $b)` does not
   match `client.handle_request(a, b)`.
