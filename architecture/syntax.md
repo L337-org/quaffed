@@ -100,8 +100,9 @@ bounded by that node, and between two statements by them.
 length** when the statement after it does not follow.  Every start where the pattern's first
 statement matches tries every end up to the block's edge, so `w()` then `$mid...` then `x()`
 over a block of `w()` statements with no `x()` makes about half the block's length squared
-tries.  A named sequence binds each try as a range of one shared copy of the block's parts, and
-`$...` binds nothing, so no try copies a run.  Blocks are short in practice - a module's top
+tries.  A named sequence's first try copies only its own run, and once one has failed it binds
+each later try as a range of one shared copy of the block's parts; `$...` binds nothing.  So no
+try copies a run, and a match found at its first try copies no more than it takes.  Blocks are short in practice - a module's top
 level, a function's body - so this is left as it is; making it linear needs a pass that finds
 where the rest of the pattern can match once per block, then reuses it from every start, which
 a name bound before the sequence and used after it complicates.  To measure it, time such a

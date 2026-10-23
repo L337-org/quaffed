@@ -259,25 +259,30 @@ impl<'p, 't> Matcher<'p, 't> {
                         .iter()
                         .position(|part| !in_block(part))
                         .unwrap_or(available.len());
-                    // A named hole binds a run; every run it tries is a prefix of one copy of the
-                    // list's parts, so a try binds without copying, and a run of n children costs
-                    // n tries rather than n copies of up to n parts each.  `$...` binds nothing,
-                    // so it copies nothing.
-                    let shared: Option<Rc<[Part<'t>]>> =
-                        hole.name.is_some().then(|| available[..within].into());
+                    // A named hole binds a run.  The first try - usually the one that matches -
+                    // copies only its own run; once one has failed, every longer run is a prefix
+                    // of one copy of the list's parts, so a try binds without copying, and a run
+                    // of n children costs n tries rather than n copies of up to n parts each.
+                    // `$...` binds nothing, so it copies nothing.
+                    let mut shared: Option<Rc<[Part<'t>]>> = None;
+                    let mut tried = false;
                     for end in 0..within {
                         if !matches!(available[end], Part::Child(_)) {
                             continue;
                         }
                         let mut attempt = bindings.clone();
-                        let bound = match &shared {
-                            Some(shared) => bind(
-                                self.target,
-                                hole,
-                                Bound::Run(Rc::clone(shared), 0..end + 1),
-                                &mut attempt,
-                            ),
-                            None => true,
+                        let bound = if hole.name.is_none() {
+                            true
+                        } else {
+                            let run = if tried {
+                                let shared =
+                                    shared.get_or_insert_with(|| available[..within].into());
+                                Bound::Run(Rc::clone(shared), 0..end + 1)
+                            } else {
+                                Bound::Run(available[..=end].into(), 0..end + 1)
+                            };
+                            tried = true;
+                            bind(self.target, hole, run, &mut attempt)
                         };
                         if bound
                             && let Some(n) =

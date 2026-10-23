@@ -152,6 +152,23 @@ fn a_name_used_twice_matches_equal_code_both_times() {
         ),
         ["f(1, 2) + g(1, 2)"]
     );
+    // Only the run it took, not what follows it: here the first binding stops before `, 0`.
+    assert_eq!(
+        matches(
+            "f($xs..., 0) + g($xs...)",
+            "f(1, 0) + g(1)\nf(1, 2, 0) + g(1, 2)\nf(1, 0) + g(1, 0)\n"
+        ),
+        ["f(1, 0) + g(1)", "f(1, 2, 0) + g(1, 2)"]
+    );
+    // And between statements, where the run is cut from a block: the second statement is
+    // reached only once a one-statement try has failed.
+    assert_eq!(
+        matches(
+            "a()\n$body...\nb()\n$body...\nc()\n",
+            "a()\nx\ny\nb()\nx\ny\nc()\na()\nx\ny\nb()\nx\nc()\n"
+        ),
+        ["a()\nx\ny\nb()\nx\ny\nc()"]
+    );
 }
 
 #[test]
