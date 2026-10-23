@@ -119,9 +119,16 @@ search and a hash comparison (`Codes`).  A hash that matches is confirmed by com
 in full, so a collision costs a comparison, never a wrong match.
 
 **So the cost is about linear in a block's length** for a run with no name joining its parts,
-and quadratic where one step's choice matters further on, as with a sequence named twice; each
-further step whose choice matters multiplies it by the block's length.  A named sequence binds
-the run it takes as a range of one copy of the block's parts, so binding copies nothing.
+and quadratic where one step's choice matters further on, as with a sequence named twice.  Each
+further step whose choice matters would multiply it by the block's length again, and with no
+limit on how many there are the problem is that of matching a pattern with variables, which is
+NP-complete, so no algorithm can bound it.  **So a run may have one such step, and two sequences
+may not stand together**, since nothing then settles how the statements divide between them and
+every division is tried.  `Pattern::costly` names the hole that breaks either rule; every
+language's compiler refuses the pattern, and `find` panics on one as a defect in its
+compiler.  Every pattern a compiler accepts is matched in at most quadratic time in a block's
+length.  A named sequence binds the run it takes as a range of one copy of the block's parts, so
+binding copies nothing.
 
 **Backtracking stays for what cannot be indexed**: two sequences with no statement between them,
 a segment that starts or ends with a token, and a block with a token between its statements,

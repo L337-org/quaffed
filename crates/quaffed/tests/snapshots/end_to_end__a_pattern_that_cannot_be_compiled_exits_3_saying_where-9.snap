@@ -1,0 +1,14 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-p"
+    - "w()\n$a...\nx()\n$b...\ny()\n$a...\nx()\n$b...\nz()"
+---
+success: false
+exit_code: 3
+----- stdout -----
+
+----- stderr -----
+quaff: -p, at character 25: "$a..." makes a second place in this run of statements where the statement a sequence stops at decides what later code must match, and each such place multiplies the work of a search by the length of the block, so a pattern may have one: give one of the names used twice a name of its own

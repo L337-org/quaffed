@@ -13,7 +13,7 @@
 use std::fmt::{self, Write as _};
 use std::ops::Range;
 
-use quaffed_syntax::{Arena, Builder, Hole, NodeId, Pattern};
+use quaffed_syntax::{Arena, Builder, Costly, Hole, NodeId, Pattern};
 use ruff_python_parser::Mode;
 
 use crate::parse::{PYTHON, ParseError, parse_from};
@@ -60,6 +60,23 @@ pub enum PatternError {
         offset: usize,
         /// Whether it starts the statements, rather than ending them.
         leading: bool,
+    },
+    /// Two sequence holes stand together in a run of statements, so nothing settles how many
+    /// statements each takes, and a search would try every division.
+    SequencesTogether {
+        /// The second sequence's name, or `None` for `$...`.
+        name: Option<String>,
+        /// Where in the pattern the second sequence is.
+        offset: usize,
+    },
+    /// A second place in a run of statements where the statement a sequence stops at decides
+    /// what later code must match, each such place multiplying a search's work by the length of
+    /// the block.
+    SecondChoice {
+        /// The hole that makes it so, as written: `$x` or `$x...`.
+        spelled: String,
+        /// Where in the pattern it is.
+        offset: usize,
     },
     /// The pattern is longer than an arena's offsets reach.
     TooLong(quaffed_syntax::TooLong),
@@ -108,6 +125,20 @@ impl fmt::Display for PatternError {
                      \"close_db()\" on lines of their own"
                 )
             }
+            PatternError::SequencesTogether { name, .. } => write!(
+                f,
+                "\"${}...\" follows another sequence with no statement between them, so nothing \
+                 says how many statements each takes: use one sequence, or put a statement \
+                 between them",
+                name.as_deref().unwrap_or("")
+            ),
+            PatternError::SecondChoice { spelled, .. } => write!(
+                f,
+                "\"{spelled}\" makes a second place in this run of statements where the statement a \
+                 sequence stops at decides what later code must match, and each such place \
+                 multiplies the work of a search by the length of the block, so a pattern may have \
+                 one: give one of the names used twice a name of its own"
+            ),
             PatternError::TooLong(err) => err.fmt(f),
         }
     }
@@ -121,7 +152,9 @@ impl PatternError {
             PatternError::Invalid { offset, .. }
             | PatternError::UnboundNamedSequence { offset }
             | PatternError::MixedHole { offset, .. }
-            | PatternError::UnboundedSequence { offset, .. } => Some(*offset),
+            | PatternError::UnboundedSequence { offset, .. }
+            | PatternError::SequencesTogether { offset, .. }
+            | PatternError::SecondChoice { offset, .. } => Some(*offset),
             PatternError::NoShape | PatternError::Empty | PatternError::TooLong(_) => None,
         }
     }
@@ -143,8 +176,8 @@ struct Claim {
 /// # Errors
 ///
 /// Returns a [`PatternError`] if the pattern is not Python, spells a hole `$_...`, is nothing
-/// but holes, starts or ends a run of statements with a sequence hole, or is too long.  Nothing
-/// partial is returned.
+/// but holes, starts or ends a run of statements with a sequence hole, has a run too costly to
+/// search ([`Pattern::costly`]), or is too long.  Nothing partial is returned.
 ///
 /// # Panics
 ///
@@ -201,6 +234,26 @@ pub fn compile_pattern(text: &str) -> Result<Pattern, PatternError> {
             name: claim.hole.name.clone(),
             offset: claim.written.start,
             leading: node == first,
+        });
+    }
+    if let Some(costly) = pattern.costly() {
+        let node = match costly {
+            Costly::Together(node) | Costly::SecondChoice(node) => node,
+        };
+        let (_, claim) = placed
+            .iter()
+            .find(|(hole, _)| *hole == node)
+            .expect("a costly run is named by one of the pattern's holes");
+        let offset = claim.written.start;
+        return Err(match costly {
+            Costly::Together(_) => PatternError::SequencesTogether {
+                name: claim.hole.name.clone(),
+                offset,
+            },
+            Costly::SecondChoice(_) => PatternError::SecondChoice {
+                spelled: text[claim.written.clone()].to_owned(),
+                offset,
+            },
         });
     }
     Ok(pattern)

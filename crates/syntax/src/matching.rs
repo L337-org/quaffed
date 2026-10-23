@@ -34,9 +34,18 @@ pub struct Match {
 ///
 /// If the pattern and the arena are of different languages, which is a defect in the caller, or
 /// the pattern has a sequence hole at the start or end of a run of statements
-/// ([`Pattern::unbounded_sequence`]), which is a defect in its compiler.
+/// ([`Pattern::unbounded_sequence`]) or a run too costly to search ([`Pattern::costly`]), which
+/// is a defect in its compiler.
 #[must_use]
 pub fn find(pattern: &Pattern, target: &Arena<'_>) -> Vec<Match> {
+    assert!(
+        pattern.unbounded_sequence().is_none(),
+        "a pattern compiler let through a sequence hole at the edge of a run of statements"
+    );
+    assert!(
+        pattern.costly().is_none(),
+        "a pattern compiler let through a run of statements too costly to search"
+    );
     find_with(pattern, target, true)
 }
 
@@ -48,10 +57,6 @@ fn find_with(pattern: &Pattern, target: &Arena<'_>, indexed: bool) -> Vec<Match>
         shape.language(),
         target.language(),
         "a pattern was matched against another language's arena"
-    );
-    assert!(
-        pattern.unbounded_sequence().is_none(),
-        "a pattern compiler let through a sequence hole at the edge of a run of statements"
     );
     // A pattern compiler refuses a pattern with no code, or with nothing but holes, so a pattern
     // of one node is one with a shape.
@@ -153,17 +158,37 @@ struct Run<'w> {
     settled: Vec<bool>,
 }
 
-impl<'w> Run<'w> {
-    /// The run `wanted` as segments, or `None` if two sequences stand together with no segment
-    /// between them to look for, or a segment starts or ends with a token, which only
-    /// backtracking can match.
-    fn new(pattern: &Pattern, wanted: &[Part<'w>]) -> Option<Run<'w>> {
+/// A run of statements split at its sequences, with each step's choice of place: whether it
+/// decides what later code must match, and through which hole.
+struct Steps<'w> {
+    segments: Vec<Vec<Part<'w>>>,
+    holes: Vec<NodeId>,
+    /// For each segment, the hole through which its choice of place decides what later code
+    /// must match, if it does: a name first bound in placing it and used further on, or the
+    /// sequence after it, which a later place gives other code, when that sequence's name is
+    /// used elsewhere.
+    choices: Vec<Option<NodeId>>,
+}
+
+/// Why a run of statements cannot be split into steps.
+enum Unsplit {
+    /// Two sequences stand together, the second of them named: nothing between them to look for.
+    Together(NodeId),
+    /// A segment starts or ends with a token.
+    Tokens,
+}
+
+impl<'w> Steps<'w> {
+    fn of(pattern: &Pattern, wanted: &[Part<'w>]) -> Result<Steps<'w>, Unsplit> {
         let shape = pattern.arena();
         let mut segments = vec![Vec::new()];
         let mut holes = Vec::new();
         for part in wanted {
             match part {
                 Part::Child(child) if pattern.hole(*child).is_some_and(|hole| hole.sequence) => {
+                    if segments.last().is_some_and(Vec::is_empty) && !holes.is_empty() {
+                        return Err(Unsplit::Together(*child));
+                    }
                     holes.push(*child);
                     segments.push(Vec::new());
                 }
@@ -178,16 +203,17 @@ impl<'w> Run<'w> {
                 && matches!(segment.last(), Some(Part::Child(_)))
         };
         if !segments.iter().all(bounded_by_statements) {
-            return None;
+            return Err(Unsplit::Tokens);
         }
-        // Each hole belongs to one part of the run: a sequence is a part of its own, and any other
+        // Each hole belongs to one part of the run, numbered in order - segment 0, the sequence
+        // before segment 1, segment 1, and so on: a sequence is a part of its own, and any other
         // hole lies inside one of a segment's statements.
         let part_of = |node: NodeId| -> usize {
             if let Some(at) = holes.iter().position(|hole| *hole == node) {
-                return segments.len() + at;
+                return 2 * at + 1;
             }
             let range = shape.range(node);
-            segments
+            let segment = segments
                 .iter()
                 .position(|segment| {
                     segment.iter().any(|part| {
@@ -196,48 +222,99 @@ impl<'w> Run<'w> {
                                 && range.end <= shape.range(*child).end)
                     })
                 })
-                .expect("every hole of a run lies in one of its parts")
+                .expect("every hole of a run lies in one of its parts");
+            2 * segment
         };
-        // The parts of the run in order - segment 0, the sequence before segment 1, segment 1,
-        // and so on - and the first and last of them each name is used in.
-        let order = |part: usize| -> usize {
-            if part < segments.len() {
-                2 * part
-            } else {
-                2 * (part - segments.len()) + 1
-            }
-        };
-        let mut uses: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
+        // Each name's first and last part, and the hole it is first bound by: holes come in
+        // pre-order, which is the order of the parts, so the first seen is the first.
+        let mut uses: BTreeMap<&str, (usize, usize, NodeId)> = BTreeMap::new();
         for (node, hole) in pattern.holes() {
             if let Some(name) = &hole.name {
-                let at = order(part_of(node));
-                let span = uses.entry(name).or_insert((at, at));
-                span.0 = span.0.min(at);
-                span.1 = span.1.max(at);
+                let at = part_of(node);
+                uses.entry(name).or_insert((at, at, node)).1 = at;
             }
         }
-        let settled = (0..segments.len())
+        let choices = (0..segments.len())
             .map(|i| {
-                // Placing segment `i` binds what the sequence before it and the segment
-                // themselves name first; none of it may be used further on.
-                let binds_for_later = uses.values().any(|&(first, last)| {
-                    (2 * i).saturating_sub(1) <= first && first <= 2 * i && last > 2 * i
-                });
-                // The sequence after it starts where it ends, so it must bind nothing used
-                // elsewhere.
-                let next_is_free = holes.get(i).is_none_or(|next| {
+                // The sequence after segment `i` starts where it ends, so a name it carries that
+                // is used elsewhere takes other code from a later place.
+                let next = holes.get(i).copied().filter(|next| {
                     pattern
                         .hole(*next)
                         .and_then(|hole| hole.name.as_deref())
-                        .is_none_or(|name| uses[name] == (2 * i + 1, 2 * i + 1))
+                        .is_some_and(|name| (uses[name].0, uses[name].1) != (2 * i + 1, 2 * i + 1))
                 });
-                !binds_for_later && next_is_free
+                // Placing segment `i` binds what the sequence before it and the segment itself
+                // name first; a name of those used further on takes what this place gives it.
+                let bound_here = uses
+                    .values()
+                    .find(|&&(first, last, _)| {
+                        (2 * i).saturating_sub(1) <= first && first <= 2 * i && last > 2 * i
+                    })
+                    .map(|&(_, _, node)| node);
+                // Segment 0 is placed by the start itself, which is tried everywhere anyway.
+                if i == 0 { None } else { next.or(bound_here) }
             })
             .collect();
-        Some(Run {
+        Ok(Steps {
             segments,
             holes,
-            settled,
+            choices,
+        })
+    }
+}
+
+/// Why a pattern's run of statements would make a search cost more than the square of a block's
+/// length, so that a compiler refuses it: [`Pattern::costly`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Costly {
+    /// Two sequences stand together with no statement between them, so nothing settles how the
+    /// statements divide between them, and every division is tried: the second of them.
+    Together(NodeId),
+    /// A second step in the run whose choice of place decides what later code must match, each
+    /// such step multiplying a search's work by the block's length: the hole that makes it one.
+    SecondChoice(NodeId),
+}
+
+impl Pattern {
+    /// Whether matching this pattern's run of statements could cost more than the square of a
+    /// block's length, and why.  A run where each sequence's place is settled by the statements
+    /// around it costs about the block's length, and one step whose choice decides what later
+    /// code must match - a sequence named twice, say - makes it quadratic; a second such step
+    /// makes it cubic, and so on.  Every language's compiler refuses a pattern this names, and
+    /// [`find`] panics on one, as a defect in its compiler.
+    #[must_use]
+    pub fn costly(&self) -> Option<Costly> {
+        let shape = self.arena();
+        // A pattern of one node is matched node by node, not as a run.
+        shape.children(shape.root()).nth(1)?;
+        let wanted = between_first_and_last(&parts(shape, shape.root()));
+        match Steps::of(self, &wanted) {
+            Err(Unsplit::Together(hole)) => Some(Costly::Together(hole)),
+            // An adapter whose statements carry tokens between them is matched by backtracking;
+            // none does yet.
+            Err(Unsplit::Tokens) => None,
+            Ok(steps) => steps
+                .choices
+                .iter()
+                .flatten()
+                .nth(1)
+                .copied()
+                .map(Costly::SecondChoice),
+        }
+    }
+}
+
+impl<'w> Run<'w> {
+    /// The run `wanted` as segments, or `None` if two sequences stand together with no segment
+    /// between them to look for, or a segment starts or ends with a token, which only
+    /// backtracking can match.
+    fn new(pattern: &Pattern, wanted: &[Part<'w>]) -> Option<Run<'w>> {
+        let steps = Steps::of(pattern, wanted).ok()?;
+        Some(Run {
+            segments: steps.segments,
+            holes: steps.holes,
+            settled: steps.choices.iter().map(Option::is_none).collect(),
         })
     }
 
@@ -1088,6 +1165,157 @@ mod indexed_against_backtracking {
             })
             .collect();
         Pattern::new(arena, holes)
+    }
+
+    /// The `n`th statement of a generated pattern.
+    fn nth(pattern: &Pattern, n: usize) -> NodeId {
+        let arena = pattern.arena();
+        arena.children(arena.root()).nth(n).unwrap()
+    }
+
+    #[test]
+    fn one_choice_that_matters_is_allowed_and_a_second_is_costly() {
+        use Item::{Fixed, Sequence, Single};
+        // A sequence named twice: one step decides what the second must match.
+        let once = pattern(&[
+            Fixed(0),
+            Sequence(Some(0)),
+            Fixed(1),
+            Sequence(Some(0)),
+            Fixed(2),
+        ]);
+        assert_eq!(once.costly(), None);
+        // A name bound in one statement and used in another, across sequences.
+        let single = pattern(&[
+            Fixed(0),
+            Sequence(None),
+            Single(Some(0)),
+            Sequence(None),
+            Single(Some(0)),
+            Fixed(2),
+        ]);
+        assert_eq!(single.costly(), None);
+        // Two sequences each named twice: placing `x` decides `$b`, and placing `y` decides
+        // the second `$a`, which is named as the second step that matters.
+        let twice = pattern(&[
+            Fixed(0),
+            Sequence(Some(0)),
+            Fixed(1),
+            Sequence(Some(1)),
+            Fixed(2),
+            Sequence(Some(0)),
+            Fixed(1),
+            Sequence(Some(1)),
+            Fixed(0),
+        ]);
+        assert_eq!(twice.costly(), Some(Costly::SecondChoice(nth(&twice, 5))));
+        // One sequence named twice, but with a step before each use.
+        let spread = pattern(&[
+            Fixed(0),
+            Sequence(None),
+            Fixed(1),
+            Sequence(Some(0)),
+            Fixed(2),
+            Sequence(Some(0)),
+            Fixed(0),
+        ]);
+        assert_eq!(spread.costly(), Some(Costly::SecondChoice(nth(&spread, 5))));
+        // Unnamed sequences between fixed statements decide nothing.
+        let free = pattern(&[Fixed(0), Sequence(None), Fixed(1), Sequence(None), Fixed(2)]);
+        assert_eq!(free.costly(), None);
+    }
+
+    #[test]
+    fn two_sequences_together_are_costly_whatever_their_names() {
+        use Item::{Fixed, Sequence};
+        let together = pattern(&[Fixed(0), Sequence(None), Sequence(None), Fixed(1)]);
+        assert_eq!(together.costly(), Some(Costly::Together(nth(&together, 2))));
+    }
+
+    #[test]
+    #[should_panic(expected = "a pattern compiler let through a run of statements too costly")]
+    fn matching_a_costly_pattern_is_a_defect() {
+        use Item::{Fixed, Sequence};
+        let together = pattern(&[Fixed(0), Sequence(None), Sequence(None), Fixed(1)]);
+        let _ = find(&together, &target(&[0, 1], 2));
+    }
+
+    /// A repeated sequence's run can line up while the segment after it fails on a name bound
+    /// before: here `$v` is `y`, and where the second `$a` ends, `x y` stands rather than `y y`.
+    #[test]
+    fn a_repeated_runs_segment_can_still_fail_on_an_earlier_name() {
+        use Item::{Fixed, Sequence, Single};
+        let items = [
+            Fixed(0),
+            Single(Some(0)),
+            Sequence(Some(1)),
+            Fixed(1),
+            Sequence(Some(1)),
+            Single(Some(0)),
+            Fixed(2),
+        ];
+        let pattern = pattern(&items);
+        assert_eq!(pattern.costly(), None);
+        let statements = [0, 2, 0, 1, 0, 1, 2];
+        let target = target(&statements, statements.len());
+        assert_eq!(
+            find_with(&pattern, &target, true),
+            find_with(&pattern, &target, false)
+        );
+    }
+
+    /// A pattern `w ; $a ; x`, its statements with a token between each.
+    fn separated_pattern() -> Pattern {
+        let text = "w ; h ; x";
+        let mut builder = Builder::new(Language::new("toy"), text).unwrap();
+        builder.enter(Kind::new("Module"), 0..text.len());
+        for (at, statement) in [(0, true), (2, false), (4, true), (6, false), (8, true)] {
+            if statement {
+                builder.enter(Kind::new("Statement"), at..at + 1);
+                builder.leave();
+            } else {
+                builder.token(at..at + 1, crate::TokenText::Source);
+            }
+        }
+        builder.leave();
+        let arena = builder.finish().into_owned();
+        let hole = arena.children(arena.root()).nth(1).unwrap();
+        Pattern::new(
+            arena,
+            vec![(
+                hole,
+                Hole {
+                    name: None,
+                    sequence: true,
+                },
+            )],
+        )
+    }
+
+    #[test]
+    fn a_run_with_tokens_between_its_statements_is_matched_by_backtracking() {
+        let pattern = separated_pattern();
+        // Not indexed, so not judged by the index's costs either.
+        assert_eq!(pattern.costly(), None);
+        let wanted = between_first_and_last(&parts(pattern.arena(), pattern.arena().root()));
+        assert!(Run::new(&pattern, &wanted).is_none());
+        let text = "w ; y ; x";
+        let mut builder = Builder::new(Language::new("toy"), text).unwrap();
+        builder.enter(Kind::new("Module"), 0..text.len());
+        builder.begin_list();
+        for (at, statement) in [(0, true), (2, false), (4, true), (6, false), (8, true)] {
+            if statement {
+                builder.enter(Kind::new("Statement"), at..at + 1);
+                builder.leave();
+            } else {
+                builder.token(at..at + 1, crate::TokenText::Source);
+            }
+        }
+        builder.end_list();
+        builder.leave();
+        let target = builder.finish().into_owned();
+        let found = find(&pattern, &target);
+        assert_eq!(found, [Match { range: 0..9 }]);
     }
 
     /// A block `a b` under a node, with a token before it - like the `:` of a `def` - and, if

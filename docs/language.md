@@ -373,7 +373,8 @@ quaff: -p, at character 5: the pattern is not Python: unexpected EOF while parsi
 ```
 
 A pattern with no code at all, only whitespace or comments, is refused too, and so is one that
-starts or ends a run of statements with a sequence hole ([Runs of
+starts or ends a run of statements with a sequence hole, puts two sequences together in one, or
+has a run whose search could grow faster than the square of a block's length ([Runs of
 statements](#runs-of-statements)).
 
 ### What takes no part in a match
@@ -465,6 +466,41 @@ quaff: -p, at character 11: "$rest..." ends the pattern's statements, so nothing
 
 A sequence inside one node is bounded by it, so `def $f():` with `$body...` as its body, or
 `f($first, $rest...)`, is fine.
+
+**Two sequences may not stand together in a run of statements**, since nothing says how many
+statements each takes:
+
+```
+$ quaff -p 'open_db()
+$a...
+$b...
+close_db()' play
+quaff: -p, at character 17: "$b..." follows another sequence with no statement between them, so nothing says how many statements each takes: use one sequence, or put a statement between them
+[exit 3]
+```
+
+**A run of statements may have one place where the statement a sequence stops at decides what
+later code must match.**  A sequence named twice is one such place: `w()`, `$a...`, `x()`, `$a...`,
+`y()` is fine, and so is a name bound in one statement and used in a later one.  Each such place
+multiplies the work of a search by the length of the block, so a second is refused rather than
+left to make a search slow on a long file:
+
+```
+$ quaff -p 'open_db()
+$a...
+commit()
+$b...
+close_db()
+$a...
+commit()
+$b...
+close_db()' play
+quaff: -p, at character 43: "$a..." makes a second place in this run of statements where the statement a sequence stops at decides what later code must match, and each such place multiplies the work of a search by the length of the block, so a pattern may have one: give one of the names used twice a name of its own
+[exit 3]
+```
+
+Every pattern that is accepted searches a block in time at most proportional to the square of its
+length, and usually in proportion to its length.
 
 ### Which files
 
@@ -635,6 +671,12 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
   short of the edge of its block, so one match would cover far more than the pattern spells.  Put
   fixed code on both sides of it.  So `return $x` then `$dead...`, every statement after a
   `return`, cannot be written.
+- **A run of statements may have only one place where a sequence's stopping point decides what
+  later code must match**, and two sequences may not stand together in one.  Matching patterns
+  with names used more than once is, in general, a problem no algorithm solves quickly, so the
+  pattern is refused where its search could grow faster than the square of a block's length,
+  rather than accepted and left to run for minutes on a long file.  A sequence named twice is
+  fine; two sequences each named twice are not.
 - **Structural patterns ignore non-Python files rather than falling back to text**, and say so.
 - **A Python file Python cannot read stops a structural search** (exit 9), but not a textual one.
 - **A Python file with no coding line is UTF-8 to a structural search, whatever `.editorconfig`

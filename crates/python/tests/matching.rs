@@ -252,6 +252,31 @@ fn a_sequence_at_the_edge_of_statements_is_refused_rather_than_taking_the_block(
 }
 
 #[test]
+fn a_run_whose_search_would_grow_faster_than_quadratic_is_refused() {
+    // Two sequences together: nothing settles how many statements each takes.
+    match compile_pattern("w()\n$a...\n$b...\nx()\n") {
+        Err(PatternError::SequencesTogether { name, offset }) => {
+            assert_eq!((name.as_deref(), offset), (Some("b"), 10));
+        }
+        other => panic!("{other:?}"),
+    }
+    // Two places where the statement a sequence stops at decides later code: `$b` after `x()`,
+    // and the second `$a` after `y()`, which is named.
+    match compile_pattern("w()\n$a...\nx()\n$b...\ny()\n$a...\nx()\n$b...\nz()\n") {
+        Err(PatternError::SecondChoice { spelled, offset }) => {
+            assert_eq!((spelled.as_str(), offset), ("$a...", 24));
+        }
+        other => panic!("{other:?}"),
+    }
+    // One such place is allowed: a sequence named twice, or a name used across statements.
+    assert!(compile_pattern("w()\n$a...\nx()\n$a...\ny()\n").is_ok());
+    assert!(compile_pattern("f($v)\n$...\ng($v)\n$...\nh($v)\n").is_ok());
+    assert!(compile_pattern("w()\n$...\nx()\n$...\ny()\n").is_ok());
+    // And two sequences inside one node are not a run of statements.
+    assert!(compile_pattern("f($a..., $b...)").is_ok());
+}
+
+#[test]
 fn a_sequence_between_statements_takes_as_few_as_it_can() {
     let source = "open_db()\na = 1\nclose_db()\nb = 2\nopen_db()\nc = 3\nclose_db()\n";
     // One match per pair, never one from the first open to the last close.
