@@ -41,9 +41,9 @@ runs:
         read -ra packages <<<"$PACKAGES"
         sudo apt-get update
         simulated="$(apt-get -s install --no-install-recommends "${packages[@]}")"
-        # An Inst line reads `Inst NAME [OLD] (VERSION ORIGIN... [ARCH])`; kept as NAME VERSION
-        # ARCH, which is how an archive file is named.
-        sed -nE 's/^Inst ([^ ]+) (\[[^]]*\] )?\(([^ ]+) .*\[([^]]+)\]\)$/\1 \3 \4/p' <<<"$simulated" \
+        # An Inst line reads `Inst NAME [OLD] (VERSION ORIGIN... [ARCH])`, sometimes followed by a
+        # bracketed list, ` []`; kept as NAME VERSION ARCH, which is how an archive file is named.
+        sed -nE 's/^Inst ([^ ]+) (\[[^]]*\] )?\(([^ ]+) .*\[([^] ]+)\]\)( \[[^]]*\])?$/\1 \3 \4/p' <<<"$simulated" \
           | sort >"$RUNNER_TEMP/apt-install-plan"
         # A line the pattern misses, say from a new apt's output, would leave its file unchecked
         # and deleted as unused, and every run would download it, all without failing.
@@ -55,22 +55,27 @@ runs:
           exit 1
         fi
         echo "apt-install: apt will install $planned packages"
-        echo "set=$(sha256sum "$RUNNER_TEMP/apt-install-plan" | cut -c1-16)" >>"$GITHUB_OUTPUT"
+        # The key once, here, so the restore and the warning that names it cannot differ.
+        prefix="apt-$RUNNER_ARCH-$PACKAGES-"
+        {
+          echo "prefix=$prefix"
+          echo "key=$prefix$(sha256sum "$RUNNER_TEMP/apt-install-plan" | cut -c1-16)"
+        } >>"$GITHUB_OUTPUT"
 
     - name: Restore the downloaded packages
       id: restore
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: /var/cache/apt/archives/*.deb
-        key: apt-${{ runner.arch }}-${{ inputs.packages }}-${{ steps.plan.outputs.set }}
+        key: ${{ steps.plan.outputs.key }}
         restore-keys: |
-          apt-${{ runner.arch }}-${{ inputs.packages }}-
+          ${{ steps.plan.outputs.prefix }}
 
     - name: Install
       shell: bash
       env:
         PACKAGES: ${{ inputs.packages }}
-        KEY: apt-${{ runner.arch }}-${{ inputs.packages }}-${{ steps.plan.outputs.set }}
+        KEY: ${{ steps.plan.outputs.key }}
         HIT: ${{ steps.restore.outputs.cache-hit }}
       run: |
         read -ra packages <<<"$PACKAGES"
@@ -97,10 +102,11 @@ runs:
             # apt resolved this exact version, so the index lists it: a different hash means
             # the cached file is not the one the index signs for.  An entry is never
             # overwritten, so after an exact hit only deleting it stops this recurring.
-            repair="it came from an older entry, so this job saves the good copy apt downloads under $(printf %q "$KEY") when it succeeds"
-            if [[ "$HIT" == true ]]; then
-              repair="this key's entry was restored exactly and is never overwritten, so delete it: gh cache delete $(printf %q "$KEY")"
-            fi
+            case "$HIT" in
+              true) repair="this key's entry was restored exactly and is never overwritten, so delete it, with a token that has actions: write: gh cache delete $(printf %q "$KEY")" ;;
+              false) repair="it came from an older entry, so this job saves the good copy apt downloads under $(printf %q "$KEY") when it succeeds" ;;
+              *) repair="the cache step reported no result, so whether $(printf %q "$KEY") is saved is unknown: check its post step" ;;
+            esac
             echo "::warning::apt-install: deleting cached $(printf %q "$name.deb"): its SHA-256 is $actual, but the index lists $(tr '\n' ' ' <<<"$listed")for $package $version $arch; $repair"
             rm -f "$deb"
           fi
