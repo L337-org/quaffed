@@ -221,10 +221,15 @@ same([a, b], [a, (b)])
 ";
     // Only the last holds the same code twice, `(b)`'s parentheses being redundant.
     assert_eq!(matches("same($x, $x)", source), ["same([a, b], [a, (b)])"]);
-    // Nor across statements: a tuple of a tuple is not a tuple of three.
+    // Nor across statements: a tuple of a tuple and a name is not a name and a tuple, though
+    // each is still the same tuple written without its parentheses.
     assert_eq!(
-        matches("$x = $y\nreturn $x\n", "t = (a, b), c\nreturn a, (b, c)\n"),
-        none()
+        matches(
+            "$x = $y\nreturn $y\n",
+            "def f():\n    t = (a, b), c\n    return a, (b, c)\n\
+             def g():\n    t = (a, b), c\n    return ((a, b), c)\n"
+        ),
+        ["t = (a, b), c\n    return ((a, b), c)"]
     );
     // A one-element tuple's comma is the tuple, so it stays in its shape too.
     assert_eq!(matches("x[$a,]", "x[a,]\nx[a]\n"), ["x[a,]"]);
