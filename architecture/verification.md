@@ -649,15 +649,19 @@ fails on the pull request that introduces it rather than in the first job to use
 
 Only the package files are cached.  apt still reads the package lists from the mirror and
 installs the versions they name, so the cache changes how fast a package arrives, never which
-version: the Budgets job's Valgrind is the one an uncached install would get.  The key carries
-the runner image's name and version, so a new image saves an entry of its own, and an older
-entry is restored by prefix for the files that still apply.
+version: the Budgets job's Valgrind is the one an uncached install would get.  The key is what
+apt is about to install - each package, version and architecture, from a simulated install - so
+an update published to the mirror makes a new key and its files are saved, rather than
+downloaded again on every run.  An older entry is restored by prefix for what has not changed,
+and its files for versions apt no longer installs are deleted unused.
 
-**A restored file is checked before it is installed.**  apt does not check a file already in
-its archive directory: it hands it to dpkg as found.  So the action compares each restored
-file's SHA-256 with the one the signed index lists for its package, version and architecture,
-and deletes any that differ, which apt then downloads.  A cached package is held to the same
-check as a downloaded one, which matters because the package job also builds releases.
+**A restored file is checked before it is installed.**  apt checks only the size of a file
+already in its archive directory, not its content: a file of the right size goes to dpkg as
+found.  So the action compares each restored file's SHA-256 with the one the signed index lists
+for its package, version and architecture, and deletes any that differ, with a warning naming
+both hashes, since apt resolved that exact version and a different hash means the file is not
+the one the index signs for.  apt then downloads it, so a cached package is held to the same
+check as a downloaded one.
 
 ## What the tests enforce
 

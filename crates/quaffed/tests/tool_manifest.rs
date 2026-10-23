@@ -586,25 +586,46 @@ fn without_comment(raw: &str) -> &str {
 /// package is checked against the index before it is installed.
 const APT_ACTION: &str = ".github/actions/apt-install/action.yaml";
 
-/// Returns each line of a workflow or action file that installs from apt itself, rather than
-/// through [`APT_ACTION`].  Comments are dropped first, as in [`workflow_violations`].
+/// Returns each command in a workflow or action file that installs from apt itself, rather
+/// than through [`APT_ACTION`]: `apt-get`, `apt` or `aptitude` as a word, then `install` as a
+/// word later in the same command, so options before the verb are caught too.  A line ending in
+/// `\` continues onto the next, and comments are dropped first, as in [`workflow_violations`].
+/// A command is reported at the line it starts on.
 fn apt_violations(label: &str, text: &str) -> Vec<String> {
-    text.lines()
-        .enumerate()
-        .filter(|(_, raw)| {
-            let line = without_comment(raw);
-            ["apt-get install", "apt install", "aptitude install"]
+    let mut found = Vec::new();
+    let mut command = String::new();
+    let mut start = 0;
+    for (index, raw) in text.lines().enumerate() {
+        if command.is_empty() {
+            start = index;
+        }
+        let line = without_comment(raw).trim_end();
+        command.push_str(line.trim_end_matches('\\'));
+        command.push(' ');
+        if line.ends_with('\\') {
+            continue;
+        }
+        // Each command between `;`, `&` and `|` on its own, so `apt-get update && make install`
+        // is not taken for an install.
+        let installs = command.split([';', '&', '|']).any(|part| {
+            let words: Vec<&str> = part
+                .split(|c: char| c.is_whitespace() || "()\"'`".contains(c))
+                .collect();
+            words
                 .iter()
-                .any(|pattern| line.contains(pattern))
-        })
-        .map(|(index, raw)| {
-            format!(
+                .position(|word| ["apt-get", "apt", "aptitude"].contains(word))
+                .is_some_and(|at| words[at + 1..].contains(&"install"))
+        });
+        if installs {
+            found.push(format!(
                 "{label}:{}: installs from apt itself: {}",
-                index + 1,
-                raw.trim()
-            )
-        })
-        .collect()
+                start + 1,
+                command.trim()
+            ));
+        }
+        command.clear();
+    }
+    found
 }
 
 fn yaml_files_under(dir: &Path, found: &mut Vec<PathBuf>) {
@@ -695,22 +716,30 @@ fn no_workflow_installs_from_apt_but_through_the_caching_action() {
 
 #[test]
 fn the_apt_check_catches_an_install_and_passes_the_action_and_comments() {
-    for line in [
+    for text in [
         "        run: sudo apt-get update && sudo apt-get install -y valgrind",
         "        run: sudo apt install -y lintian",
         "          apt-get install -yq rsyslog",
+        "        run: sudo apt-get -y install valgrind",
+        "        run: apt-get -qq install foo",
+        "        run: sudo aptitude --yes install foo",
+        "          sudo apt-get \\\n            -y \\\n            install valgrind",
     ] {
-        let found = apt_violations("fixture.yaml", line);
-        assert_eq!(found.len(), 1, "not caught: {line}");
+        let found = apt_violations("fixture.yaml", text);
+        assert_eq!(found.len(), 1, "not caught once: {text:?}: {found:?}");
         assert!(found[0].starts_with("fixture.yaml:1: "), "{found:?}");
     }
-    for line in [
+    for text in [
         "        uses: ./.github/actions/apt-install",
         "          packages: valgrind strace time musl-tools",
         "        run: sudo apt-get update",
         "    # Valgrind comes from the image, through apt-get install in the action.",
+        "        run: echo apt-install: installed",
+        "        run: scripts/install-tools cargo-insta  # not apt-get install",
+        "          sudo apt-get update\n          scripts/install-tools --all",
+        "        run: sudo apt-get update && make install",
     ] {
-        let found = apt_violations("fixture.yaml", line);
+        let found = apt_violations("fixture.yaml", text);
         assert!(found.is_empty(), "wrongly flagged: {found:?}");
     }
 }
