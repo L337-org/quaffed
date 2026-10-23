@@ -663,7 +663,9 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
 - **Implicitly concatenated plain strings are joined, but f-strings are not**: `"abc"` matches
   `"ab" "c"`, while `f"{a}{b}"` does not match `f"{a}" f"{b}"`, which `f"{$x}" f"{$y}"` does.
 - **A tuple's parentheses are layout**, as CPython's tree has them: `a, b = f()` then
-  `return (a, b)` returns the name it assigned.
+  `return (a, b)` returns the name it assigned.  The comma of a one-element tuple is not, so
+  `x[$a,]` matches `x[a,]` but not `x[a]`, and a name used twice still tells `a, (b, c)` from
+  `(a, b), c`.
 - **A string's escapes are compared as written**, so `"\n"` and `r"\n"` match each other but not
   a string holding an actual newline.
 - **A repeated hole name compares code, whatever role it plays**: an argument, a keyword, an

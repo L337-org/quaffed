@@ -138,10 +138,22 @@ fn ruff_versions(manifest: &str) -> Vec<(String, Option<String>)> {
         .collect()
 }
 
-/// Why the adapter's `ruff_*` pins are not exact and alike, if they are not.
+/// Why the adapter's `ruff_*` pins are not exact and alike, if they are not.  A `ruff_*` crate
+/// declared as a `[dependencies.ruff_*]` table or renamed with `package =` is one this check
+/// would not read, so it is refused: the adapter declares each by its own name on one line.
 fn pin_problems(manifest: &str) -> Vec<String> {
     let versions = ruff_versions(manifest);
     let mut problems = Vec::new();
+    for line in manifest.lines().map(str::trim) {
+        if (line.starts_with('[') && line.contains("dependencies.ruff_"))
+            || line.replace(' ', "").contains("package=\"ruff_")
+        {
+            problems.push(format!(
+                "{line:?} declares a ruff_* crate in a form the pin check does not read: write \
+                 it as ruff_name = \"=version\""
+            ));
+        }
+    }
     if versions.is_empty() {
         problems.push("no ruff_* dependency found, so nothing was checked".to_owned());
     }
@@ -188,7 +200,7 @@ fn the_adapter_pins_every_ruff_crate_exactly_and_alike() {
 }
 
 #[test]
-fn a_loosened_or_split_pin_is_found_however_it_is_declared() {
+fn a_loosened_or_split_pin_is_found_and_another_declaration_refused() {
     let exact = "[dependencies]\nruff_python_ast = \"=0.0.18\"\nruff_text_size = { version = \"=0.0.18\" }\n";
     assert_eq!(pin_problems(exact), Vec::<String>::new());
     for loose in [
@@ -215,4 +227,16 @@ fn a_loosened_or_split_pin_is_found_however_it_is_declared() {
     );
     assert!(split[0].contains("different versions"), "{split:?}");
     assert!(pin_problems("[dependencies]\nmemchr = \"=2\"\n")[0].contains("nothing was checked"));
+    for elsewhere in [
+        "[dependencies.ruff_python_parser]\nversion = \"0.0.19\"\n",
+        "[dependencies]\nparser = { package = \"ruff_python_parser\", version = \"0.0.19\" }\n",
+    ] {
+        let problems = pin_problems(&format!(
+            "[dependencies]\nruff_python_ast = \"=0.0.18\"\n{elsewhere}"
+        ));
+        assert!(
+            problems.iter().any(|p| p.contains("does not read")),
+            "{elsewhere}: {problems:?}"
+        );
+    }
 }

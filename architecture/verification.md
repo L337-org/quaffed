@@ -108,7 +108,7 @@ the language.  It is **used for the round trip and the structural counts, and as
 profiling by hand**, never by a budget or a benchmark, so its contents cannot move a measured
 number.  Nothing that measures reads `target/corpus/`.  A file it holds can fail a pull request
 through the round trip, by not round-tripping or by disagreeing with the oracle, or through the
-structural counts, by matching a pattern where the oracle's tree says it does not.
+structural counts, by a count of a pattern's matches in a file that differs from the oracle's.
 
 It is **fetched, not checked in**: it is CPython's code, under the PSF licence, and far larger
 than the rest of the repository.  `corpus/real-world.toml` pins it, and is the one place that
@@ -226,24 +226,24 @@ cargo test -p quaffed-python --test round_trip -- --ignored
 
 `crates/python/tests/real_world_matches.rs` holds quaff's structural matching to **an
 independent count, made by CPython's own parser**, over every real-world file the oracle
-accepts.  `scripts/count-structural`, run with the oracle's Python, counts for a set of patterns
-- one for each kind of hole: a single and an unbound hole, an unbound sequence, a named
-sequence, sequences bounded by the node they stand in, a name used twice across statements, and
-a sequence between two statements - the places each should match, by a predicate over `ast`'s
-tree written for that pattern alone.  It writes the counts to `structural.txt` beside
-`refused.txt`, and the test compiles the same patterns, matches them over the same files and
-requires the same count for each.
+accepts.  `scripts/count-structural`, run with the oracle's Python, counts for each pattern in
+its `PATTERNS` the places it should match, by a predicate over `ast`'s tree written for that
+pattern alone; the patterns cover each kind of hole and a name used twice.  It writes the counts
+to `structural.txt` beside `refused.txt`, a total per pattern and a count per pattern for each
+file with any match.  The test compiles the same patterns, matches them over the same files and
+requires the same count for each pattern in each file, so a false match in one file cannot hide
+behind a missed one in another.
 
 **A disagreement is a defect in quaff or in a predicate**, and either is found by listing both
 sides' matches by file and line: `quaff -p` over the tree, with the refused files in a
-`.ignore`, against the predicate's walk.  The first run found one in quaff: a tuple's own
-parentheses took part in a match, so `return (a, b)` did not return the `a, b` it was assigned,
-where CPython's tree has the two alike (`python.md`).
+`.ignore`, against the predicate's walk, for the files the test names.
 
 `crates/quaffed/tests/count_structural.rs` tests the script itself in the ordinary run, as
 `check_synthetic.rs` does its: on a small source it builds, each pattern is counted once beside
-its near misses, a refused file is left out, another Python is refused, and a source with no
-accepted file fails.  The predicates compare trees field by field rather than through `ast.dump`,
+its near misses and its file's line written, a refused file is left out, another Python is
+refused, and no fetched source or a source with no accepted file fails.  `real_world_matches.rs`
+tests its own reading of the counts in the ordinary run: a malformed line, or files' counts that
+do not add up to a pattern's total, are refused saying why.  The predicates compare trees field by field rather than through `ast.dump`,
 whose text for a default field differs between releases.
 
 Like the round trip it is ignored in the ordinary run, and the **Real-world corpus** job runs it

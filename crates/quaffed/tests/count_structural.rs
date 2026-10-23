@@ -141,12 +141,13 @@ fn each_pattern_is_counted_by_cpythons_tree_and_refused_files_are_left_out() {
         "{counts}"
     );
     for expected in [
-        "1\tsingle and unbound holes\tisinstance($x, $_)",
-        "1\tan unbound sequence\tprint($...)",
-        "1\ta named sequence\tself.assertEqual($args...)",
-        "1\tsequences bounded by their node\ttry:\\n    $...\\nexcept $e:\\n    $...",
-        "1\ta name used twice across statements\t$x = $y\\nreturn $x",
-        "1\ta sequence between two statements\t$x = $y\\n$...\\nreturn $x",
+        "pattern\t1\tsingle and unbound holes\tisinstance($x, $_)",
+        "pattern\t1\tan unbound sequence\tprint($...)",
+        "pattern\t1\ta named sequence\tself.assertEqual($args...)",
+        "pattern\t1\tsequences bounded by their node\ttry:\\n    $...\\nexcept $e:\\n    $...",
+        "pattern\t1\ta name used twice across statements\t$x = $y\\nreturn $x",
+        "pattern\t1\ta sequence between two statements\t$x = $y\\n$...\\nreturn $x",
+        "file\tLib/a.py\t1\t1\t1\t1\t1\t1",
     ] {
         assert!(
             counts.lines().any(|line| line == expected),
@@ -179,4 +180,16 @@ fn a_source_with_no_accepted_file_fails_rather_than_counting_nothing() {
         "{}",
         stderr(&out)
     );
+}
+
+#[test]
+fn no_fetched_source_fails_saying_to_fetch_one() {
+    let scratch = Scratch::new(&python_version(), &[("Lib/a.py", SOURCE)], &[]);
+    // A source is one with a refused.txt, as scripts/fetch-corpus leaves it.
+    fs::remove_file(scratch.0.join("corpus/cpython/refused.txt")).expect("removing refused.txt");
+    let out = scratch.count();
+    assert_eq!(out.status.code(), Some(1));
+    let err = stderr(&out);
+    assert!(err.contains("no fetched source under"), "{err}");
+    assert!(err.contains("run scripts/fetch-corpus"), "{err}");
 }

@@ -296,6 +296,9 @@ jobs:
     # manifest, so no Python version is named here.  Then every file of the real-world corpus is
     # parsed into an arena and printed back byte for byte, and every file the oracle refuses must
     # be refused: the round trip's ignored test in crates/python, which needs the fetched tree.
+    # Last, scripts/count-structural has the oracle count each structural pattern's matches file
+    # by file, and real_world_matches, another ignored test there, requires quaff's counts to
+    # agree in every file.
     runs-on: [ubuntu-latest]
     name: Real-world corpus
     # Longer than scripts/fetch-corpus's download deadline plus one read's wait, with room for the

@@ -792,14 +792,19 @@ fn equal(target: &Arena<'_>, a: &Bound<'_>, b: &Bound<'_>) -> bool {
 }
 
 /// The code of a place in an arena, as a match compares it, with no kinds in it: each kept
-/// token's text, each value, and the text of a node with nothing inside it, in source order.
-/// Two places with the same code are equal whatever role they stand in, so a name used twice
-/// matches `a` as an argument, a keyword, an attribute and a parameter alike.
+/// token's text, each value, and the text of a node with nothing inside it, in source order,
+/// with where each nested node of more than one part begins and ends.  Two places with the same
+/// code are equal whatever role they stand in, so a name used twice matches `a` as an argument,
+/// a keyword, an attribute and a parameter alike, since each of those is a node of one part, or
+/// a chain of them.  The boundaries keep apart trees whose tokens read alike: `(a + b) * c` and
+/// `a + b * c`, and `[(a, b)]` and `[a, b]` once a tuple's own parentheses take no part.
 #[derive(Debug, PartialEq, Eq, Hash)]
 enum Code<'a> {
     Token(&'a str),
     Value(&'a str),
     Text(&'a str),
+    Begin,
+    End,
 }
 
 /// The code of a node's parts, hashed once, so that whether a run holds the same code as a run
@@ -884,6 +889,8 @@ impl<'a> Same<'a, '_> {
         x == y
     }
 
+    /// The code of `of`, a place's parts.  The place itself is not bounded, so a node and a
+    /// run compare by what is inside them; each node within it of more than one part is.
     fn code(&self, of: &[Part<'_>], out: &mut Vec<Code<'a>>) {
         for part in of {
             match part {
@@ -894,10 +901,14 @@ impl<'a> Same<'a, '_> {
                         continue;
                     }
                     let inner = parts(self.arena, *child);
-                    if inner.is_empty() {
-                        out.push(Code::Text(self.arena.source(*child)));
-                    } else {
-                        self.code(&inner, out);
+                    match inner.len() {
+                        0 => out.push(Code::Text(self.arena.source(*child))),
+                        1 => self.code(&inner, out),
+                        _ => {
+                            out.push(Code::Begin);
+                            self.code(&inner, out);
+                            out.push(Code::End);
+                        }
                     }
                 }
             }

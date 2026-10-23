@@ -209,6 +209,28 @@ fn a_name_used_twice_matches_equal_code_both_times() {
 }
 
 #[test]
+fn a_name_used_twice_tells_apart_trees_whose_tokens_read_alike() {
+    let source = "\
+same([(a, b)], [a, b])
+same((a + b) * c, a + b * c)
+same(x[a,], x[a])
+same(f((x,)), f(x))
+same({(q for q in r)}, {q for q in r})
+same([(q for q in r)], [q for q in r])
+same([a, b], [a, (b)])
+";
+    // Only the last holds the same code twice, `(b)`'s parentheses being redundant.
+    assert_eq!(matches("same($x, $x)", source), ["same([a, b], [a, (b)])"]);
+    // Nor across statements: a tuple of a tuple is not a tuple of three.
+    assert_eq!(
+        matches("$x = $y\nreturn $x\n", "t = (a, b), c\nreturn a, (b, c)\n"),
+        none()
+    );
+    // A one-element tuple's comma is the tuple, so it stays in its shape too.
+    assert_eq!(matches("x[$a,]", "x[a,]\nx[a]\n"), ["x[a,]"]);
+}
+
+#[test]
 fn a_name_used_twice_matches_the_same_code_whatever_its_role() {
     // An argument and a keyword, a name and an attribute, a parameter and a name.
     assert_eq!(matches("f($k=$k)", "f(a=a)\nf(a=b)\n"), ["f(a=a)"]);
