@@ -299,8 +299,9 @@ jobs:
     runs-on: [ubuntu-latest]
     name: Real-world corpus
     # Longer than scripts/fetch-corpus's download deadline plus one read's wait, with room for the
-    # setup, the parse, check-synthetic and building and running the round trip, so a stalled
-    # download ends in the script's own error rather than a bare cancellation.
+    # setup, the parse, check-synthetic, and building and running the round trip and the
+    # structural counts, so a stalled download ends in the script's own error rather than a bare
+    # cancellation.
     timeout-minutes: 20
     steps:
       - name: Check out source repository
@@ -348,5 +349,21 @@ jobs:
             | tee "$RUNNER_TEMP/round-trip.log"
           if ! grep -q '^test result: ok\. 1 passed;' "$RUNNER_TEMP/round-trip.log"; then
             echo "::error::the real-world round trip did not run exactly one test" >&2
+            exit 1
+          fi
+
+      - name: CPython counts the structural matches
+        env:
+          PYTHON: ${{ steps.python.outputs.python-path }}
+        run: '"$PYTHON" scripts/count-structural'
+
+      - name: Every structural match is found as CPython counts it
+        # As for the round trip, the step requires that exactly one test ran.
+        run: |
+          set -o pipefail
+          cargo test --locked -p quaffed-python --test real_world_matches -- --ignored --nocapture 2>&1 \
+            | tee "$RUNNER_TEMP/structural.log"
+          if ! grep -q '^test result: ok\. 1 passed;' "$RUNNER_TEMP/structural.log"; then
+            echo "::error::the structural counts did not run exactly one test" >&2
             exit 1
           fi

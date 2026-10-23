@@ -1,10 +1,13 @@
-//! Only the Python adapter depends on a `ruff_*` crate.
+//! Only the Python adapter depends on a `ruff_*` crate, and it pins each one exactly.
 //!
 //! Ruff says of its crates that their API "will have frequent breaking changes", so they are
-//! confined to `crates/python`, where an upgrade's damage stops.  This test reads every member's
-//! `Cargo.toml` and fails naming any other member that depends on one, under any section or
-//! renamed with `package =`.  `architecture/python.md` says why.
+//! confined to `crates/python`, where an upgrade's damage stops, and each is pinned with `=` to
+//! one version, the same for all of them, so that an upgrade is deliberate work and never a
+//! lock-file refresh.  These tests read every member's `Cargo.toml` and fail naming any other
+//! member that depends on one, under any section or renamed with `package =`, and any of the
+//! adapter's that is not pinned so.  `architecture/python.md` says why.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -102,4 +105,114 @@ fn a_ruff_dependency_is_found_however_it_is_declared() {
     assert!(!depends_on_ruff(
         "[dependencies]\nquaffed-python = { path = \"../python\" }\n"
     ));
+}
+
+/// Each `ruff_*` dependency the manifest text declares on a line of its own, with the version
+/// it asks for: the string itself, or a table's `version`, or `None` for a table without one.
+fn ruff_versions(manifest: &str) -> Vec<(String, Option<String>)> {
+    let quoted = |text: &str| -> Option<String> {
+        let start = text.find('"')? + 1;
+        let end = start + text[start..].find('"')?;
+        Some(text[start..end].to_owned())
+    };
+    manifest
+        .lines()
+        .map(str::trim)
+        .filter_map(|line| {
+            let (key, value) = line.split_once('=')?;
+            let key = key.trim().trim_matches(['"', '\'']);
+            if !key.starts_with("ruff_") {
+                return None;
+            }
+            let value = value.trim();
+            let version = if value.starts_with('{') {
+                value
+                    .split_once("version")
+                    .and_then(|(_, rest)| rest.trim_start().strip_prefix('='))
+                    .and_then(quoted)
+            } else {
+                quoted(value)
+            };
+            Some((key.to_owned(), version))
+        })
+        .collect()
+}
+
+/// Why the adapter's `ruff_*` pins are not exact and alike, if they are not.
+fn pin_problems(manifest: &str) -> Vec<String> {
+    let versions = ruff_versions(manifest);
+    let mut problems = Vec::new();
+    if versions.is_empty() {
+        problems.push("no ruff_* dependency found, so nothing was checked".to_owned());
+    }
+    for (name, version) in &versions {
+        match version {
+            Some(version) if version.starts_with('=') => {}
+            Some(version) => problems.push(format!(
+                "{name} asks for {version:?}, which is not an exact pin: write \"={}\"",
+                version.trim_start_matches(['^', '~', '>', '<', '='])
+            )),
+            None => problems.push(format!("{name} names no version, so nothing pins it")),
+        }
+    }
+    // Compared by the version alone, so that `0.0.18` beside `=0.0.18` is one loose pin rather
+    // than two versions.
+    let pinned: BTreeSet<&str> = versions
+        .iter()
+        .filter_map(|(_, version)| version.as_deref())
+        .map(|version| version.trim_start_matches(['^', '~', '>', '<', '=']))
+        .collect();
+    if pinned.len() > 1 {
+        problems.push(format!(
+            "the ruff_* crates are pinned to different versions, {pinned:?}: upgrade them together"
+        ));
+    }
+    problems
+}
+
+#[test]
+fn the_adapter_pins_every_ruff_crate_exactly_and_alike() {
+    let manifest = workspace_root()
+        .join("crates")
+        .join(ADAPTER)
+        .join("Cargo.toml");
+    let text = fs::read_to_string(&manifest)
+        .unwrap_or_else(|err| panic!("reading {}: {err}", manifest.display()));
+    let problems = pin_problems(&text);
+    assert!(
+        problems.is_empty(),
+        "{}: {}.  architecture/python.md has the upgrade checklist",
+        manifest.display(),
+        problems.join("; ")
+    );
+}
+
+#[test]
+fn a_loosened_or_split_pin_is_found_however_it_is_declared() {
+    let exact = "[dependencies]\nruff_python_ast = \"=0.0.18\"\nruff_text_size = { version = \"=0.0.18\" }\n";
+    assert_eq!(pin_problems(exact), Vec::<String>::new());
+    for loose in [
+        "ruff_python_ast = \"0.0.18\"",
+        "ruff_python_ast = \"^0.0.18\"",
+        "ruff_python_ast = \"~0.0.18\"",
+        "ruff_python_ast = \">=0.0.18\"",
+        "ruff_python_ast = { version = \"0.0.18\", default-features = false }",
+    ] {
+        let problems = pin_problems(&format!("[dependencies]\n{loose}\n"));
+        assert_eq!(problems.len(), 1, "{loose}: {problems:?}");
+        assert!(
+            problems[0].contains("not an exact pin"),
+            "{loose}: {problems:?}"
+        );
+    }
+    let unversioned = pin_problems("[dependencies]\nruff_python_ast = { path = \"../ruff\" }\n");
+    assert!(
+        unversioned[0].contains("names no version"),
+        "{unversioned:?}"
+    );
+    let split = pin_problems(
+        "[dependencies]\nruff_python_ast = \"=0.0.18\"\nruff_python_parser = \"=0.0.19\"\n",
+    );
+    assert!(split[0].contains("different versions"), "{split:?}");
+    assert!(pin_problems("[dependencies]\nmemchr = \"=2\"\n")[0].contains("nothing was checked"));
 }

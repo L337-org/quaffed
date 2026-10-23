@@ -69,14 +69,18 @@ terms its reader knows.
 The arena keeps Ruff's own tokens, less those that carry no meaning in Python: comments, line
 breaks, indentation, the end of the file, semicolons between statements, a comma just before a
 closing bracket - the one Black adds when it splits a call - and redundant parentheses, those
-`ruff_python_ast::token::parentheses_iterator` finds around an expression, which excludes a call's
-own, since they are its arguments'.  A one-element tuple, `(x,)`, needs no exception: it is a tuple
-and `(x)` a name, so their trees differ already.  An f-string's or t-string's opening and closing
-compare by a fixed text, so their prefix and quotes take no part.  A string or bytes literal's value
-is its content as the script language defines it for comparing: what lies between each part's
-delimiters as written, the parts of an implicit concatenation joined, by Ruff's own `opener_len` and
-`closer_len`.  An f-string's parts are compared one by one; unlike a plain string's, an implicit
-concatenation of them is not joined.
+`ruff_python_ast::token::parentheses_iterator` finds around an expression, which excludes a
+call's own, since they are its arguments'.  A tuple's or a generator's own parentheses are left
+out too, though Ruff puts them inside the node rather than among the redundant: `a, b` and `(a,
+b)` are one tree to CPython, as are `f(x for x in y)` and `f((x for x in y))`, and where the
+parentheses change the meaning - `f((a, b))` passes one argument, `f(a, b)` two - the tree
+changes too.  An empty tuple keeps its, as its only spelling.  A one-element tuple, `(x,)`, needs
+no exception: it is a tuple and `(x)` a name, so their trees differ already.  An f-string's or
+t-string's opening and closing compare by a fixed text, so their prefix and quotes take no
+part.  A string or bytes literal's value is its content as the script language defines it for
+comparing: what lies between each part's delimiters as written, the parts of an implicit
+concatenation joined, by Ruff's own `opener_len` and `closer_len`.  An f-string's parts are
+compared one by one; unlike a plain string's, an implicit concatenation of them is not joined.
 
 Each statement list Ruff's walk visits - a module's, a function's, a branch's, an `else` or a
 `finally` - is marked as a list, so `$body...` never takes in an `else:` clause and a run of
@@ -93,6 +97,52 @@ Ruff's `NodeKind` offers no list of its variants, so the list is written once in
 catch-all arm.  The compiler then holds it to the enum: a kind Ruff adds is a non-exhaustive
 match until it is listed, and a name Ruff does not have fails to resolve.  The names are the
 same identifiers, so they are Ruff's own.
+
+## Ruff quirks it absorbs
+
+- **A format spec is invisible to Ruff's walk.**  `InterpolatedElement::visit_source_order`
+  visits a format spec's parts but never enters the `InterpolatedStringFormatSpec` node, so the
+  arena would hang the parts on the element with no spec around them.  The builder in
+  `src/parse.rs` walks such an element's children itself - the expression, then the spec
+  entered around its parts - and `a_format_spec_is_a_node_around_its_parts` checks the result.
+  `ruffs_walk_still_skips_the_format_spec` pins the quirk: an upgrade that fixes it fails that
+  test, which says to delete the workaround.
+
+## Pins
+
+`ruff_python_ast`, `ruff_python_parser` and `ruff_text_size`, which gives a node its range, are
+pinned with `=` in this crate's `Cargo.toml`, and `Cargo.lock` holds them.  An upgrade is
+deliberate work in this crate, never a lock-file refresh.
+
+The three move together.  `ruff_python_parser` depends on `ruff_python_ast` at its own version, so
+bumping one alone puts two copies of `ruff_python_ast` in the build, and the adapter fails to
+compile with *"there are multiple different versions of crate `ruff_python_ast` in the
+dependency graph"*.  `.github/dependabot.yml` keeps the `ruff_*` crates in a group of their own
+for this reason; a pull request from that group is where the checklist below starts, not a merge
+on green.
+
+## Checklist: upgrading Ruff
+
+1. **Read the changelog.**  Read Ruff's changelog for the three crates between the two
+   versions, for changes to node kinds, ranges, tokens and the parser's modes.
+2. **Bump the pin.**  Change all three `=` pins together.  `ruff_containment.rs` fails if any is
+   not exact, or the three differ.
+3. **Fix the adapter.**  Build.  A new or renamed node kind fails the kind list's `match`: list
+   it in `src/kinds.rs`, and update the count in `every_kind_is_listed_once_by_ruffs_name`.
+   Run `cargo test -p quaffed-python`: a new kind the synthetic corpus does not produce fails its
+   coverage check, so add Python that produces it, as `verification.md` describes, and a change
+   in where Ruff's root starts or ends fails the root test above.
+4. **Run the invariant harness and the CPython oracle** over the real-world corpus, as the
+   Real-world corpus CI job does (`verification.md`): `scripts/fetch-corpus` with the oracle's
+   Python, then the round trip, which fails on a change in Ruff's ranges that breaks the arena's
+   invariants, naming the file and the byte; then `scripts/count-structural` and
+   `real_world_matches.rs`, which fail on a change in what a pattern matches, naming the pattern
+   and both counts.
+5. **Check the quirks.**  Each quirk below is pinned by a test that fails when it stops holding;
+   delete the workaround that test names.  Record any new quirk here, with a test of its own.
+6. **Record what changed**: in the commit message, what in Ruff moved and what the adapter did
+   about it, and on this page anything a later change must know.  Update this page in the same
+   change.
 
 ## Ruff quirks it absorbs
 

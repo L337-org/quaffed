@@ -57,8 +57,36 @@ fn redundant_parentheses_take_no_part_but_structural_ones_do() {
     // A call's own parentheses are its arguments', never redundant.
     assert_eq!(matches("f()", "f()\n"), ["f()"]);
     assert_eq!(matches("f()", "f(x)\n"), none());
-    // A tuple's parentheses stay: f((a, b)) is one argument, f(a, b) two.
+    // A tuple passed as one argument is still one argument: f((a, b)) is not f(a, b).
     assert_eq!(matches("f($x, $y)", "f((a, b))\n"), none());
+    assert_eq!(matches("f(($x, $y))", "f(a, b)\n"), none());
+}
+
+#[test]
+fn a_tuples_or_generators_own_parentheses_take_no_part() {
+    // One tree to CPython, so one shape: the parentheses are only how it is written.
+    assert_eq!(
+        matches("return $a, $b", "return a, b\nreturn (a, b)\n"),
+        ["return a, b", "return (a, b)"]
+    );
+    assert_eq!(
+        matches(
+            "for $x in ($a, $b):\n    pass\n",
+            "for i in a, b:\n    pass\n"
+        ),
+        ["for i in a, b:\n    pass"]
+    );
+    assert_eq!(
+        matches("h($q for $q in $r)", "h(q for q in r)\nh((q for q in r))\n"),
+        ["h(q for q in r)", "h((q for q in r))"]
+    );
+    // And a name bound to one compares equal to the other, as a tuple assigned and returned.
+    assert_eq!(
+        matches("$x = $y\nreturn $x\n", "a, b = f()\nreturn (a, b)\n"),
+        ["a, b = f()\nreturn (a, b)"]
+    );
+    // An empty tuple's parentheses are all there is of it.
+    assert_eq!(matches("f(())", "f(())\nf(x)\n"), ["f(())"]);
 }
 
 #[test]

@@ -104,10 +104,11 @@ not judged, and the run says so.
 
 Real Python, as a check on what the synthetic corpus did not think to write: **CPython's own
 `Lib/test` at the release tag matching the oracle**, a large body of Python written to exercise
-the language.  It is **used for the round trip, and as input when profiling by hand**, never by
-a budget or a benchmark, so its contents cannot move a measured number.  Nothing that measures
-reads `target/corpus/`.  A file it holds can fail a pull request through the round trip, but
-only by not round-tripping or by disagreeing with the oracle.
+the language.  It is **used for the round trip and the structural counts, and as input when
+profiling by hand**, never by a budget or a benchmark, so its contents cannot move a measured
+number.  Nothing that measures reads `target/corpus/`.  A file it holds can fail a pull request
+through the round trip, by not round-tripping or by disagreeing with the oracle, or through the
+structural counts, by matching a pattern where the oracle's tree says it does not.
 
 It is **fetched, not checked in**: it is CPython's code, under the PSF licence, and far larger
 than the rest of the repository.  `corpus/real-world.toml` pins it, and is the one place that
@@ -150,7 +151,8 @@ running the oracle, so it is generated with the files rather than kept in step b
 
 The **Real-world corpus** job in `premerge.yaml` runs `scripts/check-synthetic` and
 `scripts/fetch-corpus` with the oracle's Python, reusing a fetch whose manifest and script are
-unchanged, and then the round trip over the fetched tree, below.
+unchanged, then the round trip over the fetched tree, then `scripts/count-structural` and the
+structural counts, both below.
 `crates/quaffed/tests/fetch_corpus.rs` tests the fetch script itself in the ordinary run, against
 small archives it builds: only the path is extracted, a changed hash is refused, a member with a
 `..` step or a link escaping the directory is refused, the floor fails saying how many it read,
@@ -218,6 +220,52 @@ To run the real-world half locally, fetch first:
 ```bash
 python3.X scripts/fetch-corpus        # 3.X: the oracle in corpus/real-world.toml
 cargo test -p quaffed-python --test round_trip -- --ignored
+```
+
+## The structural counts
+
+`crates/python/tests/real_world_matches.rs` holds quaff's structural matching to **an
+independent count, made by CPython's own parser**, over every real-world file the oracle
+accepts.  `scripts/count-structural`, run with the oracle's Python, counts for a set of patterns
+- one for each kind of hole: a single and an unbound hole, an unbound sequence, a named
+sequence, sequences bounded by the node they stand in, a name used twice across statements, and
+a sequence between two statements - the places each should match, by a predicate over `ast`'s
+tree written for that pattern alone.  It writes the counts to `structural.txt` beside
+`refused.txt`, and the test compiles the same patterns, matches them over the same files and
+requires the same count for each.
+
+**A disagreement is a defect in quaff or in a predicate**, and either is found by listing both
+sides' matches by file and line: `quaff -p` over the tree, with the refused files in a
+`.ignore`, against the predicate's walk.  The first run found one in quaff: a tuple's own
+parentheses took part in a match, so `return (a, b)` did not return the `a, b` it was assigned,
+where CPython's tree has the two alike (`python.md`).
+
+`crates/quaffed/tests/count_structural.rs` tests the script itself in the ordinary run, as
+`check_synthetic.rs` does its: on a small source it builds, each pattern is counted once beside
+its near misses, a refused file is left out, another Python is refused, and a source with no
+accepted file fails.  The predicates compare trees field by field rather than through `ast.dump`,
+whose text for a default field differs between releases.
+
+Like the round trip it is ignored in the ordinary run, and the **Real-world corpus** job runs it
+with `--ignored` after the script, its step failing unless exactly one test ran.  It cannot pass
+having read nothing: a count of files that differs from the oracle's, an empty pattern list, or
+a pattern that does not compile fails it.
+
+### Checklist: adding a pattern to the structural counts
+
+1. Add the pattern to `PATTERNS` in `scripts/count-structural`, with a predicate over `ast`'s
+   tree that says what it means, written from the language reference rather than from quaff's
+   matcher.
+2. Run the script with the oracle's Python, then `cargo test -p quaffed-python --test
+   real_world_matches -- --ignored`.
+3. If the counts differ, list both sides' matches by file and line, as above, and decide which
+   is wrong.  A predicate changed to agree with quaff checks nothing.
+
+To run it locally, after fetching:
+
+```bash
+python3.X scripts/count-structural    # 3.X: the oracle in corpus/real-world.toml
+cargo test -p quaffed-python --test real_world_matches -- --ignored
 ```
 
 ## docker-mcp is never in either corpus

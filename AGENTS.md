@@ -55,6 +55,7 @@ the work instead.  The shared hygiene check that CI runs fails on either.
 | `crates/python/`, or a `ruff_*` dependency or its version | [architecture/python.md](architecture/python.md) |
 | `crates/python/tests/round_trip.rs`, or how the corpus is judged by the oracle | the round trip section of [architecture/verification.md](architecture/verification.md) |
 | `corpus/`, `scripts/fetch-corpus` or `scripts/check-synthetic`, or adding Python to the synthetic corpus | the corpus sections of [architecture/verification.md](architecture/verification.md) |
+| `scripts/count-structural` or `crates/python/tests/real_world_matches.rs` | the structural counts section of [architecture/verification.md](architecture/verification.md) |
 | `packaging/`, `scripts/build-deb`, the package or release workflows, or a dependency the binary links | [architecture/release.md](architecture/release.md) |
 | `scripts/test-deb`, `scripts/break-deb` or `packaging/deb/install-test/`, or adding a target distribution | the package install test section of [architecture/verification.md](architecture/verification.md) |
 | `budgets.toml`, `scripts/budgets` or `scripts/break-budgets`, or a change that moves a budget | the budgets section of [architecture/verification.md](architecture/verification.md) |
@@ -72,6 +73,7 @@ cargo fmt --all -- --check                         # format check, as CI runs it
 scripts/install-tools --all                        # every verification tool, at its pinned version
 python3.X scripts/fetch-corpus                     # the real-world corpus (3.X: the manifest's oracle)
 python3.X scripts/check-synthetic                  # the oracle over the synthetic corpus
+python3.X scripts/count-structural                 # CPython's counts of structural matches
 scripts/build-deb --dev amd64                      # a development package (on amd64 Linux)
 scripts/test-deb target/deb/quaffed_*.deb          # install and run it on each target distribution
 scripts/budgets <quaff> --repeat 3                 # the budgets, on amd64 Linux (verification.md)

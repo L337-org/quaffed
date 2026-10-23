@@ -1,0 +1,242 @@
+#!/usr/bin/env python3
+"""Count, with CPython's own parser, the matches quaff's structural patterns should find.
+
+For each source scripts/fetch-corpus fetched under target/corpus/: parse every .py file the
+oracle accepts with `ast.parse`, and count, for each pattern below, the places its shape
+occurs - by a predicate over CPython's tree written for that pattern alone, not by quaff's
+matcher.  The counts land in target/corpus/<source>/structural.txt, beside refused.txt, for
+crates/python/tests/real_world_matches.rs to hold quaff's own counts to: a header line counting
+the files, then per pattern its count, a tab, its name, a tab and the pattern, each line break
+in it written as \n.
+
+Each pattern exercises a kind of hole: a single hole and an unbound one, an unbound sequence, a
+named sequence, a sequence bounded by the node it stands in, a name used twice across a run of
+statements, and a sequence between two statements.  The predicates spell out what each pattern
+means, so a disagreement is either a defect in quaff or in the predicate, and either is found by
+reading the file the counts differ on.
+
+Usage: scripts/count-structural [--dest DIR] [--manifest FILE]
+
+Run it with the oracle's Python, as fetch-corpus is, so that the tree is the one the corpus was
+judged by.  architecture/verification.md describes the corpus.
+"""
+
+import argparse
+import ast
+import pathlib
+import sys
+import tomllib
+
+# A statement list, as quaff's Python adapter marks one: every field of a statement that holds
+# statements.  An `elif` is an `If` in its parent's `orelse` in CPython's tree, and its own body
+# a list of its own, as it is in quaff's.
+STATEMENT_LISTS = ("body", "orelse", "finalbody")
+
+
+def calls_to(node, name):
+    """Whether `node` is a call to the plain name `name`."""
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == name
+    )
+
+
+def arguments(call):
+    """A call's arguments and keyword arguments, as quaff's arena holds them: one list."""
+    return len(call.args) + len(call.keywords)
+
+
+def shape(node):
+    """A node's tree as nested tuples of its kind and fields, its context - load or store - left
+    out.  Compared field by field rather than through `ast.dump`, whose text for a default field
+    differs between releases."""
+    if isinstance(node, ast.AST):
+        return (
+            type(node).__name__,
+            tuple((field, shape(getattr(node, field))) for field in node._fields if field != "ctx"),
+        )
+    if isinstance(node, list):
+        return tuple(shape(item) for item in node)
+    return node
+
+
+def same_code(a, b):
+    """Whether two expressions hold the same code, as a name used twice must: the same tree,
+    whatever context - load or store - each stands in."""
+    return shape(a) == shape(b)
+
+
+def statement_lists(tree):
+    """Every statement list in `tree`: each field of a node holding statements, and each case
+    of a `match` and handler of a `try`, whose bodies are lists of their own."""
+    for node in ast.walk(tree):
+        for field in STATEMENT_LISTS:
+            value = getattr(node, field, None)
+            if isinstance(value, list) and value and isinstance(value[0], ast.stmt):
+                yield value
+
+
+def single_and_unbound_holes(tree):
+    """`isinstance($x, $_)`: a call to `isinstance` with exactly two arguments."""
+    return sum(
+        1
+        for node in ast.walk(tree)
+        if calls_to(node, "isinstance") and arguments(node) == 2
+    )
+
+
+def unbound_sequence(tree):
+    """`print($...)`: a call to `print` with one or more arguments of any kind."""
+    return sum(
+        1 for node in ast.walk(tree) if calls_to(node, "print") and arguments(node) >= 1
+    )
+
+
+def named_sequence(tree):
+    """`self.assertEqual($args...)`: a call of `self.assertEqual` with one or more arguments."""
+    return sum(
+        1
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "assertEqual"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "self"
+        and arguments(node) >= 1
+    )
+
+
+def sequences_in_a_node(tree):
+    """`try: $... / except $e: $...`: a `try` with exactly one handler, which names a type and
+    binds nothing, and no `else` or `finally`."""
+    return sum(
+        1
+        for node in ast.walk(tree)
+        if type(node) is ast.Try
+        and len(node.handlers) == 1
+        and node.handlers[0].type is not None
+        and node.handlers[0].name is None
+        and not node.orelse
+        and not node.finalbody
+    )
+
+
+def assigned(statement):
+    """The one target of a plain assignment, or None."""
+    if type(statement) is ast.Assign and len(statement.targets) == 1:
+        return statement.targets[0]
+    return None
+
+
+def name_used_twice(tree):
+    """`$x = $y / return $x`: an assignment to one target and, straight after it in the same
+    list, a `return` of the same code."""
+    count = 0
+    for statements in statement_lists(tree):
+        for first, second in zip(statements, statements[1:]):
+            target = assigned(first)
+            if (
+                target is not None
+                and isinstance(second, ast.Return)
+                and second.value is not None
+                and same_code(target, second.value)
+            ):
+                count += 1
+    return count
+
+
+def sequence_between_statements(tree):
+    """`$x = $y / $... / return $x`: from each assignment to one target, the first `return` of
+    the same code later in the same list with at least one statement between, as a sequence
+    takes the fewest statements that let the rest match."""
+    count = 0
+    for statements in statement_lists(tree):
+        for at, first in enumerate(statements):
+            target = assigned(first)
+            if target is None:
+                continue
+            if any(
+                isinstance(later, ast.Return)
+                and later.value is not None
+                and same_code(target, later.value)
+                for later in statements[at + 2 :]
+            ):
+                count += 1
+    return count
+
+
+PATTERNS = [
+    ("single and unbound holes", "isinstance($x, $_)", single_and_unbound_holes),
+    ("an unbound sequence", "print($...)", unbound_sequence),
+    ("a named sequence", "self.assertEqual($args...)", named_sequence),
+    ("sequences bounded by their node", "try:\n    $...\nexcept $e:\n    $...", sequences_in_a_node),
+    ("a name used twice across statements", "$x = $y\nreturn $x", name_used_twice),
+    (
+        "a sequence between two statements",
+        "$x = $y\n$...\nreturn $x",
+        sequence_between_statements,
+    ),
+]
+
+
+def accepted(source):
+    """The .py files of a fetched source the oracle accepts, as paths relative to it."""
+    listed = (source / "refused.txt").read_text(encoding="utf-8").splitlines()
+    refused = {line.split("\t", 1)[0] for line in listed if line and not line.startswith("#")}
+    return sorted(
+        path.relative_to(source).as_posix()
+        for path in source.rglob("*.py")
+        if path.relative_to(source).as_posix() not in refused
+    )
+
+
+def count(source):
+    files = accepted(source)
+    counts = [0] * len(PATTERNS)
+    for relative in files:
+        tree = ast.parse((source / relative).read_bytes(), filename=relative)
+        for i, (_, _, predicate) in enumerate(PATTERNS):
+            counts[i] += predicate(tree)
+    lines = [f"# {len(files)} files; counted by CPython {sys.version.split()[0]}'s ast"]
+    lines.append("# Generated by scripts/count-structural; each line is a count, a name and a pattern.")
+    for (name, pattern, _), counted in zip(PATTERNS, counts):
+        if "\\n" in pattern or "\t" in pattern:
+            sys.exit(f"count-structural: {name}: a pattern may not hold a backslash-n or a tab")
+        lines.append(f"{counted}\t{name}\t{pattern.replace(chr(10), '\\n')}")
+    return len(files), "\n".join(lines) + "\n"
+
+
+def check_oracle(manifest, name):
+    """Stop unless this is the CPython the manifest says judges source `name`, since another
+    release's tree can differ."""
+    with manifest.open("rb") as file:
+        oracle = tomllib.load(file)[name]["oracle"]
+    running = ".".join(str(part) for part in sys.version_info[:3])
+    if sys.implementation.name != "cpython" or running != oracle:
+        sys.exit(
+            f"count-structural: source {name!r} is judged by CPython {oracle}, but this is "
+            f"{sys.implementation.name} {running}: run it with that Python"
+        )
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--dest", default="target/corpus", type=pathlib.Path)
+    parser.add_argument("--manifest", default="corpus/real-world.toml", type=pathlib.Path)
+    args = parser.parse_args()
+    sources = sorted(d for d in args.dest.iterdir() if (d / "refused.txt").is_file())
+    if not sources:
+        sys.exit(f"count-structural: no fetched source under {args.dest}; run scripts/fetch-corpus")
+    for source in sources:
+        check_oracle(args.manifest, source.name)
+        files, text = count(source)
+        if files == 0:
+            sys.exit(f"count-structural: {source} holds no file the oracle accepts")
+        (source / "structural.txt").write_text(text, encoding="utf-8")
+        print(f"count-structural: {source}: {files} files")
+        print(text, end="")
+
+
+if __name__ == "__main__":
+    main()
