@@ -5,7 +5,8 @@
 //! disagree about what clean means.  These tests hold that in place: the manifest is well
 //! formed, `scripts/install-tools` reads it exactly as this file does, the script stops with
 //! the tool and version named when an install fails, no workflow names a version or installs a
-//! tool itself, and `gungraun-runner` moves with the `gungraun` library.
+//! tool itself, no workflow installs from apt but through the action that caches the packages,
+//! and `gungraun-runner` moves with the `gungraun` library.
 //! `architecture/verification.md` has the reasoning.
 
 use std::collections::BTreeSet;
@@ -525,11 +526,7 @@ fn cargo_installs_every_cargo_tool_and_all_adds_the_toolchains() {
 fn workflow_violations(label: &str, text: &str, tools: &[String]) -> Vec<String> {
     let mut found = Vec::new();
     for (index, raw) in text.lines().enumerate() {
-        let line = match raw.find('#') {
-            Some(0) => "",
-            Some(i) if raw[..i].ends_with(char::is_whitespace) => &raw[..i],
-            _ => raw,
-        };
+        let line = without_comment(raw);
         let mut reasons: Vec<String> = Vec::new();
         for (pattern, why) in [
             ("cargo install", "installs a tool itself"),
@@ -574,6 +571,40 @@ fn workflow_violations(label: &str, text: &str, tools: &[String]) -> Vec<String>
         }
     }
     found
+}
+
+/// `raw` up to a YAML comment: a `#` at the beginning of the line or after whitespace.
+fn without_comment(raw: &str) -> &str {
+    match raw.find('#') {
+        Some(0) => "",
+        Some(i) if raw[..i].ends_with(char::is_whitespace) => &raw[..i],
+        _ => raw,
+    }
+}
+
+/// The action every apt install goes through, so the downloads are cached and a restored
+/// package is checked against the index before it is installed.
+const APT_ACTION: &str = ".github/actions/apt-install/action.yaml";
+
+/// Returns each line of a workflow or action file that installs from apt itself, rather than
+/// through [`APT_ACTION`].  Comments are dropped first, as in [`workflow_violations`].
+fn apt_violations(label: &str, text: &str) -> Vec<String> {
+    text.lines()
+        .enumerate()
+        .filter(|(_, raw)| {
+            let line = without_comment(raw);
+            ["apt-get install", "apt install", "aptitude install"]
+                .iter()
+                .any(|pattern| line.contains(pattern))
+        })
+        .map(|(index, raw)| {
+            format!(
+                "{label}:{}: installs from apt itself: {}",
+                index + 1,
+                raw.trim()
+            )
+        })
+        .collect()
 }
 
 fn yaml_files_under(dir: &Path, found: &mut Vec<PathBuf>) {
@@ -629,6 +660,59 @@ fn no_workflow_installs_a_tool_or_names_a_version() {
         "install tools with scripts/install-tools and pin them in tools.toml:\n{}",
         violations.join("\n")
     );
+}
+
+#[test]
+fn no_workflow_installs_from_apt_but_through_the_caching_action() {
+    let root = workspace_root();
+    let mut files = Vec::new();
+    yaml_files_under(&root.join(".github/workflows"), &mut files);
+    yaml_files_under(&root.join(".github/actions"), &mut files);
+    // Finding nothing, or not finding the action, would pass having checked nothing.
+    assert!(
+        files.iter().any(|f| f.ends_with("premerge.yaml")),
+        "the scan did not find .github/workflows/premerge.yaml, so it checked nothing"
+    );
+    assert!(
+        files.iter().any(|f| f.ends_with(APT_ACTION)),
+        "the scan did not find {APT_ACTION}, which every apt install must go through"
+    );
+    let mut violations = Vec::new();
+    for file in files.iter().filter(|f| !f.ends_with(APT_ACTION)) {
+        let label = file
+            .strip_prefix(&root)
+            .unwrap_or(file)
+            .display()
+            .to_string();
+        violations.extend(apt_violations(&label, &read(file)));
+    }
+    assert!(
+        violations.is_empty(),
+        "install apt packages with {APT_ACTION}, which caches them:\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
+fn the_apt_check_catches_an_install_and_passes_the_action_and_comments() {
+    for line in [
+        "        run: sudo apt-get update && sudo apt-get install -y valgrind",
+        "        run: sudo apt install -y lintian",
+        "          apt-get install -yq rsyslog",
+    ] {
+        let found = apt_violations("fixture.yaml", line);
+        assert_eq!(found.len(), 1, "not caught: {line}");
+        assert!(found[0].starts_with("fixture.yaml:1: "), "{found:?}");
+    }
+    for line in [
+        "        uses: ./.github/actions/apt-install",
+        "          packages: valgrind strace time musl-tools",
+        "        run: sudo apt-get update",
+        "    # Valgrind comes from the image, through apt-get install in the action.",
+    ] {
+        let found = apt_violations("fixture.yaml", line);
+        assert!(found.is_empty(), "wrongly flagged: {found:?}");
+    }
 }
 
 #[test]

@@ -1,0 +1,85 @@
+name: 'Install apt packages'
+description: 'Install packages from the runner image''s apt sources, with the downloaded package files cached.'
+
+# A job that installs from apt does it with this action, so a slow Ubuntu mirror costs a cache
+# restore rather than the download.  The cache holds only the .deb files: apt still reads the
+# package lists from the mirror, and installs the versions they name, so what is installed is
+# what an uncached install would get.  The key carries the runner image, so a new image, whose
+# packages can differ, saves an entry of its own; the prefix restore brings back an older
+# entry's files, and apt downloads only what they lack.
+#
+# apt does not check a file already in its archive directory again: it hands it to dpkg as it
+# finds it.  So before installing, each restored file is checked against the SHA-256 the signed
+# index lists for its package, version and architecture, and deleted if it does not match,
+# which leaves a cached file held to the same check as a downloaded one.
+inputs:
+  packages:
+    description: 'The packages to install, separated by spaces.'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Name the runner image
+      id: image
+      shell: bash
+      run: |
+        if [[ -z "${ImageOS:-}" || -z "${ImageVersion:-}" ]]; then
+          echo "::error::apt-install: this runner sets no ImageOS or ImageVersion, so the cache cannot be keyed on its image; the action needs a GitHub-hosted runner"
+          exit 1
+        fi
+        echo "id=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+
+    # apt's own archive directory, made the runner's so the cache can restore into it; apt
+    # writes into it as root, and its partial downloads go to a subdirectory it owns.
+    - name: Let the cache restore into apt's archive directory
+      shell: bash
+      run: sudo chown "$USER" /var/cache/apt/archives
+
+    - name: Restore the downloaded packages
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: /var/cache/apt/archives/*.deb
+        key: apt-${{ runner.arch }}-${{ inputs.packages }}-${{ steps.image.outputs.id }}
+        restore-keys: |
+          apt-${{ runner.arch }}-${{ inputs.packages }}-
+
+    - name: Install
+      shell: bash
+      # Through the environment rather than interpolated into the script, so the package names
+      # are data to the shell, never code.
+      env:
+        PACKAGES: ${{ inputs.packages }}
+      run: |
+        read -ra packages <<<"$PACKAGES"
+        sudo apt-get update
+
+        shopt -s nullglob
+        kept=0 removed=0
+        for deb in /var/cache/apt/archives/*.deb; do
+          name="$(basename "$deb" .deb)"
+          IFS=_ read -r package version arch <<<"$name"
+          version="${version//%3a/:}"
+          actual="$(sha256sum "$deb" | cut -d' ' -f1)"
+          # Read whole before searching: grep -q stops at its match, and under pipefail
+          # apt-cache's broken pipe would then count as no match.
+          listed="$(apt-cache show "$package:$arch=$version" 2>/dev/null || true)"
+          if grep -qx "SHA256: $actual" <<<"$listed"; then
+            kept=$((kept + 1))
+          else
+            echo "apt-install: deleting cached $(printf %q "$name.deb"): its SHA-256 is not the index's for $package $version $arch"
+            rm -f "$deb"
+            removed=$((removed + 1))
+          fi
+        done
+        echo "apt-install: $kept cached package files match the index, $removed deleted"
+
+        sudo apt-get install -y --no-install-recommends "${packages[@]}"
+
+        # The cache saves what is left here, so an image that deletes downloaded packages would
+        # leave nothing to save and every run would download again, unnoticed.  A warning, not a
+        # failure: it also happens, rightly, when the image already has every package.
+        debs=(/var/cache/apt/archives/*.deb)
+        if (( ${#debs[@]} == 0 )); then
+          echo "::warning::apt-install: no package file is left in /var/cache/apt/archives, so nothing will be cached: either the image has every package already, or its apt configuration deletes downloads (Keep-Downloaded-Packages, or a clean hook)"
+        fi

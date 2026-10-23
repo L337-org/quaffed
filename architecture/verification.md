@@ -637,6 +637,28 @@ that way on Linux and checks each pinned version against cargo's own record of t
 costs a cache restore until `tools.toml` changes, and then builds what changed, so a bad pin
 fails on the pull request that introduces it rather than in the first job to use the tool.
 
+**Packages from apt go through `.github/actions/apt-install`**, which caches the downloaded
+`.deb` files, so a slow Ubuntu mirror costs a cache restore rather than minutes of download:
+
+```yaml
+      - name: Install Valgrind, strace, GNU time and the musl C toolchain
+        uses: ./.github/actions/apt-install
+        with:
+          packages: valgrind strace time musl-tools
+```
+
+Only the package files are cached.  apt still reads the package lists from the mirror and
+installs the versions they name, so the cache changes how fast a package arrives, never which
+version: the Budgets job's Valgrind is the one an uncached install would get.  The key carries
+the runner image's name and version, so a new image saves an entry of its own, and an older
+entry is restored by prefix for the files that still apply.
+
+**A restored file is checked before it is installed.**  apt does not check a file already in
+its archive directory: it hands it to dpkg as found.  So the action compares each restored
+file's SHA-256 with the one the signed index lists for its package, version and architecture,
+and deletes any that differ, which apt then downloads.  A cached package is held to the same
+check as a downloaded one, which matters because the package job also builds releases.
+
 ## What the tests enforce
 
 `crates/quaffed/tests/tool_manifest.rs`, in the ordinary test run:
@@ -648,6 +670,7 @@ fails on the pull request that introduces it rather than in the first job to use
   fails, and says what is missing when cargo, rustup or a named entry is;
 - no workflow or local action calls `cargo install`, `cargo binstall` or an install action,
   names a toolchain or a dated nightly, or names a version of a manifest tool;
+- no workflow or local action but `.github/actions/apt-install` installs from apt;
 - `gungraun-runner` in the manifest and `gungraun` in `Cargo.lock` are either both absent or
   both present at one version, because gungraun refuses to run against a runner of a different
   version.

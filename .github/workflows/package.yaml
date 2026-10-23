@@ -45,7 +45,9 @@ jobs:
         run: rustup toolchain install
 
       - name: Install the musl C toolchain and lintian
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools lintian
+        uses: ./.github/actions/apt-install
+        with:
+          packages: musl-tools lintian
 
       - name: Build and check the package
         id: build
