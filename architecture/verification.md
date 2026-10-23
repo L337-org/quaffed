@@ -243,8 +243,9 @@ sides' matches by file and line: `quaff -p` over the tree, with the refused file
 its near misses and its file's line written, a refused file is left out, another Python is
 refused, and no fetched source or a source with no accepted file fails.  `real_world_matches.rs`
 tests its own reading of the counts in the ordinary run: a malformed line, or files' counts that
-do not add up to a pattern's total, are refused saying why.  The predicates compare trees field by field rather than through `ast.dump`,
-whose text for a default field differs between releases.
+do not add up to a pattern's total, are refused saying why.  The predicates compare trees field
+by field rather than through `ast.dump`, whose text for a default field differs between
+releases.
 
 Like the round trip it is ignored in the ordinary run, and the **Real-world corpus** job runs it
 with `--ignored` after the script, its step failing unless exactly one test ran.  It cannot pass
