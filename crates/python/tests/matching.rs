@@ -546,3 +546,29 @@ fn an_indented_pattern_is_refused_as_python_refuses_an_indented_file() {
         other => panic!("{other:?}"),
     }
 }
+
+#[test]
+fn a_name_used_twice_tells_a_string_from_bytes_with_the_same_content() {
+    // Different values to Python, so different code, though their content reads alike.
+    let source = "same(\"ab\", b\"ab\")\nsame(\"ab\", 'ab')\nsame(b\"ab\", b'ab')\n";
+    assert_eq!(
+        matches("same($x, $x)", source),
+        ["same(\"ab\", 'ab')", "same(b\"ab\", b'ab')"]
+    );
+}
+
+#[test]
+fn hole_spellings_in_a_string_or_comment_are_literal_text_whatever_they_are() {
+    // `$_...` and a name used both ways are refused only where they are holes.
+    let source = "log(\"$_...\")\nf(y)  # see $x...\n";
+    assert_eq!(matches("log(\"$_...\")", source), ["log(\"$_...\")"]);
+    assert_eq!(matches("f($x)  # see $x...", source), ["f(y)"]);
+    assert!(matches!(
+        compile_pattern("f($_...)"),
+        Err(PatternError::UnboundNamedSequence { offset: 2 })
+    ));
+    assert!(matches!(
+        compile_pattern("f($x, $x...)"),
+        Err(PatternError::MixedHole { offset: 6, .. })
+    ));
+}

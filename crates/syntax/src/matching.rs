@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Range;
 use std::rc::Rc;
 
-use crate::{Arena, Hole, NodeId, Pattern, Token};
+use crate::{Arena, Hole, Kind, NodeId, Pattern, Token};
 
 /// One place a pattern matched: the range it covers in the text the arena was built over.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1103,8 +1103,10 @@ impl<'p, 't> Matcher<'p, 't> {
     }
 }
 
-/// The code of a place in an arena, as a match compares it, with no kinds in it: each kept
-/// token's text, each value, and the text of a node with nothing inside it, in source order,
+/// The code of a place in an arena, as a match compares it, with no kinds in it but a value's:
+/// each kept token's text, each value with the kind of node it is the value of - so a string's
+/// and a bytes literal's alike content differ - and the text of a node with nothing inside it, in
+/// source order,
 /// with where each nested node of more than one part begins and ends.  Two places with the same
 /// code are equal whatever role they stand in, so a name used twice matches `a` as an argument,
 /// a keyword, an attribute and a parameter alike, since each of those is a node of one part, or
@@ -1113,7 +1115,7 @@ impl<'p, 't> Matcher<'p, 't> {
 #[derive(Debug, PartialEq, Eq, Hash)]
 enum Code<'a> {
     Token(&'a str),
-    Value(&'a str),
+    Value(Kind, &'a str),
     Text(&'a str),
     Begin,
     End,
@@ -1298,7 +1300,7 @@ impl<'a> Same<'a, '_> {
                 Part::Token(token) => out.push(Code::Token(self.arena.token_text(token))),
                 Part::Child(child) => {
                     if let Some(value) = self.arena.value(*child) {
-                        out.push(Code::Value(value));
+                        out.push(Code::Value(self.arena.kind(*child), value));
                         continue;
                     }
                     let inner = parts(self.arena, *child);

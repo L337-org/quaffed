@@ -200,7 +200,7 @@ struct Claim {
 /// If putting literal text back inside a string or comment moved a hole, which would mean the
 /// grammar let a string's content change the pattern's shape: a defect, not an input.
 pub fn compile_pattern(text: &str) -> Result<Pattern, PatternError> {
-    let claims = claim(text)?;
+    let claims = claim(text);
     let placeholder = placeholder_stem(text);
     // First parse: every claim a placeholder, to learn which of them the grammar makes nodes.
     let first = substitute(text, &claims, |_| true, &placeholder);
@@ -229,6 +229,7 @@ pub fn compile_pattern(text: &str) -> Result<Pattern, PatternError> {
             });
         }
     }
+    holes_spelt_well(text, &claims, &is_hole)?;
     // Second parse: a literal claim restored as written, so the pattern matches that text.  A
     // string or comment's content takes no part in the structure, so the shape is unchanged.
     let second = substitute(text, &claims, |i| is_hole[i], &placeholder);
@@ -294,8 +295,39 @@ pub fn compile_pattern(text: &str) -> Result<Pattern, PatternError> {
     Ok(pattern)
 }
 
-/// Every hole the pattern spells, in order, before anything is parsed.
-fn claim(text: &str) -> Result<Vec<Claim>, PatternError> {
+/// Refuses `$_...`, and one name used both for one node and for a sequence, among the claims the
+/// grammar made holes: in a string or a comment either is the literal text it is.
+fn holes_spelt_well(text: &str, claims: &[Claim], is_hole: &[bool]) -> Result<(), PatternError> {
+    let holes: Vec<&Claim> = claims
+        .iter()
+        .zip(is_hole)
+        .filter_map(|(claim, hole)| hole.then_some(claim))
+        .collect();
+    for (at, claim) in holes.iter().enumerate() {
+        if &text[claim.written.clone()] == "$_..." {
+            return Err(PatternError::UnboundNamedSequence {
+                offset: claim.written.start,
+            });
+        }
+        if let Some(name) = &claim.hole.name
+            && holes[..at].iter().any(|earlier| {
+                earlier.hole.name.as_ref() == Some(name)
+                    && earlier.hole.sequence != claim.hole.sequence
+            })
+        {
+            return Err(PatternError::MixedHole {
+                name: name.clone(),
+                offset: claim.written.start,
+                sequence: claim.hole.sequence,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Every hole the pattern spells, in order, before anything is parsed: what the grammar makes of
+/// each, and so whether the rules for holes apply to it, is learnt only from the parse.
+fn claim(text: &str) -> Vec<Claim> {
     let mut claims = Vec::new();
     let mut at = 0;
     while let Some(found) = text[at..].find('$') {
@@ -319,20 +351,6 @@ fn claim(text: &str) -> Result<Vec<Claim>, PatternError> {
         if sequence {
             end += 3;
         }
-        if name == Some("_") && sequence {
-            return Err(PatternError::UnboundNamedSequence { offset: start });
-        }
-        if let Some(name) = name.filter(|n| *n != "_")
-            && claims.iter().any(|c: &Claim| {
-                c.hole.name.as_deref() == Some(name) && c.hole.sequence != sequence
-            })
-        {
-            return Err(PatternError::MixedHole {
-                name: name.to_owned(),
-                offset: start,
-                sequence,
-            });
-        }
         claims.push(Claim {
             written: start..end,
             hole: Hole {
@@ -342,7 +360,7 @@ fn claim(text: &str) -> Result<Vec<Claim>, PatternError> {
         });
         at = end;
     }
-    Ok(claims)
+    claims
 }
 
 /// The length in bytes of the Python identifier `text` starts with, by the rules Ruff's lexer
@@ -580,7 +598,7 @@ mod tests {
 
     #[test]
     fn a_brace_or_a_bare_sigil_is_never_claimed() {
-        assert_eq!(claim("echo ${HOME} $ $1 $"), Ok(vec![]));
+        assert_eq!(claim("echo ${HOME} $ $1 $"), Vec::<Claim>::new());
         let pattern = compiled("f(\"${HOME}\", $a)");
         assert_eq!(holes(&pattern).len(), 1);
         assert!(pattern.arena().text().starts_with("f(\"${HOME}\""));
@@ -588,7 +606,7 @@ mod tests {
 
     #[test]
     fn names_follow_pythons_identifiers() {
-        let claims = claim("$a1 $_x $é $9 $a² $e\u{301}").unwrap();
+        let claims = claim("$a1 $_x $é $9 $a² $e\u{301}");
         let names: Vec<_> = claims.iter().map(|c| c.hole.name.clone()).collect();
         // A superscript digit is not XID_Continue; a combining accent is.
         assert_eq!(
@@ -719,7 +737,7 @@ mod tests {
             format!("the pattern is not Python: {message}")
         );
         // An error inside a placeholder points at the start of the hole.
-        let sub = substitute("$abc", &claim("$abc").unwrap(), |_| true, "__h");
+        let sub = substitute("$abc", &claim("$abc"), |_| true, "__h");
         assert_eq!(sub.written_offset(2), 0);
         assert_eq!(sub.written_offset(sub.text.len()), 4);
     }

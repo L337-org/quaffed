@@ -32,8 +32,9 @@ content read back from its shortest spelling is unchanged.
 `$_` one node bound to nothing, `$name...` a sequence of one or more nodes, and `$...` such a
 sequence bound to nothing; a hole never matches nothing.  Whether a `$name` is a hole is the
 target language's grammar's to decide, not the script parser's: one that lands in code is a
-hole, and one inside a string literal or a comment is literal text.  `$_...` is refused, since
-`$...` already spells that; so is one name used both for one node and for a sequence; so is a
+hole, and one inside a string literal or a comment is literal text.  Where they are holes, `$_...`
+is refused, since `$...` already spells that, and so is one name used both for one node and for a
+sequence; so is a
 sequence hole at the start or end of a run of statements, which nothing would bound; so is a
 pattern whose search could grow faster than the square of a block's or list's length - two
 sequences together in a run of statements, or a second place where what a sequence takes decides

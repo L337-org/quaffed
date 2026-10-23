@@ -75,12 +75,13 @@ alone, and one with nothing inside it at all by its text.  A hole matches any no
 one or more consecutive children of one node, in one list, with the tokens between them; and a name
 used twice matches only where both hold equal code - the same tokens, values and texts in order,
 nested the same way, whatever kinds of node hold them, so the same name matches as an argument, a
-keyword, an attribute or a parameter.  The nesting is each child of more than one part marking
-where it begins and ends: without it, once an adapter leaves a tuple's parentheses out, `[a, b]`
-and `[a, (b, c)]`'s tokens would read alike to `[a, b, c]`'s.  A child of one part marks nothing,
-so a name, which one node holds as an argument and another as an attribute, still compares
-alike.  A pattern of one node matches any node of that shape; one of several - statements
-in a row - matches them standing consecutively in one marked list.
+keyword, an attribute or a parameter.  A value is compared with the kind of node it belongs to,
+so a string's and a bytes literal's alike content are not equal code.  The nesting is each child
+of more than one part marking where it begins and ends: without it, once an adapter leaves a
+tuple's parentheses out, `[a, b]` and `[a, (b, c)]`'s tokens would read alike to `[a, b, c]`'s.
+A child of one part marks nothing, so a name, which one node holds as an argument and another as
+an attribute, still compares alike.  A pattern of one node matches any node of that shape; one of
+several - statements in a row - matches them standing consecutively in one marked list.
 
 **What takes no part is what the adapter leaves out of the tokens**: comments, whitespace, line
 breaks, indentation, and parentheses that only wrap an expression, so `f((x))` matches `f($a)`
