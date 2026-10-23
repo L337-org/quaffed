@@ -33,18 +33,8 @@ fn workspace_root() -> PathBuf {
 fn linked_crates(target: &str) -> Vec<(String, String)> {
     let output = Command::new(env!("CARGO"))
         .args([
-            "tree",
-            "--locked",
-            "-e",
-            "normal",
-            "-p",
-            "quaffed",
-            "--target",
-            target,
-            "--prefix",
-            "none",
-            "--format",
-            "{p}",
+            "tree", "--locked", "-e", "normal", "-p", "quaffed", "--target", target, "--prefix",
+            "none", "--format", "{p}",
         ])
         .current_dir(workspace_root())
         .output()
