@@ -497,7 +497,9 @@ quaff: -p, at character 17: "$b..." follows another sequence with no statement b
 **A pattern may have one place where what a sequence takes decides what later code must
 match.**  A sequence named twice is one such place: `w()`, `$a...`, `x()`, `$a...`, `y()` is fine,
 and so is a name bound in one statement and used in a later one.  The same goes inside a node, in
-a call's arguments or a function's body.  Each such place multiplies the work of a search by the
+a call's arguments or a function's body.  Two such places are fine when they are in lists that
+share no name, since neither then changes what the other is matched with: `f(g($a..., x,
+$a...), h($b..., y, $b...))` is accepted.  Each such place multiplies the work of a search by the
 length of the block or list it stands in, so a second is refused rather than left to make a
 search slow on a long file:
 
@@ -699,12 +701,13 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
   fixed code on both sides of it.  So `return $x` then `$dead...`, every statement after a
   `return`, cannot be written.
 - **A pattern may have only one place where what a sequence takes decides what later code must
-  match**, in a run of statements or inside a node, and two sequences may not stand together in
-  a run of statements.  Matching patterns with names used more than once is, in general, a
-  problem no algorithm solves quickly, so the pattern is refused where its search could grow
-  faster than the square of a block's or list's length, rather than accepted and left to run for
-  minutes on a long file.  A sequence named twice is fine; two sequences each named twice are
-  not.  Two sequences together inside a node, `f($a..., $b...)`, are fine: the node bounds them.
+  match**, in a run of statements or inside a node, unless the two are in lists that share no
+  name, and two sequences may not stand together in a run of statements.  Matching patterns
+  with names used more than once is, in general, a problem no algorithm solves quickly, so the
+  pattern is refused where its search could grow faster than the square of a block's or list's
+  length, rather than accepted and left to run for minutes on a long file.  A sequence named twice
+  is fine; two sequences each named twice in one list are not.  Two sequences together inside a
+  node, `f($a..., $b...)`, are fine: the node bounds them.
 - **Structural patterns ignore non-Python files rather than falling back to text**, and say so.
 - **A Python file quaff cannot parse stops a structural search** (exit 9): one Python refuses to
   read, and one Python reads in an encoding quaff does not, such as GBK.  A textual query alone

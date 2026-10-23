@@ -107,44 +107,62 @@ that let the rest match, as plain backtracking would.  The outcome of matching t
 list from each pair of places - a part of the pattern, a part of the code - is remembered with
 what it bound, so that no pair is worked out twice.  The outcome depends only on that pair and on
 what the names the rest uses are bound to, so those are part of what it is remembered by.  A name
-used once binds nothing, since nothing is compared with it.
+used once binds nothing, since nothing is compared with it.  Outcomes that depend on a binding
+are forgotten at each start - each node a pattern of one node is tried at, each start of a run -
+since another start binds the names to other code; the rest are kept for the whole search.
 
-**A sequence stops only where the code after it can stand**: where the fixed parts up to the
-next sequence match by the code alone, found once per list, nearest first.  **And a failure there
-settles the later places too**, since whatever stands after a later place also stands after this
-one, unless the place changes what the rest is matched with.  It does when the fixed parts bind a
-name used further on, when the sequence after them has a name used elsewhere and so holds
-different code from a later place, when the list must end where those parts do with no sequence
-after them to take the difference, and when another list follows - an `else` clause's - which a
-later place could let the next sequence start in.  Only then are the later places tried.
+**A sequence stops only where the code after it could stand**: where the fixed parts up to the
+next sequence could match whatever names are bound, found once per list, nearest first.  That is
+judged as a match would judge it, but with every hole matching anything and a node holding a
+sequence judged by its kind alone, since a name bound outside can change how much that sequence
+takes; judging by a match with nothing bound would miss places a binding opens.  **A sequence
+gives up at once when some later fixed code could stand nowhere after it.**  **And a failure
+where the code stands settles the later places too**, since whatever stands after a later place
+also stands after this one, unless the place changes what the rest is matched with.  It does
+when the fixed parts bind a name used further on, when the sequence after them has a name used
+elsewhere and so holds different code from a later place, when the list must end where those
+parts do with no sequence after them to take the difference, when another list follows - an
+`else` clause's - which a later place could let the next sequence start in, and when a token
+follows the parts, which the next sequence cannot start on.  Only then are the later places
+tried.
 
 **A sequence whose name is already bound is not searched for**: it must hold the same code
 again, so its end is where the code from its start first equals what it bound.  The code of a
-node's parts is hashed once, with running totals of hashes and lengths, so that end is a binary
-search and a hash comparison (`Codes`).  A hash that matches is confirmed by comparing the code
-in full, so a collision costs a comparison, never a wrong match.  A named sequence binds the run
-it takes as a range of its node's parts, so binding copies nothing.
+node's parts is numbered piece by piece once, with running totals of lengths, so that end is a
+binary search (`Codes`).  Within one node's parts, whether the code from there equals the bound
+run is read in constant time, exactly, as the longest common prefix of the two places' code: a
+suffix array, the common prefix of each suffix with the one before it, and a sparse table of
+their minimums (`Common`), made only for a node a name used twice is compared within.  Between
+two nodes' parts, a hash comparison comes first and a match is confirmed in full, so a collision
+costs a comparison, never a wrong match.  A named sequence binds the run it takes as a range of
+its node's parts, so binding copies nothing.
 
 **So the cost is about linear in a list's length** when nothing a choice binds is used further
 on, and quadratic with one **choice**: a place where a name is bound in a way that varies with
 where an earlier sequence stopped and is used later in the same list, or where a sequence named
 elsewhere in the list starts.  The fixed code before a list's first sequence makes no choice,
-since where it stands is where the list, or the run, starts.  Each further choice would multiply
-the cost by the list's length again, and with no limit on how many there are the problem is that
-of matching a pattern with variables, which is NP-complete, so no algorithm can bound it.  **So
-a pattern may make one choice, in any of its lists, and in a run of statements two sequences may
-not stand together**, since nothing then settles how the statements divide between them.
-`Pattern::costly` names the hole that breaks either rule; every language's compiler refuses the
-pattern, and `find` panics on one as a defect in its compiler.  Every pattern a compiler accepts
-is matched in at most quadratic time in the length of each list it is matched in, with tokens
-between a list's parts or not.
+since where it stands is where the list, or the run, starts.  Each further choice that the first
+can affect would multiply the cost by the list's length again, and with no limit on how many
+there are the problem is that of matching a pattern with variables, which is NP-complete, so no
+algorithm can bound it.  **So two choices may not affect each other, and in a run of statements
+two sequences may not stand together**, since nothing then settles how the statements divide
+between them.  Two choices affect each other when they are in one list, or when one list uses a
+name whose binding the other's choice varies; a list that uses none of another's varying names
+is remembered by bindings that choice does not change, and is worked out once whatever it chose,
+so `f(g($a..., x, $a...), h($b..., y, $b...))` is accepted.  `Pattern::costly` names the hole
+that breaks either rule; every language's compiler refuses the pattern, and `find` panics on one
+as a defect in its compiler.  Every pattern a compiler accepts is matched in at most quadratic
+time in the length of each list it is matched in, with tokens between a list's parts or not.
 
 **Plain backtracking is kept as the reference** the remembering matcher is held to: it tries
-every length of each sequence from every place.  Two property tests run both, one over runs of
-statements in blocks split in two, one over a node's parts with sequences at either end and a
-token between statements or not, with names repeated, and require the same matches.  Tests hold
-the cases where a later place must be tried, and one holds a body of two thousand statements to
-a few seconds.
+every length of each sequence from every place, and compares code piece by piece.  Three
+property tests run both and require the same matches: over runs of statements in blocks split
+in two, over a node's parts with sequences at either end and a token between statements or not,
+and over generated trees - nodes within nodes, names shared between lists, tokens anywhere and
+marked lists in the code.  Named tests hold each case where a shortcut must not apply, each of
+which a property test missed until it was found, and two hold the work's growth: a body of two
+thousand statements matched in seconds, and the work of a name used twice over repeated code
+growing with the square of the block's length, counted rather than timed.
 
 ## Building one
 

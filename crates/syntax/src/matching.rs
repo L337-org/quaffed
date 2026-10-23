@@ -14,8 +14,8 @@
 //! place in the pattern and place in the code, whether the rest matched from there, so that no
 //! pair is worked out twice; [`List`] says how, and what it costs.
 
-use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::cell::{OnceCell, RefCell};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -70,6 +70,7 @@ fn find_with(pattern: &Pattern, target: &Arena<'_>, remember: bool) -> Vec<Match
     let mut found = Vec::new();
     if let [only] = content.as_slice() {
         for node in target.nodes() {
+            matcher.start();
             let mut bindings = matcher.unbound();
             if matcher.node(*only, node, &mut bindings) {
                 found.push(Match {
@@ -95,6 +96,7 @@ fn find_with(pattern: &Pattern, target: &Arena<'_>, remember: bool) -> Vec<Match
                 }
                 // Matched from this start as far as the pattern goes: one try per start, whatever
                 // the run's length.
+                matcher.start();
                 let mut bindings = matcher.unbound();
                 let at = Place {
                     owner: node,
@@ -112,7 +114,23 @@ fn find_with(pattern: &Pattern, target: &Arena<'_>, remember: bool) -> Vec<Match
     }
     found.sort_by_key(|m| (m.range.start, m.range.end));
     found.dedup();
+    #[cfg(test)]
+    WORK.with(|work| work.set(matcher.work.get()));
     found
+}
+
+/// [`find`]'s matches, and the work the search took.
+#[cfg(test)]
+fn find_counting(pattern: &Pattern, target: &Arena<'_>) -> (Vec<Match>, usize) {
+    WORK.with(|work| work.set(0));
+    let found = find(pattern, target);
+    (found, WORK.with(std::cell::Cell::get))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The work the last search on this thread took, by `Matcher::work`.
+    static WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// The statement at `at` among a node's parts, where a run of statements ends.
@@ -214,6 +232,12 @@ impl Pattern {
     /// list's first sequence is not a choice, since where it stands is where the list, or the
     /// run, starts.
     ///
+    /// Two choices multiply only when they are in one list, or when one list uses a name whose
+    /// binding the other's choice varies: a list is remembered by the bindings of the names it
+    /// uses, so a list that uses none of another's varying names is worked out once whatever that
+    /// other chose.  So a second choice is refused only where it conflicts with an earlier one,
+    /// and `f(g($a..., x, $a...), h($b..., y, $b...))` is accepted.
+    ///
     /// Every language's compiler refuses a pattern this names, and [`find`] panics on one, as a
     /// defect in its compiler.  Two sequences standing together in a run of statements are
     /// refused too: matching them costs nothing more, but nothing settles how the statements
@@ -222,23 +246,38 @@ impl Pattern {
     pub fn costly(&self) -> Option<Costly> {
         let shape = self.arena();
         let root = shape.root();
-        let mut choices = Vec::new();
+        let mut lists = Vec::new();
         if shape.children(root).nth(1).is_some() {
             let run = between_first_and_last(&parts(shape, root));
             if let Some(second) = together(self, &run) {
                 return Some(Costly::Together(second));
             }
-            choices.extend(list_choices(self, &run));
+            lists.push(list_choices(self, &run));
         }
         for node in shape.nodes().filter(|node| *node != root) {
             let wanted = parts(shape, node);
             if wanted.iter().any(|part| is_sequence(self, part)) {
-                choices.extend(list_choices(self, &wanted));
+                lists.push(list_choices(self, &wanted));
             }
         }
-        choices.sort_unstable();
-        choices.dedup();
-        choices.get(1).copied().map(Costly::SecondChoice)
+        // Every choice with the list it is in, in the pattern's order.
+        let mut choices: Vec<(usize, &Choice<'_>)> = lists
+            .iter()
+            .enumerate()
+            .flat_map(|(at, list)| list.choices.iter().map(move |choice| (at, choice)))
+            .collect();
+        choices.sort_by_key(|(_, choice)| choice.hole);
+        for (later, (list, choice)) in choices.iter().enumerate() {
+            let conflicts = choices[..later].iter().any(|(other_list, other)| {
+                other_list == list
+                    || !lists[*list].names.is_disjoint(&other.varies)
+                    || !lists[*other_list].names.is_disjoint(&choice.varies)
+            });
+            if conflicts {
+                return Some(Costly::SecondChoice(choice.hole));
+            }
+        }
+        None
     }
 }
 
@@ -258,6 +297,19 @@ fn together(pattern: &Pattern, run: &[Part<'_>]) -> Option<NodeId> {
     })
 }
 
+/// A choice a list of a pattern's parts makes: the hole that makes it, and the names whose
+/// binding varies with it - those first bound in the list from the choice on.
+struct Choice<'p> {
+    hole: NodeId,
+    varies: BTreeSet<&'p str>,
+}
+
+/// The choices a list makes, and every name used within it: see [`Pattern::costly`].
+struct Choices<'p> {
+    choices: Vec<Choice<'p>>,
+    names: BTreeSet<&'p str>,
+}
+
 /// The choices a list of a pattern's parts makes, each named by the hole that makes it: see
 /// [`Pattern::costly`].
 ///
@@ -268,7 +320,7 @@ fn together(pattern: &Pattern, run: &[Part<'_>]) -> Option<NodeId> {
 /// choice when a name first bound by the sequence before it or within it is used further on in
 /// the list, or when the sequence after it is named elsewhere in the list, since that sequence
 /// then holds different code from a later place.
-fn list_choices(pattern: &Pattern, wanted: &[Part<'_>]) -> Vec<NodeId> {
+fn list_choices<'p>(pattern: &'p Pattern, wanted: &[Part<'_>]) -> Choices<'p> {
     let shape = pattern.arena();
     let mut segments: Vec<Vec<NodeId>> = vec![Vec::new()];
     let mut holes = Vec::new();
@@ -299,13 +351,13 @@ fn list_choices(pattern: &Pattern, wanted: &[Part<'_>]) -> Vec<NodeId> {
     };
     // Each name's first and last part in the list, and the hole it is first bound by: holes
     // come in pre-order, which is the order of the parts, so the first seen is the first.
-    let mut uses: BTreeMap<&str, (usize, usize, NodeId)> = BTreeMap::new();
+    let mut uses: BTreeMap<&'p str, (usize, usize, NodeId)> = BTreeMap::new();
     for (node, hole) in pattern.holes() {
         if let (Some(name), Some(at)) = (&hole.name, part_of(node)) {
             uses.entry(name).or_insert((at, at, node)).1 = at;
         }
     }
-    (1..segments.len())
+    let choices = (1..segments.len())
         .filter_map(|i| {
             let next = holes.get(i).copied().filter(|next| {
                 pattern
@@ -317,9 +369,21 @@ fn list_choices(pattern: &Pattern, wanted: &[Part<'_>]) -> Vec<NodeId> {
                 .values()
                 .find(|&&(first, last, _)| 2 * i - 1 <= first && first <= 2 * i && last > 2 * i)
                 .map(|&(_, _, node)| node);
-            next.or(bound_here)
+            let hole = next.or(bound_here)?;
+            // From the sequence before this segment on, every name first bound in the list takes
+            // what this choice leaves it.
+            let varies = uses
+                .iter()
+                .filter(|(_, (first, _, _))| *first >= 2 * i - 1)
+                .map(|(name, _)| *name)
+                .collect();
+            Some(Choice { hole, varies })
         })
-        .collect()
+        .collect();
+    Choices {
+        choices,
+        names: uses.into_keys().collect(),
+    }
 }
 
 /// What a named hole matched: one child for a hole, a run of a node's parts for a sequence, by
@@ -377,14 +441,22 @@ struct Place {
 /// outcome depends only on the pair and on what the names the rest uses are bound to, so those
 /// are part of what it is remembered by.
 ///
-/// Two further steps skip what cannot match.  A sequence stops only where the fixed code after
-/// it can stand, found once per list by the code alone.  And where that code stands but the rest
-/// fails after it, the rest fails after every later place too - whatever stands after a later
-/// place also stands after this one - unless the place changes what the rest is matched with:
-/// when the fixed code binds a name used later, when the sequence after it is named again, when
-/// the list must end where the code does, with no sequence after it to take the difference, or
-/// when another list follows, which a later place could let the next sequence start in.  Only
-/// there are later places tried.
+/// Three further steps skip what cannot match.  A sequence stops only where the fixed code after
+/// it could stand, found once per list as a match would find it but with every hole matching
+/// anything, and a node holding a sequence judged by its kind alone - what any binding could let
+/// it match, and no less.  A sequence gives up at once when some later fixed
+/// code could stand nowhere after it.  And where the fixed code stands but the rest fails after
+/// it, the rest fails after every later place too - whatever stands after a later place also
+/// stands after this one - unless the place changes what the rest is matched with: when the
+/// fixed code binds a name used later, when the sequence after it is named again, when the list
+/// must end where the code does, with no sequence after it to take the difference, when another
+/// list follows, which a later place could let the next sequence start in, or when what follows
+/// the code here is a token, which the next sequence cannot start on.  Only there are later
+/// places tried.
+///
+/// Outcomes that depend on what names are bound are forgotten at each start - each node a
+/// pattern of one node is tried at, each start of a run - since another start binds them to
+/// other code; those that depend on no binding are kept for the whole search.
 ///
 /// **What it costs.**  Without a choice ([`Pattern::costly`]), each pair is worked out once, so
 /// a list costs about its length times the pattern's; each choice multiplies that by the list's
@@ -403,6 +475,8 @@ struct List<'p> {
     /// For each sequence hole, whether the first place the fixed code after it matches settles
     /// the rest, so that no later place need be tried.
     settled: Vec<bool>,
+    /// Where each run of fixed code after a sequence starts.
+    segments: Vec<usize>,
 }
 
 /// A pattern and the arena it is matched against, with what has been worked out so far.
@@ -421,8 +495,14 @@ struct Matcher<'p, 't> {
     /// Where the fixed code starting at a list's part stands among a node's parts.
     stands: RefCell<HashMap<Stands, Rc<[usize]>>>,
     /// The outcome of matching a list's rest from a pair of places, with the names it uses
-    /// bound as they were: where the match ended, and what it bound.
+    /// bound as they were: where the match ended, and what it bound.  Those with no name bound
+    /// are kept for the whole search, and those with one only for the start they were found at.
     outcomes: RefCell<HashMap<Remembered, Outcome>>,
+    bound_outcomes: RefCell<HashMap<Remembered, Outcome>>,
+    /// How many steps and pieces of compared code the search has taken, for tests that hold
+    /// its growth.
+    #[cfg(test)]
+    work: std::cell::Cell<usize>,
 }
 
 /// A list's part where fixed code starts, and the node among whose parts it is looked for.
@@ -464,7 +544,15 @@ impl<'p, 't> Matcher<'p, 't> {
             codes: RefCell::default(),
             stands: RefCell::default(),
             outcomes: RefCell::default(),
+            bound_outcomes: RefCell::default(),
+            #[cfg(test)]
+            work: std::cell::Cell::new(0),
         }
+    }
+
+    /// Forgets what depended on the bindings of the last start, before another.
+    fn start(&self) {
+        self.bound_outcomes.borrow_mut().clear();
     }
 
     fn unbound(&self) -> Bindings {
@@ -584,7 +672,11 @@ impl<'p, 't> Matcher<'p, 't> {
                 !binds.iter().any(|slot| uses[end].contains(slot))
             })
             .collect();
+        let segments = (1..len)
+            .filter(|&i| sequence(&wanted[i - 1]) && !sequence(&wanted[i]))
+            .collect();
         let made = Rc::new(List {
+            segments,
             sequences: wanted.iter().any(sequence),
             wanted,
             whole,
@@ -644,8 +736,15 @@ impl<'p, 't> Matcher<'p, 't> {
                 .map(|&slot| bindings[slot].as_ref().map(Bound::key))
                 .collect(),
         });
+        let table = |key: &Remembered| {
+            if key.bound.iter().any(Option::is_some) {
+                &self.bound_outcomes
+            } else {
+                &self.outcomes
+            }
+        };
         if let Some(key) = &remembered {
-            let known = self.outcomes.borrow().get(key).cloned();
+            let known = table(key).borrow().get(key).cloned();
             if let Some(outcome) = known {
                 return outcome.map(|(end, made)| {
                     for (slot, bound) in made {
@@ -666,7 +765,7 @@ impl<'p, 't> Matcher<'p, 't> {
                     .collect();
                 (end, made)
             });
-            self.outcomes.borrow_mut().insert(key, made);
+            table(&key).borrow_mut().insert(key, made);
         }
         if end.is_some() {
             *bindings = attempt;
@@ -683,6 +782,8 @@ impl<'p, 't> Matcher<'p, 't> {
         at: usize,
         bindings: &mut Bindings,
     ) -> Option<usize> {
+        #[cfg(test)]
+        self.work.set(self.work.get() + 1);
         let Some(wanted) = list.wanted.get(at) else {
             return (!list.whole || place.from == place.limit).then_some(place.from);
         };
@@ -734,6 +835,20 @@ impl<'p, 't> Matcher<'p, 't> {
             from: stop + 1,
             ..place
         };
+        // Every later run of fixed code must still be able to stand somewhere after this sequence
+        // starts, or no length it takes can complete the list.
+        if self.remember
+            && list
+                .segments
+                .iter()
+                .filter(|&&start| start > at)
+                .any(|&start| {
+                    let stands = self.stands(within, list, start, place.owner, available);
+                    stands.last().is_none_or(|&last| last <= place.from)
+                })
+        {
+            return None;
+        }
         let slot = self.slot(hole);
         if let Some(slot) = slot
             && let Some(earlier) = bindings[slot].clone()
@@ -789,37 +904,39 @@ impl<'p, 't> Matcher<'p, 't> {
             // The code may stand here by itself and not with what the names hold so far, which a
             // later place can still give it.
             let mut probe = bindings.clone();
-            if self
-                .fixed(
-                    list,
-                    segment.clone(),
-                    Place {
-                        from: start,
-                        ..place
-                    },
-                    available,
-                    &mut probe,
-                )
-                .is_none()
-            {
+            let Some(after_code) = self.fixed(
+                list,
+                segment.clone(),
+                Place {
+                    from: start,
+                    ..place
+                },
+                available,
+                &mut probe,
+            ) else {
                 continue;
-            }
+            };
             if let Some(end) = self.list(within, after(start - 1), available, at + 1, bindings) {
                 return Some(end);
             }
             // Only where no other list follows can a later place give the rest nothing new: one
             // that lets the next sequence start in the next list, an `else` clause's, gives it a
             // run this place cannot.
-            if list.settled[at] && block_end == place.limit {
+            // And only where the next sequence could start right after the code: if a token
+            // stands there, a later place may be the only one it can start after.
+            if list.settled[at]
+                && block_end == place.limit
+                && matches!(available.get(after_code), Some(Part::Child(_)))
+            {
                 return None;
             }
         }
         None
     }
 
-    /// Where the fixed code `list.wanted[at..]` up to the next sequence stands among `owner`'s
-    /// parts, by the code alone: every place it matches with nothing bound, in order.  With
-    /// names bound it can only match at fewer.
+    /// Where the fixed code `list.wanted[at..]` up to the next sequence could stand among
+    /// `owner`'s parts, in order, by [`Matcher::could_match`]: whatever names are bound, the code
+    /// matches nowhere else, though it may match at fewer.
     fn stands(
         &self,
         within: Within,
@@ -836,17 +953,58 @@ impl<'p, 't> Matcher<'p, 't> {
         let len = available.len();
         let made: Rc<[usize]> = (0..len)
             .filter(|&from| {
-                let place = Place {
-                    owner,
-                    from,
-                    limit: len,
-                };
-                self.fixed(list, segment.clone(), place, available, &mut self.unbound())
-                    .is_some()
+                list.wanted[segment.clone()]
+                    .iter()
+                    .enumerate()
+                    .all(|(i, wanted)| match (wanted, available.get(from + i)) {
+                        (Part::Token(token), Some(Part::Token(other))) => {
+                            self.shape.token_text(token) == self.target.token_text(other)
+                        }
+                        (Part::Child(child), Some(Part::Child(node))) => {
+                            self.could_match(*child, *node)
+                        }
+                        _ => false,
+                    })
             })
             .collect();
         self.stands.borrow_mut().insert(key, Rc::clone(&made));
         made
+    }
+
+    /// Whether `wanted` could match `node` whatever names are bound: compared as a match would
+    /// compare them, but with every hole matching anything, and with a node whose own parts hold
+    /// a sequence judged by its kind alone, since what a name bound outside holds can change how
+    /// much that sequence takes.
+    fn could_match(&self, wanted: NodeId, node: NodeId) -> bool {
+        if self.pattern.hole(wanted).is_some() {
+            return true;
+        }
+        if self.shape.kind(wanted) != self.target.kind(node) {
+            return false;
+        }
+        if let Some(value) = self.shape.value(wanted) {
+            return self.target.value(node) == Some(value);
+        }
+        let list = self.list_of(Within::Node(wanted));
+        if list.sequences {
+            return true;
+        }
+        let available = parts(self.target, node);
+        if list.wanted.is_empty() && available.is_empty() {
+            return self.shape.source(wanted) == self.target.source(node);
+        }
+        list.wanted.len() == available.len()
+            && list
+                .wanted
+                .iter()
+                .zip(&available)
+                .all(|(wanted, here)| match (wanted, here) {
+                    (Part::Token(token), Part::Token(other)) => {
+                        self.shape.token_text(token) == self.target.token_text(other)
+                    }
+                    (Part::Child(child), Part::Child(node)) => self.could_match(*child, *node),
+                    _ => false,
+                })
     }
 
     /// Matches the fixed parts `list.wanted[segment]`, which hold no sequence, from
@@ -892,17 +1050,22 @@ impl<'p, 't> Matcher<'p, 't> {
         };
         let theirs = self.codes_of(*owner);
         let length = theirs.lengths[range.end] - theirs.lengths[range.start];
-        let hash = theirs.hash(range.clone());
         let ours = self.codes_of(place.owner);
         let end = ours
             .lengths
             .binary_search(&(ours.lengths[place.from] + length))
             .ok()?;
-        if end <= place.from
-            || end > block_end
-            || !matches!(available[end - 1], Part::Child(_))
-            || ours.hash(place.from..end) != hash
-        {
+        if end <= place.from || end > block_end || !matches!(available[end - 1], Part::Child(_)) {
+            return None;
+        }
+        // Within one node's parts, equal code is a common prefix of the two places' code at
+        // least as long as the run, read in constant time, so that a name used twice costs no
+        // comparison as long as the code it holds.
+        if *owner == place.owner {
+            return (ours.common(theirs.lengths[range.start], ours.lengths[place.from]) >= length)
+                .then_some(end);
+        }
+        if ours.hash(place.from..end) != theirs.hash(range.clone()) {
             return None;
         }
         self.equal(earlier, &Bound::Run(place.owner, place.from..end))
@@ -933,7 +1096,10 @@ impl<'p, 't> Matcher<'p, 't> {
                 Bound::Run(owner, range) => self.parts_of(*owner)[range.clone()].to_vec(),
             }
         };
-        Same { arena: self.target }.parts(&as_parts(a), &as_parts(b))
+        let (a, b) = (as_parts(a), as_parts(b));
+        #[cfg(test)]
+        self.work.set(self.work.get() + a.len() + b.len());
+        Same { arena: self.target }.parts(&a, &b)
     }
 }
 
@@ -966,6 +1132,10 @@ struct Codes {
     hashes: Vec<u64>,
     /// `BASE` to each power up to the total number of pieces.
     powers: Vec<u64>,
+    /// Each piece of code, numbered so that equal pieces have equal numbers.
+    pieces: Vec<u32>,
+    /// How far the code from any two pieces agrees, made when first asked.
+    common: OnceCell<Common>,
 }
 
 /// An odd multiplier, so that every power of it is odd and none is zero.
@@ -978,14 +1148,20 @@ impl Codes {
             lengths: vec![0],
             hashes: vec![0],
             powers: vec![1],
+            pieces: Vec::new(),
+            common: OnceCell::new(),
         };
+        let mut numbers: HashMap<Code<'_>, u32> = HashMap::new();
         let (mut length, mut hash) = (0, 0u64);
         let mut code = Vec::new();
         for part in available {
             code.clear();
             same.code(std::slice::from_ref(part), &mut code);
-            for piece in &code {
-                hash = hash.wrapping_mul(BASE).wrapping_add(piece_hash(piece));
+            for piece in code.drain(..) {
+                hash = hash.wrapping_mul(BASE).wrapping_add(piece_hash(&piece));
+                let next =
+                    u32::try_from(numbers.len()).expect("fewer pieces than an arena's offsets");
+                codes.pieces.push(*numbers.entry(piece).or_insert(next));
                 let last = *codes.powers.last().expect("begun with one");
                 codes.powers.push(last.wrapping_mul(BASE));
                 length += 1;
@@ -1001,6 +1177,95 @@ impl Codes {
         let pieces = self.lengths[range.end] - self.lengths[range.start];
         self.hashes[range.end]
             .wrapping_sub(self.hashes[range.start].wrapping_mul(self.powers[pieces]))
+    }
+
+    /// How many pieces of code from piece `a` and from piece `b` are equal, in order.
+    fn common(&self, a: usize, b: usize) -> usize {
+        self.common
+            .get_or_init(|| Common::new(&self.pieces))
+            .common(a, b)
+    }
+}
+
+/// The longest common prefix of any two suffixes of a sequence, in constant time: a suffix
+/// array, the common prefix of each suffix with the one before it in that order, and a sparse
+/// table of minimums over those.  Two suffixes' common prefix is the least of the prefixes
+/// between them in the order.  Made in time about the sequence's length times its logarithm
+/// squared, and only for a node whose code a name used twice is compared within.
+struct Common {
+    len: usize,
+    /// Each suffix's place in sorted order.
+    rank: Vec<usize>,
+    /// `table[j][i]`: the least common prefix among those of sorted suffixes `i..i + 2^j`.
+    table: Vec<Vec<usize>>,
+}
+
+impl Common {
+    fn new(sequence: &[u32]) -> Common {
+        let len = sequence.len();
+        // The suffix array, by doubling: suffixes sorted by their first 1, 2, 4... pieces.
+        let mut order: Vec<usize> = (0..len).collect();
+        let mut rank: Vec<usize> = sequence.iter().map(|&piece| piece as usize).collect();
+        let mut next = vec![0; len];
+        let mut span = 1;
+        if len > 1 {
+            loop {
+                let key = |i: usize| (rank[i], rank.get(i + span).map_or(0, |r| r + 1));
+                order.sort_unstable_by_key(|&i| key(i));
+                next[order[0]] = 0;
+                for w in 1..len {
+                    next[order[w]] =
+                        next[order[w - 1]] + usize::from(key(order[w - 1]) < key(order[w]));
+                }
+                std::mem::swap(&mut rank, &mut next);
+                if rank[order[len - 1]] == len - 1 {
+                    break;
+                }
+                span *= 2;
+            }
+        }
+        if len == 1 {
+            rank = vec![0];
+        }
+        // Each sorted suffix's common prefix with the one before it, by Kasai's walk.
+        let mut prefix = vec![0; len];
+        let mut h = 0;
+        for i in 0..len {
+            if rank[i] == 0 {
+                h = 0;
+                continue;
+            }
+            let j = order[rank[i] - 1];
+            while i + h < len && j + h < len && sequence[i + h] == sequence[j + h] {
+                h += 1;
+            }
+            prefix[rank[i]] = h;
+            h = h.saturating_sub(1);
+        }
+        let mut table = vec![prefix];
+        let mut width = 1;
+        while 2 * width <= len {
+            let last = table.last().expect("begun with one");
+            let row = (0..=len - 2 * width)
+                .map(|i| last[i].min(last[i + width]))
+                .collect();
+            table.push(row);
+            width *= 2;
+        }
+        Common { len, rank, table }
+    }
+
+    fn common(&self, a: usize, b: usize) -> usize {
+        if a == b {
+            return self.len - a;
+        }
+        let (low, high) = if self.rank[a] < self.rank[b] {
+            (self.rank[a] + 1, self.rank[b])
+        } else {
+            (self.rank[b] + 1, self.rank[a])
+        };
+        let level = (high - low + 1).ilog2() as usize;
+        self.table[level][low].min(self.table[level][high + 1 - (1 << level)])
     }
 }
 
@@ -1734,6 +1999,322 @@ mod remembered_against_backtracking {
                 split,
                 separated
             );
+        }
+    }
+}
+
+/// The remembering matcher held to plain backtracking over generated trees: patterns of nodes
+/// within nodes, with single holes and sequences named or not, names shared between lists and
+/// tokens anywhere, against targets of nested nodes with marked lists - the shapes the
+/// run-shaped properties above cannot make.
+#[cfg(test)]
+mod trees {
+    use super::*;
+    use crate::{Builder, Hole, Kind, Language, TokenText};
+    use proptest::prelude::*;
+
+    /// A tree written as an s-expression: `(K a b)` a node of kind `K` over its children, a word
+    /// a leaf compared by its text, `;` a token, `$x`, `$_`, `$x...` and `$...` holes, and `[ ... ]`
+    /// a marked list among the enclosing node's children.
+    #[derive(Debug, Clone)]
+    enum Tree {
+        Node(String, Vec<Tree>),
+        Leaf(String),
+        Token(String),
+        Hole(String),
+        List(Vec<Tree>),
+    }
+
+    fn words(text: &str) -> Vec<String> {
+        let spaced = text
+            .replace('(', " ( ")
+            .replace(')', " ) ")
+            .replace('[', " [ ")
+            .replace(']', " ] ")
+            .replace(';', " ; ");
+        spaced.split_whitespace().map(str::to_owned).collect()
+    }
+
+    fn read(words: &[String], at: &mut usize, close: &str) -> Vec<Tree> {
+        let mut out = Vec::new();
+        while *at < words.len() && words[*at] != close {
+            let word = words[*at].clone();
+            *at += 1;
+            out.push(match word.as_str() {
+                "(" => {
+                    let kind = words[*at].clone();
+                    *at += 1;
+                    Tree::Node(kind, read(words, at, ")"))
+                }
+                "[" => Tree::List(read(words, at, "]")),
+                ";" => Tree::Token(word),
+                _ if word.starts_with('$') => Tree::Hole(word),
+                _ => Tree::Leaf(word),
+            });
+        }
+        *at += 1;
+        out
+    }
+
+    fn render(tree: &Tree, text: &mut String) {
+        match tree {
+            Tree::Node(_, children) | Tree::List(children) => {
+                for child in children {
+                    render(child, text);
+                }
+            }
+            Tree::Leaf(word) | Tree::Token(word) | Tree::Hole(word) => {
+                if !text.is_empty() {
+                    text.push(' ');
+                }
+                text.push_str(word);
+            }
+        }
+    }
+
+    struct Build<'a> {
+        builder: Builder<'a>,
+        text: &'a str,
+        at: usize,
+        next: u32,
+        holes: Vec<(NodeId, Hole)>,
+    }
+
+    impl Build<'_> {
+        fn add(&mut self, tree: &Tree) {
+            while self.text.as_bytes().get(self.at) == Some(&b' ') {
+                self.at += 1;
+            }
+            match tree {
+                Tree::Node(kind, children) => {
+                    let mut spelled = String::new();
+                    render(tree, &mut spelled);
+                    let kind = Kind::new(Box::leak(kind.clone().into_boxed_str()));
+                    self.builder.enter(kind, self.at..self.at + spelled.len());
+                    self.next += 1;
+                    for child in children {
+                        self.add(child);
+                    }
+                    self.builder.leave();
+                }
+                Tree::List(children) => {
+                    self.builder.begin_list();
+                    for child in children {
+                        self.add(child);
+                    }
+                    self.builder.end_list();
+                }
+                Tree::Leaf(word) | Tree::Hole(word) => {
+                    let node = NodeId(self.next);
+                    self.builder
+                        .enter(Kind::new("Leaf"), self.at..self.at + word.len());
+                    self.next += 1;
+                    self.builder.leave();
+                    if let Tree::Hole(spelled) = tree {
+                        let spelled = &spelled[1..];
+                        let (name, sequence) = match spelled.strip_suffix("...") {
+                            Some(name) => (name, true),
+                            None => (spelled, false),
+                        };
+                        let name = (!name.is_empty() && name != "_").then(|| name.to_owned());
+                        self.holes.push((node, Hole { name, sequence }));
+                    }
+                    self.at += word.len();
+                }
+                Tree::Token(word) => {
+                    self.builder
+                        .token(self.at..self.at + word.len(), TokenText::Source);
+                    self.at += word.len();
+                }
+            }
+        }
+    }
+
+    /// The trees `text` writes, under a root, as an arena, with its holes.
+    fn build(text: &str) -> (Arena<'static>, Vec<(NodeId, Hole)>) {
+        let words = words(text);
+        let root = Tree::Node("Root".into(), read(&words, &mut 0, "\u{0}"));
+        let mut spelled = String::new();
+        render(&root, &mut spelled);
+        let spelled: &'static str = Box::leak(spelled.into_boxed_str());
+        let mut build = Build {
+            builder: Builder::new(Language::new("toy"), spelled).unwrap(),
+            text: spelled,
+            at: 0,
+            next: 0,
+            holes: Vec::new(),
+        };
+        build.add(&root);
+        let holes = build.holes;
+        (build.builder.finish().into_owned(), holes)
+    }
+
+    fn pattern(text: &str) -> Pattern {
+        let (arena, holes) = build(text);
+        Pattern::new(arena, holes)
+    }
+
+    /// What `pattern` matches in `target`, remembering and by plain backtracking.
+    fn both(pattern_text: &str, target_text: &str) -> (Vec<String>, Vec<String>) {
+        let pattern = pattern(pattern_text);
+        let (target, _) = build(target_text);
+        let shown = |found: Vec<Match>| -> Vec<String> {
+            found
+                .into_iter()
+                .map(|m| target.text()[m.range].to_owned())
+                .collect()
+        };
+        (
+            shown(find_with(&pattern, &target, true)),
+            shown(find_with(&pattern, &target, false)),
+        )
+    }
+
+    /// Where fixed code could stand is judged by kinds, not by matching with nothing bound: here
+    /// `g`'s `$s` takes `a a` only once the outer `$s` is bound to it, so with nothing bound
+    /// `g` would seem to stand nowhere it can.
+    #[test]
+    fn where_code_could_stand_holds_whatever_is_bound() {
+        for (pattern, target) in [
+            (
+                "(f (k $s...) $... (g $s... $...) (h $s...))",
+                "(f (k a a) w (g a a b) (h a a))",
+            ),
+            (
+                "(k $s...) $... (g $s... $...) (h $s...)",
+                "[(k a a) w (g a a b) (h a a)]",
+            ),
+        ] {
+            let (fast, slow) = both(pattern, target);
+            assert_eq!(fast, slow, "{pattern} over {target}");
+            assert!(!slow.is_empty(), "{pattern} over {target}");
+        }
+    }
+
+    /// A sequence cannot start on a token, so where one follows the fixed code a later place is
+    /// still tried: here the first `x` is followed by `;`, the second by a child.
+    #[test]
+    fn a_later_place_is_tried_when_a_token_follows_the_code() {
+        let (fast, slow) = both("(f $... x $... y)", "(f w x ; z x z y)");
+        assert_eq!(fast, slow);
+        assert_eq!(slow.len(), 1);
+    }
+
+    /// A run with one choice, a sequence named twice, over a block of one repeated statement:
+    /// each start tries each length, and with equal code read in constant time the work grows
+    /// with the square of the block's length - four times over twice the length, not eight, as
+    /// comparing the code piece by piece made it.  With no `g` anywhere, each start gives up at
+    /// once, and the work grows with the length alone.
+    #[test]
+    fn a_name_used_twice_over_repeated_code_stays_quadratic() {
+        let pattern = pattern("x $s... x $s... g");
+        assert_eq!(pattern.costly(), None);
+        let work = |n: usize, tail: &str| {
+            let (target, _) = build(&format!("[{}{tail}]", vec!["x"; n].join(" ")));
+            let (found, work) = find_counting(&pattern, &target);
+            (found.len(), work)
+        };
+        let ((found, small), (_, large)) = (work(100, " g"), work(200, " g"));
+        assert_eq!(found, 49);
+        assert!(large < 5 * small, "with g: {small} then {large}");
+        let ((found, small), (_, large)) = (work(100, ""), work(200, ""));
+        assert_eq!(found, 0);
+        assert!(large < 3 * small, "with no g: {small} then {large}");
+    }
+
+    #[test]
+    fn choices_in_lists_that_share_no_name_do_not_multiply() {
+        // Each list is worked out once whatever the other chose.
+        assert_eq!(
+            pattern("(f (g $a... x $a...) (h $b... y $b...))").costly(),
+            None
+        );
+        // But a list that uses a name the other's choice binds is worked out again for each.
+        assert!(matches!(
+            pattern("(f (g $a... x $a... $v) (h $b... $v $b...))").costly(),
+            Some(Costly::SecondChoice(_))
+        ));
+        // And two in one list multiply, as ever.
+        assert!(matches!(
+            pattern("(f w $a... x $b... y $a... x $b... z)").costly(),
+            Some(Costly::SecondChoice(_))
+        ));
+    }
+
+    fn pattern_item(depth: u32) -> BoxedStrategy<String> {
+        let leaf = prop_oneof![
+            4 => prop_oneof![Just("x"), Just("y")].prop_map(str::to_owned),
+            1 => prop_oneof![Just("$a"), Just("$b"), Just("$_")].prop_map(str::to_owned),
+            2 => prop_oneof![Just("$p..."), Just("$q..."), Just("$...")].prop_map(str::to_owned),
+            1 => Just(";".to_owned()),
+        ];
+        if depth == 0 {
+            return leaf.boxed();
+        }
+        prop_oneof![
+            4 => leaf,
+            1 => prop::collection::vec(pattern_item(depth - 1), 1..5)
+                .prop_map(|items| format!("(g {})", trimmed(&items))),
+        ]
+        .boxed()
+    }
+
+    fn target_item(depth: u32) -> BoxedStrategy<String> {
+        let leaf = prop_oneof![
+            4 => prop_oneof![Just("x"), Just("y")].prop_map(str::to_owned),
+            1 => Just(";".to_owned()),
+        ];
+        if depth == 0 {
+            return leaf.boxed();
+        }
+        prop_oneof![
+            3 => leaf,
+            1 => prop::collection::vec(target_item(depth - 1), 1..6)
+                .prop_map(|items| format!("(g {})", trimmed(&items))),
+            1 => prop::collection::vec(target_item(depth - 1), 1..6)
+                .prop_map(|items| format!("[{}]", trimmed(&items))),
+        ]
+        .boxed()
+    }
+
+    /// Items as a node's or list's children, with no token at either end and at least one child,
+    /// as a parser makes them.
+    fn trimmed(items: &[String]) -> String {
+        let start = items.iter().position(|item| item != ";");
+        let end = items.iter().rposition(|item| item != ";");
+        match (start, end) {
+            (Some(start), Some(end)) => items[start..=end].join(" "),
+            _ => "x".to_owned(),
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(4000))]
+
+        #[test]
+        fn remembering_finds_what_backtracking_finds_in_nested_trees(
+            pattern in prop::collection::vec(pattern_item(2), 1..7),
+            target in prop::collection::vec(target_item(2), 1..12),
+        ) {
+            let pattern = format!("(D {})", trimmed(&pattern));
+            let target = format!("(D {})", trimmed(&target));
+            let (fast, slow) = both(&pattern, &target);
+            prop_assert_eq!(fast, slow, "{} over {}", pattern, target);
+        }
+
+        #[test]
+        fn the_common_prefix_of_two_places_is_read_exactly(
+            sequence in prop::collection::vec(0u32..3, 1..60),
+            a in 0usize..60,
+            b in 0usize..60,
+        ) {
+            let (a, b) = (a % sequence.len(), b % sequence.len());
+            let plain = sequence[a..]
+                .iter()
+                .zip(&sequence[b..])
+                .take_while(|(x, y)| x == y)
+                .count();
+            prop_assert_eq!(Common::new(&sequence).common(a, b), plain);
         }
     }
 }
