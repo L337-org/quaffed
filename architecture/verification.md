@@ -661,7 +661,10 @@ found.  So the action compares each restored file's SHA-256 with the one the sig
 for its package, version and architecture, and deletes any that differ, with a warning naming
 both hashes, since apt resolved that exact version and a different hash means the file is not
 the one the index signs for.  apt then downloads it, so a cached package is held to the same
-check as a downloaded one.
+check as a downloaded one.  An entry is never overwritten, so when the bad file came from an exact
+hit the warning names the `gh cache delete` that removes it; from an older entry, the job's own
+save replaces it.  A simulated install whose `Inst` lines the action cannot all read fails the
+job, rather than leave files unchecked.
 
 ## What the tests enforce
 

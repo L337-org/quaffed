@@ -40,15 +40,25 @@ runs:
       run: |
         read -ra packages <<<"$PACKAGES"
         sudo apt-get update
+        simulated="$(apt-get -s install --no-install-recommends "${packages[@]}")"
         # An Inst line reads `Inst NAME [OLD] (VERSION ORIGIN... [ARCH])`; kept as NAME VERSION
         # ARCH, which is how an archive file is named.
-        apt-get -s install --no-install-recommends "${packages[@]}" \
-          | sed -nE 's/^Inst ([^ ]+) (\[[^]]*\] )?\(([^ ]+) .*\[([^]]+)\]\)$/\1 \3 \4/p' \
+        sed -nE 's/^Inst ([^ ]+) (\[[^]]*\] )?\(([^ ]+) .*\[([^]]+)\]\)$/\1 \3 \4/p' <<<"$simulated" \
           | sort >"$RUNNER_TEMP/apt-install-plan"
-        echo "apt-install: apt will install $(wc -l <"$RUNNER_TEMP/apt-install-plan") packages"
+        # A line the pattern misses, say from a new apt's output, would leave its file unchecked
+        # and deleted as unused, and every run would download it, all without failing.
+        inst="$(grep -c '^Inst ' <<<"$simulated" || true)"
+        planned="$(wc -l <"$RUNNER_TEMP/apt-install-plan")"
+        if (( inst != planned )); then
+          echo "::error::apt-install: apt's simulated install has $inst Inst lines, but only $planned read as NAME VERSION ARCH, so its output format has changed; the lines were:"
+          grep '^Inst ' <<<"$simulated"
+          exit 1
+        fi
+        echo "apt-install: apt will install $planned packages"
         echo "set=$(sha256sum "$RUNNER_TEMP/apt-install-plan" | cut -c1-16)" >>"$GITHUB_OUTPUT"
 
     - name: Restore the downloaded packages
+      id: restore
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: /var/cache/apt/archives/*.deb
@@ -60,6 +70,8 @@ runs:
       shell: bash
       env:
         PACKAGES: ${{ inputs.packages }}
+        KEY: apt-${{ runner.arch }}-${{ inputs.packages }}-${{ steps.plan.outputs.set }}
+        HIT: ${{ steps.restore.outputs.cache-hit }}
       run: |
         read -ra packages <<<"$PACKAGES"
 
@@ -83,8 +95,13 @@ runs:
             kept=$((kept + 1))
           else
             # apt resolved this exact version, so the index lists it: a different hash means
-            # the cached file is not the one the index signs for.
-            echo "::warning::apt-install: deleting cached $(printf %q "$name.deb"): its SHA-256 is $actual, but the index lists $(tr '\n' ' ' <<<"$listed")for $package $version $arch"
+            # the cached file is not the one the index signs for.  An entry is never
+            # overwritten, so after an exact hit only deleting it stops this recurring.
+            repair="it came from an older entry, so this job saves the good copy apt downloads under $(printf %q "$KEY") when it succeeds"
+            if [[ "$HIT" == true ]]; then
+              repair="this key's entry was restored exactly and is never overwritten, so delete it: gh cache delete $(printf %q "$KEY")"
+            fi
+            echo "::warning::apt-install: deleting cached $(printf %q "$name.deb"): its SHA-256 is $actual, but the index lists $(tr '\n' ' ' <<<"$listed")for $package $version $arch; $repair"
             rm -f "$deb"
           fi
         done
