@@ -20,6 +20,7 @@ workspace = true
 [dev-dependencies]
 insta = { version = "=1.49.0", features = ["filters"] }
 insta-cmd = "=0.7.0"
+proptest = "=1.12.0"
 
 # The Linux package's static musl binary uses mimalloc, because musl's own allocator makes parsing
 # markedly slower; see architecture/release.md.
@@ -31,5 +32,7 @@ mimalloc = "=0.1.52"
 ignore = "=0.4.33"
 memchr = "=2.8.3"
 quaffed-encoding = { path = "../encoding" }
+quaffed-python = { path = "../python" }
 quaffed-representation = { path = "../representation" }
 quaffed-script = { path = "../script" }
+quaffed-syntax = { path = "../syntax" }

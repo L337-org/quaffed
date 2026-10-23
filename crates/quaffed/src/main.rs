@@ -3,10 +3,10 @@
 
 //! `quaff`, the command-line entry point.
 //!
-//! It runs textual search and the script language's textual subset:
-//! `quaff TEXT`, `-s TEXT`, and scripts from `-e` and `-f` of `find` statements, with or
-//! without an `expect`.  `architecture/search.md` and `architecture/script.md` describe its
-//! design.
+//! It runs textual and structural search and the script language's search subset:
+//! `quaff TEXT`, `-s TEXT`, `-p PATTERN`, and scripts from `-e` and `-f` of `find` statements,
+//! of text or backticked patterns, with or without an `expect`.  `architecture/search.md` and
+//! `architecture/script.md` describe its design.
 
 mod cli;
 mod contents;
@@ -16,6 +16,7 @@ mod output;
 mod resolve;
 mod run;
 mod search;
+mod structural;
 mod workspace;
 
 use std::io::Write;
@@ -38,13 +39,14 @@ fn help() -> String {
 Usage:
   quaff TEXT [PATH]        search the project for TEXT
   quaff -s TEXT [PATH]     the same, with TEXT given as an option
+  quaff -p PATTERN [PATH]  search the project's Python files for code shaped like PATTERN
   quaff -e SCRIPT [PATH]   run the statements in SCRIPT
   quaff -f FILE [PATH]     run the script in FILE; -f - reads it from standard input
   quaff -h, --help         this help
 
--s, -e and -f may each be repeated and mixed, and run in the order given.  With any of them,
-the first positional argument is PATH.  TEXT is literal: nothing in it is special.  Put --
-before TEXT that starts with a dash.
+-s, -p, -e and -f may each be repeated and mixed, and run in the order given.  With any of
+them, the first positional argument is PATH.  TEXT is literal: nothing in it is special.  Put
+-- before TEXT that starts with a dash.
 
 A script is statements separated by newlines or ;, with # comments:
 
@@ -52,6 +54,7 @@ A script is statements separated by newlines or ;, with # comments:
   find \"TODO\" expect none          an assertion: fail, exit 2, unless the count holds
   find \"def\" $^ \"    pass\"         $^ is a line break; adjacent quoted text joins
   find ^\"x\"$                       ^ and $ anchor to the start and end of a line
+  find `open($path)` expect 2      a backticked pattern is matched by structure, like -p
 
 Consecutive assertions are one block: every one is checked, each that fails is reported,
 and the run stops after the block.  Counts are N, at least N, at most N, N or none, none and
@@ -63,12 +66,17 @@ A search covers the whole project - the nearest directory at or above this one t
 inside the project.  Files ignored by .gitignore, .ignore or .git/info/exclude are skipped,
 and so is version-control metadata.  Hidden files are searched.
 
+A pattern is Python code in which $name matches any one expression or statement, and
+$name... one or more in a row; a name used twice must match the same code each time.
+Comments, layout and redundant parentheses take no part.  A pattern applies to Python files
+only, and a Python file in scope that does not parse refuses the run.
+
 Each match prints on its own line as path:line:column-endline:endcolumn: text, with columns
 counted in characters.  Binary files are not searched, and the run says how many there were.
 
 Exit status: 0 found, or every assertion held; 1 nothing found, with no assertions; 2 an
 assertion failed; 3 usage or script error; 5 a statement or construct this build does not
-have; 7 I/O error.
+have; 7 I/O error; 9 a Python file a structural search needs does not parse.
 ",
         env!("CARGO_PKG_VERSION")
     )

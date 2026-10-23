@@ -18,8 +18,9 @@ use ruff_python_parser::Mode;
 
 use crate::parse::{PYTHON, ParseError, parse_from};
 
-/// Why a pattern could not be compiled.  Each says where in the pattern, as a byte offset into
-/// the pattern as written.
+/// Why a pattern could not be compiled.  Each that has a place in the pattern carries it, as a
+/// byte offset into the pattern as written, and [`PatternError::offset`] gives it; the message
+/// leaves it out, for the caller to place in terms its reader knows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PatternError {
     /// The pattern, with its holes, is not Python.
@@ -57,23 +58,17 @@ pub enum PatternError {
 impl fmt::Display for PatternError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            PatternError::Invalid { message, offset } => {
-                write!(f, "the pattern is not Python, at byte {offset}: {message}")
+            PatternError::Invalid { message, .. } => {
+                write!(f, "the pattern is not Python: {message}")
             }
-            PatternError::UnboundNamedSequence { offset } => write!(
-                f,
-                "\"$_...\" at byte {offset} is not a hole: a sequence that binds nothing is \
-                 written \"$...\""
+            PatternError::UnboundNamedSequence { .. } => f.write_str(
+                "\"$_...\" is not a hole: a sequence that binds nothing is written \"$...\"",
             ),
             PatternError::NoShape => f.write_str(
                 "the pattern is only holes, so it has no shape to match: write the code around \
                  them, as in \"handle_request($a, $b)\"",
             ),
-            PatternError::MixedHole {
-                name,
-                offset,
-                sequence,
-            } => {
+            PatternError::MixedHole { name, sequence, .. } => {
                 let (first, here) = if *sequence {
                     ("one node", "a sequence")
                 } else {
@@ -81,14 +76,27 @@ impl fmt::Display for PatternError {
                 };
                 write!(
                     f,
-                    "\"${name}\" is used for {first} and, at byte {offset}, for {here}: a name is \
-                     one or the other, so give the sequence a name of its own"
+                    "\"${name}\" is used for {first} and, here, for {here}: a name is one or the \
+                     other, so give the sequence a name of its own"
                 )
             }
             PatternError::Empty => {
                 f.write_str("the pattern has no code in it, only whitespace or comments")
             }
             PatternError::TooLong(err) => err.fmt(f),
+        }
+    }
+}
+
+impl PatternError {
+    /// Where in the pattern as written the error is, as a byte offset, if it has a place.
+    #[must_use]
+    pub fn offset(&self) -> Option<usize> {
+        match self {
+            PatternError::Invalid { offset, .. }
+            | PatternError::UnboundNamedSequence { offset }
+            | PatternError::MixedHole { offset, .. } => Some(*offset),
+            PatternError::NoShape | PatternError::Empty | PatternError::TooLong(_) => None,
         }
     }
 }
@@ -470,9 +478,10 @@ mod tests {
     fn an_unbound_named_sequence_is_refused_pointing_to_the_one_spelling() {
         let err = compile_pattern("f(a, $_...)").unwrap_err();
         assert_eq!(err, PatternError::UnboundNamedSequence { offset: 5 });
+        assert_eq!(err.offset(), Some(5));
         assert_eq!(
             err.to_string(),
-            "\"$_...\" at byte 5 is not a hole: a sequence that binds nothing is written \"$...\""
+            "\"$_...\" is not a hole: a sequence that binds nothing is written \"$...\""
         );
     }
 
@@ -489,14 +498,15 @@ mod tests {
         );
         assert!(
             err.to_string()
-                .starts_with("\"$x\" is used for one node and, at byte 8, for a sequence")
+                .starts_with("\"$x\" is used for one node and, here, for a sequence")
         );
         // The other order names the use at the offset.
         let err = compile_pattern("f($x..., $x)").unwrap_err();
+        assert_eq!(err.offset(), Some(9));
         assert_eq!(
             err.to_string(),
-            "\"$x\" is used for a sequence and, at byte 9, for one node: a name is one or the \
-             other, so give the sequence a name of its own"
+            "\"$x\" is used for a sequence and, here, for one node: a name is one or the other, \
+             so give the sequence a name of its own"
         );
         assert!(compile_pattern("f($x, $x)").is_ok());
         assert!(compile_pattern("f($x..., g($x...))").is_ok());
@@ -517,6 +527,7 @@ mod tests {
                 .to_string()
                 .starts_with("the pattern is only holes")
         );
+        assert_eq!(PatternError::NoShape.offset(), None);
         assert!(compile_pattern("$a\nx = 1\n").is_ok());
         assert!(compile_pattern("$a + 1").is_ok());
     }
@@ -544,9 +555,10 @@ mod tests {
             panic!("{err:?}");
         };
         assert_eq!(*offset, 9, "{message}");
-        assert!(
-            err.to_string()
-                .starts_with("the pattern is not Python, at byte 9: ")
+        assert_eq!(err.offset(), Some(9));
+        assert_eq!(
+            err.to_string(),
+            format!("the pattern is not Python: {message}")
         );
         // An error inside a placeholder points at the start of the hole.
         let sub = substitute("$abc", &claim("$abc").unwrap(), |_| true, "__h");

@@ -20,6 +20,8 @@ pub enum Source {
     Expression(usize),
     /// A `-s` or `--string` option.
     StringOption,
+    /// A `-p` or `--pattern` option: a structural query.
+    PatternOption,
     /// The bare query: the first positional argument.
     Positional,
 }

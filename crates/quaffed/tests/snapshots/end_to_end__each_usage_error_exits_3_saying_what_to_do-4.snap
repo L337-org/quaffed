@@ -4,11 +4,11 @@ info:
   program: quaff
   args:
     - "-p"
-    - handle($a)
+    - ""
 ---
 success: false
 exit_code: 3
 ----- stdout -----
 
 ----- stderr -----
-quaff: "-p" is not built yet
+quaff: -p is empty: give the pattern to search for

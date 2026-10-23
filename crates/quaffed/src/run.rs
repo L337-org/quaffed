@@ -10,14 +10,16 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
-use quaffed_encoding::{self as encoding, Encoding, Named, Refusal};
+use quaffed_encoding::{self as encoding, Encoding, Named, Refusal, python};
+use quaffed_python::compile_pattern;
 use quaffed_representation::check;
 use quaffed_representation::program::{
     ActionKind, Count, Counted, Expectation, Operand, Program, Query, Statement, TextPart,
     TextPattern,
 };
 use quaffed_representation::span::{Source, Span, Spanned};
-use quaffed_script::{ErrorKind, location, parse_source};
+use quaffed_script::{ErrorKind, lexer, location, parse_source};
+use quaffed_syntax::Pattern;
 
 use crate::cli::{self, SourceArg, UsageError};
 use crate::contents::Contents;
@@ -26,6 +28,7 @@ use crate::editorconfig::EditorConfig;
 use crate::output;
 use crate::resolve::{self, Declarations, Resolution, Unknown};
 use crate::search::{self, Match};
+use crate::structural;
 use crate::workspace::{self, Workspace};
 
 /// Why a run could not give an answer.  Each kind maps to one exit code, because each asks the
@@ -81,6 +84,12 @@ pub enum Failure {
     },
     /// The files to search could not all be found.  Exit 7.
     Discovery(discover::Error),
+    /// A structural search needs Python files that do not parse, so the run is refused: a count
+    /// that silently left them out could not be trusted.  Exit 9.
+    Unparseable {
+        /// Each such file, as the user would recognise it, and why it does not parse.
+        files: Vec<(PathBuf, String)>,
+    },
 }
 
 impl Failure {
@@ -94,6 +103,7 @@ impl Failure {
             | Failure::OutsideCurrentDirectory { .. } => 3,
             Failure::Unknown { .. } => 5,
             Failure::Io { .. } | Failure::Discovery(_) => 7,
+            Failure::Unparseable { .. } => 9,
         }
     }
 }
@@ -135,6 +145,26 @@ impl fmt::Display for Failure {
                 Ok(())
             }
             Failure::Discovery(err) => err.fmt(f),
+            Failure::Unparseable { files } => {
+                write!(
+                    f,
+                    "refused: {} in scope {} not parse, so a structural search cannot count \
+                     matches in {}:",
+                    count(files.len(), "Python file", "Python files"),
+                    if files.len() == 1 { "does" } else { "do" },
+                    if files.len() == 1 { "it" } else { "them" }
+                )?;
+                for (path, why) in files {
+                    write!(f, "\n  {path:?}: {why}")?;
+                }
+                write!(
+                    f,
+                    "\nTo search without {}, list {} in .ignore, or give a narrower scope on \
+                     the command line",
+                    if files.len() == 1 { "it" } else { "them" },
+                    if files.len() == 1 { "it" } else { "them" }
+                )
+            }
         }
     }
 }
@@ -149,7 +179,8 @@ impl std::error::Error for Failure {
             | Failure::Empty { .. }
             | Failure::Unknown { .. }
             | Failure::OutsideProject { .. }
-            | Failure::OutsideCurrentDirectory { .. } => None,
+            | Failure::OutsideCurrentDirectory { .. }
+            | Failure::Unparseable { .. } => None,
         }
     }
 }
@@ -220,10 +251,26 @@ pub fn run(
             Failure::Script { location, message }
         }
     })?;
-    let steps = plan(&built.program).map_err(|(construct, span)| Failure::Unknown {
-        location: built.locate(span, span.start),
-        message: format!("{construct} is not built yet"),
-    })?;
+    let (steps, structural) =
+        plan(&built.program).map_err(|(construct, span)| Failure::Unknown {
+            location: built.locate(span, span.start),
+            message: format!("{construct} is not built yet"),
+        })?;
+    // Every structural pattern is compiled before any file is read, so one that cannot be
+    // compiled stops the run before it looks at anything.
+    let compiled: Vec<Pattern> = structural
+        .iter()
+        .map(|(written, span)| {
+            compile_pattern(written).map_err(|err| Failure::Script {
+                location: built.locate(
+                    *span,
+                    err.offset()
+                        .map_or(span.start, |at| built.content_start(*span) + at),
+                ),
+                message: err.to_string(),
+            })
+        })
+        .collect::<Result<_, _>>()?;
 
     let cwd = fs::canonicalize(cwd).map_err(|cause| Failure::Io {
         doing: "reading the current directory",
@@ -240,7 +287,7 @@ pub fn run(
         .map_err(Failure::Discovery)?;
 
     let searching: Vec<Searching> = steps.iter().flat_map(Step::patterns).collect();
-    let patterns: Vec<&TextPattern> = searching.iter().map(|s| s.pattern).collect();
+    let patterns: Vec<Wanted> = searching.iter().map(|s| s.pattern).collect();
     // EditorConfig is read no higher than the project root, or where quaff runs with no
     // project, so that nothing outside the project changes an answer.
     let boundary = workspace
@@ -257,9 +304,17 @@ pub fn run(
         &found.files,
         &cwd,
         &patterns,
+        &compiled,
         &mut declarations,
         locale.as_ref(),
     )?;
+    // A structural search over files it cannot parse would give a count that cannot be trusted,
+    // so the whole run is refused, naming each, before anything is printed.
+    if !searched.unparsed.is_empty() {
+        return Err(Failure::Unparseable {
+            files: searched.unparsed.clone(),
+        });
+    }
     let mut evaluation = Evaluation {
         searched: &searched,
         printing: true,
@@ -314,6 +369,16 @@ struct Built {
 }
 
 impl Built {
+    /// Where in its source the pattern operand at `span` starts its content: past the backtick
+    /// fence and any padding space in a script, as the lexer cuts it, and at its start for `-p`,
+    /// whose source is the pattern alone.
+    fn content_start(&self, span: Span) -> usize {
+        if matches!(self.program.sources[span.source], Source::PatternOption) {
+            return span.start;
+        }
+        span.start + lexer::content_start(&self.texts[span.source][span.start..span.end])
+    }
+
     /// Where byte `offset` of the source `span` is in, as a diagnostic names it.
     fn locate(&self, span: Span, offset: usize) -> String {
         location::describe(
@@ -392,19 +457,26 @@ fn build(
 }
 
 impl Built {
-    /// Adds a textual query from the command line as the `find` it means.
+    /// Adds a query from the command line as the `find` it means: `-p` a structural one, and
+    /// `-s` or the bare query a textual one.
     fn push_query(&mut self, query: cli::Query) {
         let source = self.program.sources.len();
         self.program.sources.push(match query.source {
             cli::Source::Positional => Source::Positional,
             cli::Source::StringOption => Source::StringOption,
+            cli::Source::PatternOption => Source::PatternOption,
         });
         let span = Span {
             source,
             start: 0,
             end: query.text.len(),
         };
-        let operand = Operand::Text(TextPattern::literal(query.text.clone()));
+        let operand = match query.source {
+            cli::Source::PatternOption => Operand::Pattern(query.text.clone()),
+            cli::Source::Positional | cli::Source::StringOption => {
+                Operand::Text(TextPattern::literal(query.text.clone()))
+            }
+        };
         let find = Statement::Find(Query::new(Spanned::new(operand, span)));
         self.program.push(Spanned::new(find, span));
         self.texts.push(query.text);
@@ -442,17 +514,30 @@ fn script_text(read: io::Result<Vec<u8>>, source: &Source) -> Result<String, Fai
     })
 }
 
-/// One step of a program this build can run: every query in it is textual and unscoped.
+/// One step of a program this build can run: every query in it is unscoped.
 enum Step<'p> {
     /// Search, and print what was found.
-    Find(&'p TextPattern),
+    Find(Wanted<'p>),
     /// Search for each, print what was found, and check each count.
     Assert(Vec<Assertion<'p>>),
 }
 
+/// A program's steps, and each structural pattern in it with where it was written.
+type Planned<'p> = (Vec<Step<'p>>, Vec<(&'p str, Span)>);
+
+/// What a query searches for: text, or a structural pattern.
+#[derive(Clone, Copy)]
+enum Wanted<'p> {
+    /// A textual pattern, matched in every text file.
+    Text(&'p TextPattern),
+    /// A structural pattern, matched in every Python file: as written, and where its compiled
+    /// form is in the run's list of them.
+    Structural { written: &'p str, compiled: usize },
+}
+
 /// One assertion in a block this build can run.
 struct Assertion<'p> {
-    pattern: &'p TextPattern,
+    pattern: Wanted<'p>,
     count: Count,
     span: Span,
 }
@@ -460,7 +545,7 @@ struct Assertion<'p> {
 /// One pattern the run searches for.
 #[derive(Clone, Copy)]
 struct Searching<'p> {
-    pattern: &'p TextPattern,
+    pattern: Wanted<'p>,
 }
 
 impl Step<'_> {
@@ -468,7 +553,7 @@ impl Step<'_> {
     /// disagree about which pattern is which.
     fn patterns(&self) -> Vec<Searching<'_>> {
         match self {
-            Step::Find(pattern) => vec![Searching { pattern }],
+            Step::Find(pattern) => vec![Searching { pattern: *pattern }],
             Step::Assert(block) => block
                 .iter()
                 .map(|a| Searching { pattern: a.pattern })
@@ -477,16 +562,21 @@ impl Step<'_> {
     }
 }
 
-/// The steps `program` runs as, or the first construct in it that is in the MVP but not
-/// built yet, with where it was written.
-fn plan(program: &Program) -> Result<Vec<Step<'_>>, (&'static str, Span)> {
+/// The steps `program` runs as, and each structural pattern in it in order with where it was
+/// written; or the first construct in it that is in the MVP but not built yet, with where it was
+/// written.
+fn plan(program: &Program) -> Result<Planned<'_>, (&'static str, Span)> {
     let mut steps = Vec::new();
+    let mut structural = Vec::new();
     for statement in program.body() {
         steps.push(match &statement.node {
-            Statement::Find(query) => Step::Find(buildable(query)?),
-            Statement::Assert(block) => {
-                Step::Assert(block.iter().map(assertion).collect::<Result<_, _>>()?)
-            }
+            Statement::Find(query) => Step::Find(buildable(query, &mut structural)?),
+            Statement::Assert(block) => Step::Assert(
+                block
+                    .iter()
+                    .map(|a| assertion(a, &mut structural))
+                    .collect::<Result<_, _>>()?,
+            ),
             Statement::Act(action) => {
                 let construct = match action.kind {
                     ActionKind::Delete => "delete",
@@ -497,22 +587,29 @@ fn plan(program: &Program) -> Result<Vec<Step<'_>>, (&'static str, Span)> {
             _ => return Err(("this statement", statement.span)),
         });
     }
-    Ok(steps)
+    Ok((steps, structural))
 }
 
-fn assertion(expectation: &Spanned<Expectation>) -> Result<Assertion<'_>, (&'static str, Span)> {
+fn assertion<'p>(
+    expectation: &'p Spanned<Expectation>,
+    structural: &mut Vec<(&'p str, Span)>,
+) -> Result<Assertion<'p>, (&'static str, Span)> {
     let Counted::Matches(query) = &expectation.node.counted else {
         return Err(("this assertion", expectation.span));
     };
     Ok(Assertion {
-        pattern: buildable(query)?,
+        pattern: buildable(query, structural)?,
         count: expectation.node.count.node,
         span: expectation.span,
     })
 }
 
-/// The pattern of `query`, if this build can search for it.
-fn buildable(query: &Query) -> Result<&TextPattern, (&'static str, Span)> {
+/// The pattern of `query`, if this build can search for it.  A structural one joins
+/// `structural`, to be compiled with the rest before any file is read.
+fn buildable<'p>(
+    query: &'p Query,
+    structural: &mut Vec<(&'p str, Span)>,
+) -> Result<Wanted<'p>, (&'static str, Span)> {
     if let Some(glob) = query.scope.first() {
         return Err(("an `in` clause", glob.span));
     }
@@ -520,11 +617,15 @@ fn buildable(query: &Query) -> Result<&TextPattern, (&'static str, Span)> {
         return Err(("a `where` clause", filter.span));
     }
     match &query.operand.node {
-        Operand::Text(pattern) => Ok(pattern),
-        _ => Err((
-            "a structural pattern - a backticked operand -",
-            query.operand.span,
-        )),
+        Operand::Text(pattern) => Ok(Wanted::Text(pattern)),
+        Operand::Pattern(written) => {
+            structural.push((written.as_str(), query.operand.span));
+            Ok(Wanted::Structural {
+                written,
+                compiled: structural.len() - 1,
+            })
+        }
+        _ => Err(("this kind of operand", query.operand.span)),
     }
 }
 
@@ -558,10 +659,29 @@ fn resolve_scope(
     }
 }
 
+/// One match a search found, and for a structural one the code it covers, which is printed in
+/// place of the pattern's text.
+struct Hit {
+    at: Match,
+    text: Option<String>,
+}
+
 /// What searching every file for every pattern found.
 struct Searched {
     /// For each pattern, the files with matches, in discovery order.
-    matches: Vec<Vec<(PathBuf, Vec<Match>)>>,
+    matches: Vec<Vec<(PathBuf, Vec<Hit>)>>,
+    /// Python files a structural search needs that do not parse, by the paths a message shows,
+    /// with where and why.
+    unparsed: Vec<(PathBuf, String)>,
+    /// Python files in scope, binary ones included, when a structural pattern is wanted.
+    python: usize,
+    /// Python files searched for the structural patterns.
+    structural: usize,
+    /// Other files, which have no structure quaff reads, so no structural pattern applies.
+    not_applicable: usize,
+    /// Python files in an encoding quaff does not read, so not searched for a structural
+    /// pattern, with why.
+    unread: Vec<(PathBuf, String)>,
     /// For each pattern, the files of unknown encoding holding bytes it would match, by the
     /// paths a message shows, with the lines they are on and why the encoding is unknown.  Never
     /// counted, and never edited.
@@ -596,12 +716,35 @@ enum Unspelled {
 fn search_files(
     files: &[PathBuf],
     cwd: &Path,
-    patterns: &[&TextPattern],
+    patterns: &[Wanted],
+    compiled: &[Pattern],
     declarations: &mut Declarations,
     locale: Option<&(String, Encoding)>,
 ) -> Result<Searched, Failure> {
+    let textual: Vec<(usize, &TextPattern)> = patterns
+        .iter()
+        .enumerate()
+        .filter_map(|(i, wanted)| match wanted {
+            Wanted::Text(pattern) => Some((i, *pattern)),
+            Wanted::Structural { .. } => None,
+        })
+        .collect();
+    let structural: Vec<(usize, usize)> = patterns
+        .iter()
+        .enumerate()
+        .filter_map(|(i, wanted)| match wanted {
+            Wanted::Structural { compiled, .. } => Some((i, *compiled)),
+            Wanted::Text(_) => None,
+        })
+        .collect();
+    let shapes: Vec<&Pattern> = structural.iter().map(|&(_, c)| &compiled[c]).collect();
     let mut searched = Searched {
-        matches: vec![Vec::new(); patterns.len()],
+        matches: (0..patterns.len()).map(|_| Vec::new()).collect(),
+        unparsed: Vec::new(),
+        python: 0,
+        structural: 0,
+        not_applicable: 0,
+        unread: Vec::new(),
         possible: vec![Vec::new(); patterns.len()],
         unspelled: vec![Vec::new(); patterns.len()],
         refused: Vec::new(),
@@ -636,18 +779,35 @@ fn search_files(
             path: output::relative(&err.path, cwd),
             cause: err.cause,
         })?;
+        let binary = matches!(resolution, Resolution::Binary);
+        let python = resolve::is_python(file);
+        if !shapes.is_empty() {
+            if python {
+                // A binary one too: it is in scope, so the run does not say there is no Python,
+                // though it is counted with the binary files rather than searched.
+                searched.python += 1;
+            } else if !binary {
+                searched.not_applicable += 1;
+            }
+            if python && !binary {
+                // The text Ruff parses is the text CPython would run, decoded as CPython decodes
+                // it, whatever else declares the file's encoding for the textual tier.
+                match python::Source::decode(&bytes) {
+                    Ok(source) => searched.python(&shown, &source.text, &structural, &shapes),
+                    // quaff's own limit, not Python's: the file may well parse.
+                    Err(refusal @ Refusal::Unread { .. }) => {
+                        searched.unread.push((shown.clone(), refusal.to_string()));
+                    }
+                    // A Python file CPython refuses to read does not parse, whatever it holds.
+                    Err(refusal) => searched.unparsed.push((shown.clone(), refusal.to_string())),
+                }
+            }
+        }
         match resolution {
             Resolution::Binary => searched.binary += 1,
             Resolution::Refused(refusal) => searched.refused.push((shown, refusal)),
             Resolution::Known { encoding, body, .. } => {
-                for (i, pattern) in patterns.iter().enumerate() {
-                    match search::search(&bytes[body..], encoding, pattern) {
-                        None => searched.unspelled[i]
-                            .push((shown.clone(), Unspelled::Ambiguous(encoding))),
-                        Some(in_file) if in_file.is_empty() => {}
-                        Some(in_file) => searched.matches[i].push((shown.clone(), in_file)),
-                    }
-                }
+                searched.known(&shown, &bytes[body..], encoding, &textual);
             }
             Resolution::Unknown(reason) => {
                 if reason == Unknown::NotUtf8
@@ -655,32 +815,107 @@ fn search_files(
                 {
                     searched.hinted.push(shown.clone());
                 }
-                // An ASCII query is the same bytes in every ASCII-compatible encoding, so where
-                // its bytes are absent there is certainly no match; where present, a match is
-                // only possible, since in some encodings those bytes end a character.  In a
-                // declared UTF-16 or UTF-32 it is other bytes, so no query can be searched.
-                for (i, pattern) in patterns.iter().enumerate() {
-                    let in_file = if reason.ascii_compatible() {
-                        search::search(&bytes, Encoding::Unknown8Bit, pattern)
-                    } else {
-                        None
-                    };
-                    match in_file {
-                        None => searched.unspelled[i]
-                            .push((shown.clone(), Unspelled::Unknown(reason.clone()))),
-                        Some(in_file) if in_file.is_empty() => {}
-                        Some(in_file) => {
-                            let mut lines: Vec<usize> =
-                                in_file.iter().map(|m| m.start.line).collect();
-                            lines.dedup();
-                            searched.possible[i].push((shown.clone(), lines, reason.clone()));
-                        }
+                searched.unknown(&shown, &bytes, &reason, &textual);
+            }
+        }
+    }
+    Ok(searched)
+}
+
+impl Searched {
+    /// Searches a file in a known encoding, `text` its body after any byte-order mark, for each
+    /// textual pattern, by its index among all the run's patterns.
+    fn known(
+        &mut self,
+        shown: &Path,
+        text: &[u8],
+        encoding: Encoding,
+        textual: &[(usize, &TextPattern)],
+    ) {
+        for &(i, pattern) in textual {
+            match search::search(text, encoding, pattern) {
+                None => self.unspelled[i].push((shown.to_owned(), Unspelled::Ambiguous(encoding))),
+                Some(in_file) if in_file.is_empty() => {}
+                Some(in_file) => self.matches[i].push((
+                    shown.to_owned(),
+                    in_file
+                        .into_iter()
+                        .map(|at| Hit { at, text: None })
+                        .collect(),
+                )),
+            }
+        }
+    }
+
+    /// Searches a Python file's decoded `text` for each structural pattern, `shapes` in the
+    /// order of `structural`, which pairs each pattern's index among all the run's patterns with
+    /// its compiled one.  A file that does not parse is recorded, and searched for nothing.
+    fn python(
+        &mut self,
+        shown: &Path,
+        text: &str,
+        structural: &[(usize, usize)],
+        shapes: &[&Pattern],
+    ) {
+        match structural::search(text, shapes) {
+            Err(unparsed) => self.unparsed.push((
+                shown.to_owned(),
+                format!(
+                    "line {}, column {}: {}",
+                    unparsed.at.line, unparsed.at.column, unparsed.message
+                ),
+            )),
+            Ok(found) => {
+                self.structural += 1;
+                for (&(i, _), in_file) in structural.iter().zip(found) {
+                    if !in_file.is_empty() {
+                        self.matches[i].push((
+                            shown.to_owned(),
+                            in_file
+                                .into_iter()
+                                .map(|f| Hit {
+                                    at: f.at,
+                                    text: Some(f.text),
+                                })
+                                .collect(),
+                        ));
                     }
                 }
             }
         }
     }
-    Ok(searched)
+
+    /// Searches a file of unknown encoding for each textual pattern.  An ASCII query is the
+    /// same bytes in every ASCII-compatible encoding, so where its bytes are absent there is
+    /// certainly no match; where present, a match is only possible, since in some encodings those
+    /// bytes end a character.  In a declared UTF-16 or UTF-32 it is other bytes, so no query can
+    /// be searched.
+    fn unknown(
+        &mut self,
+        shown: &Path,
+        bytes: &[u8],
+        reason: &Unknown,
+        textual: &[(usize, &TextPattern)],
+    ) {
+        for &(i, pattern) in textual {
+            let in_file = if reason.ascii_compatible() {
+                search::search(bytes, Encoding::Unknown8Bit, pattern)
+            } else {
+                None
+            };
+            match in_file {
+                None => {
+                    self.unspelled[i].push((shown.to_owned(), Unspelled::Unknown(reason.clone())));
+                }
+                Some(in_file) if in_file.is_empty() => {}
+                Some(in_file) => {
+                    let mut lines: Vec<usize> = in_file.iter().map(|m| m.start.line).collect();
+                    lines.dedup();
+                    self.possible[i].push((shown.to_owned(), lines, reason.clone()));
+                }
+            }
+        }
+    }
 }
 
 /// Walking the steps in order over what the search found.
@@ -706,10 +941,14 @@ impl Evaluation<'_> {
         for step in steps {
             match step {
                 Step::Find(pattern) => {
-                    let found = self.print_matches(pattern, out)?;
+                    let found = self.print_matches(*pattern, out)?;
                     if found == 0 {
-                        self.notes
-                            .push(format!("no matches for {}", quoted(pattern)));
+                        self.notes.push(match self.nothing_applicable(*pattern) {
+                            Some(why) => {
+                                format!("{why}, so {} was not searched for", quoted(*pattern))
+                            }
+                            None => format!("no matches for {}", quoted(*pattern)),
+                        });
                     }
                     any |= found > 0;
                 }
@@ -721,8 +960,16 @@ impl Evaluation<'_> {
                     // quaff cannot read can never block an answer about the files it can.
                     for assertion in block {
                         let found = self.print_matches(assertion.pattern, out)?;
-                        if !assertion.count.holds(found) {
-                            let location = built.locate(assertion.span, assertion.span.start);
+                        let location = built.locate(assertion.span, assertion.span.start);
+                        // An assertion about the structure of files that have none is not a
+                        // passed one, whatever it asks.
+                        if let Some(why) = self.nothing_applicable(assertion.pattern) {
+                            failed.push(format!(
+                                "{location}: expected {} of {}, which cannot be checked: {why}",
+                                expected(assertion.count),
+                                quoted(assertion.pattern)
+                            ));
+                        } else if !assertion.count.holds(found) {
                             failed.push(format!(
                                 "{location}: expected {} of {}, found {found}",
                                 expected(assertion.count),
@@ -748,23 +995,42 @@ impl Evaluation<'_> {
     }
 
     /// Prints the next pattern's matches, `pattern`, and returns how many there were.
-    fn print_matches(
-        &mut self,
-        pattern: &TextPattern,
-        out: &mut impl Write,
-    ) -> Result<u64, Failure> {
-        let text = display(pattern);
+    fn print_matches(&mut self, pattern: Wanted, out: &mut impl Write) -> Result<u64, Failure> {
+        // A textual match is the pattern's own text; a structural one is the code it covers.
+        let text = match pattern {
+            Wanted::Text(pattern) => display(pattern),
+            Wanted::Structural { .. } => String::new(),
+        };
         let mut count = 0;
         for (path, in_file) in &self.searched.matches[self.next] {
-            for found in in_file {
+            for hit in in_file {
                 count += 1;
                 if self.printing {
-                    self.printing = print(out, &output::line(path, found, &text))?;
+                    let shown = hit.text.as_deref().unwrap_or(&text);
+                    self.printing = print(out, &output::line(path, &hit.at, shown))?;
                 }
             }
         }
         self.next += 1;
         Ok(count)
+    }
+
+    /// Why `pattern` could not be looked for anywhere, if that is so: a structural pattern in a
+    /// scope with no Python file, or none that could be searched.
+    fn nothing_applicable(&self, pattern: Wanted) -> Option<String> {
+        let searched = self.searched;
+        match pattern {
+            Wanted::Structural { .. } if searched.python == 0 => Some(format!(
+                "no file in scope has structural support; {} not searched",
+                count(searched.not_applicable, "text-tier file", "text-tier files")
+            )),
+            // Each file's own note says why it was not searched.
+            Wanted::Structural { .. } if searched.structural == 0 => Some(format!(
+                "no Python file in scope could be searched; {} not searched",
+                count(searched.python, "Python file", "Python files")
+            )),
+            _ => None,
+        }
     }
 }
 
@@ -781,15 +1047,22 @@ fn display(pattern: &TextPattern) -> String {
         .collect()
 }
 
-/// `pattern` as a message names it: its text quoted, with any anchors outside the quotes as a
-/// script writes them, so an anchored pattern is not mistaken for the bare text.
-fn quoted(pattern: &TextPattern) -> String {
-    format!(
-        "{}{:?}{}",
-        if pattern.start_anchor { "^" } else { "" },
-        display(pattern),
-        if pattern.end_anchor { "$" } else { "" }
-    )
+/// `pattern` as a message names it, in the delimiters a script writes it in: a textual one
+/// quoted, with any anchors outside the quotes, so an anchored pattern is not mistaken for the
+/// bare text; a structural one in backticks.
+fn quoted(pattern: Wanted) -> String {
+    match pattern {
+        Wanted::Text(pattern) => format!(
+            "{}{:?}{}",
+            if pattern.start_anchor { "^" } else { "" },
+            display(pattern),
+            if pattern.end_anchor { "$" } else { "" }
+        ),
+        // A line break as `\n`, as for text, so that a note stays on one line.
+        Wanted::Structural { written, .. } => {
+            format!("`{}`", written.replace('\r', "\\r").replace('\n', "\\n"))
+        }
+    }
 }
 
 /// What `count` requires, worded for a failed assertion.
@@ -816,9 +1089,9 @@ fn skipped(
     found: &discover::Found,
     declared_skipped: &[String],
 ) -> Vec<String> {
-    let mut notes = Vec::new();
+    let mut notes = structural_notes(searched, evaluated);
     for (i, Searching { pattern, .. }) in evaluated.iter().enumerate() {
-        let pattern = quoted(pattern);
+        let pattern = quoted(*pattern);
         let unknown = searched.unspelled[i]
             .iter()
             .filter(|(_, why)| {
@@ -909,6 +1182,32 @@ fn skipped(
     notes
 }
 
+/// The notes for structural patterns, once for the run however many there are: the text-tier
+/// files they do not apply to, where some Python is in scope - with none, the search or the
+/// assertion already counted them - and Python files in an encoding quaff does not read.
+fn structural_notes(searched: &Searched, evaluated: &[Searching]) -> Vec<String> {
+    let mut notes = Vec::new();
+    if !evaluated
+        .iter()
+        .any(|s| matches!(s.pattern, Wanted::Structural { .. }))
+    {
+        return notes;
+    }
+    // With no Python in scope, the run's own message counts these instead.
+    if searched.python > 0 && searched.not_applicable > 0 {
+        notes.push(format!(
+            "{} not searched for structural patterns, which apply to Python files only",
+            count(searched.not_applicable, "text-tier file", "text-tier files")
+        ));
+    }
+    for (path, reason) in &searched.unread {
+        notes.push(format!(
+            "{path:?} not searched for structural patterns: {reason}"
+        ));
+    }
+    notes
+}
+
 /// An encoding's name, as `CPython` calls the codec.
 fn name_of(encoding: Encoding) -> &'static str {
     match encoding {
@@ -955,6 +1254,22 @@ fn count(n: usize, one: &str, many: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_operand_this_build_cannot_search_for_is_not_built_yet_where_it_was_written() {
+        // The MVP check refuses a bound operand before planning, so no script reaches this;
+        // the planner still says what it cannot build rather than searching for nothing.
+        let span = Span {
+            source: 0,
+            start: 4,
+            end: 5,
+        };
+        let query = Query::new(Spanned::new(Operand::Bound("f".into()), span));
+        let mut structural = Vec::new();
+        let refused = buildable(&query, &mut structural).err();
+        assert_eq!(refused, Some(("this kind of operand", span)));
+        assert_eq!(structural.len(), 0, "{structural:?}");
+    }
 
     #[test]
     fn each_failure_has_the_exit_code_for_its_remedy() {
@@ -1057,14 +1372,20 @@ mod tests {
     #[test]
     fn a_pattern_is_named_with_its_anchors_outside_the_quotes() {
         let mut pattern = TextPattern::literal("x");
-        assert_eq!(quoted(&pattern), "\"x\"");
+        assert_eq!(quoted(Wanted::Text(&pattern)), "\"x\"");
         pattern.start_anchor = true;
         pattern.push_line_break();
         pattern.push_literal("y".into());
-        assert_eq!(quoted(&pattern), "^\"x\\ny\"");
+        assert_eq!(quoted(Wanted::Text(&pattern)), "^\"x\\ny\"");
         pattern.start_anchor = false;
         pattern.end_anchor = true;
-        assert_eq!(quoted(&pattern), "\"x\\ny\"$");
+        assert_eq!(quoted(Wanted::Text(&pattern)), "\"x\\ny\"$");
+        // A structural pattern is named in backticks, as a script writes it.
+        let structural = Wanted::Structural {
+            written: "f($a)",
+            compiled: 0,
+        };
+        assert_eq!(quoted(structural), "`f($a)`");
     }
 
     #[test]
@@ -1271,7 +1592,14 @@ mod tests {
             cwd: dir.clone(),
             contents: Contents::default(),
         };
-        let searched = search_files(&[with, without], &dir, &[&pattern], &mut declarations, None);
+        let searched = search_files(
+            &[with, without],
+            &dir,
+            &[Wanted::Text(&pattern)],
+            &[],
+            &mut declarations,
+            None,
+        );
         let _ = fs::remove_dir_all(&dir);
         let searched = searched.expect("searching");
         let listed: Vec<&PathBuf> = searched.matches[0].iter().map(|(path, _)| path).collect();

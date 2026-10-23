@@ -33,6 +33,7 @@ cargo build --release
 quaff TODO                 # every TODO in the project, from wherever you are in it
 quaff TODO src             # only under src
 quaff -s TODO -s FIXME     # two searches, in turn
+quaff -p 'open($args...)'  # every call of open in the project's Python, whatever its layout
 quaff -e 'find "TODO" expect none' src   # fail, exit 2, if any TODO is left
 quaff -f checks.quaff      # a script file; -f - reads one from standard input
 quaff -h                   # the rest

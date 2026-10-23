@@ -1,0 +1,16 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-p"
+    - "log(\"$x\")"
+---
+success: true
+exit_code: 0
+----- stdout -----
+src/strings.py:1:1-1:9: log("$x")
+src/strings.py:2:1-2:9: log('$x')
+
+----- stderr -----
+quaff: 1 text-tier file not searched for structural patterns, which apply to Python files only

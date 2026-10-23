@@ -12,15 +12,17 @@ than replacing it.
 | `quaff TEXT` | search the project for `TEXT` |
 | `quaff TEXT PATH` | the same, narrowed to `PATH` |
 | `quaff -s TEXT [PATH]`, `--string TEXT`, `--string=TEXT` | the same, as an option |
+| `quaff -p PATTERN [PATH]`, `--pattern PATTERN`, `--pattern=PATTERN` | search the project's Python for code of `PATTERN`'s shape |
 | `quaff -e SCRIPT [PATH]`, `--expression SCRIPT`, `--expression=SCRIPT` | run the statements in `SCRIPT` |
 | `quaff -f FILE [PATH]`, `--file FILE`, `--file=FILE` | run the script in `FILE`; `-f -` reads it from standard input |
 | `quaff -h`, `quaff --help` | the help, on standard output, exit 0 |
 | `quaff` | the help, on standard error, exit 3 |
 | `--` | ends option parsing, so `quaff -- --verbose` searches for `--verbose` |
 
-- **Sources compose in the order given.**  `-s`, `-e` and `-f` may each be repeated and mixed,
-  and their statements make one program in command-line order; `-s TEXT` is `find` of that text,
-  exactly.  `-f -` may be given once, because standard input can be read only once; a second is
+- **Sources compose in the order given.**  `-s`, `-p`, `-e` and `-f` may each be repeated and
+  mixed, and their statements make one program in command-line order; `-s TEXT` is `find` of that
+  text, exactly, and `-p PATTERN` is `find` of that structural pattern, as a backticked operand
+  is.  `-f -` may be given once, because standard input can be read only once; a second is
   a usage error.  A script is read as UTF-8, exit 3 if it is not: a file or standard input is
   refused at its first byte that is not, and an `-e` argument, which arrives whole, is refused
   naming which `-e` it was.  A leading UTF-8 byte-order mark on a file or standard input is
@@ -29,14 +31,14 @@ than replacing it.
   statements at all - every source empty, or only blank lines and comments, as `-e "$CHECKS"`
   with the variable unset gives - is refused too, exit 3, naming the sources, rather than
   searching for nothing and exiting 1.
-- **The first positional is the query only when no `-s`, `-e` or `-f` was given**; otherwise it
-  is the scope.
+- **The first positional is the query only when no `-s`, `-p`, `-e` or `-f` was given**;
+  otherwise it is the scope.
 - **There is exactly one scope argument.**  More than one is refused, naming them and the
   shell's glob expansion as the likely cause: bash 3.2 expands `src/**/*.py` to one file of
   many and the search would look successful.
 - **The query is literal.**  Nothing in it is special: `^`, `$`, `*` and `[` match themselves.
   Anchors and line breaks are a script construct, written outside an operand's quotes.
-- **Options in the MVP whose stories have not landed** - `-p`, `-o`, `--dry-run`, `--version` -
+- **Options in the MVP whose stories have not landed** - `-o`, `--dry-run`, `--version` -
   are refused as not built yet, rather than as unknown, which would be wrong.  Every other
   option is unknown.  Both exit 3.  A short option never takes `=VALUE`: `-s=x` is unknown.
 - **Parsing is hand-written** (`src/cli.rs`).  The order of sources matters, and an argument
@@ -151,6 +153,42 @@ a CRLF file as it answers the same file with LF endings.
 characters that keeps only the current line and column and stops at the last match, so a search
 needs about the size of the largest file it reads.  No size limit is applied.
 
+## Structural search
+
+A structural pattern - `-p PATTERN`, or a backticked operand in a script - is matched by shape
+against Python files, through the syntax arena (`syntax.md`) and the Python adapter
+(`python.md`): a hole matches any code, comments and layout take no part, and a match inside a
+match is a match of its own.  **Which files it applies to follows the units rule, where in the
+MVP a unit is a whole file** (`src/structural.rs`, and the file loop in `src/run.rs`):
+
+- **A Python file** - `.py`, `.pyi` or `.pyw`, by name alone, as `resolve::is_python` decides
+  for an encoding too - is decoded as `CPython` decodes it (`python::Source::decode` in
+  `quaffed-encoding`), parsed, and searched.  An `.editorconfig` or version-control declaration
+  that gives the textual tier another encoding does not change the text Ruff is given, since it
+  does not change the text Python runs.
+- **Any other file is not applicable**: it is never matched as text instead, and never an error.
+  A note counts the text-tier files not searched.  **When no file in scope is Python, the run
+  says so in words** - `no file in scope has structural support; 12 text-tier files not
+  searched` - rather than reporting nothing found: a `find` exits 1, and a `find ... expect`
+  fails, exit 2, whatever it asks, because an assertion about structure that could not be looked
+  for is not a passed one.  **When Python is in scope but none of it could be searched** -
+  every file binary or in an encoding quaff does not read - the same holds, worded `no Python
+  file in scope could be searched; 2 Python files not searched`, each file's note saying why.
+- **A Python file that does not parse refuses the whole run**, exit 9, before anything is
+  printed, naming each such file with where its first error is and Ruff's message, and saying how
+  to leave it out: an entry in `.ignore`, or a narrower scope.  A file `CPython` refuses to read -
+  a bad encoding declaration, say - does not parse either.  A count that silently skipped a file
+  could not be trusted.  Textual searches still run over such files, since they need no parse.
+- **A binary Python file** is skipped and counted, as any binary file is; **one in an encoding
+  quaff does not read** - a declared GBK, say, which `CPython` reads - is noted as not
+  searched.
+
+**A pattern is compiled before any file is read**, so one that is not Python, spells `$_...`,
+is nothing but holes, or uses a name both ways, is a script error, exit 3, and nothing is
+searched.  It is placed where in the pattern the fault is, counted in its source's terms -
+`-p, at character 6`, or a script's line and column past the backtick fence - rather than as a
+byte offset into the pattern; a fault with no one place is at the pattern's start.
+
 ## Output
 
 One line per match on standard output:
@@ -166,7 +204,8 @@ src/app.py:12:5-12:22: def connect(self):
   showing it as Latin-1 would.
 - **The path is relative to the current directory**, so a search from a subdirectory prints
   `../app.py`.
-- **The text is the matched text**, folded onto one line: each line ending, with the
+- **The text is the matched text** - for a structural match, the code the match covers -
+  folded onto one line: each line ending, with the
   indentation after it, becomes one space, never nothing, so `return` and `value` on two lines
   do not read as `returnvalue`.  It is printed in full.
 - With several queries, each query's matches print together, in program order: a `find` with
@@ -187,8 +226,9 @@ src/app.py:12:5-12:22: def connect(self):
   `quaff: checks.quaff:3:1: expected exactly 2 matches of "TODO", found 1`.  One whose scope
   held files its query could not be searched in also names those files; the count is of hits
   only, never of possible matches.  A message names a pattern by its text quoted, a line break
-  as `\n`, with any anchors outside the quotes as a script writes them: `^"x"$`.  Statements
-  after a failed block do not run, so they add no notes.
+  as `\n`, with any anchors outside the quotes as a script writes them: `^"x"$`; a structural
+  pattern in backticks, a line break there too as `\n`: `` `f($a)` ``.  Statements after a
+  failed block do not run, so they add no notes.
 - A closed standard output - piping into `head` - stops the printing quietly.  Assertions are
   still evaluated, so the exit code is still the answer.
 
@@ -202,6 +242,7 @@ src/app.py:12:5-12:22: def connect(self):
 | 3 | a usage error, a malformed script, a program with no statements, an edit with no `expect`, or a scope outside the project |
 | 5 | a statement or construct this build does not have: outside the MVP, or in it and not built yet |
 | 7 | an I/O error, naming the path and quoting the system's error |
+| 9 | a structural search needs a Python file that does not parse, naming each and how to leave it out |
 
 **An assertion block** - a run of consecutive `find ... expect` statements - is evaluated to
 the end: every assertion in it is checked and each that fails is reported.  If any failed, the
@@ -217,11 +258,10 @@ files never decide an assertion either: they are not text.
 **Every source is read and parsed, and the whole program checked, before any file is looked
 at**, so a script with an error anywhere does not run at all.  A script error names where it is
 - `refactor.quaff:12:5`, `<stdin>:12:5`, or `-e expression 2, at character 10` - and what was
-expected (`script.md`).  The constructs that parse but are not built yet - a backticked
-pattern, an `in` or `where` clause, `replace` and `delete` - exit 5, named, at where they were
-written.
+expected (`script.md`).  The constructs that parse but are not built yet - an `in` or
+`where` clause, `replace` and `delete` - exit 5, named, at where they were written.
 
-A run that cannot give an answer - exit 3, 5 or 7 - prints nothing on standard output, so a
+A run that cannot give an answer - exit 3, 5, 7 or 9 - prints nothing on standard output, so a
 partial answer never passes for a whole one.
 Every message says what was being done, quotes the path or argument it concerns, and says what
 to do where there is something to do (`src/run.rs`).

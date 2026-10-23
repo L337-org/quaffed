@@ -1,0 +1,23 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "find \"handle_request\" expect 6\nfind `handle_request($a, $b)` expect 3"
+---
+success: true
+exit_code: 0
+----- stdout -----
+README.md:1:6-1:19: handle_request
+src/app.py:2:12-2:25: handle_request
+src/app.py:5:1-5:14: handle_request
+src/app.py:6:8-6:21: handle_request
+src/app.py:7:1-7:14: handle_request
+src/app.py:7:16-7:29: handle_request
+src/app.py:2:12-3:13: handle_request(req, resp)
+src/app.py:7:1-7:39: handle_request(handle_request(a, b), c)
+src/app.py:7:16-7:35: handle_request(a, b)
+
+----- stderr -----
+quaff: 1 text-tier file not searched for structural patterns, which apply to Python files only
