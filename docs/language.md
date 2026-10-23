@@ -374,7 +374,7 @@ quaff: -p, at character 5: the pattern is not Python: unexpected EOF while parsi
 
 A pattern with no code at all, only whitespace or comments, is refused too, and so is one that
 starts or ends a run of statements with a sequence hole, puts two sequences together in one, or
-has a run whose search could grow faster than the square of a block's length ([Runs of
+whose search could grow faster than the square of a block's or list's length ([Runs of
 statements](#runs-of-statements)).
 
 ### What takes no part in a match
@@ -484,11 +484,12 @@ quaff: -p, at character 17: "$b..." follows another sequence with no statement b
 [exit 3]
 ```
 
-**A run of statements may have one place where the statement a sequence stops at decides what
-later code must match.**  A sequence named twice is one such place: `w()`, `$a...`, `x()`, `$a...`,
-`y()` is fine, and so is a name bound in one statement and used in a later one.  Each such place
-multiplies the work of a search by the length of the block, so a second is refused rather than
-left to make a search slow on a long file:
+**A pattern may have one place where what a sequence takes decides what later code must
+match.**  A sequence named twice is one such place: `w()`, `$a...`, `x()`, `$a...`, `y()` is fine,
+and so is a name bound in one statement and used in a later one.  The same goes inside a node, in
+a call's arguments or a function's body.  Each such place multiplies the work of a search by the
+length of the block or list it stands in, so a second is refused rather than left to make a
+search slow on a long file:
 
 ```
 $ quaff -p 'open_db()
@@ -500,12 +501,13 @@ $a...
 commit()
 $b...
 close_db()' play
-quaff: -p, at character 43: "$a..." makes a second place in this run of statements where the statement a sequence stops at decides what later code must match, and each such place multiplies the work of a search by the length of the block, so a pattern may have one: give one of the names used twice a name of its own
+quaff: -p, at character 43: "$a..." makes a second place where what a sequence takes decides what later code must match, and each such place multiplies the work of a search by the length of the block or list it stands in, so a pattern may have one: give one of the names used twice a name of its own
 [exit 3]
 ```
 
-Every pattern that is accepted searches a block in time at most proportional to the square of its
-length, and usually in proportion to its length.
+Every pattern that is accepted searches each block or list in time at most proportional to the
+square of its length, and usually in proportion to its length, whether the sequences stand in a
+run of statements or inside a node.
 
 ### Which files
 
@@ -680,12 +682,13 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
   short of the edge of its block, so one match would cover far more than the pattern spells.  Put
   fixed code on both sides of it.  So `return $x` then `$dead...`, every statement after a
   `return`, cannot be written.
-- **A run of statements may have only one place where a sequence's stopping point decides what
-  later code must match**, and two sequences may not stand together in one.  Matching patterns
-  with names used more than once is, in general, a problem no algorithm solves quickly, so the
-  pattern is refused where its search could grow faster than the square of a block's length,
-  rather than accepted and left to run for minutes on a long file.  A sequence named twice is
-  fine; two sequences each named twice are not.
+- **A pattern may have only one place where what a sequence takes decides what later code must
+  match**, in a run of statements or inside a node, and two sequences may not stand together in
+  a run of statements.  Matching patterns with names used more than once is, in general, a
+  problem no algorithm solves quickly, so the pattern is refused where its search could grow
+  faster than the square of a block's or list's length, rather than accepted and left to run for
+  minutes on a long file.  A sequence named twice is fine; two sequences each named twice are
+  not.  Two sequences together inside a node, `f($a..., $b...)`, are fine: the node bounds them.
 - **Structural patterns ignore non-Python files rather than falling back to text**, and say so.
 - **A Python file Python cannot read stops a structural search** (exit 9), but not a textual one.
 - **A Python file with no coding line is UTF-8 to a structural search, whatever `.editorconfig`

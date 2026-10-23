@@ -185,8 +185,8 @@ MVP a unit is a whole file** (`src/structural.rs`, and the file loop in `src/run
 
 **A pattern is compiled before any file is read**, so one that is not Python, spells `$_...`, is
 nothing but holes, uses a name both ways, starts or ends a run of statements with a sequence
-hole, or has a run whose search could grow faster than the square of a block's length, is a
-script error, exit 3, and nothing is searched.  It is placed where in the pattern the fault is,
+hole, or could take a search time growing faster than the square of a block's or list's length,
+is a script error, exit 3, and nothing is searched.  It is placed where in the pattern the fault is,
 counted in its source's terms - `-p, at character 6`, or a script's line and column past the
 backtick fence - rather than as a byte offset into the pattern; a fault with no one place is at
 the pattern's start.

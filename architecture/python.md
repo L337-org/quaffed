@@ -56,11 +56,11 @@ gives.  A hole is not Python, so it takes two stages:
 It refuses `$_...`, since a sequence that binds nothing is spelt `$...`; a pattern with no code,
 only whitespace or comments; a pattern that is only holes, which has no shape to match; a
 sequence hole that starts or ends a run of statements, which nothing would bound (`syntax.md`),
-naming the hole and suggesting code on both sides of it; and a run of statements whose search
-could grow faster than the square of a block's length (`syntax.md`), naming the hole that makes
-it so: two sequences together, or a second place where the statement a sequence stops at decides
-later code.  An error that is Ruff's is placed in the pattern as written, not in the text with
-placeholders.  Each error with a place carries it as a byte offset into the pattern, which
+naming the hole and suggesting code on both sides of it; and a pattern whose search could grow
+faster than the square of a block's or list's length (`syntax.md`), naming the hole that makes it
+so: two sequences together in a run of statements, or a second place where what a sequence takes
+decides later code.  An error that is Ruff's is placed in the pattern as written, not in the
+text with placeholders.  Each error with a place carries it as a byte offset into the pattern, which
 `PatternError::offset` returns, and its message leaves it out: the caller says where, in the
 terms its reader knows.
 

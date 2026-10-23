@@ -69,9 +69,9 @@ pub enum PatternError {
         /// Where in the pattern the second sequence is.
         offset: usize,
     },
-    /// A second place in a run of statements where the statement a sequence stops at decides
-    /// what later code must match, each such place multiplying a search's work by the length of
-    /// the block.
+    /// A second place where what a sequence takes decides what later code must match, in a run
+    /// of statements or among a node's children, each such place multiplying a search's work by
+    /// the length of the block or list it stands in.
     SecondChoice {
         /// The hole that makes it so, as written: `$x` or `$x...`.
         spelled: String,
@@ -134,10 +134,10 @@ impl fmt::Display for PatternError {
             ),
             PatternError::SecondChoice { spelled, .. } => write!(
                 f,
-                "\"{spelled}\" makes a second place in this run of statements where the statement a \
-                 sequence stops at decides what later code must match, and each such place \
-                 multiplies the work of a search by the length of the block, so a pattern may have \
-                 one: give one of the names used twice a name of its own"
+                "\"{spelled}\" makes a second place where what a sequence takes decides what later \
+                 code must match, and each such place multiplies the work of a search by the length \
+                 of the block or list it stands in, so a pattern may have one: give one of the \
+                 names used twice a name of its own"
             ),
             PatternError::TooLong(err) => err.fmt(f),
         }

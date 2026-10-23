@@ -327,8 +327,18 @@ fn a_run_whose_search_would_grow_faster_than_quadratic_is_refused() {
     assert!(compile_pattern("w()\n$a...\nx()\n$a...\ny()\n").is_ok());
     assert!(compile_pattern("f($v)\n$...\ng($v)\n$...\nh($v)\n").is_ok());
     assert!(compile_pattern("w()\n$...\nx()\n$...\ny()\n").is_ok());
-    // And two sequences inside one node are not a run of statements.
+    // Two sequences together inside one node are not a run of statements, and cost nothing.
     assert!(compile_pattern("f($a..., $b...)").is_ok());
+    // But choices inside a node count as they do in a run: `$b` after `x`, then `$a` again.
+    match compile_pattern("f(w, $a..., x, $b..., y, $a..., x, $b..., z)") {
+        Err(PatternError::SecondChoice { spelled, offset }) => {
+            assert_eq!((spelled.as_str(), offset), ("$a...", 25));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(
+        compile_pattern("def $f():\n    w()\n    $a...\n    x()\n    $a...\n    y()\n").is_ok()
+    );
 }
 
 #[test]
