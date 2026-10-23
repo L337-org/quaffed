@@ -155,14 +155,14 @@ as a defect in its compiler.  Every pattern a compiler accepts is matched in at 
 time in the length of each list it is matched in, with tokens between a list's parts or not.
 
 **Plain backtracking is kept as the reference** the remembering matcher is held to: it tries
-every length of each sequence from every place, and compares code piece by piece.  Three
-property tests run both and require the same matches: over runs of statements in blocks split
-in two, over a node's parts with sequences at either end and a token between statements or not,
-and over generated trees - nodes within nodes, names shared between lists, tokens anywhere and
-marked lists in the code.  Named tests hold each case where a shortcut must not apply, and two
-hold the work's growth: a body of two thousand statements matched in seconds, and the work of a
-name used twice over repeated code growing with the square of the block's length, counted rather
-than timed.
+every length of each sequence from every place, and compares code piece by piece.  Property
+tests run both and require the same matches (`remembered_against_backtracking` and `trees` in
+`src/matching.rs`): over runs of statements in blocks split in two, over a node's parts with
+sequences at either end and a token between statements or not, and over generated trees - nodes
+within nodes, names shared between lists, tokens anywhere and marked lists in the code.  Named
+tests beside them hold each case where a shortcut must not apply, and the work's growth: a long
+body matched in seconds, and the work of a name used twice over repeated code growing with the
+square of the block's length, counted rather than timed.
 
 ## Building one
 
