@@ -127,8 +127,9 @@ may not stand together**, since nothing then settles how the statements divide b
 every division is tried.  `Pattern::costly` names the hole that breaks either rule; every
 language's compiler refuses the pattern, and `find` panics on one as a defect in its
 compiler.  Every pattern a compiler accepts is matched in at most quadratic time in a block's
-length.  A named sequence binds the run it takes as a range of one copy of the block's parts, so
-binding copies nothing.
+length wherever the index applies: in a block with no token between its statements, for a
+pattern whose segments start and end with statements, as in Python.  A named sequence binds the
+run it takes as a range of one copy of the block's parts, so binding copies nothing.
 
 **Backtracking stays for what cannot be indexed**: two sequences with no statement between them,
 a segment that starts or ends with a token, and a block with a token between its statements,
@@ -159,5 +160,8 @@ corpora.
 5. Keep the tokens that carry meaning in that language, give a string literal its content as
    its value, and compile patterns, as `python.md` does for Python; hold the result with
    matching tests and properties like Python's.
-6. Refuse a pattern `Pattern::unbounded_sequence` names, with an error that says where the hole
-   is, since `find` panics on one.
+6. Refuse a pattern `Pattern::unbounded_sequence` or `Pattern::costly` names, with an error that
+   says where the hole is, since `find` panics on one.
+7. If the language's blocks keep a token between statements, as a `;` would be, extend the index
+   to them first: such a block is matched by backtracking, which `Pattern::costly` does not judge
+   and the quadratic bound does not cover.

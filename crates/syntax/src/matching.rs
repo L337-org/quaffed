@@ -291,8 +291,8 @@ impl Pattern {
         let wanted = between_first_and_last(&parts(shape, shape.root()));
         match Steps::of(self, &wanted) {
             Err(Unsplit::Together(hole)) => Some(Costly::Together(hole)),
-            // An adapter whose statements carry tokens between them is matched by backtracking;
-            // none does yet.
+            // A run with tokens at its segments' edges is matched by backtracking, whose cost
+            // this does not judge.
             Err(Unsplit::Tokens) => None,
             Ok(steps) => steps
                 .choices
