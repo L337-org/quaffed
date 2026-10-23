@@ -312,8 +312,8 @@ quaff: 1 text-tier file not searched for structural patterns, which apply to Pyt
 
 | hole | matches |
 | --- | --- |
-| `$name` | any one expression or statement, bound to `name` |
-| `$_` | any one expression or statement, bound to nothing |
+| `$name` | any one node - an expression, a statement, an argument, a parameter, a name - bound to `name` |
+| `$_` | any one node, bound to nothing |
 | `$name...` | one or more consecutive items - arguments, elements, statements - bound to `name` |
 | `$...` | one or more consecutive items, bound to nothing |
 
@@ -524,29 +524,32 @@ alone.
   [exit 1]
   ```
 
-  When Python is in scope but none of it could be searched - binary, or in an encoding quaff does
-  not read - it says `no Python file in scope could be searched`, and each file's note says why.
-- **A Python file that does not parse refuses the whole run**, exit 9, before anything is printed,
+  When Python is in scope but none of it could be searched, because every such file is binary,
+  it says `no Python file in scope could be searched`, and counts the binary files.
+- **A Python file quaff cannot parse refuses the whole run**, exit 9, before anything is printed,
   because a count that silently skipped a file could not be trusted:
 
   With a directory `broken/` beside `play/` holding only `bad.py`, which is `def broken(:`:
 
   ```
   $ quaff -p 'wrap($x)' broken
-  quaff: refused: 1 Python file in scope does not parse, so a structural search cannot count matches in it:
+  quaff: refused: 1 Python file in scope cannot be parsed, so a structural search cannot count matches in it:
     "broken/bad.py": line 1, column 12: Expected a parameter or the end of the parameter list
   To search without it, list it in .ignore, or give a narrower scope on the command line
   [exit 9]
   ```
 
-  A textual search over the same files still runs, since it needs no parse.  A file Python
+  A textual search over the same files still runs, since it needs no parse - but not in a run
+  that also holds a structural pattern, since the refusal stops the whole run.  A file Python
   itself refuses to read - a bad encoding declaration, or a byte its encoding does not have -
-  does not parse either.  A binary Python file, one with a NUL byte in its first 8000 bytes, is
-  skipped and counted with the binary files instead, as any binary file is.
+  does not parse either, and nor, to quaff, does one in an encoding Python reads and quaff does
+  not, such as GBK: quaff cannot count matches in it.  A binary Python file, one with a NUL byte
+  in its first 8000 bytes, is skipped and counted with the binary files instead, as any binary
+  file is.
 - **A Python file is read as Python reads it**: in the encoding its coding line declares, or
   UTF-8.  An `.editorconfig` or git attribute that says otherwise does not change that, because it
   does not change what Python runs.  One in an encoding Python reads and quaff does not, such as
-  GBK, is noted as not searched.
+  GBK, refuses a structural search, as above.
 
 ## What is searched
 
@@ -624,7 +627,7 @@ src/app.py:16:5-17:32: return lookup(request.args["id"], default=None,)
 | 3 | a usage error, a malformed script or pattern, an empty program, or a scope outside the project |
 | 5 | a statement or construct this build does not have |
 | 7 | an I/O error, naming the path and quoting the system's error |
-| 9 | a structural search needs a Python file that does not parse |
+| 9 | a structural search needs a Python file quaff cannot parse |
 
 **A run that cannot give an answer - exit 3, 5, 7 or 9 - prints nothing on standard output**, so
 a partial answer never passes for a whole one.  The whole program is read and checked before any

@@ -12,4 +12,3 @@ exit_code: 0
 latin1.py:2:13-2:19: f(name)
 
 ----- stderr -----
-quaff: "gbk.py" not searched for structural patterns: line 1 declares the encoding "gbk", Python's "gbk", which Python reads and quaff does not
