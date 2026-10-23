@@ -1229,5 +1229,12 @@ fn a_pattern_that_cannot_be_compiled_exits_3_saying_where() {
     assert_quaff_snapshot!(project.quaff(&["-e", "find ``` f($_...) ```"]));
     // A -p pattern has no fence, so a backtick it starts with is its first character.
     assert_quaff_snapshot!(project.quaff(&["-p", "`f(x)"]));
+    // A sequence that starts or ends a run of statements would reach the edge of its block.
+    assert_quaff_snapshot!(project.quaff(&["-p", "handle_request($a, $b)\n$rest..."]));
+    // A run whose search would grow faster than the square of a block's length.
+    assert_quaff_snapshot!(project.quaff(&["-p", "w()\n$a...\n$b...\nx()"]));
+    assert_quaff_snapshot!(
+        project.quaff(&["-p", "w()\n$a...\nx()\n$b...\ny()\n$a...\nx()\n$b...\nz()"])
+    );
     project.assert_unchanged();
 }

@@ -708,6 +708,9 @@ dependencies = [
 [[package]]
 name = "quaffed-syntax"
 version = "0.1.0"
+dependencies = [
+ "proptest",
+]
 
 [[package]]
 name = "quick-error"

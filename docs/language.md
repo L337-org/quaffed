@@ -372,7 +372,10 @@ quaff: -p, at character 5: the pattern is not Python: unexpected EOF while parsi
 [exit 3]
 ```
 
-A pattern with no code at all, only whitespace or comments, is refused too.
+A pattern with no code at all, only whitespace or comments, is refused too, and so is one that
+starts or ends a run of statements with a sequence hole, puts two sequences together in one, or
+has a run whose search could grow faster than the square of a block's length ([Runs of
+statements](#runs-of-statements)).
 
 ### What takes no part in a match
 
@@ -447,8 +450,57 @@ close_db()' play
 play/nested.py:9:1-11:10: open_db() a = 1 close_db()
 ```
 
-**A sequence hole at the start or end of a run of statements takes the rest of its block on that
-side**: `open_db()` then `$rest...` covers everything after `open_db()` to the end of the block.
+From each place a run can start it is matched separately, so with `w()` twice before `x()` twice,
+`w()` then `$mid...` then `x()` gives two overlapping matches, and a search reports both.
+
+**A sequence hole may not start or end a run of statements.**  Nothing would bound it on that
+side, so it would reach the edge of its block - at a module's top level, most of the file - in a
+single match that every count agreed with:
+
+```
+$ quaff -p 'open_db()
+$rest...' play
+quaff: -p, at character 11: "$rest..." ends the pattern's statements, so nothing bounds it and it would take every statement to the end of the block: put a statement after it, so that code stands on both sides, as "$body..." does between "open_db()" and "close_db()" on lines of their own
+[exit 3]
+```
+
+A sequence inside one node is bounded by it, so `def $f():` with `$body...` as its body, or
+`f($first, $rest...)`, is fine.
+
+**Two sequences may not stand together in a run of statements**, since nothing says how many
+statements each takes:
+
+```
+$ quaff -p 'open_db()
+$a...
+$b...
+close_db()' play
+quaff: -p, at character 17: "$b..." follows another sequence with no statement between them, so nothing says how many statements each takes: use one sequence, or put a statement between them
+[exit 3]
+```
+
+**A run of statements may have one place where the statement a sequence stops at decides what
+later code must match.**  A sequence named twice is one such place: `w()`, `$a...`, `x()`, `$a...`,
+`y()` is fine, and so is a name bound in one statement and used in a later one.  Each such place
+multiplies the work of a search by the length of the block, so a second is refused rather than
+left to make a search slow on a long file:
+
+```
+$ quaff -p 'open_db()
+$a...
+commit()
+$b...
+close_db()
+$a...
+commit()
+$b...
+close_db()' play
+quaff: -p, at character 43: "$a..." makes a second place in this run of statements where the statement a sequence stops at decides what later code must match, and each such place multiplies the work of a search by the length of the block, so a pattern may have one: give one of the names used twice a name of its own
+[exit 3]
+```
+
+Every pattern that is accepted searches a block in time at most proportional to the square of its
+length, and usually in proportion to its length.
 
 ### Which files
 
@@ -615,7 +667,16 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
 - **A method call is a different shape from a plain call**: `handle_request($a, $b)` does not
   match `client.handle_request(a, b)`.
 - **A run of statements never crosses into another block.**
-- **A sequence hole at the edge of a run of statements runs to the end of its block.**
+- **A sequence hole may not start or end a run of statements**, because nothing would stop it
+  short of the edge of its block, so one match would cover far more than the pattern spells.  Put
+  fixed code on both sides of it.  So `return $x` then `$dead...`, every statement after a
+  `return`, cannot be written.
+- **A run of statements may have only one place where a sequence's stopping point decides what
+  later code must match**, and two sequences may not stand together in one.  Matching patterns
+  with names used more than once is, in general, a problem no algorithm solves quickly, so the
+  pattern is refused where its search could grow faster than the square of a block's length,
+  rather than accepted and left to run for minutes on a long file.  A sequence named twice is
+  fine; two sequences each named twice are not.
 - **Structural patterns ignore non-Python files rather than falling back to text**, and say so.
 - **A Python file Python cannot read stops a structural search** (exit 9), but not a textual one.
 - **A Python file with no coding line is UTF-8 to a structural search, whatever `.editorconfig`

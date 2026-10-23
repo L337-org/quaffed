@@ -68,6 +68,27 @@ impl Pattern {
     pub fn holes(&self) -> impl Iterator<Item = (NodeId, &Hole)> {
         self.holes.iter().map(|(node, hole)| (*node, hole))
     }
+
+    /// A sequence hole at the start or end of a pattern of several statements in a row, if the
+    /// pattern has one, the leading one first: a hole nothing in the pattern bounds on that
+    /// side.  Every language's compiler refuses such a pattern, and [`crate::find`] treats one
+    /// as a defect in the compiler.
+    ///
+    /// A run of statements is matched wherever it can start, so such a hole would reach to the
+    /// edge of the block it stands in - at a module's top level, most of a file - and a match
+    /// that far beyond what the pattern spells is one an edit would destroy code with.  A
+    /// sequence with fixed code on both sides, or inside a node such as a call or a function
+    /// body, is bounded by that code and is not one of these.
+    #[must_use]
+    pub fn unbounded_sequence(&self) -> Option<NodeId> {
+        let content: Vec<NodeId> = self.arena.children(self.arena.root()).collect();
+        if content.len() < 2 {
+            return None;
+        }
+        [content[0], content[content.len() - 1]]
+            .into_iter()
+            .find(|node| self.hole(*node).is_some_and(|hole| hole.sequence))
+    }
 }
 
 #[cfg(test)]
@@ -115,6 +136,77 @@ mod tests {
             .map(|(_, h)| h.name.clone().unwrap())
             .collect();
         assert_eq!(names, ["a", "b"]);
+    }
+
+    /// Two statements, `a` then `b`, as children of a module, with the given nodes as sequence
+    /// holes: 1 is `a`, 2 is `b`.
+    fn run_of_two(sequences: &[usize]) -> Pattern {
+        let mut builder = Builder::new(Language::new("toy"), "a\nb").unwrap();
+        builder.enter(Kind::new("Module"), 0..3);
+        builder.enter(Kind::new("Name"), 0..1);
+        builder.leave();
+        builder.enter(Kind::new("Name"), 2..3);
+        builder.leave();
+        builder.leave();
+        let arena = builder.finish().into_owned();
+        let nodes: Vec<_> = arena.nodes().collect();
+        let holes = sequences
+            .iter()
+            .map(|&i| {
+                (
+                    nodes[i],
+                    Hole {
+                        name: None,
+                        sequence: true,
+                    },
+                )
+            })
+            .collect();
+        Pattern::new(arena, holes)
+    }
+
+    #[test]
+    fn a_sequence_at_either_end_of_a_run_is_unbounded_and_the_leading_one_is_named_first() {
+        let nodes: Vec<_> = run_of_two(&[]).arena().nodes().collect();
+        assert_eq!(run_of_two(&[1]).unbounded_sequence(), Some(nodes[1]));
+        assert_eq!(run_of_two(&[2]).unbounded_sequence(), Some(nodes[2]));
+        assert_eq!(run_of_two(&[1, 2]).unbounded_sequence(), Some(nodes[1]));
+        assert_eq!(run_of_two(&[]).unbounded_sequence(), None);
+    }
+
+    #[test]
+    fn a_sequence_inside_one_node_is_bounded_by_it() {
+        // `f(x)` as the one statement of a module, with `x` a sequence: the call bounds it.
+        let mut builder = Builder::new(Language::new("toy"), "f(x)").unwrap();
+        builder.enter(Kind::new("Module"), 0..4);
+        builder.enter(Kind::new("Call"), 0..4);
+        builder.enter(Kind::new("Name"), 0..1);
+        builder.leave();
+        builder.enter(Kind::new("Name"), 2..3);
+        builder.leave();
+        builder.leave();
+        builder.leave();
+        let arena = builder.finish().into_owned();
+        let x = arena.nodes().nth(3).unwrap();
+        let pattern = Pattern::new(
+            arena,
+            vec![(
+                x,
+                Hole {
+                    name: None,
+                    sequence: true,
+                },
+            )],
+        );
+        assert_eq!(pattern.unbounded_sequence(), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "a pattern compiler let through a sequence hole at the edge")]
+    fn matching_a_pattern_with_an_unbounded_sequence_is_a_defect() {
+        let pattern = run_of_two(&[1]);
+        let target = run_of_two(&[]).arena().clone();
+        let _ = crate::find(&pattern, &target);
     }
 
     #[test]

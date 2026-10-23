@@ -13,7 +13,7 @@
 use std::fmt::{self, Write as _};
 use std::ops::Range;
 
-use quaffed_syntax::{Arena, Builder, Hole, NodeId, Pattern};
+use quaffed_syntax::{Arena, Builder, Costly, Hole, NodeId, Pattern};
 use ruff_python_parser::Mode;
 
 use crate::parse::{PYTHON, ParseError, parse_from};
@@ -51,6 +51,33 @@ pub enum PatternError {
         /// Whether the spelling at `offset` is the sequence, `$x...`, or the single node, `$x`.
         sequence: bool,
     },
+    /// A sequence hole starts or ends the pattern's statements, so nothing in the pattern bounds
+    /// it on that side and it would take every statement to that edge of the block.
+    UnboundedSequence {
+        /// The name it binds, or `None` for `$...`.
+        name: Option<String>,
+        /// Where in the pattern it is.
+        offset: usize,
+        /// Whether it starts the statements, rather than ending them.
+        leading: bool,
+    },
+    /// Two sequence holes stand together in a run of statements, so nothing settles how many
+    /// statements each takes, and a search would try every division.
+    SequencesTogether {
+        /// The second sequence's name, or `None` for `$...`.
+        name: Option<String>,
+        /// Where in the pattern the second sequence is.
+        offset: usize,
+    },
+    /// A second place in a run of statements where the statement a sequence stops at decides
+    /// what later code must match, each such place multiplying a search's work by the length of
+    /// the block.
+    SecondChoice {
+        /// The hole that makes it so, as written: `$x` or `$x...`.
+        spelled: String,
+        /// Where in the pattern it is.
+        offset: usize,
+    },
     /// The pattern is longer than an arena's offsets reach.
     TooLong(quaffed_syntax::TooLong),
 }
@@ -83,6 +110,35 @@ impl fmt::Display for PatternError {
             PatternError::Empty => {
                 f.write_str("the pattern has no code in it, only whitespace or comments")
             }
+            PatternError::UnboundedSequence { name, leading, .. } => {
+                let spelled = format!("${}...", name.as_deref().unwrap_or(""));
+                let (role, edge, put) = if *leading {
+                    ("starts", "the start", "before")
+                } else {
+                    ("ends", "the end", "after")
+                };
+                write!(
+                    f,
+                    "\"{spelled}\" {role} the pattern's statements, so nothing bounds it and it would \
+                     take every statement to {edge} of the block: put a statement {put} it, so that \
+                     code stands on both sides, as \"$body...\" does between \"open_db()\" and \
+                     \"close_db()\" on lines of their own"
+                )
+            }
+            PatternError::SequencesTogether { name, .. } => write!(
+                f,
+                "\"${}...\" follows another sequence with no statement between them, so nothing \
+                 says how many statements each takes: use one sequence, or put a statement \
+                 between them",
+                name.as_deref().unwrap_or("")
+            ),
+            PatternError::SecondChoice { spelled, .. } => write!(
+                f,
+                "\"{spelled}\" makes a second place in this run of statements where the statement a \
+                 sequence stops at decides what later code must match, and each such place \
+                 multiplies the work of a search by the length of the block, so a pattern may have \
+                 one: give one of the names used twice a name of its own"
+            ),
             PatternError::TooLong(err) => err.fmt(f),
         }
     }
@@ -95,7 +151,10 @@ impl PatternError {
         match self {
             PatternError::Invalid { offset, .. }
             | PatternError::UnboundNamedSequence { offset }
-            | PatternError::MixedHole { offset, .. } => Some(*offset),
+            | PatternError::MixedHole { offset, .. }
+            | PatternError::UnboundedSequence { offset, .. }
+            | PatternError::SequencesTogether { offset, .. }
+            | PatternError::SecondChoice { offset, .. } => Some(*offset),
             PatternError::NoShape | PatternError::Empty | PatternError::TooLong(_) => None,
         }
     }
@@ -117,7 +176,8 @@ struct Claim {
 /// # Errors
 ///
 /// Returns a [`PatternError`] if the pattern is not Python, spells a hole `$_...`, is nothing
-/// but holes, or is too long.  Nothing partial is returned.
+/// but holes, starts or ends a run of statements with a sequence hole, has a run too costly to
+/// search ([`Pattern::costly`]), or is too long.  Nothing partial is returned.
 ///
 /// # Panics
 ///
@@ -138,7 +198,7 @@ pub fn compile_pattern(text: &str) -> Result<Pattern, PatternError> {
     // string or comment's content takes no part in the structure, so the shape is unchanged.
     let second = substitute(text, &claims, |i| is_hole[i], &placeholder);
     let arena = parse_as(&second.text, mode).map_err(|err| invalid(err, &second))?;
-    let holes: Vec<(NodeId, Hole)> = claims
+    let placed: Vec<(NodeId, &Claim)> = claims
         .iter()
         .zip(&is_hole)
         .filter(|(_, hole)| **hole)
@@ -146,8 +206,12 @@ pub fn compile_pattern(text: &str) -> Result<Pattern, PatternError> {
         .map(|((claim, _), range)| {
             let node = node_spanning(&arena, range)
                 .expect("restoring literal text inside a string or comment moved a hole");
-            (node, claim.hole.clone())
+            (node, claim)
         })
+        .collect();
+    let holes: Vec<(NodeId, Hole)> = placed
+        .iter()
+        .map(|(node, claim)| (*node, claim.hole.clone()))
         .collect();
     let content: Vec<NodeId> = arena.children(arena.root()).collect();
     if content.is_empty() {
@@ -159,7 +223,40 @@ pub fn compile_pattern(text: &str) -> Result<Pattern, PatternError> {
     {
         return Err(PatternError::NoShape);
     }
-    Ok(Pattern::new(arena.into_owned(), holes))
+    let first = content[0];
+    let pattern = Pattern::new(arena.into_owned(), holes);
+    if let Some(node) = pattern.unbounded_sequence() {
+        let (_, claim) = placed
+            .iter()
+            .find(|(hole, _)| *hole == node)
+            .expect("an unbounded sequence is one of the pattern's holes");
+        return Err(PatternError::UnboundedSequence {
+            name: claim.hole.name.clone(),
+            offset: claim.written.start,
+            leading: node == first,
+        });
+    }
+    if let Some(costly) = pattern.costly() {
+        let node = match costly {
+            Costly::Together(node) | Costly::SecondChoice(node) => node,
+        };
+        let (_, claim) = placed
+            .iter()
+            .find(|(hole, _)| *hole == node)
+            .expect("a costly run is named by one of the pattern's holes");
+        let offset = claim.written.start;
+        return Err(match costly {
+            Costly::Together(_) => PatternError::SequencesTogether {
+                name: claim.hole.name.clone(),
+                offset,
+            },
+            Costly::SecondChoice(_) => PatternError::SecondChoice {
+                spelled: text[claim.written.clone()].to_owned(),
+                offset,
+            },
+        });
+    }
+    Ok(pattern)
 }
 
 /// Every hole the pattern spells, in order, before anything is parsed.
@@ -511,6 +608,32 @@ mod tests {
         assert!(compile_pattern("f($x, $x)").is_ok());
         assert!(compile_pattern("f($x..., g($x...))").is_ok());
         assert!(compile_pattern("f($_, $...)").is_ok());
+    }
+
+    #[test]
+    fn a_sequence_at_the_edge_of_statements_names_the_side_to_bound_it_on() {
+        let err = compile_pattern("$pre...\nx()\n").unwrap_err();
+        assert_eq!(err.offset(), Some(0));
+        assert!(
+            err.to_string()
+                .starts_with("\"$pre...\" starts the pattern's statements"),
+            "{err}"
+        );
+        assert!(
+            err.to_string().contains("put a statement before it"),
+            "{err}"
+        );
+        let err = compile_pattern("x()\n$...\n").unwrap_err();
+        assert_eq!(err.offset(), Some(4));
+        assert!(
+            err.to_string()
+                .starts_with("\"$...\" ends the pattern's statements"),
+            "{err}"
+        );
+        assert!(
+            err.to_string().contains("put a statement after it"),
+            "{err}"
+        );
     }
 
     #[test]

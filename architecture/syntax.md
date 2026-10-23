@@ -85,10 +85,58 @@ arena holds and knows no language; an adapter decides, for its language, which t
 meaning.
 
 A run of statements is matched once from each place it could start, as far as the pattern
-goes.  **A sequence hole at an edge of such a pattern takes the rest of its block on that side**:
-a leading one starts at the block's first statement, so it gives one match per block, and a
-trailing one runs to the block's last, so `x = 1` then `$rest...` covers everything after it.
-A sequence anywhere else takes the fewest children that let the rest match, and at least one.
+goes, and every sequence hole takes the fewest children that let the rest match, and at least
+one.  **A sequence hole may not start or end a run of statements**: nothing in the pattern
+would bound it on that side, so it would reach the edge of its block - at a module's top level,
+most of a file - in one match whose count every check would agree with, and an edit would
+replace it all.  Taking the fewest at an edge would make it one statement, `$_` under another
+name, and taking until the next match begins still reaches the edge when there is one
+occurrence, so neither makes an edge hole both safe and useful.  `Pattern::unbounded_sequence`
+names such a hole; every language's compiler refuses the pattern, and `find` panics on one as a
+defect in its compiler.  A sequence inside one node - a call's arguments, a function's body - is
+bounded by that node, and between two statements by them.
+
+**A run of statements is matched by an index, not by trying lengths** (`Run` in
+`src/matching.rs`).  The run is split at its sequences into segments, the fixed statements
+between them, and each segment's places in a block - where its shape stands, with the bindings
+it makes itself - are found once per block.  A match then starts at each place of the first
+segment and jumps, for each sequence, to the nearest place of the next segment after it: taking
+the fewest statements is the same as taking the next occurrence.
+
+**A failure after a segment's nearest place settles the later places too**, since whatever
+stands after a later place also stands after this one, unless the choice of place changes what
+the rest is matched with.  It does in two cases.  The first is when placing the segment binds a
+name used further on: the sequence before it, or a hole in it, named first there and used again
+later.  The second is when the sequence after the segment has a name used elsewhere, since a
+later start gives it different code.  Only in those cases are the later places tried, in order,
+with the bindings so far, and a start is given up as soon as a later segment has no place left
+after the run so far.
+
+**A sequence whose name is already bound is not searched for**: it must hold the same code
+again, so its end is where the code from its start first equals what it bound.  The code of a
+block's parts is hashed once, with running totals of hashes and lengths, so that end is a binary
+search and a hash comparison (`Codes`).  A hash that matches is confirmed by comparing the code
+in full, so a collision costs a comparison, never a wrong match.
+
+**So the cost is about linear in a block's length** for a run with no name joining its parts,
+and quadratic where one step's choice matters further on, as with a sequence named twice.  Each
+further step whose choice matters would multiply it by the block's length again, and with no
+limit on how many there are the problem is that of matching a pattern with variables, which is
+NP-complete, so no algorithm can bound it.  **So a run may have one such step, and two sequences
+may not stand together**, since nothing then settles how the statements divide between them and
+every division is tried.  `Pattern::costly` names the hole that breaks either rule; every
+language's compiler refuses the pattern, and `find` panics on one as a defect in its
+compiler.  Every pattern a compiler accepts is matched in at most quadratic time in a block's
+length wherever the index applies: in a block with no token between its statements, for a
+pattern whose segments start and end with statements, as in Python.  A named sequence binds the
+run it takes as a range of one copy of the block's parts, so binding copies nothing.
+
+**Backtracking stays for what cannot be indexed**: two sequences with no statement between them,
+a segment that starts or ends with a token, and a block with a token between its statements,
+where a sequence could take the token.  It tries every length of each sequence from every
+start.  It is also what the index is held to: a property test runs both over generated runs and
+blocks, with names repeated and blocks split, and requires the same matches, and two tests hold
+the cases where a later place must be tried.
 
 ## Building one
 
@@ -112,3 +160,8 @@ corpora.
 5. Keep the tokens that carry meaning in that language, give a string literal its content as
    its value, and compile patterns, as `python.md` does for Python; hold the result with
    matching tests and properties like Python's.
+6. Refuse a pattern `Pattern::unbounded_sequence` or `Pattern::costly` names, with an error that
+   says where the hole is, since `find` panics on one.
+7. If the language's blocks keep a token between statements, as a `;` would be, extend the index
+   to them first: such a block is matched by backtracking, which `Pattern::costly` does not judge
+   and the quadratic bound does not cover.
