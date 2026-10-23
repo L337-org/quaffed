@@ -7,7 +7,7 @@
 //!   the string's prefix, an f-string's or t-string's literal text included.
 
 use proptest::prelude::*;
-use quaffed_python::compile_pattern;
+use quaffed_python::{PatternError, compile_pattern};
 
 /// Pieces of Python and of hole syntax, so generated patterns hit the compiler's edges: holes
 /// next to each other, a bare `$`, `${`, quotes and comments.
@@ -38,6 +38,32 @@ proptest! {
     #[test]
     fn any_text_is_a_pattern_or_an_error(pieces in prop::collection::vec(piece(), 0..12)) {
         let _ = compile_pattern(&pieces.concat());
+    }
+
+    #[test]
+    fn a_sequence_in_a_run_of_statements_is_refused_exactly_at_its_ends(
+        calls in prop::collection::vec(name(), 2..6),
+        at in any::<prop::sample::Index>(),
+    ) {
+        let at = at.index(calls.len());
+        let lines: Vec<String> = calls
+            .iter()
+            .enumerate()
+            .map(|(i, callee)| if i == at { "$s...".to_owned() } else { format!("{callee}()") })
+            .collect();
+        let text = lines.join("\n");
+        let edge = at == 0 || at == calls.len() - 1;
+        match compile_pattern(&text) {
+            Err(PatternError::UnboundedSequence { leading, .. }) => {
+                prop_assert!(edge, "{text:?} refused with its sequence in the middle");
+                prop_assert_eq!(leading, at == 0);
+            }
+            Ok(pattern) => {
+                prop_assert!(!edge, "{text:?} compiled with a sequence at an edge");
+                prop_assert_eq!(pattern.unbounded_sequence(), None);
+            }
+            Err(err) => prop_assert!(false, "{text:?}: {err}"),
+        }
     }
 
     #[test]

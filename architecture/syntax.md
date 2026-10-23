@@ -85,10 +85,16 @@ arena holds and knows no language; an adapter decides, for its language, which t
 meaning.
 
 A run of statements is matched once from each place it could start, as far as the pattern
-goes.  **A sequence hole at an edge of such a pattern takes the rest of its block on that side**:
-a leading one starts at the block's first statement, so it gives one match per block, and a
-trailing one runs to the block's last, so `x = 1` then `$rest...` covers everything after it.
-A sequence anywhere else takes the fewest children that let the rest match, and at least one.
+goes, and every sequence hole takes the fewest children that let the rest match, and at least
+one.  **A sequence hole may not start or end a run of statements**: nothing in the pattern
+would bound it on that side, so it would reach the edge of its block - at a module's top level,
+most of a file - in one match whose count every check would agree with, and an edit would
+replace it all.  Taking the fewest at an edge would make it one statement, `$_` under another
+name, and taking until the next match begins still reaches the edge when there is one
+occurrence, so neither makes an edge hole both safe and useful.  `Pattern::unbounded_sequence`
+names such a hole; every language's compiler refuses the pattern, and `find` panics on one as a
+defect in its compiler.  A sequence inside one node - a call's arguments, a function's body - is
+bounded by that node, and between two statements by them.
 
 ## Building one
 
@@ -112,3 +118,5 @@ corpora.
 5. Keep the tokens that carry meaning in that language, give a string literal its content as
    its value, and compile patterns, as `python.md` does for Python; hold the result with
    matching tests and properties like Python's.
+6. Refuse a pattern `Pattern::unbounded_sequence` names, with an error that says where the hole
+   is, since `find` panics on one.

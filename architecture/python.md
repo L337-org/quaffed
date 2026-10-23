@@ -54,7 +54,9 @@ gives.  A hole is not Python, so it takes two stages:
    put back too, and the pattern fails to parse.
 
 It refuses `$_...`, since a sequence that binds nothing is spelt `$...`; a pattern with no code,
-only whitespace or comments; and a pattern that is only holes, which has no shape to match.  An
+only whitespace or comments; a pattern that is only holes, which has no shape to match; and a
+sequence hole that starts or ends a run of statements, which nothing would bound (`syntax.md`),
+naming the hole and suggesting code on both sides of it.  An
 error that is Ruff's is placed in the pattern as written, not in the text with placeholders.
 Each error with a place carries it as a byte offset into the pattern, which
 `PatternError::offset` returns, and its message leaves it out: the caller says where, in the

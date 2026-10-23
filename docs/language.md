@@ -372,7 +372,9 @@ quaff: -p, at character 5: the pattern is not Python: unexpected EOF while parsi
 [exit 3]
 ```
 
-A pattern with no code at all, only whitespace or comments, is refused too.
+A pattern with no code at all, only whitespace or comments, is refused too, and so is one that
+starts or ends a run of statements with a sequence hole ([Runs of
+statements](#runs-of-statements)).
 
 ### What takes no part in a match
 
@@ -447,8 +449,22 @@ close_db()' play
 play/nested.py:9:1-11:10: open_db() a = 1 close_db()
 ```
 
-**A sequence hole at the start or end of a run of statements takes the rest of its block on that
-side**: `open_db()` then `$rest...` covers everything after `open_db()` to the end of the block.
+From each place a run can start it is matched separately, so with `w()` twice before `x()` twice,
+`w()` then `$mid...` then `x()` gives two overlapping matches, and a search reports both.
+
+**A sequence hole may not start or end a run of statements.**  Nothing would bound it on that
+side, so it would reach the edge of its block - at a module's top level, most of the file - in a
+single match that every count agreed with:
+
+```
+$ quaff -p 'open_db()
+$rest...' play
+quaff: -p, at character 11: "$rest..." ends the pattern's statements, so nothing bounds it and it would take every statement to the end of the block: put a statement after it, so that code stands on both sides, as "$body..." does between "open_db()" and "close_db()" on lines of their own
+[exit 3]
+```
+
+A sequence inside one node is bounded by it, so `def $f():` with `$body...` as its body, or
+`f($first, $rest...)`, is fine.
 
 ### Which files
 
@@ -615,7 +631,10 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
 - **A method call is a different shape from a plain call**: `handle_request($a, $b)` does not
   match `client.handle_request(a, b)`.
 - **A run of statements never crosses into another block.**
-- **A sequence hole at the edge of a run of statements runs to the end of its block.**
+- **A sequence hole may not start or end a run of statements**, because nothing would stop it
+  short of the edge of its block, so one match would cover far more than the pattern spells.  Put
+  fixed code on both sides of it.  Deleting every statement after a `return` with `return $x` then `$dead...`
+  is not possible for that reason.
 - **Structural patterns ignore non-Python files rather than falling back to text**, and say so.
 - **A Python file Python cannot read stops a structural search** (exit 9), but not a textual one.
 - **A Python file with no coding line is UTF-8 to a structural search, whatever `.editorconfig`

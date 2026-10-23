@@ -6,7 +6,7 @@
 //! a match inside a match, a string's content, redundant parentheses, and runs of statements
 //! that stay in one block.
 
-use quaffed_python::{compile_pattern, parse_module};
+use quaffed_python::{PatternError, compile_pattern, parse_module};
 use quaffed_syntax::find;
 
 /// The text of every match of `pattern` in `source`, parsed as a module.
@@ -200,44 +200,49 @@ fn a_trailing_comma_or_a_semicolon_takes_no_part() {
 }
 
 #[test]
-fn a_sequence_at_the_edge_of_statements_takes_the_rest_of_its_block() {
-    let source = "def f():\n    x = 1\n    a()\n    b()\n";
+fn a_sequence_at_the_edge_of_statements_is_refused_rather_than_taking_the_block() {
+    // Nothing would bound it on that side, so it would reach the edge of its block.
+    let refused = |pattern: &str| match compile_pattern(pattern) {
+        Err(PatternError::UnboundedSequence {
+            name,
+            offset,
+            leading,
+        }) => (name, offset, leading),
+        other => panic!("{pattern:?}: {other:?}"),
+    };
+    assert_eq!(refused("$pre...\nx()\n"), (Some("pre".into()), 0, true));
     assert_eq!(
-        matches("x = 1\n$rest...\n", source),
-        ["x = 1\n    a()\n    b()"]
+        refused("x = 1\n$rest...\n"),
+        (Some("rest".into()), 6, false)
     );
+    assert_eq!(refused("x()\n$...\n"), (None, 4, false));
+    // At both edges, the leading one is named.
+    assert_eq!(refused("$a...\nx()\n$b...\n"), (Some("a".into()), 0, true));
+    // Bounded by code on both sides, or by the node it stands in, a sequence is allowed.
+    assert!(compile_pattern("w()\n$mid...\nx()\n").is_ok());
+    assert!(compile_pattern("def $f():\n    $body...\n").is_ok());
+    assert!(compile_pattern("if $c:\n    x()\n    $rest...\n").is_ok());
+    assert!(compile_pattern("f($first, $rest...)").is_ok());
+}
+
+#[test]
+fn a_sequence_between_statements_takes_as_few_as_it_can() {
+    let source = "open_db()\na = 1\nclose_db()\nb = 2\nopen_db()\nc = 3\nclose_db()\n";
+    // One match per pair, never one from the first open to the last close.
+    assert_eq!(
+        matches("open_db()\n$body...\nclose_db()\n", source),
+        [
+            "open_db()\na = 1\nclose_db()",
+            "open_db()\nc = 3\nclose_db()"
+        ]
+    );
+    // From each place it can start, as far as the pattern needs, and at least one statement.
     let source = "w()\nw()\nx()\nx()\n";
-    // A leading sequence starts at the block's first statement and takes all it can.
-    assert_eq!(matches("$pre...\nx()\n", source), ["w()\nw()\nx()\nx()"]);
-    // Between the edges a sequence still takes only what the pattern needs, and at least one.
     assert_eq!(
         matches("w()\n$mid...\nx()\n", source),
         ["w()\nw()\nx()", "w()\nx()\nx()"]
     );
-}
-
-#[test]
-fn sequences_at_both_edges_take_their_block_and_each_keeps_one() {
-    let source = "w()\nx()\ny()\nz()\n";
-    // A leading and a trailing sequence around one statement take everything either side.
-    assert_eq!(
-        matches("$a...\nx()\n$b...\n", source),
-        ["w()\nx()\ny()\nz()"]
-    );
-    // The trailing one still gets at least one statement when the leading one is greedy.
-    assert_eq!(matches("$a...\nz()\n$b...\n", source), none());
-    assert_eq!(
-        matches("$a...\ny()\n$b...\n", source),
-        ["w()\nx()\ny()\nz()"]
-    );
-    // A leading sequence gives one match per list, never one reaching into the else clause.
-    assert_eq!(
-        matches(
-            "$pre...\nx()\n",
-            "if c:\n    w()\n    x()\nelse:\n    v()\n    x()\n"
-        ),
-        ["w()\n    x()", "v()\n    x()"]
-    );
+    assert_eq!(matches("w()\n$mid...\nw()\n", source), none());
 }
 
 #[test]
@@ -264,17 +269,20 @@ fn statements_in_a_row_match_where_they_stand_together_in_one_block() {
 
 #[test]
 fn a_run_of_statements_or_a_sequence_stays_in_one_block() {
-    // Not from a function's name or parameters into its body.
+    // Within a function's body, but never out of it.
     assert_eq!(
         matches(
-            "$pre...\nreturn $x\n",
-            "def f(a):\n    y = 1\n    return a\n"
+            "y = 1\n$mid...\nreturn $x\n",
+            "def f(a):\n    y = 1\n    g()\n    return a\n"
         ),
-        ["y = 1\n    return a"]
+        ["y = 1\n    g()\n    return a"]
     );
     assert_eq!(
-        matches("$pre...\nx()\n", "if c:\n    w()\n    x()\n"),
-        ["w()\n    x()"]
+        matches(
+            "w()\n$mid...\nx()\n",
+            "if c:\n    w()\nelse:\n    v()\n    x()\n"
+        ),
+        none()
     );
     // Not from a branch into its else clause.
     assert_eq!(
@@ -282,7 +290,10 @@ fn a_run_of_statements_or_a_sequence_stays_in_one_block() {
         none()
     );
     assert_eq!(
-        matches("x = 1\n$rest...\n", "if c:\n    x = 1\nelse:\n    z()\n"),
+        matches(
+            "x = 1\n$rest...\nz()\n",
+            "if c:\n    x = 1\nelse:\n    y()\n    z()\n"
+        ),
         none()
     );
     // Not across a for's else, nor from a try's body over its handlers.

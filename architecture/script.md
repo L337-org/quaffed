@@ -33,7 +33,8 @@ one node bound to nothing, `$name...` a sequence of one or more nodes, and `$...
 bound to nothing; a hole never matches nothing.  Whether a `$name` is a hole is the target
 language's grammar's to decide, not the script parser's: one that lands in code is a hole, and one
 inside a string literal or a comment is literal text.  `$_...` is refused, since `$...` already
-spells that; so is one name used both for one node and for a sequence; and so is a pattern with no
+spells that; so is one name used both for one node and for a sequence; so is a sequence hole at
+the start or end of a run of statements, which nothing would bound; and so is a pattern with no
 code, or with nothing but holes.  The script parser carries the operand as written; compiling it is
 the language adapter's, which `python.md` describes for Python.
 

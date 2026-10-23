@@ -31,7 +31,9 @@ pub struct Match {
 ///
 /// # Panics
 ///
-/// If the pattern and the arena are of different languages, which is a defect in the caller.
+/// If the pattern and the arena are of different languages, which is a defect in the caller, or
+/// the pattern has a sequence hole at the start or end of a run of statements
+/// ([`Pattern::unbounded_sequence`]), which is a defect in its compiler.
 #[must_use]
 pub fn find(pattern: &Pattern, target: &Arena<'_>) -> Vec<Match> {
     let shape = pattern.arena();
@@ -39,6 +41,10 @@ pub fn find(pattern: &Pattern, target: &Arena<'_>) -> Vec<Match> {
         shape.language(),
         target.language(),
         "a pattern was matched against another language's arena"
+    );
+    assert!(
+        pattern.unbounded_sequence().is_none(),
+        "a pattern compiler let through a sequence hole at the edge of a run of statements"
     );
     // A pattern compiler refuses a pattern with no code, or with nothing but holes, so a pattern
     // of one node is one with a shape.
@@ -55,40 +61,21 @@ pub fn find(pattern: &Pattern, target: &Arena<'_>) -> Vec<Match> {
         }
     } else {
         let wanted = between_first_and_last(&parts(shape, shape.root()));
-        // A sequence hole at either edge of the pattern takes as much of the block as it can: a
-        // leading one from the block's first statement, a trailing one to its last.
-        let edge = |part: Option<&Part<'_>>| match part {
-            Some(Part::Child(child)) => pattern.hole(*child).is_some_and(|hole| hole.sequence),
-            _ => false,
-        };
-        let leading = edge(wanted.first());
-        let mut greedy = Vec::new();
-        for part in [wanted.first(), wanted.last()] {
-            if edge(part)
-                && let Some(Part::Child(child)) = part
-            {
-                greedy.push(*child);
-            }
-        }
         for node in target.nodes() {
             let available = parts(target, node);
             let limits = list_ends(target, &available);
-            let mut previous = None;
             for (start, first) in available.iter().enumerate() {
                 let Part::Child(first) = first else { continue };
-                let list = target.list(*first);
-                let begins_list = previous != Some(list);
-                previous = Some(list);
                 // A run of statements stays in one list - one block's statements - so it never
                 // takes in a header, a clause, or another block.
-                if list.is_none() || (leading && !begins_list) {
+                if target.list(*first).is_none() {
                     continue;
                 }
                 let limit = limits[start];
                 // Matched from this start as far as the pattern goes: one try per start, whatever
                 // the run's length.
                 let mut bindings = Bindings::new();
-                if let Some(taken) = Matcher::new(pattern, target).greedy(&greedy).consume(
+                if let Some(taken) = Matcher::new(pattern, target).consume(
                     &wanted,
                     &available[start..limit],
                     &mut bindings,
@@ -185,17 +172,11 @@ enum Bound<'a> {
 
 type Bindings<'a> = BTreeMap<String, Bound<'a>>;
 
-/// The ends a sequence hole tries, in the order it tries them.
-type Ends<'a> = Box<dyn Iterator<Item = usize> + 'a>;
-
 /// A pattern and the arena it is matched against.
 struct Matcher<'p, 't> {
     shape: &'p Arena<'static>,
     pattern: &'p Pattern,
     target: &'t Arena<'t>,
-    /// The sequence holes that take the longest run they can rather than the shortest: those at
-    /// the edges of a pattern of several statements.
-    greedy: Vec<NodeId>,
 }
 
 impl<'p, 't> Matcher<'p, 't> {
@@ -204,13 +185,7 @@ impl<'p, 't> Matcher<'p, 't> {
             shape: pattern.arena(),
             pattern,
             target,
-            greedy: Vec::new(),
         }
-    }
-
-    fn greedy(mut self, holes: &[NodeId]) -> Self {
-        self.greedy = holes.to_vec();
-        self
     }
 
     fn hole(&self, node: NodeId) -> Option<&'p Hole> {
@@ -249,8 +224,8 @@ impl<'p, 't> Matcher<'p, 't> {
     }
 
     /// Matches `wanted` against the start of `available`, and says how many of its parts the
-    /// match took: each sequence hole the shortest way, or a greedy one the longest; with
-    /// `whole`, only a match that takes them all counts.
+    /// match took, each sequence hole the shortest way that lets the rest match; with `whole`,
+    /// only a match that takes them all counts.
     fn consume(
         &self,
         wanted: &[Part<'_>],
@@ -272,43 +247,23 @@ impl<'p, 't> Matcher<'p, 't> {
             },
             Part::Child(child) => match self.hole(*child) {
                 Some(hole) if hole.sequence => {
-                    // One or more of the available parts, from a child to a child.  A hole tries
-                    // the shortest run first and keeps the first that lets the rest match; a greedy
-                    // one, at an edge of a pattern of statements, tries the longest first.
+                    // One or more of the available parts, from a child to a child, the shortest
+                    // run first: the first that lets the rest match is kept.
                     let Some(Part::Child(first)) = available.first() else {
                         return None;
                     };
                     // A run stays in one list, so `$body...` never takes in a clause or a header.
                     let block = self.target.list(*first);
                     let in_block = |part: &Part<'_>| !matches!(part, Part::Child(c) if self.target.list(*c) != block);
-                    let greedy = self.greedy.contains(child);
-                    // A greedy hole may try many lengths, so it finds the list's end once and shares
-                    // one copy of the parts; a shortest-first one usually stops at its first try, so
-                    // it walks forward and copies only the run it tries.
-                    let (ends, shared): (Ends<'_>, Option<Rc<[Part<'t>]>>) = if greedy {
-                        let within = available
-                            .iter()
-                            .position(|p| !in_block(p))
-                            .unwrap_or(available.len());
-                        (
-                            Box::new((0..within).rev()),
-                            Some(available[..within].into()),
-                        )
-                    } else {
-                        // Stops at the list's end as it reaches it, not before it starts.
-                        let forward =
-                            (0..available.len()).take_while(move |&i| in_block(&available[i]));
-                        (Box::new(forward), None)
-                    };
+                    // Walked forward, stopping at the list's end as it reaches it, so a try costs
+                    // only the run it copies.
+                    let ends = (0..available.len()).take_while(|&i| in_block(&available[i]));
                     for end in ends {
                         if !matches!(available[end], Part::Child(_)) {
                             continue;
                         }
                         let mut attempt = bindings.clone();
-                        let run = match &shared {
-                            Some(shared) => Bound::Run(Rc::clone(shared), 0..end + 1),
-                            None => Bound::Run(available[..=end].into(), 0..end + 1),
-                        };
+                        let run = Bound::Run(available[..=end].into(), 0..end + 1);
                         if bind(self.target, hole, run, &mut attempt)
                             && let Some(n) =
                                 self.consume(rest, &available[end + 1..], &mut attempt, whole)
