@@ -32,9 +32,9 @@ not procedural macros or the crates they are built from: the code a derive gener
 into the binary, and the graph cannot tell which macros' output ships.  **What comes with the Rust
 toolchain rather than as a crate - the musl C library and LLVM's libunwind - is outside that graph,
 so the test cannot see it**, and nor is data in the source tree derived from someone else's work -
-the codec tables generated from CPython (`encoding.md`).  Both are kept by hand: check the first when the toolchain's musl target changes.
-For the second, `packaging.rs` fails if the attribution does not name the CPython release the tables
-were generated from.
+the codec tables generated from CPython (`encoding.md`).  Both are kept by hand: check the first
+when the toolchain's musl target changes.  For the second, `packaging.rs` fails if the attribution
+does not name the CPython release the tables were generated from.
 
 **The version** is the workspace's, read by `scripts/workspace-version`, and the release's tag
 must be `v` followed by it.  The changelog has one entry per version pointing at the release notes,
