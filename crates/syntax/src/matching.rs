@@ -10,6 +10,7 @@
 //! hole matches any node, a sequence hole one or more consecutive children of one node with
 //! whatever tokens stand between them, and a name used twice must match equal code both times.
 
+use std::cell::OnceCell;
 use std::collections::BTreeMap;
 use std::ops::Range;
 use std::rc::Rc;
@@ -100,33 +101,29 @@ fn backtrack<'t>(
     found: &mut Vec<Match>,
 ) {
     let limits = list_ends(target, available);
-    {
-        {
-            for (start, first) in available.iter().enumerate() {
-                let Part::Child(first) = first else { continue };
-                // A run of statements stays in one list - one block's statements - so it never
-                // takes in a header, a clause, or another block.
-                if target.list(*first).is_none() {
-                    continue;
-                }
-                let limit = limits[start];
-                // Matched from this start as far as the pattern goes: one try per start, whatever
-                // the run's length.
-                let mut bindings = Bindings::new();
-                if let Some(taken) = Matcher::new(pattern, target).consume(
-                    wanted,
-                    &available[start..limit],
-                    &mut bindings,
-                    false,
-                ) {
-                    let Part::Child(end) = available[start + taken - 1] else {
-                        unreachable!("a run of statements ends at a statement");
-                    };
-                    found.push(Match {
-                        range: target.range(*first).start..target.range(end).end,
-                    });
-                }
-            }
+    for (start, first) in available.iter().enumerate() {
+        let Part::Child(first) = first else { continue };
+        // A run of statements stays in one list - one block's statements - so it never
+        // takes in a header, a clause, or another block.
+        if target.list(*first).is_none() {
+            continue;
+        }
+        let limit = limits[start];
+        // Matched from this start as far as the pattern goes: one try per start, whatever
+        // the run's length.
+        let mut bindings = Bindings::new();
+        if let Some(taken) = Matcher::new(pattern, target).consume(
+            wanted,
+            &available[start..limit],
+            &mut bindings,
+            false,
+        ) {
+            let Part::Child(end) = available[start + taken - 1] else {
+                unreachable!("a run of statements ends at a statement");
+            };
+            found.push(Match {
+                range: target.range(*first).start..target.range(end).end,
+            });
         }
     }
 }
@@ -284,7 +281,7 @@ impl<'w> Run<'w> {
             available,
             index: &index,
             shared: &shared,
-            codes: std::cell::OnceCell::new(),
+            codes: OnceCell::new(),
         };
         for &start in &index[0] {
             let limit = limits[start];
@@ -316,7 +313,7 @@ struct Search<'s, 'w, 'p, 't> {
     index: &'s [Vec<usize>],
     shared: &'s Rc<[Part<'t>]>,
     /// The parts' code hashed, made when a name is first used twice.
-    codes: std::cell::OnceCell<Codes>,
+    codes: OnceCell<Codes>,
 }
 
 impl<'t> Search<'_, '_, '_, 't> {
