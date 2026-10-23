@@ -706,7 +706,9 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
   minutes on a long file.  A sequence named twice is fine; two sequences each named twice are
   not.  Two sequences together inside a node, `f($a..., $b...)`, are fine: the node bounds them.
 - **Structural patterns ignore non-Python files rather than falling back to text**, and say so.
-- **A Python file Python cannot read stops a structural search** (exit 9), but not a textual one.
+- **A Python file quaff cannot parse stops a structural search** (exit 9): one Python refuses to
+  read, and one Python reads in an encoding quaff does not, such as GBK.  A textual query alone
+  still searches it, but one in the same run as a structural pattern is stopped with it.
 - **A Python file with no coding line is UTF-8 to a structural search, whatever `.editorconfig`
   or git attributes say**, since that is how Python reads it.  A textual search follows those
   declarations, as listed under [Encodings](#encodings), so with `charset = latin1` for `*.py`,

@@ -457,7 +457,7 @@ fn alike(a: &str, b: &str) -> (bool, bool) {
 
 #[test]
 fn parentheses_and_commas_cpythons_tree_does_not_record_take_no_part() {
-    // Each pair is one tree to CPython 3.14.8, so each matches the other.
+    // Each pair is one tree to CPython, so each matches the other.
     for (a, b) in [
         ("from x import (a, b)", "from x import a, b"),
         ("from x import (a, b,)", "from x import a, b"),
@@ -469,6 +469,8 @@ fn parentheses_and_commas_cpythons_tree_does_not_record_take_no_part() {
             "with (open(p), open(q),):\n    pass",
             "with open(p), open(q):\n    pass",
         ),
+        // The statement's pair, not the one around `b`, which only wraps it.
+        ("with (a, (b)):\n    pass", "with a, b:\n    pass"),
         ("class A():\n    pass", "class A:\n    pass"),
         ("x = (a, b,)", "x = a, b"),
         ("x = a, b,", "x = a, b"),
@@ -532,4 +534,15 @@ fn a_hole_inside_a_dotted_name_is_refused_saying_why() {
     assert!(compile_pattern("import $m").is_ok());
     assert!(compile_pattern("from $m import x").is_ok());
     assert!(compile_pattern("f(\"a.$m\")  # a.$m").is_ok());
+}
+
+#[test]
+fn an_indented_pattern_is_refused_as_python_refuses_an_indented_file() {
+    match compile_pattern("    f($x)") {
+        Err(err @ PatternError::Invalid { .. }) => {
+            assert_eq!(err.offset(), Some(0));
+            assert!(err.to_string().contains("Unexpected indentation"), "{err}");
+        }
+        other => panic!("{other:?}"),
+    }
 }

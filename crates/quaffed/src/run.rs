@@ -1019,7 +1019,7 @@ impl Evaluation<'_> {
                 "no file in scope has structural support; {} not searched",
                 count(searched.not_applicable, "text-tier file", "text-tier files")
             )),
-            // Each file's own note says why it was not searched.
+            // Every Python file in scope is binary, which the binary count says.
             Wanted::Structural { .. } if searched.structural == 0 => Some(format!(
                 "no Python file in scope could be searched; {} not searched",
                 count(searched.python, "Python file", "Python files")
