@@ -2104,9 +2104,9 @@ mod remembered_against_backtracking {
         assert_eq!(find_with(&pattern, &target, true), backtracked);
     }
 
-    /// Words as statements of a `Def` node a module holds,
-    /// split into two lists at `split`, like a branch and its else clause, with a `;` token
-    /// between two statements of one list if `separated`.  Gives the arena and each word's node.
+    /// Words as statements of a `Def` node a module holds, split into two lists at `split`, like a
+    /// branch and its else clause, with a `;` token between two statements of one list if
+    /// `separated`.  Gives the arena and each word's node.
     fn block(words: &[String], split: usize, separated: bool) -> (Arena<'static>, Vec<NodeId>) {
         let mut text = String::new();
         let mut spans = Vec::new();
@@ -2809,9 +2809,10 @@ mod trees {
         assert_eq!(slow, ["w x y z x ; y"]);
     }
 
-    /// A node that binds a name used later is one choice in its list, however it is reached.
+    /// A choice reported by more than one list - a segment's, and a node's that binds the same
+    /// name used later - never conflicts with itself, so one such choice is accepted.
     #[test]
-    fn a_node_binding_a_name_used_later_is_counted_once_in_its_list() {
+    fn a_choice_reported_by_more_than_one_list_does_not_conflict_with_itself() {
         assert_eq!(pattern("w $... (f $a... x) $... (g $a...)").costly(), None);
     }
 
