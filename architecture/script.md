@@ -28,6 +28,27 @@ otherwise trim.
 The unit tests check every spelling the design lists, and a property test checks that any
 content read back from its shortest spelling is unchanged.
 
+**Holes in a pattern.**  Inside a backticked operand, `$name` is a hole that binds one node,
+`$_` one node bound to nothing, `$name...` a sequence of one or more nodes, and `$...` such a
+sequence bound to nothing; a hole never matches nothing.  Whether a `$name` is a hole is the
+target language's grammar's to decide, not the script parser's: one that lands in code is a
+hole, and one inside a string literal or a comment is literal text.  Where they are holes, `$_...`
+is refused, since `$...` already spells that, and so is one name used both for one node and for a
+sequence; so is a sequence hole at the start or end of a run of statements, which nothing would
+bound; so is a pattern whose search could grow faster than the square of a block's or list's
+length - two sequences together in a run of statements, or a second place where what a sequence
+takes decides what later code must match; and so is a pattern with no code, or with nothing but
+holes.  The script parser carries the operand as written; compiling it is the language adapter's,
+which `python.md` describes for Python.
+
+**A string literal in a pattern matches by its content**: what lies between its delimiters,
+exactly as written, the parts of an implicit concatenation joined.  The quotes, the prefix and
+the quote style take no part, so `"x"` matches `'x'` and `r"x"`; escapes are compared as written,
+so `"\n"` matches `r"\n"`, both being a backslash and an `n` in the file.  This is the same
+content a `where` comparison uses, so that a script says what a string says without spelling any
+one language's quoting.  A string's decoded value is not compared: escapes would become
+characters that are not in the file, and an interpolated string cannot be decoded at all.
+
 ## Statements (`src/parser.rs`)
 
 ```
@@ -85,18 +106,21 @@ advice to use a longer fence, because it is almost always an operand that held i
 delimiter.
 
 **Locations** (`src/location.rs`) name the source: `refactor.quaff:12:5` for a file,
-`<stdin>:12:5` for standard input, `-e expression 2, at character 10` for an inline script.
-Lines and columns count from 1, columns in characters.  A script file or standard input is read
-as UTF-8, and a leading byte-order mark is dropped before parsing, so line 1, column 1 is the
-first visible character; the command line does that (`crates/quaffed/src/run.rs`), and the
-parser never sees the mark.
+`<stdin>:12:5` for standard input, `-e expression 2, at character 10` for an inline script,
+and `-p, at character 4` for a `-p` pattern, the one command-line query that can be wrong at a
+place in it.  Lines and columns count from 1, columns in characters.  A script file or standard
+input is read as UTF-8, and a leading byte-order mark is dropped before parsing, so line 1,
+column 1 is the first visible character; the command line does that
+(`crates/quaffed/src/run.rs`), and the parser never sees the mark.
 
 ## Running a script
 
 The command line (`crates/quaffed/src/run.rs`) reads each source in order - `-s` and the bare
-query become a `find` of their text - parses it into one `Program`, runs the checker, then
-refuses anything this build cannot yet run: a backticked pattern, an `in` or `where` clause, and
-`replace` and `delete`, each exit 5 at where it was written.  Only then does it look at a file.
+query become a `find` of their text, and `-p` a `find` of its pattern - parses it into one
+`Program`, runs the checker, then refuses anything this build cannot yet run: an `in` or `where`
+clause, and `replace` and `delete`, each exit 5 at where it was written.  It compiles every
+backticked pattern, so one that is not a pattern is exit 3 there too.  Only then does it look at
+a file.
 Every file is read once, for every query in the program, and the statements are evaluated in
 order over the results.  Output, notes, assertion failures and exit codes are in `search.md`.
 
@@ -115,5 +139,5 @@ program a script parses to.
 5. When it becomes runnable, remove its refusal from `plan` in `crates/quaffed/src/run.rs`, and
    replace its end-to-end snapshot in `each_construct_not_built_yet_exits_5_naming_it` with one
    that runs it.
-6. Update this page, and `search.md` where it changes the output or the exit codes, in the same
-   change.
+6. Update this page, `search.md` where it changes the output or the exit codes, and
+   `docs/language.md`, in the same change.

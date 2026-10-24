@@ -1,6 +1,6 @@
 # The real-world corpus: real Python, fetched rather than checked in, and used for the round trip
-# only - never by a budget or a benchmark.  scripts/fetch-corpus reads this file;
-# architecture/verification.md describes it.
+# and the structural counts only - never by a budget or a benchmark.  scripts/fetch-corpus reads
+# this file; architecture/verification.md describes it.
 
 [cpython]
 # CPython's own test suite, at the release matching the oracle: a large body of real Python

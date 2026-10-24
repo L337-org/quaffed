@@ -34,14 +34,21 @@ pub fn describe(source: &Source, text: &str, offset: usize) -> String {
     match source {
         Source::File(path) => format!("{}:{line}:{column}", path.display()),
         Source::Stdin => format!("<stdin>:{line}:{column}"),
-        Source::Expression(n) => {
-            let at = text[..floor_char_boundary(text, offset)].chars().count() + 1;
-            format!("-e expression {n}, at character {at}")
-        }
+        Source::Expression(n) => format!(
+            "-e expression {n}, at character {}",
+            character(text, offset)
+        ),
         Source::StringOption => "-s".into(),
+        // A pattern can be wrong at a place in it; literal text cannot.
+        Source::PatternOption => format!("-p, at character {}", character(text, offset)),
         Source::Positional => "the query".into(),
         _ => "an unnamed source".into(),
     }
+}
+
+/// Which character of `text`, from 1, byte `offset` is in.
+fn character(text: &str, offset: usize) -> usize {
+    text[..floor_char_boundary(text, offset)].chars().count() + 1
 }
 
 #[cfg(test)]
@@ -72,6 +79,10 @@ mod tests {
             "-e expression 2, at character 10"
         );
         assert_eq!(describe(&Source::StringOption, "x", 0), "-s");
+        assert_eq!(
+            describe(&Source::PatternOption, "f(é, $a)", 5),
+            "-p, at character 5"
+        );
         assert_eq!(describe(&Source::Positional, "x", 0), "the query");
     }
 }

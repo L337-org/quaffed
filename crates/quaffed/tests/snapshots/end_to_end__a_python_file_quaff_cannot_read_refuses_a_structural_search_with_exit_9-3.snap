@@ -1,0 +1,15 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-s"
+    - f(
+---
+success: true
+exit_code: 0
+----- stdout -----
+a.py:1:1-1:2: f(
+
+----- stderr -----
+quaff: "gbk.py": possible match of "f(" on line 2, not counted, since its encoding is unknown: the coding line on line 1 declares "gbk", Python's "gbk", which quaff does not read

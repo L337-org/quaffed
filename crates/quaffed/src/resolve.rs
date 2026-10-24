@@ -42,10 +42,15 @@ pub struct File<'a> {
 impl File<'_> {
     /// Whether it is Python source, by its name, as `architecture/search.md` lists them.
     fn is_python(&self) -> bool {
-        self.path
-            .extension()
-            .is_some_and(|e| e == "py" || e == "pyi" || e == "pyw")
+        is_python(self.path)
     }
+}
+
+/// Whether the file at `path` is Python source, by its name alone, as `architecture/search.md`
+/// lists them: the one rule both an encoding's decision and structural search go by.
+pub fn is_python(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|e| e == "py" || e == "pyi" || e == "pyw")
 }
 
 /// What decides a file's encoding.

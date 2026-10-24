@@ -250,7 +250,7 @@ impl Compiled {
 /// Only the current line and column are kept, never a table of every character, so the memory
 /// a search needs beyond the file's own bytes does not grow with the file.  The walk stops at
 /// the last match's last character.
-fn positions(text: &[u8], encoding: Encoding, ranges: &[(usize, usize)]) -> Vec<Match> {
+pub(crate) fn positions(text: &[u8], encoding: Encoding, ranges: &[(usize, usize)]) -> Vec<Match> {
     // Each match's first and last byte, in order: matches do not overlap, so starts and ends
     // interleave.
     let targets: Vec<usize> = ranges

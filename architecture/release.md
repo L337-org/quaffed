@@ -26,13 +26,15 @@ through `stacker` and `psm`'s assembly, so this stays a requirement whatever hap
 **The copyright file is hand-written**, in Debian's machine-readable format, and names everything
 linked into the binary with its copyright and licence, because the binary distributes it.
 `crates/quaffed/tests/packaging.rs` reads the binary's dependency graph for both packaged targets
-with `cargo tree` and fails naming any crate the file does not mention, so adding a dependency
-means adding it there.  **What comes with the Rust toolchain rather than as a crate - the musl C
-library and LLVM's libunwind - is outside that graph, so the test cannot see it**, and nor is
-data in the source tree derived from someone else's work - the codec tables generated from
-CPython (`encoding.md`).  Both are kept by hand: check the first when the toolchain's musl
-target changes.  For the second, `packaging.rs` fails if the attribution does not name the
-CPython release the tables were generated from.
+with `cargo tree` and fails naming any crate the file does not mention, so adding a dependency means
+adding it there.  It leaves out build scripts' dependencies, which run inside the compiler, but
+not procedural macros or the crates they are built from: the code a derive generates is compiled
+into the binary, and the graph cannot tell which macros' output ships.  **What comes with the Rust
+toolchain rather than as a crate - the musl C library and LLVM's libunwind - is outside that graph,
+so the test cannot see it**, and nor is data in the source tree derived from someone else's work -
+the codec tables generated from CPython (`encoding.md`).  Both are kept by hand: check the first
+when the toolchain's musl target changes.  For the second, `packaging.rs` fails if the attribution
+does not name the CPython release the tables were generated from.
 
 **The version** is the workspace's, read by `scripts/workspace-version`, and the release's tag
 must be `v` followed by it.  The changelog has one entry per version pointing at the release notes,

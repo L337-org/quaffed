@@ -1,0 +1,14 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-p"
+    - f($a)
+---
+success: true
+exit_code: 0
+----- stdout -----
+latin1.py:2:13-2:19: f(name)
+
+----- stderr -----

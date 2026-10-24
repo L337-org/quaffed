@@ -5,7 +5,8 @@
 //! disagree about what clean means.  These tests hold that in place: the manifest is well
 //! formed, `scripts/install-tools` reads it exactly as this file does, the script stops with
 //! the tool and version named when an install fails, no workflow names a version or installs a
-//! tool itself, and `gungraun-runner` moves with the `gungraun` library.
+//! tool itself, no workflow installs from apt but through the action that caches the packages,
+//! and `gungraun-runner` moves with the `gungraun` library.
 //! `architecture/verification.md` has the reasoning.
 
 use std::collections::BTreeSet;
@@ -525,11 +526,7 @@ fn cargo_installs_every_cargo_tool_and_all_adds_the_toolchains() {
 fn workflow_violations(label: &str, text: &str, tools: &[String]) -> Vec<String> {
     let mut found = Vec::new();
     for (index, raw) in text.lines().enumerate() {
-        let line = match raw.find('#') {
-            Some(0) => "",
-            Some(i) if raw[..i].ends_with(char::is_whitespace) => &raw[..i],
-            _ => raw,
-        };
+        let line = without_comment(raw);
         let mut reasons: Vec<String> = Vec::new();
         for (pattern, why) in [
             ("cargo install", "installs a tool itself"),
@@ -572,6 +569,61 @@ fn workflow_violations(label: &str, text: &str, tools: &[String]) -> Vec<String>
         for why in reasons {
             found.push(format!("{label}:{}: {why}: {}", index + 1, raw.trim()));
         }
+    }
+    found
+}
+
+/// `raw` up to a YAML comment: a `#` at the beginning of the line or after whitespace.
+fn without_comment(raw: &str) -> &str {
+    match raw.find('#') {
+        Some(0) => "",
+        Some(i) if raw[..i].ends_with(char::is_whitespace) => &raw[..i],
+        _ => raw,
+    }
+}
+
+/// The action every apt install goes through, so the downloads are cached and a restored
+/// package is checked against the index before it is installed.
+const APT_ACTION: &str = ".github/actions/apt-install/action.yaml";
+
+/// Returns each command in a workflow or action file that installs from apt itself, rather
+/// than through [`APT_ACTION`]: `apt-get`, `apt` or `aptitude` as a word, then `install` as a
+/// word later in the same command, so options before the verb are caught too.  A line ending in
+/// `\` continues onto the next, and comments are dropped first, as in [`workflow_violations`].
+/// A command is reported at the line it starts on.
+fn apt_violations(label: &str, text: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut command = String::new();
+    let mut start = 0;
+    for (index, raw) in text.lines().enumerate() {
+        if command.is_empty() {
+            start = index;
+        }
+        let line = without_comment(raw).trim_end();
+        command.push_str(line.trim_end_matches('\\'));
+        command.push(' ');
+        if line.ends_with('\\') {
+            continue;
+        }
+        // Each command between `;`, `&` and `|` on its own, so `apt-get update && make install`
+        // is not taken for an install.
+        let installs = command.split([';', '&', '|']).any(|part| {
+            let words: Vec<&str> = part
+                .split(|c: char| c.is_whitespace() || "()\"'`".contains(c))
+                .collect();
+            words
+                .iter()
+                .position(|word| ["apt-get", "apt", "aptitude"].contains(word))
+                .is_some_and(|at| words[at + 1..].contains(&"install"))
+        });
+        if installs {
+            found.push(format!(
+                "{label}:{}: installs from apt itself: {}",
+                start + 1,
+                command.trim()
+            ));
+        }
+        command.clear();
     }
     found
 }
@@ -629,6 +681,67 @@ fn no_workflow_installs_a_tool_or_names_a_version() {
         "install tools with scripts/install-tools and pin them in tools.toml:\n{}",
         violations.join("\n")
     );
+}
+
+#[test]
+fn no_workflow_installs_from_apt_but_through_the_caching_action() {
+    let root = workspace_root();
+    let mut files = Vec::new();
+    yaml_files_under(&root.join(".github/workflows"), &mut files);
+    yaml_files_under(&root.join(".github/actions"), &mut files);
+    // Finding nothing, or not finding the action, would pass having checked nothing.
+    assert!(
+        files.iter().any(|f| f.ends_with("premerge.yaml")),
+        "the scan did not find .github/workflows/premerge.yaml, so it checked nothing"
+    );
+    assert!(
+        files.iter().any(|f| f.ends_with(APT_ACTION)),
+        "the scan did not find {APT_ACTION}, which every apt install must go through"
+    );
+    let mut violations = Vec::new();
+    for file in files.iter().filter(|f| !f.ends_with(APT_ACTION)) {
+        let label = file
+            .strip_prefix(&root)
+            .unwrap_or(file)
+            .display()
+            .to_string();
+        violations.extend(apt_violations(&label, &read(file)));
+    }
+    assert!(
+        violations.is_empty(),
+        "install apt packages with {APT_ACTION}, which caches them:\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
+fn the_apt_check_catches_an_install_and_passes_the_action_and_comments() {
+    for text in [
+        "        run: sudo apt-get update && sudo apt-get install -y valgrind",
+        "        run: sudo apt install -y lintian",
+        "          apt-get install -yq rsyslog",
+        "        run: sudo apt-get -y install valgrind",
+        "        run: apt-get -qq install foo",
+        "        run: sudo aptitude --yes install foo",
+        "          sudo apt-get \\\n            -y \\\n            install valgrind",
+    ] {
+        let found = apt_violations("fixture.yaml", text);
+        assert_eq!(found.len(), 1, "not caught once: {text:?}: {found:?}");
+        assert!(found[0].starts_with("fixture.yaml:1: "), "{found:?}");
+    }
+    for text in [
+        "        uses: ./.github/actions/apt-install",
+        "          packages: valgrind strace time musl-tools",
+        "        run: sudo apt-get update",
+        "    # Valgrind comes from the image, through apt-get install in the action.",
+        "        run: echo apt-install: installed",
+        "        run: scripts/install-tools cargo-insta  # not apt-get install",
+        "          sudo apt-get update\n          scripts/install-tools --all",
+        "        run: sudo apt-get update && make install",
+    ] {
+        let found = apt_violations("fixture.yaml", text);
+        assert!(found.is_empty(), "wrongly flagged: {found:?}");
+    }
 }
 
 #[test]

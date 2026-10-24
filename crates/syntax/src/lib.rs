@@ -9,6 +9,13 @@
 //! crate depends on nothing: `tests/no_dependencies.rs` holds that.  `architecture/syntax.md`
 //! describes it.
 
+mod matching;
+mod pattern;
+
+pub use matching::{Costly, Match, find};
+pub use pattern::{Hole, Pattern};
+
+use std::borrow::Cow;
 use std::fmt;
 use std::ops::Range;
 
@@ -74,6 +81,9 @@ struct Node {
     start: u32,
     end: u32,
     after: u32,
+    /// The list among its parent's children it belongs to, if the adapter marked one - a
+    /// block's statements - so that a run of children never crosses from one into another.
+    list: u32,
 }
 
 /// A parsed file: every node in pre-order, over the text the parser was given.
@@ -84,8 +94,29 @@ struct Node {
 #[derive(Debug, Clone)]
 pub struct Arena<'text> {
     language: Language,
-    text: &'text str,
+    text: Cow<'text, str>,
     nodes: Vec<Node>,
+    tokens: Vec<Token>,
+    values: Vec<(NodeId, String)>,
+}
+
+/// One token the matcher compares: the parser's tokens that carry meaning, with comments,
+/// whitespace, line breaks, indentation and redundant parentheses left out by the adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Token {
+    start: u32,
+    end: u32,
+    compare: TokenText,
+}
+
+/// What a token is compared by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenText {
+    /// Its text in the source.
+    Source,
+    /// A fixed text standing for the token whatever its source says: the opening of an
+    /// f-string compares the same whatever its prefix and quotes, as a string's content does.
+    Fixed(&'static str),
 }
 
 impl<'text> Arena<'text> {
@@ -97,8 +128,8 @@ impl<'text> Arena<'text> {
 
     /// The whole text the parser was given.
     #[must_use]
-    pub fn text(&self) -> &'text str {
-        self.text
+    pub fn text(&self) -> &str {
+        &self.text
     }
 
     /// How many nodes it holds; at least one, the root.
@@ -130,6 +161,16 @@ impl<'text> Arena<'text> {
         self.node(node).kind
     }
 
+    /// The list among its parent's children `node` belongs to, a block's statements, or `None`
+    /// if the adapter marked none.  Two siblings in one list share it.
+    #[must_use]
+    pub fn list(&self, node: NodeId) -> Option<u32> {
+        match self.node(node).list {
+            0 => None,
+            list => Some(list),
+        }
+    }
+
     /// The byte range of `node` in the text.
     #[must_use]
     pub fn range(&self, node: NodeId) -> Range<usize> {
@@ -139,7 +180,7 @@ impl<'text> Arena<'text> {
 
     /// The text of `node`.
     #[must_use]
-    pub fn source(&self, node: NodeId) -> &'text str {
+    pub fn source(&self, node: NodeId) -> &str {
         &self.text[self.range(node)]
     }
 
@@ -155,14 +196,65 @@ impl<'text> Arena<'text> {
 
     /// The text before the root.
     #[must_use]
-    pub fn leading(&self) -> &'text str {
+    pub fn leading(&self) -> &str {
         &self.text[..self.range(self.root()).start]
     }
 
     /// The text after the root.
     #[must_use]
-    pub fn trailing(&self) -> &'text str {
+    pub fn trailing(&self) -> &str {
         &self.text[self.range(self.root()).end..]
+    }
+
+    /// The same arena, owning a copy of its text, so that it can outlive the text it was
+    /// built over.  A pattern keeps its arena this way.
+    #[must_use]
+    pub fn into_owned(self) -> Arena<'static> {
+        Arena {
+            language: self.language,
+            text: Cow::Owned(self.text.into_owned()),
+            nodes: self.nodes,
+            tokens: self.tokens,
+            values: self.values,
+        }
+    }
+
+    /// The tokens the adapter kept that lie inside `range`, in source order.
+    #[must_use]
+    pub fn tokens_in(&self, range: Range<usize>) -> &[Token] {
+        let first = self
+            .tokens
+            .partition_point(|t| widen(t.start) < range.start);
+        let past = self.tokens.partition_point(|t| widen(t.start) < range.end);
+        let past = past.max(first);
+        let kept = &self.tokens[first..past];
+        let inside = kept.partition_point(|t| widen(t.end) <= range.end);
+        &kept[..inside]
+    }
+
+    /// The byte range of `token` in the text.
+    #[must_use]
+    pub fn token_range(&self, token: &Token) -> Range<usize> {
+        widen(token.start)..widen(token.end)
+    }
+
+    /// What `token` is compared by: its source text, or the fixed text the adapter gave it.
+    #[must_use]
+    pub fn token_text(&self, token: &Token) -> &str {
+        match token.compare {
+            TokenText::Source => &self.text[self.token_range(token)],
+            TokenText::Fixed(text) => text,
+        }
+    }
+
+    /// The value `node` compares by in place of its children, if the adapter gave it one: a
+    /// string literal's content, its quotes and prefix taking no part.
+    #[must_use]
+    pub fn value(&self, node: NodeId) -> Option<&str> {
+        self.values
+            .binary_search_by_key(&node, |(n, _)| *n)
+            .ok()
+            .map(|at| self.values[at].1.as_str())
     }
 
     fn node(&self, node: NodeId) -> &Node {
@@ -220,6 +312,12 @@ pub struct Builder<'text> {
     text: &'text str,
     nodes: Vec<Node>,
     open: Vec<usize>,
+    tokens: Vec<Token>,
+    values: Vec<(NodeId, String)>,
+    /// The lists begun and not yet ended: each one's number, and how many nodes were open when
+    /// it began, so that only the open node's children join it.
+    lists: Vec<(u32, usize)>,
+    next_list: u32,
 }
 
 impl<'text> Builder<'text> {
@@ -244,6 +342,10 @@ impl<'text> Builder<'text> {
             text,
             nodes: Vec::new(),
             open: Vec::new(),
+            tokens: Vec::new(),
+            values: Vec::new(),
+            lists: Vec::new(),
+            next_list: 1,
         })
     }
 
@@ -257,13 +359,42 @@ impl<'text> Builder<'text> {
             !self.open.is_empty() || self.nodes.is_empty(),
             "an adapter entered a second root"
         );
+        let list = match self.lists.last() {
+            Some(&(list, depth)) if depth == self.open.len() => list,
+            _ => 0,
+        };
         self.open.push(self.nodes.len());
         self.nodes.push(Node {
             kind,
             start: narrow(range.start),
             end: narrow(range.end),
             after: 0,
+            list,
         });
+    }
+
+    /// Begins a list among the open node's children - a block's statements - which every child
+    /// entered until [`end_list`](Builder::end_list) belongs to.
+    pub fn begin_list(&mut self) {
+        self.lists.push((self.next_list, self.open.len()));
+        self.next_list += 1;
+    }
+
+    /// Ends the list begun last.
+    ///
+    /// # Panics
+    ///
+    /// If no list was begun, which is a defect in the adapter.
+    pub fn end_list(&mut self) {
+        let (_, depth) = self
+            .lists
+            .pop()
+            .expect("an adapter ended a list it never began");
+        assert_eq!(
+            depth,
+            self.open.len(),
+            "an adapter ended a list with a node inside it still open"
+        );
     }
 
     /// Ends the node entered last.
@@ -285,14 +416,51 @@ impl<'text> Builder<'text> {
     ///
     /// If no root was entered or a node is still open, which is a defect in the adapter.
     #[must_use]
-    pub fn finish(self) -> Arena<'text> {
+    pub fn finish(mut self) -> Arena<'text> {
         assert!(self.open.is_empty(), "an adapter left nodes open");
+        assert!(self.lists.is_empty(), "an adapter left a list open");
         assert!(!self.nodes.is_empty(), "an adapter entered no root");
+        self.values.sort_by_key(|(node, _)| *node);
         Arena {
             language: self.language,
-            text: self.text,
+            text: Cow::Borrowed(self.text),
             nodes: self.nodes,
+            tokens: self.tokens,
+            values: self.values,
         }
+    }
+
+    /// Gives the node open now a value it compares by in place of its children.
+    ///
+    /// # Panics
+    ///
+    /// If no node is open, which is a defect in the adapter.
+    pub fn value(&mut self, value: String) {
+        let open = *self
+            .open
+            .last()
+            .expect("an adapter gave a value with no node open");
+        self.values.push((NodeId(narrow(open)), value));
+    }
+
+    /// Adds a token the matcher compares, covering `range`.  Tokens are added in source order.
+    ///
+    /// # Panics
+    ///
+    /// If `range` starts before the end of the token added last, which is a defect in the
+    /// adapter.
+    pub fn token(&mut self, range: Range<usize>, compare: TokenText) {
+        assert!(
+            self.tokens
+                .last()
+                .is_none_or(|last| widen(last.end) <= range.start),
+            "an adapter added a token out of order"
+        );
+        self.tokens.push(Token {
+            start: narrow(range.start),
+            end: narrow(range.end),
+            compare,
+        });
     }
 }
 
@@ -413,6 +581,46 @@ mod tests {
     #[should_panic(expected = "an adapter entered no root")]
     fn no_root_is_a_defect() {
         let _ = Builder::new(TOY, "").unwrap().finish();
+    }
+
+    #[test]
+    #[should_panic(expected = "an adapter added a token out of order")]
+    fn a_token_out_of_order_is_a_defect() {
+        let mut builder = Builder::new(TOY, "ab").unwrap();
+        builder.token(1..2, TokenText::Source);
+        builder.token(0..1, TokenText::Source);
+    }
+
+    #[test]
+    #[should_panic(expected = "an adapter gave a value with no node open")]
+    fn a_value_with_no_node_open_is_a_defect() {
+        Builder::new(TOY, "").unwrap().value(String::new());
+    }
+
+    #[test]
+    #[should_panic(expected = "an adapter left a list open")]
+    fn a_list_left_open_is_a_defect() {
+        let mut builder = Builder::new(TOY, "a").unwrap();
+        builder.enter(Kind::new("A"), 0..1);
+        builder.begin_list();
+        builder.leave();
+        let _ = builder.finish();
+    }
+
+    #[test]
+    #[should_panic(expected = "an adapter ended a list with a node inside it still open")]
+    fn ending_a_list_inside_a_child_is_a_defect() {
+        let mut builder = Builder::new(TOY, "ab").unwrap();
+        builder.enter(Kind::new("A"), 0..2);
+        builder.begin_list();
+        builder.enter(Kind::new("B"), 1..2);
+        builder.end_list();
+    }
+
+    #[test]
+    #[should_panic(expected = "an adapter ended a list it never began")]
+    fn ending_a_list_never_begun_is_a_defect() {
+        Builder::new(TOY, "").unwrap().end_list();
     }
 
     #[test]

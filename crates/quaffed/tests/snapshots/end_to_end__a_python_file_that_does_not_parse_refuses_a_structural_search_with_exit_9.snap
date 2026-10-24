@@ -1,0 +1,19 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-p"
+    - "handle_request($a, $b)"
+---
+success: false
+exit_code: 9
+----- stdout -----
+
+----- stderr -----
+quaff: refused: 4 Python files in scope cannot be parsed, so a structural search cannot count matches in them:
+  "src/bad_byte.py": byte 0xff on line 2 is not valid "utf-8", the encoding line 1 declares
+  "src/bad_coding.py": line 1 declares the encoding "uft-8", which Python does not know
+  "src/broken.py": line 1, column 12: Expected a parameter or the end of the parameter list
+  "src/wide.py": line 1 has a NUL byte, which Python source cannot contain
+To search without them, list them in .ignore, or give a narrower scope on the command line

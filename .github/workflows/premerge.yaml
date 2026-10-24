@@ -237,7 +237,9 @@ jobs:
         run: rustup target add x86_64-unknown-linux-musl
 
       - name: Install Valgrind, strace, GNU time and the musl C toolchain
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends valgrind strace time musl-tools
+        uses: ./.github/actions/apt-install
+        with:
+          packages: valgrind strace time musl-tools
 
       # The package's build - musl, mimalloc, the dist profile's optimisation - with its
       # symbols kept, so callgrind's report names every function.
@@ -296,11 +298,15 @@ jobs:
     # manifest, so no Python version is named here.  Then every file of the real-world corpus is
     # parsed into an arena and printed back byte for byte, and every file the oracle refuses must
     # be refused: the round trip's ignored test in crates/python, which needs the fetched tree.
+    # Last, scripts/count-structural has the oracle count each structural pattern's matches file
+    # by file, and real_world_matches, another ignored test there, requires quaff's counts to
+    # agree in every file.
     runs-on: [ubuntu-latest]
     name: Real-world corpus
     # Longer than scripts/fetch-corpus's download deadline plus one read's wait, with room for the
-    # setup, the parse, check-synthetic and building and running the round trip, so a stalled
-    # download ends in the script's own error rather than a bare cancellation.
+    # setup, the parse, check-synthetic, and building and running the round trip and the
+    # structural counts, so a stalled download ends in the script's own error rather than a bare
+    # cancellation.
     timeout-minutes: 20
     steps:
       - name: Check out source repository
@@ -348,5 +354,21 @@ jobs:
             | tee "$RUNNER_TEMP/round-trip.log"
           if ! grep -q '^test result: ok\. 1 passed;' "$RUNNER_TEMP/round-trip.log"; then
             echo "::error::the real-world round trip did not run exactly one test" >&2
+            exit 1
+          fi
+
+      - name: CPython counts the structural matches
+        env:
+          PYTHON: ${{ steps.python.outputs.python-path }}
+        run: '"$PYTHON" scripts/count-structural'
+
+      - name: Every structural match is found as CPython counts it
+        # As for the round trip, the step requires that exactly one test ran.
+        run: |
+          set -o pipefail
+          cargo test --locked -p quaffed-python --test real_world_matches -- --ignored --nocapture 2>&1 \
+            | tee "$RUNNER_TEMP/structural.log"
+          if ! grep -q '^test result: ok\. 1 passed;' "$RUNNER_TEMP/structural.log"; then
+            echo "::error::the structural counts did not run exactly one test" >&2
             exit 1
           fi

@@ -232,11 +232,28 @@ fn run(bytes: &[u8], at: usize, delimiter: u8) -> usize {
 /// Reads the operand whose opening delimiter is at `at`, returning its content and the byte
 /// after its closing delimiter.
 fn operand(text: &str, at: usize) -> Result<(String, usize), LexError> {
+    let (content, end) = operand_range(text, at)?;
+    Ok((text[content].to_owned(), end))
+}
+
+/// Where the content of a fenced operand as written - delimiters, and any padding space,
+/// included - starts in it: the offset a place in the content is counted from.  An operand that
+/// is not closed is taken to start its content after its opening fence.
+#[must_use]
+pub fn content_start(operand: &str) -> usize {
+    match operand_range(operand, 0) {
+        Ok((content, _)) => content.start,
+        Err(err) => err.end,
+    }
+}
+
+/// The content of the operand whose opening delimiter is at `at`, and where the operand ends.
+fn operand_range(text: &str, at: usize) -> Result<(std::ops::Range<usize>, usize), LexError> {
     let bytes = text.as_bytes();
     let delimiter = bytes[at];
     let fence = run(bytes, at, delimiter);
     if fence == 2 {
-        return Ok((String::new(), at + 2));
+        return Ok((at + 2..at + 2, at + 2));
     }
     let content_start = at + fence;
     let mut i = content_start;
@@ -244,18 +261,19 @@ fn operand(text: &str, at: usize) -> Result<(String, usize), LexError> {
         if bytes[i] == delimiter {
             let length = run(bytes, i, delimiter);
             if length == fence {
-                let mut content = &text[content_start..i];
+                let mut content = content_start..i;
+                let written = &text[content.clone()];
                 // Like Markdown's code spans, which is what lets content begin or end with the
                 // delimiter - except that content of spaces alone is trimmed too, where
                 // CommonMark keeps it.  The two-character minimum keeps a lone space.
                 if fence >= 3
-                    && content.len() >= 2
-                    && content.starts_with(' ')
-                    && content.ends_with(' ')
+                    && written.len() >= 2
+                    && written.starts_with(' ')
+                    && written.ends_with(' ')
                 {
-                    content = &content[1..content.len() - 1];
+                    content = content.start + 1..content.end - 1;
                 }
-                return Ok((content.to_owned(), i + fence));
+                return Ok((content, i + fence));
             }
             i += length;
         } else {
@@ -394,6 +412,19 @@ mod tests {
             "{}",
             err.message
         );
+    }
+
+    #[test]
+    fn an_operands_content_starts_where_the_lexer_cuts_it() {
+        assert_eq!(content_start("`f(x)`"), 1);
+        // A fence of three or more may pad its content with a space each side.
+        assert_eq!(content_start("``` f(x) ```"), 4);
+        assert_eq!(content_start("```f(x)```"), 3);
+        // Padding that is all there is is not stripped.
+        assert_eq!(content_start("``` ```"), 3);
+        assert_eq!(content_start("``"), 2);
+        // Never closed: after the opening fence.
+        assert_eq!(content_start("```f"), 3);
     }
 
     #[test]

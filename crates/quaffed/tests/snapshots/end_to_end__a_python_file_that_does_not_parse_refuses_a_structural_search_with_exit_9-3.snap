@@ -1,0 +1,15 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-s"
+    - handle_request(a)
+---
+success: true
+exit_code: 0
+----- stdout -----
+src/app.py:5:1-5:17: handle_request(a)
+
+----- stderr -----
+quaff: "src/bad_coding.py" not searched: line 1 declares the encoding "uft-8", which Python does not know

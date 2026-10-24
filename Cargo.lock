@@ -665,9 +665,12 @@ dependencies = [
  "insta-cmd",
  "memchr",
  "mimalloc",
+ "proptest",
  "quaffed-encoding",
+ "quaffed-python",
  "quaffed-representation",
  "quaffed-script",
+ "quaffed-syntax",
 ]
 
 [[package]]
@@ -681,11 +684,13 @@ dependencies = [
 name = "quaffed-python"
 version = "0.1.0"
 dependencies = [
+ "proptest",
  "quaffed-encoding",
  "quaffed-syntax",
  "ruff_python_ast",
  "ruff_python_parser",
  "ruff_text_size",
+ "unicode-ident",
 ]
 
 [[package]]
@@ -703,6 +708,9 @@ dependencies = [
 [[package]]
 name = "quaffed-syntax"
 version = "0.1.0"
+dependencies = [
+ "proptest",
+]
 
 [[package]]
 name = "quick-error"

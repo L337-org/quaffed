@@ -10,5 +10,8 @@ authors.workspace = true
 # Nothing is published until a release decides where and how.
 publish = false
 
+[dev-dependencies]
+proptest = "=1.12.0"
+
 [lints]
 workspace = true

@@ -1,0 +1,16 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "find \"handle\"\nfind `f($a)`"
+---
+success: false
+exit_code: 9
+----- stdout -----
+
+----- stderr -----
+quaff: refused: 1 Python file in scope cannot be parsed, so a structural search cannot count matches in it:
+  "src/broken.py": line 1, column 12: Expected a parameter or the end of the parameter list
+To search without it, list it in .ignore, or give a narrower scope on the command line

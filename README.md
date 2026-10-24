@@ -33,6 +33,7 @@ cargo build --release
 quaff TODO                 # every TODO in the project, from wherever you are in it
 quaff TODO src             # only under src
 quaff -s TODO -s FIXME     # two searches, in turn
+quaff -p 'open($args...)'  # every call of open in the project's Python, whatever its layout
 quaff -e 'find "TODO" expect none' src   # fail, exit 2, if any TODO is left
 quaff -f checks.quaff      # a script file; -f - reads one from standard input
 quaff -h                   # the rest
@@ -40,7 +41,8 @@ quaff -h                   # the rest
 
 Each match prints as `path:line:column-endline:endcolumn: text`.  With no assertion, the exit
 status is 0 when something was found and 1 when nothing was.  With assertions, it is 0 when
-every one held and 2 when one did not.  `quaff -h` lists the rest.
+every one held and 2 when one did not.  `quaff -h` lists the rest, and
+[docs/language.md](docs/language.md) is the full reference, with examples and edge cases.
 
 ## Contributing
 

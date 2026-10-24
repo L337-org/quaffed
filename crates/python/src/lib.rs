@@ -11,10 +11,12 @@
 
 mod kinds;
 mod parse;
+mod pattern;
 
 pub use kinds::all_kinds;
 pub use parse::{
     PYTHON, ParseError, kinds_in_expression, kinds_in_ipython, kinds_in_module, parse_expression,
     parse_ipython, parse_module,
 };
+pub use pattern::{PatternError, compile_pattern};
 pub use quaffed_syntax::Kind;

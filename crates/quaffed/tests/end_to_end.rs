@@ -433,8 +433,8 @@ fn each_usage_error_exits_3_saying_what_to_do() {
     assert_quaff_snapshot!(project.quaff(&[""]));
     assert_quaff_snapshot!(project.quaff(&["-s"]));
     assert_quaff_snapshot!(project.quaff(&["--frobnicate"]));
-    assert_quaff_snapshot!(project.quaff(&["-p", "handle($a)"]));
-    assert_quaff_snapshot!(project.quaff(&["--pattern=handle($a)"]));
+    assert_quaff_snapshot!(project.quaff(&["-p", ""]));
+    assert_quaff_snapshot!(project.quaff(&["--output=json"]));
     assert_quaff_snapshot!(project.quaff(&["-s", ""]));
     assert_quaff_snapshot!(project.quaff(&["--"]));
     assert_quaff_snapshot!(project.quaff(&["-e"]));
@@ -779,7 +779,7 @@ fn each_construct_outside_the_mvp_exits_5_naming_it() {
 #[test]
 fn each_construct_not_built_yet_exits_5_naming_it() {
     let project = Project::new(SCRIPTED);
-    assert_quaff_snapshot!(project.quaff(&["-e", "find `f($a)`"]));
+    assert_quaff_snapshot!(project.quaff(&["-e", "replace `f($a)` with `g($a)` expect 1"]));
     assert_quaff_snapshot!(project.quaff(&["-e", "find \"a\" in \"src/**\""]));
     assert_quaff_snapshot!(project.quaff(&["-e", "find \"a\" where not FILE matches \"x\""]));
     assert_quaff_snapshot!(project.quaff(&["-e", "find \"a\"; delete `a` expect 1"]));
@@ -1101,5 +1101,161 @@ fn a_change_of_kind_or_permissions_is_reported() {
     .expect("changing the mode");
     // A directory created and left empty.
     fs::create_dir(project.dir.join("empty")).expect("making a directory");
+    project.assert_unchanged();
+}
+
+// Structural search: a pattern's shape in Python files.
+
+/// A project of Python and other files, for structural search.
+const STRUCTURAL: &[(&str, &str)] = &[
+    (".git/HEAD", ""),
+    (
+        "src/app.py",
+        "def handle(req, resp):\n    return handle_request(req,\n        resp)\n\n\
+         handle_request(a)\nclient.handle_request(a, b)\nhandle_request(handle_request(a, b), c)\n",
+    ),
+    ("src/strings.py", "log(\"$x\")\nlog('$x')\nlog(\"y\")\n"),
+    ("README.md", "Call handle_request(a, b) to start.\n"),
+];
+
+#[test]
+fn a_structural_pattern_finds_each_match_with_its_holes() {
+    let project = Project::new(STRUCTURAL);
+    // Every match of the shape, a multi-line one folded onto one line, a match inside a match
+    // as its own line; never the attribute call, never the text in README.md.
+    assert_quaff_snapshot!(project.quaff(&["-p", "handle_request($a, $b)"]));
+    // A sequence hole takes one or more arguments, never none.
+    assert_quaff_snapshot!(project.quaff(&["--pattern=handle_request($args...)"]));
+    // A hole inside a string is literal text, and quotes take no part.
+    assert_quaff_snapshot!(project.quaff(&["-p", "log(\"$x\")"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_backticked_find_in_a_script_is_structural_and_can_be_asserted() {
+    let project = Project::new(STRUCTURAL);
+    assert_quaff_snapshot!(project.quaff(&["-e", "find `handle_request($a)` expect 1"]));
+    assert_quaff_snapshot!(project.quaff(&["-e", "find `handle_request($a)` expect 2"]));
+    // Textual and structural statements in one script, each by its own operand.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "find \"handle_request\" expect 6\nfind `handle_request($a, $b)` expect 3",
+    ]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_scope_with_no_python_says_so_rather_than_finding_nothing() {
+    let project = Project::new(STRUCTURAL);
+    // A search exits 1, saying no file in scope has structure, not merely that nothing matched.
+    assert_quaff_snapshot!(project.quaff(&["-p", "handle_request($a, $b)", "README.md"]));
+    // An assertion over it is not a passed one, whatever it asks.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "find `handle_request($a, $b)` expect none",
+        "README.md",
+    ]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_scope_whose_python_cannot_be_searched_says_so_rather_than_finding_nothing() {
+    let mut project = Project::new(&[(".git/HEAD", ""), ("README.md", "f(x)\n")]);
+    // Python is in scope, but binary, so counted with the binary files: the run says no Python
+    // file could be searched, not that none has structure.
+    project.add_bytes("compiled.py", b"f(x)\x00\n");
+    assert_quaff_snapshot!(project.quaff(&["-p", "f($a)"]));
+    assert_quaff_snapshot!(project.quaff(&["-e", "find `f($a)` expect none"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_structural_pattern_with_a_line_break_is_named_on_one_line() {
+    let project = Project::new(STRUCTURAL);
+    assert_quaff_snapshot!(project.quaff(&["-p", "if $c:\n    return 1"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_python_file_that_does_not_parse_refuses_a_structural_search_with_exit_9() {
+    let mut project = Project::new(STRUCTURAL);
+    project.add_bytes("src/broken.py", b"def handle(:\n");
+    // A file CPython refuses to read does not parse either.
+    project.add_bytes("src/bad_coding.py", b"# -*- coding: uft-8 -*-\nx = 1\n");
+    // Nor does one holding a byte its declared encoding lacks, though a lossy decoding would
+    // parse, nor UTF-16, which CPython refuses for its NUL bytes.
+    project.add_bytes(
+        "src/bad_byte.py",
+        b"# coding: utf-8\nx = '\xff'\nhandle_request(x, y)\n",
+    );
+    project.add_bytes("src/wide.py", b"\xff\xfex\x00\n\x00");
+    // Nothing is printed, every such file is named with where and why, and the way to exclude
+    // them is said.
+    assert_quaff_snapshot!(project.quaff(&["-p", "handle_request($a, $b)"]));
+    // A narrower scope that leaves them out is searched.
+    assert_quaff_snapshot!(project.quaff(&["-p", "handle_request($a, $b)", "src/app.py"]));
+    // A textual search over the same files runs: it needs no parse tree.
+    assert_quaff_snapshot!(project.quaff(&["-s", "handle_request(a)"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_python_file_is_searched_in_its_declared_encoding() {
+    let mut project = Project::new(&[(".git/HEAD", "")]);
+    // Latin-1, declared: decoded before parsing, and placed by its characters, so the match
+    // after the é starts in column 13, not 14.
+    project.add_bytes(
+        "latin1.py",
+        b"# -*- coding: latin-1 -*-\nname = '\xe9'; f(name)\n",
+    );
+    assert_quaff_snapshot!(project.quaff(&["-p", "f($a)"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_python_file_quaff_cannot_read_refuses_a_structural_search_with_exit_9() {
+    let mut project = Project::new(&[(".git/HEAD", ""), ("a.py", "f(x)\n")]);
+    // GBK, declared: Python reads it and quaff does not, so a count without it could not be
+    // trusted - CPython counts two calls here - and the run is refused rather than passed.
+    project.add_bytes("gbk.py", b"# -*- coding: gbk -*-\nf(y)\n");
+    assert_quaff_snapshot!(project.quaff(&["-p", "f($a)"]));
+    assert_quaff_snapshot!(project.quaff(&["-e", "find `f($a)` expect 1"]));
+    // A textual search needs no parse, so it still runs over the file.
+    assert_quaff_snapshot!(project.quaff(&["-s", "f("]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_run_holding_a_structural_pattern_is_refused_whole_textual_queries_included() {
+    let mut project = Project::new(STRUCTURAL);
+    project.add_bytes("src/broken.py", b"def handle(:\n");
+    // Alone, a textual query searches the broken file and the rest.
+    let alone = project.quaff(&["-s", "handle"]).output().unwrap();
+    assert_eq!(alone.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&alone.stdout).contains("src/broken.py:1:5-1:10: handle"));
+    // Beside a structural one, the run is refused before either prints anything.
+    assert_quaff_snapshot!(project.quaff(&["-s", "handle", "-p", "f($a)"]));
+    assert_quaff_snapshot!(project.quaff(&["-e", "find \"handle\"\nfind `f($a)`"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_pattern_that_cannot_be_compiled_exits_3_saying_where() {
+    let project = Project::new(STRUCTURAL);
+    assert_quaff_snapshot!(project.quaff(&["-p", "handle_request($a"]));
+    assert_quaff_snapshot!(project.quaff(&["-p", "$x"]));
+    assert_quaff_snapshot!(project.quaff(&["-e", "find `f($_...)`"]));
+    assert_quaff_snapshot!(project.quaff(&["-e", "find `f($x, $x...)`"]));
+    // Placed past a longer fence and the space that pads it, at the `$`, character 12.
+    assert_quaff_snapshot!(project.quaff(&["-e", "find ``` f($_...) ```"]));
+    // A -p pattern has no fence, so a backtick it starts with is its first character.
+    assert_quaff_snapshot!(project.quaff(&["-p", "`f(x)"]));
+    // A sequence that starts or ends a run of statements would reach the edge of its block.
+    assert_quaff_snapshot!(project.quaff(&["-p", "handle_request($a, $b)\n$rest..."]));
+    // A run whose search would grow faster than the square of a block's length.
+    assert_quaff_snapshot!(project.quaff(&["-p", "w()\n$a...\n$b...\nx()"]));
+    assert_quaff_snapshot!(
+        project.quaff(&["-p", "w()\n$a...\nx()\n$b...\ny()\n$a...\nx()\n$b...\nz()"])
+    );
     project.assert_unchanged();
 }

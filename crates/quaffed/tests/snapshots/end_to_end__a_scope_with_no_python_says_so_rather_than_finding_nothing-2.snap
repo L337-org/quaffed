@@ -1,0 +1,15 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "find `handle_request($a, $b)` expect none"
+    - README.md
+---
+success: false
+exit_code: 2
+----- stdout -----
+
+----- stderr -----
+quaff: -e expression 1, at character 1: expected no matches of `handle_request($a, $b)`, which cannot be checked: no file in scope has structural support; 1 text-tier file not searched
