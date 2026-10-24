@@ -273,17 +273,15 @@ impl Pattern {
             .enumerate()
             .flat_map(|(at, list)| list.choices.iter().map(move |choice| (at, choice)))
             .collect();
-        // A node's ways reach each list enclosing it, its call's and the expression's around
-        // that, but are one choice: each level passes on the same ways.  So a hole is counted
-        // once, in the outermost list it is reported in, the first, as lists are taken in
-        // pre-order.
         choices.sort_by_key(|(_, choice)| choice.hole);
-        choices.dedup_by_key(|(_, choice)| choice.hole);
         for (later, (list, choice)) in choices.iter().enumerate() {
+            // A node's ways reach each list enclosing it - its call's, the expression's around
+            // that - as one choice reported at each level, which never conflicts with itself.
             let conflicts = choices[..later].iter().any(|(other_list, other)| {
-                other_list == list
-                    || !lists[*list].names.is_disjoint(&other.varies)
-                    || !lists[*other_list].names.is_disjoint(&choice.varies)
+                other.hole != choice.hole
+                    && (other_list == list
+                        || !lists[*list].names.is_disjoint(&other.varies)
+                        || !lists[*other_list].names.is_disjoint(&choice.varies))
             });
             if conflicts {
                 return Some(Costly::SecondChoice(choice.hole));
@@ -2106,15 +2104,10 @@ mod remembered_against_backtracking {
         assert_eq!(find_with(&pattern, &target, true), backtracked);
     }
 
-    /// Words as statements of a module, or, with `wrapped`, of a `Def` node the module holds,
+    /// Words as statements of a `Def` node a module holds,
     /// split into two lists at `split`, like a branch and its else clause, with a `;` token
     /// between two statements of one list if `separated`.  Gives the arena and each word's node.
-    fn block(
-        words: &[String],
-        split: usize,
-        separated: bool,
-        wrapped: bool,
-    ) -> (Arena<'static>, Vec<NodeId>) {
+    fn block(words: &[String], split: usize, separated: bool) -> (Arena<'static>, Vec<NodeId>) {
         let mut text = String::new();
         let mut spans = Vec::new();
         let mut separators = Vec::new();
@@ -2132,9 +2125,7 @@ mod remembered_against_backtracking {
         let text: &'static str = Box::leak(text.into_boxed_str());
         let mut builder = Builder::new(Language::new("toy"), text).unwrap();
         builder.enter(Kind::new("Module"), 0..text.len());
-        if wrapped {
-            builder.enter(Kind::new("Def"), 0..text.len());
-        }
+        builder.enter(Kind::new("Def"), 0..text.len());
         builder.begin_list();
         let mut separators = separators.into_iter().peekable();
         for (i, span) in spans.iter().enumerate() {
@@ -2149,16 +2140,10 @@ mod remembered_against_backtracking {
             builder.leave();
         }
         builder.end_list();
-        if wrapped {
-            builder.leave();
-        }
+        builder.leave();
         builder.leave();
         let arena = builder.finish().into_owned();
-        let parent = if wrapped {
-            arena.children(arena.root()).next().unwrap()
-        } else {
-            arena.root()
-        };
+        let parent = arena.children(arena.root()).next().unwrap();
         let nodes = arena.children(parent).collect();
         (arena, nodes)
     }
@@ -2173,7 +2158,7 @@ mod remembered_against_backtracking {
                 Item::Single(_) | Item::Sequence(_) => format!("h{i}"),
             })
             .collect();
-        let (arena, nodes) = block(&words, words.len(), separated, true);
+        let (arena, nodes) = block(&words, words.len(), separated);
         let holes = items
             .iter()
             .zip(nodes)
@@ -2200,7 +2185,7 @@ mod remembered_against_backtracking {
             .iter()
             .map(|&s| STATEMENTS[s].to_owned())
             .collect();
-        block(&words, split, separated, true).0
+        block(&words, split, separated).0
     }
 
     #[test]
@@ -2280,11 +2265,8 @@ mod remembered_against_backtracking {
         let target = nested_target(&statements, statements.len(), false);
         let started = std::time::Instant::now();
         assert_eq!(find(&pattern, &target), []);
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(5),
-            "{:?}",
-            started.elapsed()
-        );
+        let took = started.elapsed();
+        assert!(took < std::time::Duration::from_secs(5), "{took:?}");
     }
 
     proptest! {
@@ -2661,9 +2643,7 @@ mod trees {
             if shape.kind(wanted) != self.target.kind(node) {
                 return false;
             }
-            if let Some(value) = shape.value(wanted) {
-                return self.target.value(node) == Some(value) && then(held);
-            }
+            // The trees built here carry no values, so none is compared.
             let wanted_parts = parts(shape, wanted);
             let node_parts = parts(self.target, node);
             if wanted_parts.is_empty() && node_parts.is_empty() {
@@ -2796,11 +2776,43 @@ mod trees {
                 "(B (h (f x y z)) (g x y))",
             ),
             ("(f $a... $b...) (g $a...)", "[(f x y z) (g x y)]"),
+            // The node uses its name again itself, and reaches one place by more than one way.
+            ("(B (f $a... y $a...) (g $a...))", "(B (f x y x) (g x))"),
+            (
+                "(B (f $a... y $... $... z) (g $a...))",
+                "(B (f x y w w w z) (g x))",
+            ),
         ] {
             let (fast, slow) = both(pattern, target);
             assert_eq!(fast, slow, "{pattern} over {target}");
             assert_eq!(slow.len(), 1, "{pattern} over {target}");
+            let (built, _) = build(target);
+            let compiled = super::trees::pattern(pattern);
+            let oracle: Vec<String> = Oracle {
+                pattern: &compiled,
+                target: &built,
+            }
+            .find()
+            .into_iter()
+            .map(|m| built.text()[m.range].to_owned())
+            .collect();
+            assert_eq!(fast, oracle, "{pattern} over {target} against the oracle");
         }
+    }
+
+    /// Where fixed code could stand compares a node's parts in place: a token where the code has
+    /// a child is not a place it stands.
+    #[test]
+    fn fixed_code_does_not_stand_where_a_token_meets_a_child() {
+        let (fast, slow) = both("(B $... (k x ; y))", "(B w (k x y z) (k x ; y))");
+        assert_eq!(fast, slow);
+        assert_eq!(slow, ["w x y z x ; y"]);
+    }
+
+    /// A node that binds a name used later is one choice in its list, however it is reached.
+    #[test]
+    fn a_node_binding_a_name_used_later_is_counted_once_in_its_list() {
+        assert_eq!(pattern("w $... (f $a... x) $... (g $a...)").costly(), None);
     }
 
     /// A node asked for its ways: each is one length of `$a`, and the one `g` needs is the

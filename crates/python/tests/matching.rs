@@ -587,3 +587,27 @@ fn a_node_is_asked_again_when_a_name_it_bound_fails_later() {
         Err(PatternError::SecondChoice { .. })
     ));
 }
+
+#[test]
+fn a_choice_in_a_nodes_own_list_still_counts_when_its_name_is_used_outside() {
+    // `$b` and `$c` are two choices in `f`'s list; using `$b` after `f` as well does not hide
+    // either from the list that makes them.
+    for pattern in [
+        "f($a..., 1, $b..., 2, $b..., 3, $c..., 4, $c...)",
+        "f($a..., 1, $b..., 2, $b..., 3, $c..., 4, $c...) + g($b...)",
+    ] {
+        assert!(
+            matches!(
+                compile_pattern(pattern),
+                Err(PatternError::SecondChoice { .. })
+            ),
+            "{pattern}"
+        );
+    }
+}
+
+#[test]
+fn a_string_after_a_sequence_stands_only_where_its_content_does() {
+    let source = "f(1, \"x\")\nf(1, \"y\")\n";
+    assert_eq!(matches("f($..., \"x\")", source), ["f(1, \"x\")"]);
+}
