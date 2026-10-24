@@ -339,7 +339,9 @@ $ quaff -p 'same($x, $x)' play
 play/nested.py:2:1-2:16: same(a + b, a+b)
 ```
 
-The same holds whatever role the name plays: `$x = $o.$x` matches `name = self.name`.
+The same holds whatever role the name plays: `$x = $o.$x` matches `name = self.name`.  And it
+holds across nodes: `f($a..., $b...) + g($a...)` matches `f(1, 2, 3) + g(1, 2)`, `$a` taking
+`1, 2` in `f` because `g` holds that, though `1` alone would let `f` match by itself.
 
 **A hole is only a hole in code.**  A `$name` inside a string literal or a comment in the pattern
 is literal text, while one in an f-string's `{...}` field is a hole:

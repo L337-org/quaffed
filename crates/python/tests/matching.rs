@@ -572,3 +572,18 @@ fn hole_spellings_in_a_string_or_comment_are_literal_text_whatever_they_are() {
         Err(PatternError::MixedHole { offset: 6, .. })
     ));
 }
+
+#[test]
+fn a_node_is_asked_again_when_a_name_it_bound_fails_later() {
+    // `f`'s `$a` must take `1, 2` for `g` to hold the same, though `1` alone lets `f` match.
+    let source = "f(1, 2, 3) + g(1, 2)\nf(1, 2, 3) + g(1, 2, 3, 4)\n";
+    assert_eq!(
+        matches("f($a..., $b...) + g($a...)", source),
+        ["f(1, 2, 3) + g(1, 2)"]
+    );
+    // The node's ways count as a choice: a second that can affect it is refused.
+    assert!(matches!(
+        compile_pattern("f($a..., $b...) + g($a..., x, $b...)"),
+        Err(PatternError::SecondChoice { .. })
+    ));
+}

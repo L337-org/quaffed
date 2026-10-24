@@ -138,10 +138,21 @@ two nodes' parts, a hash comparison comes first and a match is confirmed in full
 costs a comparison, never a wrong match.  A named sequence binds the run it takes as a range of
 its node's parts, so binding copies nothing.
 
+**A node's match is not final where it can bind a name used after it more than one way.**  A
+node holding a sequence that first binds a name used again after the node (`exported`) can match
+more than one way: `f($a..., $b...)` over `f(1, 2, 3)` binds `$a` to `1` or to `1, 2`.  Taking
+the first would miss `f($a..., $b...) + g($a...)` over `f(1, 2, 3) + g(1, 2)`.  So such a node
+gives each distinct binding of those names it can make, in the order backtracking finds them
+(`Matcher::node_ways`), and the list holding it tries the rest with each in turn.  Gathering them
+remembers each place as matching a list does, by what the names it reads hold.  Every other node
+gives its first match, since nothing after it reads what it bound.
+
 **So the cost is about linear in a list's length** when nothing a choice binds is used further
 on, and quadratic with one **choice**: a place where a name is bound in a way that varies with
 where an earlier sequence stopped and is used later in the same list, or where a sequence named
-elsewhere in the list starts.  The fixed code before a list's first sequence makes no choice,
+elsewhere in the list starts, or where a node gives more than one way of binding a name used
+after it, counted once in the outermost list it reaches.  The fixed code before a list's first
+sequence makes no choice,
 since where it stands is where the list, or the run, starts.  Each further choice that the first
 can affect would multiply the cost by the list's length again, and with no limit on how many
 there are the problem is that of matching a pattern with variables, which is NP-complete, so no
@@ -160,7 +171,10 @@ every length of each sequence from every place, and compares code piece by piece
 tests run both and require the same matches (`remembered_against_backtracking` and `trees` in
 `src/matching.rs`): over runs of statements in blocks split in two, over a node's parts with
 sequences at either end and a token between statements or not, and over generated trees - nodes
-within nodes, names shared between lists, tokens anywhere and marked lists in the code.  Named
+within nodes, names shared between lists, tokens anywhere and marked lists in the code.  The
+tree property also holds both to an oracle written for the tests alone (`Oracle`), which tries
+every way of matching across nodes as within them and remembers nothing, so a commitment the
+two share does not pass unseen.  Named
 tests beside them hold each case where a shortcut must not apply, and the work's growth: a long
 body matched in seconds, and the work of a name used twice over repeated code growing with the
 square of the block's length, counted rather than timed.
