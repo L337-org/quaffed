@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+"""Compare a pull request's instruction counts with main's, and hold the arena to its budget.
+
+Reads the summaries gungraun writes with `--save-summary=json`, one `summary.json` per benchmark
+under each side's GUNGRAUN_HOME, as `scripts/benchmarks` measures them, and writes a Markdown
+section for the job summary.  architecture/verification.md has the reasoning.
+
+    scripts/benchmark-gate --main DIR --pull-request DIR [--label TEXT] [--summary FILE]
+
+Two rules, each failing the run on its own:
+
+- A benchmark whose instruction count on the pull request is more than RULE_PERCENT above
+  main's regresses.  A benchmark only on the pull request is new and is reported with nothing to
+  compare; one only on main was removed and is reported too.
+- Building the arena may cost at most ARENA_BUDGET_PERCENT of Ruff's own parse: the
+  `parse_into_arena` benchmark less `ruff_parse`, as a share of `ruff_parse`, on the pull
+  request.  It is a rule of its own so that a slower arena cannot hide inside a faster parse.
+
+A side with no benchmarks is only accepted for main, and only when `scripts/benchmarks` said so
+by writing NONE_MARKER there because main's tree has no benchmark target: otherwise a
+measurement that produced nothing would pass having compared nothing.
+
+Exit status: 0 when both rules hold, 1 when one does not, 2 when the counts could not be
+compared - no benchmark ran on the pull request, a summary unreadable or in a format this
+script does not know, the arena's two benchmarks missing - since a gate that could not compare
+has not passed.  The summary is written in every case, so the job page says which.
+"""
+
+import argparse
+import json
+import pathlib
+import sys
+from fractions import Fraction
+
+# More than this much above main fails a benchmark, as a percentage of main's count.
+RULE_PERCENT = Fraction(2)
+
+# The most building the arena may cost, as a percentage of Ruff's parse alone.  Set by the
+# owner from the arena as optimised, with room for the layout work later stories may add.
+ARENA_BUDGET_PERCENT = Fraction(60)
+
+# The benchmarks the arena's share is read from: Ruff's parse alone, and with the arena.
+RUFF_PARSE = "ruff_parse synthetic"
+PARSE_INTO_ARENA = "parse_into_arena synthetic"
+
+# Written by scripts/benchmarks in place of summaries when a tree has no benchmark target.
+NONE_MARKER = "no-benchmarks"
+
+# The summary format this script reads.  gungraun numbers it; a new number may move a field.
+SUMMARY_VERSION = "7"
+
+
+class Unreadable(Exception):
+    """A side whose counts cannot be read, with the reason."""
+
+
+def load(directory):
+    """Read every benchmark summary under one side's directory.
+
+    Returns:
+        dict | None: benchmark name ("function id") to its instruction count, or None when the
+        side carries NONE_MARKER.
+
+    Raises:
+        Unreadable: the directory is missing, holds no summary, or a summary cannot be read.
+    """
+    root = pathlib.Path(directory)
+    if not root.is_dir():
+        raise Unreadable(f"{root} does not exist")
+    if (root / NONE_MARKER).exists():
+        return None
+    counts = {}
+    paths = sorted(root.rglob("summary.json"))
+    if not paths:
+        raise Unreadable(f"no benchmark summary under {root}")
+    for path in paths:
+        try:
+            summary = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise Unreadable(f"{path}: {exc}") from exc
+        if str(summary.get("version")) != SUMMARY_VERSION:
+            raise Unreadable(f"{path}: summary version {summary.get('version')!r}, where this "
+                             f"script reads version {SUMMARY_VERSION}")
+        try:
+            name = f"{summary['function_name']} {summary['id']}"
+            (callgrind,) = [p for p in summary["profiles"] if p["tool"] == "Callgrind"]
+            count = callgrind["data"]["total"]["metrics"]["Ir"]["values"]["new"]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise Unreadable(f"{path}: no Callgrind instruction count ({exc!r})") from exc
+        if not isinstance(count, int) or count <= 0:
+            raise Unreadable(f"{path}: instruction count {count!r} is not a positive whole number")
+        if name in counts:
+            raise Unreadable(f"{path}: a second benchmark named {name!r}")
+        counts[name] = count
+    return counts
+
+
+def percent(new, old):
+    """`new` against `old`, as a signed percentage of `old`."""
+    return Fraction(new - old, old) * 100
+
+
+def show(value):
+    """A percentage to one decimal place, signed when it is a change."""
+    return f"{float(value):+.1f}%"
+
+
+def arena_share(counts):
+    """What building the arena costs as a percentage of Ruff's parse, or None without both."""
+    if RUFF_PARSE not in counts or PARSE_INTO_ARENA not in counts:
+        return None
+    ruff = counts[RUFF_PARSE]
+    return Fraction(counts[PARSE_INTO_ARENA] - ruff, ruff) * 100
+
+
+def judge(main_counts, head):
+    """Apply both rules.
+
+    Returns:
+        tuple: the table's rows, the regressions, the problems that stop a comparison, and the
+        notes to show, each a list of strings.
+    """
+    rows, regressed, problems, notes = [], [], [], []
+    if main_counts is None:
+        notes.append("main has no benchmarks, so nothing was compared; every benchmark is new.")
+        main_counts = {}
+    for name in sorted(set(main_counts) | set(head)):
+        if name not in head:
+            rows.append(f"| `{name}` | {main_counts[name]:,} | removed | - |")
+            continue
+        if name not in main_counts:
+            rows.append(f"| `{name}` | new | {head[name]:,} | - |")
+            continue
+        change = percent(head[name], main_counts[name])
+        mark = ""
+        if change > RULE_PERCENT:
+            mark = " **regressed**"
+            regressed.append(f"{name}: {main_counts[name]:,} on main, {head[name]:,} on the pull "
+                             f"request, {show(change)}, more than the {float(RULE_PERCENT):g}% allowed")
+        rows.append(f"| `{name}` | {main_counts[name]:,} | {head[name]:,} | {show(change)}{mark} |")
+
+    share = arena_share(head)
+    if share is None:
+        problems.append(f"the arena's share cannot be worked out: the pull request needs both "
+                        f"`{RUFF_PARSE}` and `{PARSE_INTO_ARENA}`")
+    else:
+        line = (f"Building the arena costs **{float(share):.1f}%** of Ruff's parse, against a "
+                f"budget of {float(ARENA_BUDGET_PERCENT):g}%")
+        on_main = arena_share(main_counts)
+        if on_main is not None:
+            line += f"; on main it costs {float(on_main):.1f}%"
+        notes.append(line + ".")
+        if share > ARENA_BUDGET_PERCENT:
+            regressed.append(f"building the arena costs {float(share):.1f}% of Ruff's parse, over "
+                             f"its budget of {float(ARENA_BUDGET_PERCENT):g}%")
+    return rows, regressed, problems, notes
+
+
+def render(label, rows, regressed, problems, notes):
+    """The Markdown section for the job summary."""
+    title = "## Instruction counts" + (f" ({label})" if label else "")
+    out = [title, ""]
+    if rows:
+        out += ["| benchmark | main | pull request | change |", "| --- | ---: | ---: | ---: |", *rows, ""]
+    out += notes
+    if regressed:
+        out += ["", "**Failed:**", *[f"- {line}" for line in regressed]]
+    if problems:
+        out += ["", "**Not evaluated:**", *[f"- {line}" for line in problems]]
+    return "\n".join(out) + "\n\n"
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--main", required=True, metavar="DIR", help="main's GUNGRAUN_HOME")
+    parser.add_argument("--pull-request", required=True, metavar="DIR",
+                        help="the pull request's GUNGRAUN_HOME")
+    parser.add_argument("--label", default="", help="what the section is for, such as the architecture")
+    parser.add_argument("--summary", metavar="FILE",
+                        help="append the Markdown section here (the job summary); default stdout only")
+    args = parser.parse_args(argv)
+
+    problems = []
+    try:
+        main_counts = load(args.main)
+    except Unreadable as exc:
+        main_counts, problems = {}, [f"main: {exc}"]
+    try:
+        head = load(args.pull_request)
+        if head is None:
+            raise Unreadable(f"{args.pull_request} says it has no benchmarks, which only main may")
+    except Unreadable as exc:
+        head, problems = {}, problems + [f"pull request: {exc}"]
+
+    if head:
+        rows, regressed, more, notes = judge(main_counts, head)
+        problems += more
+    else:
+        rows, regressed, notes = [], [], []
+    if problems:
+        # A side that could not be read leaves nothing to judge against, whatever the other says.
+        regressed = []
+    text = render(args.label, rows, regressed, problems, notes)
+    sys.stdout.write(text)
+    if args.summary:
+        with open(args.summary, "a", encoding="utf-8") as f:
+            f.write(text)
+    if problems:
+        for line in problems:
+            print(f"benchmark-gate: not evaluated - {line}", file=sys.stderr)
+        return 2
+    if regressed:
+        for line in regressed:
+            print(f"benchmark-gate: {line}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

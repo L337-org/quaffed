@@ -144,6 +144,10 @@ name and comments say what it checks.
 `.github/workflows/package.yaml` also runs on every pull request, building the Linux package for
 each architecture; `architecture/release.md` describes it and the release workflow.
 
+`.github/workflows/benchmarks.yaml` runs on every pull request, counting the front end's and the
+matcher's instructions against main's on each architecture; `architecture/verification.md`
+describes it.
+
 `.github/workflows/report-failures.yaml` posts a failed run to Slack.  Adding a workflow that
 runs on a schedule, a push, a release or a pull request means adding it there: the checklist is
 in `architecture/verification.md`, under failed runs are posted to Slack.

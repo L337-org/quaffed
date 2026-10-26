@@ -9,6 +9,7 @@ on:
     workflows:
       - 'Check inbound changes'
       - 'Code review'
+      - 'Benchmarks'
       - 'Coverage'
       - 'Package'
       - 'Release'

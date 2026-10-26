@@ -463,6 +463,94 @@ correct.
 5. Say in the pull request description which budget moved, by how much, and what in the trace
    accounts for it, so the reviewer can agree it.
 
+## The benchmarks
+
+The budgets hold the whole binary; the benchmarks hold the parts of it most likely to grow, the
+Python front end and the matcher, closer.  `.github/workflows/benchmarks.yaml` counts them on
+every pull request, once on amd64 and once on arm64, and fails the pull request when one does
+more work than on main.  As with the budgets, nothing is timed: the counts are instructions,
+from gungraun under Valgrind's Callgrind.
+
+- **What is counted is `crates/python/benches/front_end.rs`**, over the synthetic corpus only,
+  so a change to the real-world corpus can never move a count: Ruff's parse of every file
+  alone (`ruff_parse`), the parse with the arena built from it (`parse_into_arena`), compiling a
+  pattern (`compiling`), and searching every file for each of the structural counts' patterns
+  (`matching`).  Reading files, building the arenas a search runs over and compiling its
+  pattern are setup, which gungraun does not count, so each benchmark counts only the work it
+  names.  They live in the adapter because only it may name Ruff's types, and Ruff's parse alone
+  is one of them.
+- **They are built with the `profiling` profile**, the shipped binary's optimisation with its
+  symbols kept, so the counts are the shipped code's and each benchmark's Callgrind profile
+  names every function.
+- **Main is counted in the same job, at the merge's first parent**, in a second worktree.
+  Counts do not vary from run to run on one image, but the same build counts differently under
+  another image or Valgrind, so a stored figure would move with every runner-image update, while
+  two counts from one job compare exactly.  amd64 and arm64 count differently too, so each is
+  compared with itself.  Each tree is counted with the runner its own `tools.toml` pins,
+  because gungraun refuses a runner of another version than its library, so a pull request that
+  moves the pin is still compared.
+- **The 2% rule**: a benchmark more than `RULE_PERCENT` above main's count fails, named with
+  both counts.  A benchmark only on the pull request is reported as new, one only on main as
+  removed; neither fails.
+- **The arena's budget**: building the arena may cost at most `ARENA_BUDGET_PERCENT` of Ruff's
+  parse, that is `parse_into_arena` less `ruff_parse`, as a share of `ruff_parse`, on the pull
+  request.  It is a rule of its own so that a slower arena cannot hide inside a faster parse.
+  Both figures are in `scripts/benchmark-gate`.
+- **A gate that could not compare has not passed.**  No benchmark on the pull request, a summary
+  unreadable or in a version of gungraun's format the script does not know, or the arena's two
+  benchmarks missing, fails the job as not evaluated.  Main may have no benchmarks only when
+  `scripts/benchmarks` says so, because its tree has no benchmark target.
+- **The job summary** shows every benchmark's count on main and on the pull request with the
+  change, and the arena's share against its budget, on each side.  Every count and Callgrind
+  profile is kept in the job's `benchmarks-<arch>` artefact.
+
+**The gate has a negative test on every run**, on amd64: `scripts/break-benchmarks` makes a copy
+with the matcher slowed and one with the arena's building slowed, and the job fails unless
+`scripts/benchmark-gate` fails each, the first on the 2% rule and the second on the budget.
+`crates/quaffed/tests/benchmark_gate.rs` holds the script itself to each rule and each refusal.
+
+Locally the benchmarks need Linux with Valgrind, and gungraun's runner at the version
+`tools.toml` pins.  On any other machine, run them in a container of the toolchain's version:
+
+```bash
+docker run --rm -it --security-opt seccomp=unconfined --ulimit nofile=1024:1024 \
+  -v "$PWD":/src -w /src rust:<rust-toolchain.toml's channel> bash
+# inside: apt-get update && apt-get install -y valgrind git, then:
+scripts/install-tools gungraun-runner
+git worktree add --detach /tmp/main origin/main
+scripts/benchmarks /tmp/main "$(mktemp -d)/main"        # note the two directories printed
+scripts/benchmarks /src "$(mktemp -d)/pull-request"
+scripts/benchmark-gate --main <main's directory> --pull-request <the pull request's directory>
+```
+
+Docker's default seccomp profile refuses the call gungraun makes to turn off address-space
+randomisation (*"setarch: failed to set personality"*), hence `seccomp=unconfined`; the file
+limit is the same one the budgets need.  A count made locally compares only with another made
+in the same container.
+
+### Checklist: adding a benchmark
+
+1. Add a `#[bench::<id>(...)]` case to a benchmark in `crates/python/benches/front_end.rs`, or a
+   new `#[library_benchmark]` function listed in its group.  Put everything that is not the work
+   being counted in the case's setup call, whose instructions gungraun leaves out.  A comment
+   above a benchmark is a plain `//` comment: gungraun's attribute refuses a doc comment.
+2. Use only the synthetic corpus, through the tests' `common` module.
+3. Run it locally as above, and check its count is the work it names: `callgrind_annotate` its
+   profile under the gungraun directory.
+4. On the pull request it shows as new, compared with nothing; from the next pull request on it
+   is held to the 2% rule like the rest.
+5. Renaming a benchmark or its case shows it as removed and new, so the rename's pull request
+   holds it to nothing; say so in the description.
+
+### Checklist: changing a figure
+
+A count that rises more than 2% is a defect until shown otherwise: find where in the profile
+the instructions went, from the job's artefact, as for a budget.  Where the work is right - new
+behaviour that has to cost something - the pull request says which benchmark rose, by how much,
+and why, and the reviewer agrees it; the rule itself is not loosened to let one change through.
+Changing `RULE_PERCENT` or `ARENA_BUDGET_PERCENT` is the owner's decision, recorded with its
+reason.
+
 ## The package install test
 
 A package that builds is not yet a package that installs, and an installed binary is not yet
