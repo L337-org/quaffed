@@ -477,8 +477,8 @@ from gungraun under Valgrind's Callgrind.
   pattern (`compiling`), and searching every file for each of the structural counts' patterns
   (`matching`).  Reading files, building the arenas a search runs over and compiling its
   pattern are setup, which gungraun does not count, and each benchmark hands its input back so
-  that freeing it is not counted either: each counts only the work it names.  They live in the adapter because only it may name Ruff's types, and Ruff's parse alone
-  is one of them.
+  that freeing it is not counted either: each counts only the work it names.  They live in the
+  adapter because only it may name Ruff's types, and Ruff's parse alone is one of them.
 - **They are built with the `profiling` profile**, the shipped binary's optimisation with its
   symbols kept, so the counts are the shipped code's and each benchmark's Callgrind profile
   names every function.
@@ -502,8 +502,10 @@ from gungraun under Valgrind's Callgrind.
 - **Whether the jobs are required status checks**, and why, is in `architecture/workspace.md`.
 - **A gate that could not compare has not passed.**  No benchmark on the pull request, a summary
   unreadable or in a version of gungraun's format the script does not know, two benchmarks of
-  one name, or the arena's two benchmarks missing, fails the job as not evaluated.  Main may have no benchmarks only when
-  `scripts/benchmarks` says so, because its tree has no benchmark target.
+  one name, a count below `LEAST_COUNT` or a parse with the arena counting no more than the parse
+  alone - counts that missed the work they name - or the arena's two benchmarks missing, fails
+  the job as not evaluated.  Main may have no benchmarks only when `scripts/benchmarks` says
+  so, because its tree has no benchmark target.
 - **The job summary** shows every benchmark's count on main and on the pull request with the
   change, and the arena's share against its budget, on each side.  Every count and Callgrind
   profile is kept in the job's `benchmarks-<arch>` artefact.

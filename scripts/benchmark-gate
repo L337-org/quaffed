@@ -26,10 +26,10 @@ measurement that produced nothing would pass having compared nothing.
 
 Exit status: 0 when the arena is within its budget, whatever rose, 1 when it is over, 2 when
 the counts could not be compared - no benchmark ran on the pull request, a summary unreadable
-or in a format this script does not know, two benchmarks of one name, the arena's two
-benchmarks missing, or the parse with the arena counting no more than the parse it contains -
-since a gate that could not compare has not passed.  The summary is
-written in every case, so the job page says which.
+or in a format this script does not know, two benchmarks of one name, a count below
+LEAST_COUNT, the arena's two benchmarks missing, or the parse with the arena counting no more
+than the parse it contains - since a gate that could not compare has not passed.  The summary
+is written in every case, so the job page says which.
 """
 
 import argparse
@@ -53,6 +53,12 @@ PARSE_INTO_ARENA = "parse_into_arena synthetic"
 
 # Written by scripts/benchmarks in place of summaries when a tree has no benchmark target.
 NONE_MARKER = "no-benchmarks"
+
+# The fewest instructions a benchmark here can count and still be the work it names: each parses
+# or searches the whole synthetic corpus, or compiles a pattern, and none of those is anywhere
+# near this cheap.  A count under it is a measurement that missed the work, and is refused
+# rather than compared, since a rule over a meaningless number would pass whatever it said.
+LEAST_COUNT = 10_000
 
 # The summary format this script reads.  gungraun numbers it; a new number may move a field.
 SUMMARY_VERSION = "7"
@@ -97,6 +103,9 @@ def load(directory):
             raise Unreadable(f"{path}: no Callgrind instruction count ({exc!r})") from exc
         if not isinstance(count, int) or count <= 0:
             raise Unreadable(f"{path}: instruction count {count!r} is not a positive whole number")
+        if count < LEAST_COUNT:
+            raise Unreadable(f"{path}: {count:,} instructions, fewer than the {LEAST_COUNT:,} any "
+                             f"benchmark here does, so the count missed the work it names")
         if name in counts:
             raise Unreadable(f"{path}: a second benchmark named {name!r}")
         counts[name] = count

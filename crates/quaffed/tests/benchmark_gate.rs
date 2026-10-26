@@ -5,7 +5,7 @@
 //! Each test writes gungraun summaries in the shape `--save-summary=json` produces and runs the
 //! script with `python3`.  The counting itself runs in CI's **Benchmarks** job, where
 //! `scripts/break-benchmarks` shows the gate alerting on a really slowed matcher and failing on a
-//! really slowed adapter;
+//! really slowed adapter, and
 //! `architecture/verification.md` describes the gate.
 
 use std::fs;
@@ -465,7 +465,13 @@ fn two_benchmarks_of_one_name_are_refused() {
     let scratch = Scratch::new();
     let pr = scratch.side("pr", MAIN);
     // A second directory holding a summary for a benchmark already counted.
-    write_summary(&pr.join("again"), "matching", "a_name_used_twice", "1", "7");
+    write_summary(
+        &pr.join("again"),
+        "matching",
+        "a_name_used_twice",
+        "200000",
+        "7",
+    );
     let out = gate(&scratch.side("main", MAIN), &pr, &[]);
     let all = text(&out);
     assert_eq!(out.status.code(), Some(2), "{all}");
@@ -495,9 +501,8 @@ fn the_summary_is_written_when_nothing_could_be_compared() {
 
 #[test]
 fn a_parse_with_the_arena_that_counts_no_more_than_the_parse_alone_is_refused() {
-    // As Valgrind on an arm64 runner once counted it: the parse with the arena, 563
-    // instructions, against Ruff's parse alone, 665,690.  It cannot be right, and an arena share
-    // read from it - here below nothing - would pass any budget.
+    // The parse with the arena counted below Ruff's parse alone, which it contains: it cannot be
+    // right, and an arena share read from it - here below nothing - would pass any budget.
     let scratch = Scratch::new();
     let out = gate(
         &scratch.side("main", MAIN),
@@ -505,7 +510,7 @@ fn a_parse_with_the_arena_that_counts_no_more_than_the_parse_alone_is_refused() 
             "pr",
             &with(&[
                 ("ruff_parse", "synthetic", 665_690),
-                ("parse_into_arena", "synthetic", 563),
+                ("parse_into_arena", "synthetic", 600_000),
             ]),
         ),
         &[],
@@ -514,8 +519,24 @@ fn a_parse_with_the_arena_that_counts_no_more_than_the_parse_alone_is_refused() 
     assert_eq!(out.status.code(), Some(2), "{all}");
     assert!(
         all.contains(
-            "`parse_into_arena synthetic` counted 563 instructions, no more than `ruff_parse synthetic`'s 665,690"
+            "`parse_into_arena synthetic` counted 600,000 instructions, no more than `ruff_parse synthetic`'s 665,690"
         ),
         "{all}"
     );
+}
+
+#[test]
+fn a_count_too_small_to_be_the_work_it_names_is_refused() {
+    let scratch = Scratch::new();
+    let pr = scratch.side("pr", &with(&[("matching", "a_name_used_twice", 9_999)]));
+    let out = gate(&scratch.side("main", MAIN), &pr, &[]);
+    let all = text(&out);
+    assert_eq!(out.status.code(), Some(2), "{all}");
+    assert!(
+        all.contains("9,999 instructions, fewer than the 10,000 any benchmark here does"),
+        "{all}"
+    );
+    let at_least = scratch.side("pr-at", &with(&[("matching", "a_name_used_twice", 10_000)]));
+    let out = gate(&scratch.side("main-at", MAIN), &at_least, &[]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
 }
