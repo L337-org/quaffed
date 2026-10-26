@@ -349,6 +349,14 @@ impl<'text> Builder<'text> {
         })
     }
 
+    /// Makes room for at least `nodes` more nodes and `tokens` more tokens, so that an adapter
+    /// that knows about how many it will add pays for the room once rather than each time the
+    /// arena outgrows it.
+    pub fn reserve(&mut self, nodes: usize, tokens: usize) {
+        self.nodes.reserve(nodes);
+        self.tokens.reserve(tokens);
+    }
+
     /// Starts a node of `kind` covering `range` of the text, as a child of the node open now.
     ///
     /// # Panics

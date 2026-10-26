@@ -185,7 +185,10 @@ An adapter makes a `Builder` over the text, then walks its parser's tree once, c
 a node's kind and range, then its children, then `leave`.  `finish` gives the arena.  A second root,
 a `leave` with nothing open, or a node left open is a defect in the adapter and panics.  `value`
 gives the node open now its value, `token` adds a token, in source order, and `begin_list` and
-`end_list` mark a list among the open node's children.  The builder does not
+`end_list` mark a list among the open node's children.  `reserve` makes room for the nodes and
+tokens an adapter expects to add, so the arena does not grow as the walk goes; the Python
+adapter reserves as many of each as Ruff found tokens, an upper bound on the tokens it keeps,
+spending some memory to save the copying.  The builder does not
 check the range invariants, which would cost every parse; the round trip checks them over both
 corpora.
 
