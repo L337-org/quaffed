@@ -479,9 +479,16 @@ from gungraun under Valgrind's Callgrind.
   pattern are setup, which gungraun does not count, and each benchmark hands its input back so
   that freeing it is not counted either: each counts only the work it names.  They live in the
   adapter because only it may name Ruff's types, and Ruff's parse alone is one of them.
-- **They are built with the `profiling` profile**, the shipped binary's optimisation with its
-  symbols kept, so the counts are the shipped code's and each benchmark's Callgrind profile
-  names every function.
+- **They are built with the `benchmarks` profile**: the shipped binary's optimisation, so the
+  counts are the shipped code's, with its symbols kept, so gungraun finds each benchmark and its
+  Callgrind profile names every function, and **no debug information**.  With any debug
+  information - line tables alone included - Callgrind on arm64 loses track of calls and returns,
+  and gungraun, which switches collection on as a benchmark is entered, counts the wrong code: a
+  few dozen instructions for a search of the whole corpus, while other benchmarks in the same
+  build count correctly.  It was found by building one variant at a time on an arm64 machine; the
+  same build counts correctly on amd64.  The profiles therefore name functions but not source
+  lines.  `LEAST_COUNT` in `scripts/benchmark-gate` refuses a count that small, so a return of
+  the fault fails the job rather than passing it.
 - **Main is counted in the same job, at the merge's first parent**, in a second worktree.
   Counts do not vary from run to run on one image, but the same build counts differently under
   another image or Valgrind, so a stored figure would move with every runner-image update, while

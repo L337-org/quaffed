@@ -33,7 +33,7 @@ jobs:
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     # Covers building gungraun's runner from source, two cold builds of the benchmarks with the
-    # profiling profile and their counting, and on amd64 two more of each for the negative test,
+    # benchmarks profile and their counting, and on amd64 two more of each for the negative test,
     # generously.
     timeout-minutes: 60
     steps:

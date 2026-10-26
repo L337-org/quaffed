@@ -38,3 +38,12 @@ strip = "symbols"
 inherits = "dist"
 debug = true
 strip = "none"
+
+# The instruction-count benchmarks: the shipped optimisation, with the symbols that let gungraun
+# find each benchmark and a profile name its functions, but no debug information.  With any - line
+# tables alone included - Valgrind's Callgrind on arm64 loses track of calls and returns, and
+# gungraun's collection, switched on by entering a benchmark, counts the wrong code: a few dozen
+# instructions for work that takes hundreds of thousands.  architecture/verification.md has more.
+[profile.benchmarks]
+inherits = "dist"
+strip = "none"

@@ -4,8 +4,9 @@
 #   scripts/benchmarks TREE OUT
 #
 # Runs crates/python/benches/front_end.rs in TREE under gungraun's runner and Valgrind's
-# Callgrind, built with the profiling profile - the shipped binary's optimisation, with its
-# symbols kept so each benchmark's profile names every function - and leaves a summary.json for
+# Callgrind, built with the benchmarks profile - the shipped binary's optimisation, with its
+# symbols kept so each benchmark's profile names every function, and no debug information, which
+# Callgrind on arm64 cannot count through (Cargo.toml says why) - and leaves a summary.json for
 # each benchmark, with its Callgrind profile, under OUT.
 #
 # The runner is the version TREE's own tools.toml pins, since gungraun refuses a runner of
@@ -59,7 +60,7 @@ printf 'benchmarks: counting %s with gungraun-runner %s at %s\n' "$tree" "$versi
 (
     cd "$tree"
     CARGO_TARGET_DIR="$tree/target" GUNGRAUN_RUNNER="$runner" GUNGRAUN_HOME="$out" \
-        cargo bench --locked --profile profiling -p quaffed-python --bench front_end -- \
+        cargo bench --locked --profile benchmarks -p quaffed-python --bench front_end -- \
         --save-summary=json
 ) || die "the benchmarks in $tree failed; cargo's and gungraun's output is above"
 
