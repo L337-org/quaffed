@@ -1,11 +1,13 @@
 //! Instruction counts of the Python front end and the matcher, over the synthetic corpus only.
 //!
 //! Run under gungraun's runner and Valgrind's Callgrind, Linux only: `cargo bench -p
-//! quaffed-python --bench front_end`.  `scripts/benchmarks` runs them for main and for a pull
-//! request in one job and compares the two; architecture/verification.md has how, and why.
+//! quaffed-python --bench front_end`.  `scripts/benchmarks` counts one tree's, and
+//! `scripts/benchmark-gate` compares main's with a pull request's; architecture/verification.md
+//! has how, and why.
 //!
 //! Reading and decoding the files, building arenas to search and compiling patterns are setup,
-//! which gungraun does not count, so each benchmark counts only the work it names.  Ruff's parse
+//! which gungraun does not count.  Each benchmark hands its input back, so that freeing it falls
+//! outside what is counted too, and each counts only the work it names.  Ruff's parse
 //! is counted alone as well as with the arena built from it, so that what the arena costs can be
 //! held to its own budget as a share of the parse.
 
@@ -54,7 +56,7 @@ fn arena(mode: Mode, text: &str) -> Arena<'_> {
 // Ruff's parse of every file, and nothing of quaff's: what the arena's cost is a share of.
 #[library_benchmark]
 #[bench::synthetic(corpus())]
-fn ruff_parse(files: Vec<(Mode, String)>) {
+fn ruff_parse(files: Vec<(Mode, String)>) -> Vec<(Mode, String)> {
     for (mode, text) in &files {
         let mode = match mode {
             Mode::Module => ruff_python_parser::Mode::Module,
@@ -66,15 +68,17 @@ fn ruff_parse(files: Vec<(Mode, String)>) {
                 .unwrap_or_else(|err| panic!("Ruff parsing a synthetic corpus file: {err}")),
         );
     }
+    files
 }
 
 // Ruff's parse of every file with the arena built from it, as quaff parses a file.
 #[library_benchmark]
 #[bench::synthetic(corpus())]
-fn parse_into_arena(files: Vec<(Mode, String)>) {
+fn parse_into_arena(files: Vec<(Mode, String)>) -> Vec<(Mode, String)> {
     for (mode, text) in &files {
         black_box(arena(*mode, black_box(text)));
     }
+    files
 }
 
 /// `pattern` compiled, with every file of the corpus parsed into an arena to search.
@@ -97,22 +101,21 @@ fn searching(pattern: &str) -> (Pattern, Vec<Arena<'static>>) {
 #[bench::sequences_bounded_by_their_node(searching("try:\n    $...\nexcept $e:\n    $..."))]
 #[bench::a_name_used_twice(searching("$x = $y\nreturn $x"))]
 #[bench::a_sequence_between_two_statements(searching("$x = $y\n$...\nreturn $x"))]
-fn matching(searching: (Pattern, Vec<Arena<'static>>)) {
-    let (pattern, arenas) = searching;
-    for arena in &arenas {
-        black_box(find(black_box(&pattern), black_box(arena)));
+fn matching(searching: (Pattern, Vec<Arena<'static>>)) -> (Pattern, Vec<Arena<'static>>) {
+    let (pattern, arenas) = &searching;
+    for arena in arenas {
+        black_box(find(black_box(pattern), black_box(arena)));
     }
+    searching
 }
 
 // Each pattern compiled.
 #[library_benchmark]
 #[bench::single_and_unbound_holes("isinstance($x, $_)")]
 #[bench::a_sequence_between_two_statements("$x = $y\n$...\nreturn $x")]
-fn compiling(pattern: &str) {
-    black_box(
-        compile_pattern(black_box(pattern))
-            .unwrap_or_else(|err| panic!("compiling the benchmark's pattern {pattern:?}: {err}")),
-    );
+fn compiling(pattern: &str) -> Pattern {
+    compile_pattern(black_box(pattern))
+        .unwrap_or_else(|err| panic!("compiling the benchmark's pattern {pattern:?}: {err}"))
 }
 
 library_benchmark_group!(

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Make a deliberately slowed copy of the checkout, to show that scripts/benchmark-gate fails on
-# each rule it holds.
+# Make a deliberately slowed copy of the checkout, to show that scripts/benchmark-gate acts on
+# each rule it holds: an alert for a benchmark that rose, a failure for the arena's budget.
 #
 #   scripts/break-benchmarks DIRECTORY HOW
 #
 # Copies the checkout's tracked files into DIRECTORY and slows one function, as HOW says:
 #
 #   matcher   the matcher's `find` does a few thousand instructions more each call, so every
-#             matching benchmark rises far past the 2% rule while the parse does not move
+#             matching benchmark rises far past the rule while the parse does not move
 #   adapter   building the arena does a hundred more steps for each of Ruff's tokens, so the
 #             arena's share of the parse rises past its budget
 #

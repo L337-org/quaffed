@@ -11,7 +11,9 @@ use ruff_python_ast::token::{Token, TokenKind, Tokens, parentheses_iterator};
 use ruff_python_ast::visitor::source_order::{
     SourceOrderVisitor, TraversalSignal, walk_body, walk_interpolated_string_element, walk_node,
 };
-use ruff_python_ast::{AnyNodeRef, ExprRef, NodeKind, Stmt, StringFlags};
+use ruff_python_ast::{
+    AnyNodeRef, ExprRef, ExprTuple, InterpolatedElement, NodeKind, Stmt, StringFlags,
+};
 use ruff_python_parser::{Mode, ParseOptions};
 use ruff_text_size::{Ranged, TextRange, TextSize};
 
@@ -147,12 +149,9 @@ fn kinds_in(arena: &Arena<'_>) -> BTreeSet<Kind> {
     arena.nodes().map(|node| arena.kind(node)).collect()
 }
 
-/// Where the comma of `node` starts, if it is a one-element tuple: the first comma after its
+/// Where the comma of `tuple` starts, if it has one element: the first comma after its
 /// element, since the element's own commas lie inside it.
-fn tuple_comma(node: AnyNodeRef<'_>, tokens: &Tokens) -> Option<TextSize> {
-    let AnyNodeRef::ExprTuple(tuple) = node else {
-        return None;
-    };
+fn tuple_comma(tuple: &ExprTuple, tokens: &Tokens) -> Option<TextSize> {
     let [element] = tuple.elts.as_slice() else {
         return None;
     };
@@ -166,10 +165,7 @@ fn tuple_comma(node: AnyNodeRef<'_>, tokens: &Tokens) -> Option<TextSize> {
 
 /// Where the comma ending a tuple of two or more elements starts, if it has one: `a, b,` is the
 /// tuple `a, b` to `CPython`, so the comma is layout, as one before a closing bracket is.
-fn trailing_tuple_comma(node: AnyNodeRef<'_>, tokens: &Tokens) -> Option<TextSize> {
-    let AnyNodeRef::ExprTuple(tuple) = node else {
-        return None;
-    };
+fn trailing_tuple_comma(tuple: &ExprTuple, tokens: &Tokens) -> Option<TextSize> {
     let [_, .., last] = tuple.elts.as_slice() else {
         return None;
     };
@@ -196,20 +192,16 @@ fn empty_class_arguments(node: AnyNodeRef<'_>, parent: Option<AnyNodeRef<'_>>) -
 /// where `CPython`'s tree does not record them: `from x import (a, b)` imports what `from x
 /// import a, b` does, and `with (open(p), open(q)):` opens what the same without them does.
 /// Neither is around an expression, so neither is found as one that only wraps an expression.
-fn statement_parentheses(node: AnyNodeRef<'_>, tokens: &Tokens) -> Option<[TextSize; 2]> {
-    let (first, last) = match node {
-        AnyNodeRef::StmtImportFrom(import) => match (import.names.first(), import.names.last()) {
-            (Some(first), Some(last)) => (first.range(), last.range()),
-            _ => return None,
-        },
-        AnyNodeRef::StmtWith(with) => match (with.items.first(), with.items.last()) {
-            (Some(first), Some(last)) => (first.range(), last.range()),
-            _ => return None,
-        },
-        _ => return None,
-    };
+/// `statement` is the import or the `with`, and `first` and `last` its first and last name or
+/// item.
+fn statement_parentheses(
+    statement: TextRange,
+    first: TextRange,
+    last: TextRange,
+    tokens: &Tokens,
+) -> Option<[TextSize; 2]> {
     let open = tokens
-        .after(node.range().start())
+        .after(statement.start())
         .iter()
         .take_while(|token| token.start() < first.start())
         .find(|token| token.kind() == TokenKind::Lpar);
@@ -217,7 +209,7 @@ fn statement_parentheses(node: AnyNodeRef<'_>, tokens: &Tokens) -> Option<[TextS
     let close = tokens
         .after(last.end())
         .iter()
-        .take_while(|token| token.start() < node.range().end() && token.kind() != TokenKind::Colon)
+        .take_while(|token| token.start() < statement.end() && token.kind() != TokenKind::Colon)
         .find(|token| token.kind() == TokenKind::Rpar);
     Some([open?.start(), close?.start()])
 }
@@ -227,13 +219,10 @@ fn statement_parentheses(node: AnyNodeRef<'_>, tokens: &Tokens) -> Option<[TextS
 /// match: the `{` with the text before the expression, and the `=` with the text from the
 /// expression to the conversion, the format spec or the `}`.
 fn self_documenting(
-    node: AnyNodeRef<'_>,
+    element: &InterpolatedElement,
     tokens: &Tokens,
     widened: &mut Vec<(TextSize, TextRange)>,
 ) {
-    let AnyNodeRef::InterpolatedElement(element) = node else {
-        return;
-    };
     let Some(debug) = &element.debug_text else {
         return;
     };
@@ -274,17 +263,12 @@ fn redundant_parentheses(
     }
 }
 
-/// Where a tuple's or a generator's own parentheses start, which take no part in a match: Ruff
-/// counts them among the node's tokens rather than the redundant, but `a, b` and `(a, b)` are
-/// one tree to `CPython`, as are `f(x for x in y)` and `f((x for x in y))`.  An empty tuple's are
-/// its only spelling, and stay.
-fn own_parentheses(node: AnyNodeRef<'_>) -> Option<[TextSize; 2]> {
-    let wears_its_own = match node {
-        AnyNodeRef::ExprTuple(tuple) => tuple.parenthesized && !tuple.elts.is_empty(),
-        AnyNodeRef::ExprGenerator(generator) => generator.parenthesized,
-        _ => false,
-    };
-    wears_its_own.then(|| [node.range().start(), node.range().end() - TextSize::new(1)])
+/// Where the parentheses a tuple or a generator wears start, filling `range`, which take no
+/// part in a match: Ruff counts them among the node's tokens rather than the redundant, but `a,
+/// b` and `(a, b)` are one tree to `CPython`, as are `f(x for x in y)` and `f((x for x in y))`.
+/// An empty tuple's are its only spelling, and stay, so it is never asked.
+fn own_parentheses(range: TextRange) -> [TextSize; 2] {
+    [range.start(), range.end() - TextSize::new(1)]
 }
 
 /// Where each token that a `(` comes straight before starts, read with a cursor.
@@ -355,29 +339,51 @@ impl<'a> Build<'_, 'a> {
             redundant_parentheses(expr, parent, self.tokens, &mut self.redundant);
         }
         // Each of the rest applies to one or two kinds of node, so only those ask.
-        match node {
-            AnyNodeRef::ExprTuple(_) => {
-                self.redundant
-                    .extend(own_parentheses(node).into_iter().flatten());
-                self.tuple_commas.extend(tuple_comma(node, self.tokens));
+        let (statement, ends) = match node {
+            AnyNodeRef::ExprTuple(tuple) => {
+                if tuple.parenthesized && !tuple.elts.is_empty() {
+                    self.redundant.extend(own_parentheses(tuple.range()));
+                }
+                self.tuple_commas.extend(tuple_comma(tuple, self.tokens));
                 self.trailing_commas
-                    .extend(trailing_tuple_comma(node, self.tokens));
+                    .extend(trailing_tuple_comma(tuple, self.tokens));
+                return;
             }
-            AnyNodeRef::ExprGenerator(_) => {
-                self.redundant
-                    .extend(own_parentheses(node).into_iter().flatten());
+            AnyNodeRef::ExprGenerator(generator) => {
+                if generator.parenthesized {
+                    self.redundant.extend(own_parentheses(generator.range()));
+                }
+                return;
             }
-            AnyNodeRef::StmtImportFrom(_) | AnyNodeRef::StmtWith(_) => {
-                self.redundant.extend(
-                    statement_parentheses(node, self.tokens)
-                        .into_iter()
-                        .flatten(),
-                );
+            AnyNodeRef::InterpolatedElement(element) => {
+                self_documenting(element, self.tokens, &mut self.widened);
+                return;
             }
-            AnyNodeRef::InterpolatedElement(_) => {
-                self_documenting(node, self.tokens, &mut self.widened);
-            }
-            _ => {}
+            // Python's grammar gives an import at least one name and a `with` at least one
+            // item, so both ends are always there.
+            AnyNodeRef::StmtImportFrom(import) => (
+                import.range(),
+                import
+                    .names
+                    .first()
+                    .zip(import.names.last())
+                    .map(|(f, l)| (f.range(), l.range())),
+            ),
+            AnyNodeRef::StmtWith(with) => (
+                with.range(),
+                with.items
+                    .first()
+                    .zip(with.items.last())
+                    .map(|(f, l)| (f.range(), l.range())),
+            ),
+            _ => return,
+        };
+        if let Some((first, last)) = ends {
+            self.redundant.extend(
+                statement_parentheses(statement, first, last, self.tokens)
+                    .into_iter()
+                    .flatten(),
+            );
         }
     }
 }
@@ -652,6 +658,24 @@ mod tests {
         let mut out = Vec::new();
         visit(arena, arena.root(), 0, &mut out);
         out
+    }
+
+    #[test]
+    fn the_cursor_over_opening_parentheses_answers_as_a_search_does_in_any_order() {
+        let starts: Vec<TextSize> = [3, 7, 12].map(TextSize::new).to_vec();
+        let mut opened = Opened {
+            starts: starts.clone(),
+            next: 0,
+        };
+        // In order, repeated, backwards, before the first and past the last.
+        for at in [3, 7, 7, 12, 3, 1, 12, 5, 7, 20, 0] {
+            let at = TextSize::new(at);
+            assert_eq!(
+                opened.before(at),
+                starts.binary_search(&at).is_ok(),
+                "asked at {at:?}"
+            );
+        }
     }
 
     #[test]

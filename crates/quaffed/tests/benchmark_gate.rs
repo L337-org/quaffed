@@ -1,10 +1,11 @@
-//! `scripts/benchmark-gate` raises an alert, without failing, for a benchmark more than 2% above
-//! main's count, naming it and both counts; fails an arena that costs more than its budget's share
-//! of Ruff's parse; and fails rather than passes when it has nothing to compare.
+//! `scripts/benchmark-gate` raises an alert, without failing, for a benchmark that rose past the
+//! rule against main's count, naming it and both counts; fails an arena that costs more than its
+//! budget's share of Ruff's parse; and fails rather than passes when it has nothing to compare.
 //!
 //! Each test writes gungraun summaries in the shape `--save-summary=json` produces and runs the
 //! script with `python3`.  The counting itself runs in CI's **Benchmarks** job, where
-//! `scripts/break-benchmarks` shows the gate failing on a really slowed build;
+//! `scripts/break-benchmarks` shows the gate alerting on a really slowed matcher and failing on a
+//! really slowed adapter;
 //! `architecture/verification.md` describes the gate.
 
 use std::fs;
@@ -407,5 +408,114 @@ fn the_summary_is_appended_to_the_named_file() {
     assert!(
         written.starts_with("before\n## Instruction counts\n"),
         "{written}"
+    );
+}
+
+/// Replaces the summary of `function` `id` under `dir` with `json`, as written.
+fn overwrite_summary(dir: &Path, function: &str, id: &str, json: &str) {
+    let at = dir.join(format!(
+        "quaffed-python/front_end/front_end/{function}.{id}/summary.json"
+    ));
+    fs::write(at, json).expect("writing a summary");
+}
+
+#[test]
+fn a_summary_that_is_not_json_is_refused_naming_it() {
+    let scratch = Scratch::new();
+    let pr = scratch.side("pr", MAIN);
+    overwrite_summary(&pr, "matching", "a_name_used_twice", "{\"version\": \"7\",");
+    let out = gate(&scratch.side("main", MAIN), &pr, &[]);
+    let all = text(&out);
+    assert_eq!(out.status.code(), Some(2), "{all}");
+    assert!(
+        all.contains("matching.a_name_used_twice/summary.json: "),
+        "{all}"
+    );
+}
+
+#[test]
+fn a_summary_without_exactly_one_callgrind_profile_is_refused() {
+    let scratch = Scratch::new();
+    for profiles in [
+        "[]",
+        r#"[{"tool": "DHAT", "data": {}}]"#,
+        r#"[{"tool": "Callgrind", "data": {"total": {"metrics": {"Ir": {"values": {"new": 1}}}}}}, {"tool": "Callgrind", "data": {"total": {"metrics": {"Ir": {"values": {"new": 1}}}}}}]"#,
+    ] {
+        let pr = scratch.side(&format!("pr-{}", profiles.len()), MAIN);
+        overwrite_summary(
+            &pr,
+            "matching",
+            "a_name_used_twice",
+            &format!(
+                r#"{{"version": "7", "function_name": "matching", "id": "a_name_used_twice", "profiles": {profiles}}}"#
+            ),
+        );
+        let out = gate(&scratch.side("main", MAIN), &pr, &[]);
+        let all = text(&out);
+        assert_eq!(out.status.code(), Some(2), "{profiles}: {all}");
+        assert!(
+            all.contains("no Callgrind instruction count"),
+            "{profiles}: {all}"
+        );
+    }
+}
+
+#[test]
+fn two_benchmarks_of_one_name_are_refused() {
+    let scratch = Scratch::new();
+    let pr = scratch.side("pr", MAIN);
+    // A second directory holding a summary for a benchmark already counted.
+    write_summary(&pr.join("again"), "matching", "a_name_used_twice", "1", "7");
+    let out = gate(&scratch.side("main", MAIN), &pr, &[]);
+    let all = text(&out);
+    assert_eq!(out.status.code(), Some(2), "{all}");
+    assert!(
+        all.contains("a second benchmark named 'matching a_name_used_twice'"),
+        "{all}"
+    );
+}
+
+#[test]
+fn the_summary_is_written_when_nothing_could_be_compared() {
+    let scratch = Scratch::new();
+    let file = scratch.0.join("summary.md");
+    let out = gate(
+        &scratch.side("main", MAIN),
+        &scratch.side("pr", &[]),
+        &["--summary", file.to_str().expect("a UTF-8 path")],
+    );
+    assert_eq!(out.status.code(), Some(2), "{}", text(&out));
+    let written = fs::read_to_string(&file).expect("reading the summary file");
+    assert!(written.contains("**Not evaluated:**"), "{written}");
+    assert!(
+        written.contains("pull request: no benchmark summary under"),
+        "{written}"
+    );
+}
+
+#[test]
+fn a_parse_with_the_arena_that_counts_no_more_than_the_parse_alone_is_refused() {
+    // As Valgrind on an arm64 runner once counted it: the parse with the arena, 563
+    // instructions, against Ruff's parse alone, 665,690.  It cannot be right, and an arena share
+    // read from it - here below nothing - would pass any budget.
+    let scratch = Scratch::new();
+    let out = gate(
+        &scratch.side("main", MAIN),
+        &scratch.side(
+            "pr",
+            &with(&[
+                ("ruff_parse", "synthetic", 665_690),
+                ("parse_into_arena", "synthetic", 563),
+            ]),
+        ),
+        &[],
+    );
+    let all = text(&out);
+    assert_eq!(out.status.code(), Some(2), "{all}");
+    assert!(
+        all.contains(
+            "`parse_into_arena synthetic` counted 563 instructions, no more than `ruff_parse synthetic`'s 665,690"
+        ),
+        "{all}"
     );
 }

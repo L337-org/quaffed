@@ -476,8 +476,8 @@ from gungraun under Valgrind's Callgrind.
   alone (`ruff_parse`), the parse with the arena built from it (`parse_into_arena`), compiling a
   pattern (`compiling`), and searching every file for each of the structural counts' patterns
   (`matching`).  Reading files, building the arenas a search runs over and compiling its
-  pattern are setup, which gungraun does not count, so each benchmark counts only the work it
-  names.  They live in the adapter because only it may name Ruff's types, and Ruff's parse alone
+  pattern are setup, which gungraun does not count, and each benchmark hands its input back so
+  that freeing it is not counted either: each counts only the work it names.  They live in the adapter because only it may name Ruff's types, and Ruff's parse alone
   is one of them.
 - **They are built with the `profiling` profile**, the shipped binary's optimisation with its
   symbols kept, so the counts are the shipped code's and each benchmark's Callgrind profile
@@ -489,22 +489,20 @@ from gungraun under Valgrind's Callgrind.
   compared with itself.  Each tree is counted with the runner its own `tools.toml` pins,
   because gungraun refuses a runner of another version than its library, so a pull request that
   moves the pin is still compared.
-- **The 2% rule is an alert, not a gate**: a benchmark more than `RULE_PERCENT` above main's
-  count is marked in the job summary and raised as a warning on the pull request, named with
-  both counts, and the job still passes.  Until v1 the edit operations are still being added,
-  and the front end and matcher grow as they come, so a rise is for the reviewer to judge
-  rather than a block.  A benchmark only on the pull request is reported as new, one only on
-  main as removed.
+- **A rise is an alert, not a gate**: a benchmark more than `RULE_PERCENT` above main's count
+  is marked in the job summary and raised as a warning on the pull request, named with both
+  counts, and the job still passes, since whether the rise is expected is the reviewer's to
+  judge.  A benchmark only on the pull request is reported as new, one only on main as
+  removed.
 - **The arena's budget**: building the arena may cost at most `ARENA_BUDGET_PERCENT` of Ruff's
   parse, that is `parse_into_arena` less `ruff_parse`, as a share of `ruff_parse`, on the pull
   request.  Over it fails the job; a change whose arena has to cost more raises the budget in
   the same pull request.  It is a rule of its own so that a slower arena cannot hide inside a
   faster parse.  Both figures are in `scripts/benchmark-gate`.
-- **Neither job is a required status check**, a deliberate exception to every job being one
-  (`architecture/workspace.md`): a failure is seen on the pull request, and blocks nothing.
+- **Whether the jobs are required status checks**, and why, is in `architecture/workspace.md`.
 - **A gate that could not compare has not passed.**  No benchmark on the pull request, a summary
-  unreadable or in a version of gungraun's format the script does not know, or the arena's two
-  benchmarks missing, fails the job as not evaluated.  Main may have no benchmarks only when
+  unreadable or in a version of gungraun's format the script does not know, two benchmarks of
+  one name, or the arena's two benchmarks missing, fails the job as not evaluated.  Main may have no benchmarks only when
   `scripts/benchmarks` says so, because its tree has no benchmark target.
 - **The job summary** shows every benchmark's count on main and on the pull request with the
   change, and the arena's share against its budget, on each side.  Every count and Callgrind
@@ -545,7 +543,7 @@ in the same container.
 3. Run it locally as above, and check its count is the work it names: `callgrind_annotate` its
    profile under the gungraun directory.
 4. On the pull request it shows as new, compared with nothing; from the next pull request on it
-   raises an alert past the 2% rule like the rest.
+   raises an alert past the rule like the rest.
 5. Renaming a benchmark or its case shows it as removed and new, so the rename's pull request
    compares it with nothing; say so in the description.
 
@@ -557,10 +555,17 @@ in the same container.
    both sides, from the pull request's counts and main's, and compare.
 3. Decide whether that is what the change should cost.  If not, it is a defect: fix the code.
 4. If it is, say in the pull request description which benchmark rose, by how much, and why, so
-   the reviewer can agree it.  For the arena, set `ARENA_BUDGET_PERCENT` in
-   `scripts/benchmark-gate` in the same pull request, with the reason in the commit.
-5. Changing `RULE_PERCENT`, or making the 2% rule a gate again, is the owner's decision, recorded
-   with its reason.
+   the reviewer can agree it.
+5. For the arena, once the owner agrees the new cost, change `ARENA_BUDGET_PERCENT` in
+   `scripts/benchmark-gate` in the same pull request, with the reason in the commit, and with
+   it:
+   1. the budget's figure in `crates/quaffed/tests/benchmark_gate.rs`'s assertions, and its
+      fixtures, which sit either side of the budget (`MAIN` well under it, the failing cases
+      just over);
+   2. the slowed adapter in `scripts/break-benchmarks`, which must still cost more than the new
+      budget for the negative test to fail it: read its share from the job's log.
+6. Changing `RULE_PERCENT`, or making a rise fail the job, is the owner's decision, recorded with
+   its reason.
 
 ## The package install test
 

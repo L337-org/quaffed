@@ -11,10 +11,9 @@ Two rules:
 
 - A benchmark whose instruction count on the pull request is more than RULE_PERCENT above
   main's rose, and is an alert: marked in the summary and, in GitHub Actions, raised as a
-  warning on the pull request, but never failing the run.  Until v1 the edit operations are
-  still being added, and the front end and matcher grow as they come, so a rise is for a
-  reviewer to read rather than a gate.  A benchmark only on the pull request is new and is
-  reported with nothing to compare; one only on main was removed and is reported too.
+  warning on the pull request, but never failing the run, so that whether the rise is expected
+  is the reviewer's to judge.  A benchmark only on the pull request is new and is reported with
+  nothing to compare; one only on main was removed and is reported too.
 - Building the arena may cost at most ARENA_BUDGET_PERCENT of Ruff's own parse: the
   `parse_into_arena` benchmark less `ruff_parse`, as a share of `ruff_parse`, on the pull
   request.  Over it fails the run: a change that has to cost more raises the budget in the same
@@ -26,9 +25,11 @@ by writing NONE_MARKER there because main's tree has no benchmark target: otherw
 measurement that produced nothing would pass having compared nothing.
 
 Exit status: 0 when the arena is within its budget, whatever rose, 1 when it is over, 2 when
-the counts could not be compared - no benchmark ran on the pull request, a summary unreadable or in a format this
-script does not know, the arena's two benchmarks missing - since a gate that could not compare
-has not passed.  The summary is written in every case, so the job page says which.
+the counts could not be compared - no benchmark ran on the pull request, a summary unreadable
+or in a format this script does not know, two benchmarks of one name, the arena's two
+benchmarks missing, or the parse with the arena counting no more than the parse it contains -
+since a gate that could not compare has not passed.  The summary is
+written in every case, so the job page says which.
 """
 
 import argparse
@@ -42,8 +43,8 @@ from fractions import Fraction
 # count.
 RULE_PERCENT = Fraction(2)
 
-# The most building the arena may cost, as a percentage of Ruff's parse alone.  Set by the
-# owner from the arena as optimised, with room for the layout work later stories may add.
+# The most building the arena may cost, as a percentage of Ruff's parse alone.  Changing it is
+# the owner's decision, made in the pull request whose change moves the cost.
 ARENA_BUDGET_PERCENT = Fraction(60)
 
 # The benchmarks the arena's share is read from: Ruff's parse alone, and with the arena.
@@ -150,6 +151,12 @@ def judge(main_counts, head):
     if share is None:
         problems.append(f"the arena's share cannot be worked out: the pull request needs both "
                         f"`{RUFF_PARSE}` and `{PARSE_INTO_ARENA}`")
+    elif share <= 0:
+        # The parse with the arena contains Ruff's parse, so it can never count fewer; if it
+        # does, what was counted is not the work the benchmarks name, and no figure can be read.
+        problems.append(f"`{PARSE_INTO_ARENA}` counted {head[PARSE_INTO_ARENA]:,} instructions, "
+                        f"no more than `{RUFF_PARSE}`'s {head[RUFF_PARSE]:,} though it contains "
+                        f"that parse, so the counts are not of the work they name")
     else:
         line = (f"Building the arena costs **{float(share):.1f}%** of Ruff's parse, against a "
                 f"budget of {float(ARENA_BUDGET_PERCENT):g}%")

@@ -2,16 +2,15 @@ name: 'Benchmarks'
 permissions:
   contents: read
 
-# A pull request that makes the front end or the matcher execute more than 2% more instructions
-# than main, in any benchmark, raises an alert - in the job summary and as a warning on the pull
-# request - without failing: until v1 the edit operations are still being added, and growth is
-# expected, so a rise is for the reviewer to judge.  One that takes building the arena past its
-# budget as a share of Ruff's own parse fails, and raises the budget in the same pull request
-# where the cost is right.  Neither job is a required status check.  Main is counted in the same job as the pull request, at the
-# tip the pull request would merge into, because a count moves with the runner image and its
-# Valgrind: a stored figure would move with every image update, while two counts from one job
-# compare exactly.  amd64 and arm64 count differently, so each is compared with itself.
-# architecture/verification.md has the reasoning; scripts/benchmarks counts and
+# Counts the instructions the front end and the matcher execute on a pull request against main's,
+# on each architecture.  A benchmark that rose past the rule in scripts/benchmark-gate raises an
+# alert - in the job summary and as a warning on the pull request - without failing; building the
+# arena past its budget, as a share of Ruff's own parse, fails.  Main is counted in the same job
+# as the pull request, at the tip the pull request would merge into, because a count moves with
+# the runner image and its Valgrind: a stored figure would move with every image update, while
+# two counts from one job compare exactly.  amd64 and arm64 count differently, so each is
+# compared with itself.  architecture/workspace.md says why these jobs are not required checks;
+# architecture/verification.md has the reasoning, scripts/benchmarks counts and
 # scripts/benchmark-gate compares.
 on:
   pull_request:
@@ -79,7 +78,7 @@ jobs:
       - name: Count the pull request
         run: scripts/benchmarks "$GITHUB_WORKSPACE" "$RUNNER_TEMP/counts/pull-request"
 
-      - name: Any rise of more than 2% is reported, and the arena is within its budget
+      - name: Any benchmark that rose is reported, and the arena is within its budget
         env:
           ARCH: ${{ matrix.arch }}
         run: |
@@ -124,7 +123,7 @@ jobs:
             cat "$RUNNER_TEMP/err-adapter"
             exit 1
           fi
-          said adapter "of Ruff's parse, over its budget of 60%"
+          said adapter "of Ruff's parse, over its budget of"
 
       # Saved whether or not the gate held: each benchmark's Callgrind profile is what a
       # reviewer reads to see where the instructions went.
