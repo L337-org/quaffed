@@ -144,14 +144,21 @@ name and comments say what it checks.
 `.github/workflows/package.yaml` also runs on every pull request, building the Linux package for
 each architecture; `architecture/release.md` describes it and the release workflow.
 
+`.github/workflows/benchmarks.yaml` runs on every pull request, counting the front end's and the
+matcher's instructions against main's on each architecture; `architecture/verification.md`
+describes it.
+
 `.github/workflows/report-failures.yaml` posts a failed run to Slack.  Adding a workflow that
 runs on a schedule, a push, a release or a pull request means adding it there: the checklist is
 in `architecture/verification.md`, under failed runs are posted to Slack.
 
 **Every job here is meant to be a required status check.**  Adding, renaming or removing one
 means updating the branch ruleset in the same change, or the branch waits on a check that never
-reports, or a new job gates nothing.  The exceptions are the review, below, and `Announce to
-Slack`, which runs only when a pull request opens, so never reports on a later push.
+reports, or a new job gates nothing.  The exceptions are the review, below; `Announce to
+Slack`, which runs only when a pull request opens, so never reports on a later push; and the two
+`Benchmarks` jobs: a benchmark that rose, the arena over its budget and a count that could not
+be compared each show on the pull request for the reviewer to weigh
+(`architecture/verification.md`, under the benchmarks).
 
 ### Shared CI
 

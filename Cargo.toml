@@ -38,3 +38,10 @@ strip = "symbols"
 inherits = "dist"
 debug = true
 strip = "none"
+
+# The instruction-count benchmarks: the shipped optimisation, with the symbols that let gungraun
+# find each benchmark and a profile name its functions, but no debug information, with which some
+# counts on arm64 collapse.  architecture/verification.md says why.
+[profile.benchmarks]
+inherits = "dist"
+strip = "none"

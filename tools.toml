@@ -14,6 +14,8 @@ cargo-llvm-cov = "0.9.1"
 cargo-mutants = "27.1.0"
 flamegraph = "0.6.14"
 cargo-fuzz = "0.13.2"
+# The instruction-count benchmarks' runner; the `gungraun` library in Cargo.lock must match it.
+gungraun-runner = "0.20.0"
 
 # Nightly toolchains, each pinned by date and named for the one job that needs it, so no other
 # job installs it.  A nightly that can be scoped by directory is

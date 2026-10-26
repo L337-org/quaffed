@@ -3,7 +3,7 @@
 
 //! Python source parsed into a syntax arena, and the kinds of node a piece of source contains.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fmt;
 
 use quaffed_syntax::{Arena, Builder, Kind, Language, TokenText, TooLong};
@@ -11,7 +11,9 @@ use ruff_python_ast::token::{Token, TokenKind, Tokens, parentheses_iterator};
 use ruff_python_ast::visitor::source_order::{
     SourceOrderVisitor, TraversalSignal, walk_body, walk_interpolated_string_element, walk_node,
 };
-use ruff_python_ast::{AnyNodeRef, NodeKind, Stmt, StringFlags};
+use ruff_python_ast::{
+    AnyNodeRef, ExprRef, ExprTuple, InterpolatedElement, NodeKind, Stmt, StringFlags,
+};
 use ruff_python_parser::{Mode, ParseOptions};
 use ruff_text_size::{Ranged, TextRange, TextSize};
 
@@ -147,12 +149,9 @@ fn kinds_in(arena: &Arena<'_>) -> BTreeSet<Kind> {
     arena.nodes().map(|node| arena.kind(node)).collect()
 }
 
-/// Where the comma of `node` starts, if it is a one-element tuple: the first comma after its
+/// Where the comma of `tuple` starts, if it has one element: the first comma after its
 /// element, since the element's own commas lie inside it.
-fn tuple_comma(node: AnyNodeRef<'_>, tokens: &Tokens) -> Option<TextSize> {
-    let AnyNodeRef::ExprTuple(tuple) = node else {
-        return None;
-    };
+fn tuple_comma(tuple: &ExprTuple, tokens: &Tokens) -> Option<TextSize> {
     let [element] = tuple.elts.as_slice() else {
         return None;
     };
@@ -166,10 +165,7 @@ fn tuple_comma(node: AnyNodeRef<'_>, tokens: &Tokens) -> Option<TextSize> {
 
 /// Where the comma ending a tuple of two or more elements starts, if it has one: `a, b,` is the
 /// tuple `a, b` to `CPython`, so the comma is layout, as one before a closing bracket is.
-fn trailing_tuple_comma(node: AnyNodeRef<'_>, tokens: &Tokens) -> Option<TextSize> {
-    let AnyNodeRef::ExprTuple(tuple) = node else {
-        return None;
-    };
+fn trailing_tuple_comma(tuple: &ExprTuple, tokens: &Tokens) -> Option<TextSize> {
     let [_, .., last] = tuple.elts.as_slice() else {
         return None;
     };
@@ -196,20 +192,16 @@ fn empty_class_arguments(node: AnyNodeRef<'_>, parent: Option<AnyNodeRef<'_>>) -
 /// where `CPython`'s tree does not record them: `from x import (a, b)` imports what `from x
 /// import a, b` does, and `with (open(p), open(q)):` opens what the same without them does.
 /// Neither is around an expression, so neither is found as one that only wraps an expression.
-fn statement_parentheses(node: AnyNodeRef<'_>, tokens: &Tokens) -> Vec<TextSize> {
-    let (first, last) = match node {
-        AnyNodeRef::StmtImportFrom(import) => match (import.names.first(), import.names.last()) {
-            (Some(first), Some(last)) => (first.range(), last.range()),
-            _ => return Vec::new(),
-        },
-        AnyNodeRef::StmtWith(with) => match (with.items.first(), with.items.last()) {
-            (Some(first), Some(last)) => (first.range(), last.range()),
-            _ => return Vec::new(),
-        },
-        _ => return Vec::new(),
-    };
+/// `statement` is the import or the `with`, and `first` and `last` its first and last name or
+/// item.
+fn statement_parentheses(
+    statement: TextRange,
+    first: TextRange,
+    last: TextRange,
+    tokens: &Tokens,
+) -> Option<[TextSize; 2]> {
     let open = tokens
-        .after(node.range().start())
+        .after(statement.start())
         .iter()
         .take_while(|token| token.start() < first.start())
         .find(|token| token.kind() == TokenKind::Lpar);
@@ -217,31 +209,29 @@ fn statement_parentheses(node: AnyNodeRef<'_>, tokens: &Tokens) -> Vec<TextSize>
     let close = tokens
         .after(last.end())
         .iter()
-        .take_while(|token| token.start() < node.range().end() && token.kind() != TokenKind::Colon)
+        .take_while(|token| token.start() < statement.end() && token.kind() != TokenKind::Colon)
         .find(|token| token.kind() == TokenKind::Rpar);
-    match (open, close) {
-        (Some(open), Some(close)) => vec![open.start(), close.start()],
-        _ => Vec::new(),
-    }
+    Some([open?.start(), close?.start()])
 }
 
 /// For an f-string or t-string field that prints itself, `{v = }`, the ranges its `{` and `=`
 /// tokens take in, so that the spacing around the expression, which is printed, takes part in a
 /// match: the `{` with the text before the expression, and the `=` with the text from the
 /// expression to the conversion, the format spec or the `}`.
-fn self_documenting(node: AnyNodeRef<'_>, tokens: &Tokens) -> Vec<(TextSize, TextRange)> {
-    let AnyNodeRef::InterpolatedElement(element) = node else {
-        return Vec::new();
-    };
+fn self_documenting(
+    element: &InterpolatedElement,
+    tokens: &Tokens,
+    widened: &mut Vec<(TextSize, TextRange)>,
+) {
     let Some(debug) = &element.debug_text else {
-        return Vec::new();
+        return;
     };
     let open = element.range().start();
     let after = element.expression.range().end();
-    let mut widened = vec![(
+    widened.push((
         open,
         TextRange::at(open, TextSize::of(debug.leading()) + TextSize::new(1)),
-    )];
+    ));
     if let Some(equal) = tokens
         .after(after)
         .iter()
@@ -253,136 +243,231 @@ fn self_documenting(node: AnyNodeRef<'_>, tokens: &Tokens) -> Vec<(TextSize, Tex
             TextRange::at(after, TextSize::of(debug.trailing())),
         ));
     }
-    widened
 }
 
-/// Where each parenthesis that takes no part in a match around or of `node` starts, an
-/// opening one and a closing one.
+/// Where each parenthesis around `expr` that takes no part in a match starts, an opening one
+/// and a closing one.
 ///
 /// Parentheses around an expression that its parent's syntax does not need - `f((x))`'s inner
-/// pair - change nothing.  Nor do a tuple's or a generator's own, which Ruff counts among the
-/// node's tokens rather than the redundant: `a, b` and `(a, b)` are one tree to `CPython`, as
-/// are `f(x for x in y)` and `f((x for x in y))`.  Where they change the meaning, the tree
-/// changes too - `f((a, b))` passes one argument and `f(a, b)` two.  An empty tuple's are its
-/// only spelling, and stay.
+/// pair - change nothing.  Where they change the meaning, the tree changes too - `f((a, b))`
+/// passes one argument and `f(a, b)` two.  A tuple's or a generator's own are
+/// [`own_parentheses`].
 fn redundant_parentheses(
-    node: AnyNodeRef<'_>,
-    parent: Option<AnyNodeRef<'_>>,
+    expr: ExprRef<'_>,
+    parent: AnyNodeRef<'_>,
     tokens: &Tokens,
-) -> Vec<TextSize> {
-    let mut found = Vec::new();
-    if let (Some(expr), Some(parent)) = (node.as_expr_ref(), parent) {
-        for around in parentheses_iterator(expr, Some(parent), tokens) {
-            found.extend([around.start(), around.end() - TextSize::new(1)]);
+    found: &mut Vec<TextSize>,
+) {
+    for around in parentheses_iterator(expr, Some(parent), tokens) {
+        found.extend([around.start(), around.end() - TextSize::new(1)]);
+    }
+}
+
+/// Where the parentheses a tuple or a generator wears start, filling `range`, which take no
+/// part in a match: Ruff counts them among the node's tokens rather than the redundant, but `a,
+/// b` and `(a, b)` are one tree to `CPython`, as are `f(x for x in y)` and `f((x for x in y))`.
+/// An empty tuple's are its only spelling, and stay, so it is never asked.
+fn own_parentheses(range: TextRange) -> [TextSize; 2] {
+    [range.start(), range.end() - TextSize::new(1)]
+}
+
+/// Where each token that a `(` comes straight before starts, read with a cursor.
+struct Opened {
+    starts: Vec<TextSize>,
+    next: usize,
+}
+
+impl Opened {
+    /// Whether a `(` comes straight before the token starting at `start`.  The walk asks in
+    /// source order, so the cursor only moves forward; asked out of order, it searches again.
+    fn before(&mut self, start: TextSize) -> bool {
+        if self.next > 0 && self.starts[self.next - 1] >= start {
+            self.next = self.starts.partition_point(|s| *s < start);
+        }
+        while self.starts.get(self.next).is_some_and(|s| *s < start) {
+            self.next += 1;
+        }
+        self.starts.get(self.next) == Some(&start)
+    }
+}
+
+/// Where each token that a `(` comes straight before starts, comments and line breaks inside
+/// brackets aside, as Ruff's [`parentheses_iterator`] reads them: the only places an expression
+/// can start inside parentheses of its own.  In source order.
+fn after_opening_parentheses(tokens: &Tokens) -> Vec<TextSize> {
+    let mut opened = Vec::new();
+    let mut after_open = false;
+    for token in tokens.iter().filter(|token| !token.kind().is_trivia()) {
+        if after_open {
+            opened.push(token.start());
+        }
+        after_open = token.kind() == TokenKind::Lpar;
+    }
+    opened
+}
+
+/// The walk [`build`] makes of Ruff's tree, building the arena and noting the layout among
+/// the tokens as it goes.
+struct Build<'text, 'a> {
+    builder: Builder<'text>,
+    tokens: &'a Tokens,
+    source: &'a str,
+    /// The nodes entered and not yet left, so each node knows its parent.
+    open: Vec<AnyNodeRef<'a>>,
+    /// Where each token straight after a `(` starts.
+    opened: Opened,
+    /// Where each redundant parenthesis starts: an opening one, and a closing one.
+    redundant: Vec<TextSize>,
+    /// Where each one-element tuple's comma starts, which is the tuple, not layout.
+    tuple_commas: Vec<TextSize>,
+    /// Where each comma that ends a tuple of several elements starts, which is layout.
+    trailing_commas: Vec<TextSize>,
+    /// Tokens that take in the text around them, by where each starts.
+    widened: Vec<(TextSize, TextRange)>,
+}
+
+impl<'a> Build<'_, 'a> {
+    /// Notes the parentheses, commas and widened tokens in or around `node` that a match
+    /// treats as layout or reads differently from Ruff.
+    fn note_layout(&mut self, node: AnyNodeRef<'a>, parent: Option<AnyNodeRef<'a>>) {
+        // Ruff's search for the parentheses around an expression costs three binary
+        // searches over the file's tokens, and finds nothing unless a `(` comes straight
+        // before it, which few do.
+        if let (Some(expr), Some(parent)) = (node.as_expr_ref(), parent)
+            && self.opened.before(expr.start())
+        {
+            redundant_parentheses(expr, parent, self.tokens, &mut self.redundant);
+        }
+        // Each of the rest applies to one or two kinds of node, so only those ask.
+        let (statement, ends) = match node {
+            AnyNodeRef::ExprTuple(tuple) => {
+                if tuple.parenthesized && !tuple.elts.is_empty() {
+                    self.redundant.extend(own_parentheses(tuple.range()));
+                }
+                self.tuple_commas.extend(tuple_comma(tuple, self.tokens));
+                self.trailing_commas
+                    .extend(trailing_tuple_comma(tuple, self.tokens));
+                return;
+            }
+            AnyNodeRef::ExprGenerator(generator) => {
+                if generator.parenthesized {
+                    self.redundant.extend(own_parentheses(generator.range()));
+                }
+                return;
+            }
+            AnyNodeRef::InterpolatedElement(element) => {
+                self_documenting(element, self.tokens, &mut self.widened);
+                return;
+            }
+            // Python's grammar gives an import at least one name and a `with` at least one
+            // item, so both ends are always there.
+            AnyNodeRef::StmtImportFrom(import) => (
+                import.range(),
+                import
+                    .names
+                    .first()
+                    .zip(import.names.last())
+                    .map(|(f, l)| (f.range(), l.range())),
+            ),
+            AnyNodeRef::StmtWith(with) => (
+                with.range(),
+                with.items
+                    .first()
+                    .zip(with.items.last())
+                    .map(|(f, l)| (f.range(), l.range())),
+            ),
+            _ => return,
+        };
+        if let Some((first, last)) = ends {
+            self.redundant.extend(
+                statement_parentheses(statement, first, last, self.tokens)
+                    .into_iter()
+                    .flatten(),
+            );
         }
     }
-    let wears_its_own = match node {
-        AnyNodeRef::ExprTuple(tuple) => tuple.parenthesized && !tuple.elts.is_empty(),
-        AnyNodeRef::ExprGenerator(generator) => generator.parenthesized,
-        _ => false,
-    };
-    if wears_its_own {
-        found.extend([node.range().start(), node.range().end() - TextSize::new(1)]);
+}
+
+impl<'a> SourceOrderVisitor<'a> for Build<'_, 'a> {
+    fn enter_node(&mut self, node: AnyNodeRef<'a>) -> TraversalSignal {
+        let parent = self.open.last().copied();
+        if empty_class_arguments(node, parent) {
+            self.redundant
+                .extend([node.range().start(), node.range().end() - TextSize::new(1)]);
+            return TraversalSignal::Skip;
+        }
+        self.builder
+            .enter(kind_of(node.kind()), node.range().into());
+        self.note_layout(node, parent);
+        if let Some(content) = string_content(node, self.source) {
+            self.builder.value(content);
+        }
+        self.open.push(node);
+        // Ruff's source-order walk visits a format spec's parts but never enters the spec
+        // itself (`InterpolatedElement::visit_source_order`), so the spec would be missing
+        // from the arena, its parts hung on the element.  The element's children are walked
+        // here instead, with the spec entered around its parts, in the order Ruff's walk
+        // uses: the expression, then the spec.
+        if let AnyNodeRef::InterpolatedElement(element) = node
+            && let Some(spec) = &element.format_spec
+        {
+            self.visit_expr(&element.expression);
+            self.builder.enter(
+                kind_of(NodeKind::InterpolatedStringFormatSpec),
+                spec.range().into(),
+            );
+            for part in &spec.elements {
+                walk_interpolated_string_element(self, part);
+            }
+            self.builder.leave();
+            return TraversalSignal::Skip;
+        }
+        TraversalSignal::Traverse
     }
-    found
+
+    fn leave_node(&mut self, node: AnyNodeRef<'a>) {
+        // Ruff's walk leaves a node it was told to skip, which was never entered.
+        if empty_class_arguments(node, self.open.last().copied()) {
+            return;
+        }
+        self.open.pop();
+        self.builder.leave();
+    }
+
+    // Each statement list - a module's, a function's, a branch's, an else or finally - is
+    // marked, so that a run of statements or a sequence hole stays in one block.
+    fn visit_body(&mut self, body: &'a [Stmt]) {
+        self.builder.begin_list();
+        walk_body(self, body);
+        self.builder.end_list();
+    }
 }
 
 /// The arena of `root` and every node beneath it, in one walk of Ruff's tree, with the tokens
 /// a match compares: Ruff's own, less comments, line breaks, indentation and the parentheses
 /// that only wrap an expression or that a tuple or generator wears.
 fn build<'text>(
-    builder: Builder<'text>,
+    mut builder: Builder<'text>,
     root: AnyNodeRef<'_>,
     tokens: &Tokens,
     source: &str,
 ) -> Arena<'text> {
-    struct Build<'text, 'a> {
-        builder: Builder<'text>,
-        tokens: &'a Tokens,
-        source: &'a str,
-        /// The nodes entered and not yet left, so each node knows its parent.
-        open: Vec<AnyNodeRef<'a>>,
-        /// Where each redundant parenthesis starts: an opening one, and a closing one.
-        redundant: BTreeSet<TextSize>,
-        /// Where each one-element tuple's comma starts, which is the tuple, not layout.
-        tuple_commas: BTreeSet<TextSize>,
-        /// Where each comma that ends a tuple of several elements starts, which is layout.
-        trailing_commas: BTreeSet<TextSize>,
-        /// Tokens that take in the text around them, by where each starts.
-        widened: BTreeMap<TextSize, TextRange>,
-    }
-
-    impl<'a> SourceOrderVisitor<'a> for Build<'_, 'a> {
-        fn enter_node(&mut self, node: AnyNodeRef<'a>) -> TraversalSignal {
-            let parent = self.open.last().copied();
-            if empty_class_arguments(node, parent) {
-                self.redundant
-                    .extend([node.range().start(), node.range().end() - TextSize::new(1)]);
-                return TraversalSignal::Skip;
-            }
-            self.builder
-                .enter(kind_of(node.kind()), node.range().into());
-            self.redundant
-                .extend(redundant_parentheses(node, parent, self.tokens));
-            self.redundant
-                .extend(statement_parentheses(node, self.tokens));
-            self.tuple_commas.extend(tuple_comma(node, self.tokens));
-            self.trailing_commas
-                .extend(trailing_tuple_comma(node, self.tokens));
-            self.widened.extend(self_documenting(node, self.tokens));
-            if let Some(content) = string_content(node, self.source) {
-                self.builder.value(content);
-            }
-            self.open.push(node);
-            // Ruff's source-order walk visits a format spec's parts but never enters the spec
-            // itself (`InterpolatedElement::visit_source_order`), so the spec would be missing
-            // from the arena, its parts hung on the element.  The element's children are walked
-            // here instead, with the spec entered around its parts, in the order Ruff's walk
-            // uses: the expression, then the spec.
-            if let AnyNodeRef::InterpolatedElement(element) = node
-                && let Some(spec) = &element.format_spec
-            {
-                self.visit_expr(&element.expression);
-                self.builder.enter(
-                    kind_of(NodeKind::InterpolatedStringFormatSpec),
-                    spec.range().into(),
-                );
-                for part in &spec.elements {
-                    walk_interpolated_string_element(self, part);
-                }
-                self.builder.leave();
-                return TraversalSignal::Skip;
-            }
-            TraversalSignal::Traverse
-        }
-
-        fn leave_node(&mut self, node: AnyNodeRef<'a>) {
-            // Ruff's walk leaves a node it was told to skip, which was never entered.
-            if empty_class_arguments(node, self.open.last().copied()) {
-                return;
-            }
-            self.open.pop();
-            self.builder.leave();
-        }
-
-        // Each statement list - a module's, a function's, a branch's, an else or finally - is
-        // marked, so that a run of statements or a sequence hole stays in one block.
-        fn visit_body(&mut self, body: &'a [Stmt]) {
-            self.builder.begin_list();
-            walk_body(self, body);
-            self.builder.end_list();
-        }
-    }
-
+    // The tokens kept are some of Ruff's, and a file seldom has more nodes than tokens, so this
+    // is room enough without growing as the walk goes; where a file has more, the arena grows.
+    builder.reserve(tokens.len(), tokens.len());
     let mut build = Build {
         builder,
         tokens,
         source,
         open: Vec::new(),
-        redundant: BTreeSet::new(),
-        tuple_commas: BTreeSet::new(),
-        trailing_commas: BTreeSet::new(),
-        widened: BTreeMap::new(),
+        opened: Opened {
+            starts: after_opening_parentheses(tokens),
+            next: 0,
+        },
+        redundant: Vec::new(),
+        tuple_commas: Vec::new(),
+        trailing_commas: Vec::new(),
+        widened: Vec::new(),
     };
     walk_node(&mut build, root);
     let Build {
@@ -394,32 +479,45 @@ fn build<'text>(
         ..
     } = build;
     let layout = Layout {
-        redundant,
-        tuple_commas,
-        trailing_commas,
-        widened,
+        redundant: sorted(redundant),
+        tuple_commas: sorted(tuple_commas),
+        trailing_commas: sorted(trailing_commas),
+        widened: {
+            let mut widened = widened;
+            widened.sort_unstable_by_key(|(start, _)| *start);
+            widened
+        },
     };
     add_tokens(&mut builder, tokens, &layout);
     builder.finish()
 }
 
-/// What [`build`] found of a file's layout among its tokens.
+/// `offsets` in order, each once, to be searched.  Collected into a list and sorted once
+/// rather than kept in a set as they are found, which costs more for the handful a file has.
+fn sorted(mut offsets: Vec<TextSize>) -> Vec<TextSize> {
+    offsets.sort_unstable();
+    offsets.dedup();
+    offsets
+}
+
+/// What [`build`] found of a file's layout among its tokens, each list in order of where the
+/// token starts.
 struct Layout {
     /// Where each parenthesis that takes no part starts.
-    redundant: BTreeSet<TextSize>,
+    redundant: Vec<TextSize>,
     /// Where each one-element tuple's comma starts, which is the tuple.
-    tuple_commas: BTreeSet<TextSize>,
+    tuple_commas: Vec<TextSize>,
     /// Where each comma ending a tuple of several elements starts, which is layout.
-    trailing_commas: BTreeSet<TextSize>,
+    trailing_commas: Vec<TextSize>,
     /// Tokens that take in the text around them, by where each starts.
-    widened: BTreeMap<TextSize, TextRange>,
+    widened: Vec<(TextSize, TextRange)>,
 }
 
 /// Adds to `builder` the tokens a match compares: Ruff's own, less comments, line breaks,
 /// indentation, the end of the file, semicolons, the parentheses that take no part, a comma
 /// just before a closing bracket unless it is a one-element tuple's, and a comma ending a tuple.
 fn add_tokens(builder: &mut Builder<'_>, tokens: &Tokens, layout: &Layout) {
-    let meaningful: Vec<&Token> = tokens
+    let mut meaningful = tokens
         .iter()
         .filter(|token| {
             !matches!(
@@ -434,11 +532,11 @@ fn add_tokens(builder: &mut Builder<'_>, tokens: &Tokens, layout: &Layout) {
                     | TokenKind::Semi
             )
         })
-        .collect();
-    for (i, token) in meaningful.iter().enumerate() {
+        .peekable();
+    while let Some(token) = meaningful.next() {
         let kind = token.kind();
         if matches!(kind, TokenKind::Lpar | TokenKind::Rpar)
-            && layout.redundant.contains(&token.start())
+            && layout.redundant.binary_search(&token.start()).is_ok()
         {
             continue;
         }
@@ -447,9 +545,9 @@ fn add_tokens(builder: &mut Builder<'_>, tokens: &Tokens, layout: &Layout) {
         // own does not.  A one-element tuple's comma is the tuple, so it stays: without it
         // `x[a,]` would read as `x[a]`.  A comma ending a tuple of several, `a, b,`, is layout.
         if kind == TokenKind::Comma
-            && !layout.tuple_commas.contains(&token.start())
-            && (layout.trailing_commas.contains(&token.start())
-                || meaningful.get(i + 1).is_some_and(|next| {
+            && layout.tuple_commas.binary_search(&token.start()).is_err()
+            && (layout.trailing_commas.binary_search(&token.start()).is_ok()
+                || meaningful.peek().is_some_and(|next| {
                     matches!(
                         next.kind(),
                         TokenKind::Rpar | TokenKind::Rsqb | TokenKind::Rbrace
@@ -467,11 +565,15 @@ fn add_tokens(builder: &mut Builder<'_>, tokens: &Tokens, layout: &Layout) {
             TokenKind::TStringEnd => TokenText::Fixed("t-string end"),
             _ => TokenText::Source,
         };
-        let range = layout
-            .widened
-            .get(&token.start())
-            .copied()
-            .unwrap_or(token.range());
+        // Most files have no field that prints itself, so most never search.
+        let range = if layout.widened.is_empty() {
+            token.range()
+        } else {
+            layout
+                .widened
+                .binary_search_by_key(&token.start(), |(start, _)| *start)
+                .map_or(token.range(), |at| layout.widened[at].1)
+        };
         builder.token(range.into(), compare);
     }
 }
@@ -556,6 +658,24 @@ mod tests {
         let mut out = Vec::new();
         visit(arena, arena.root(), 0, &mut out);
         out
+    }
+
+    #[test]
+    fn the_cursor_over_opening_parentheses_answers_as_a_search_does_in_any_order() {
+        let starts: Vec<TextSize> = [3, 7, 12].map(TextSize::new).to_vec();
+        let mut opened = Opened {
+            starts: starts.clone(),
+            next: 0,
+        };
+        // In order, repeated, backwards, before the first and past the last.
+        for at in [3, 7, 7, 12, 3, 1, 12, 5, 7, 20, 0] {
+            let at = TextSize::new(at);
+            assert_eq!(
+                opened.before(at),
+                starts.binary_search(&at).is_ok(),
+                "asked at {at:?}"
+            );
+        }
     }
 
     #[test]

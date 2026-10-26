@@ -29,3 +29,11 @@ unicode-ident = "=1.0.26"
 # The round trip decodes each corpus file as quaff does, then encodes the printed text back.
 quaffed-encoding = { path = "../encoding" }
 proptest = "=1.12.0"
+# The instruction-count benchmarks.  The runner, `gungraun-runner`, must be the same version: it
+# is pinned in tools.toml, and crates/quaffed/tests/tool_manifest.rs holds the two together.
+gungraun = "=0.20.0"
+
+# Counted under Valgrind by gungraun's runner, which brings its own harness.
+[[bench]]
+name = "front_end"
+harness = false

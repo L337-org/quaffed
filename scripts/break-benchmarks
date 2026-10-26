@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Make a deliberately slowed copy of the checkout, to show that scripts/benchmark-gate acts on
+# each rule it holds: an alert for a benchmark that rose, a failure for the arena's budget.
+#
+#   scripts/break-benchmarks DIRECTORY HOW
+#
+# Copies the checkout's tracked files into DIRECTORY and slows one function, as HOW says:
+#
+#   matcher   the matcher's `find` does a few thousand instructions more each call, so every
+#             matching benchmark rises far past the rule while the parse does not move
+#   adapter   building the arena does a hundred more steps for each of Ruff's tokens, so the
+#             arena's share of the parse rises past its budget
+#
+# The slowed copy is then measured with scripts/benchmarks and judged against the real tree's
+# counts.  Gungraun clears the environment before a library benchmark, so the slowing is
+# written into the source rather than switched on by a variable as scripts/break-budgets does.
+# The checkout itself is never touched.  Fails, naming the file, if the code it slows has
+# moved, so the negative test cannot quietly test nothing.
+#
+# Needs: git, python3.
+
+set -euo pipefail
+
+die() {
+    printf 'break-benchmarks: %s\n' "$*" >&2
+    exit 1
+}
+
+[[ $# -eq 2 ]] || die "usage: scripts/break-benchmarks DIRECTORY matcher|adapter"
+out="$1"
+how="$2"
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+case "$how" in
+matcher)
+    file="crates/syntax/src/matching.rs"
+    anchor='pub fn find(pattern: &Pattern, target: &Arena<'"'"'_>) -> Vec<Match> {'
+    slow='    for step in 0..2000_u32 { std::hint::black_box(step); }'
+    ;;
+adapter)
+    file="crates/python/src/parse.rs"
+    anchor='    builder.reserve(tokens.len(), tokens.len());'
+    slow='    for token in tokens.iter() { for _ in 0..100 { std::hint::black_box(token); } }'
+    ;;
+*)
+    die "HOW is matcher or adapter, not '$how'"
+    ;;
+esac
+
+mkdir -p "$out"
+git -C "$root" ls-files -z | (cd "$root" && xargs -0 tar -cf -) | tar -xf - -C "$out"
+
+# The slowing goes straight after the anchor line, which must appear exactly once.
+python3 - "$out/$file" "$anchor" "$slow" <<'EOF' || die "could not slow $file; its output is above"
+import sys
+path, anchor, slow = sys.argv[1:]
+lines = open(path, encoding="utf-8").read().split("\n")
+found = [i for i, line in enumerate(lines) if line == anchor]
+if len(found) != 1:
+    sys.exit(f"{path}: the line to slow after appears {len(found)} times, not once: {anchor!r}")
+lines.insert(found[0] + 1, slow)
+open(path, "w", encoding="utf-8").write("\n".join(lines))
+EOF
+printf 'break-benchmarks: %s slowed in %s\n' "$file" "$out" >&2

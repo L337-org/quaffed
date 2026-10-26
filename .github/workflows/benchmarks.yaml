@@ -1,0 +1,136 @@
+name: 'Benchmarks'
+permissions:
+  contents: read
+
+# Counts the instructions the front end and the matcher execute on a pull request against main's,
+# on each architecture.  A benchmark that rose past the rule in scripts/benchmark-gate raises an
+# alert - in the job summary and as a warning on the pull request - without failing; building the
+# arena past its budget, as a share of Ruff's own parse, fails.  Main is counted in the same job
+# as the pull request, at the tip the pull request would merge into, because a count moves with
+# the runner image and its Valgrind: a stored figure would move with every image update, while
+# two counts from one job compare exactly.  amd64 and arm64 count differently, so each is
+# compared with itself.  architecture/workspace.md says why these jobs are not required checks;
+# architecture/verification.md has the reasoning, scripts/benchmarks counts and
+# scripts/benchmark-gate compares.
+on:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  benchmarks:
+    name: Benchmarks (${{ matrix.arch }})
+    strategy:
+      # Both are counted when one fails, so a run shows the state of each.
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    # Covers building gungraun's runner from source, two cold builds of the benchmarks with the
+    # benchmarks profile and their counting, and on amd64 two more of each for the negative test,
+    # generously.
+    timeout-minutes: 60
+    steps:
+      - name: Check out source repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The merge and its parents, to check main's side out beside this one.
+          fetch-depth: 2
+          persist-credentials: false
+
+      # The checkout is the pull request merged into main's tip, which is what would land, so
+      # main's side is that merge's first parent: the comparison then covers exactly what the
+      # pull request adds, whatever has reached main since it branched.
+      - name: Check out main's side
+        run: |
+          base="$(git rev-parse HEAD^1)"
+          git worktree add --detach "$RUNNER_TEMP/main" "$base"
+          echo "Counting main at $base, the first parent of the merge being counted."
+
+      # This checkout's toolchain builds the tools; each tree's builds what it counts.  They are
+      # the same unless the pull request moves the pin.
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+
+      - name: Install main's pinned toolchain
+        working-directory: ${{ runner.temp }}/main
+        run: rustup toolchain install
+
+      - name: Install Valgrind
+        uses: ./.github/actions/apt-install
+        with:
+          packages: valgrind
+
+      - name: Install gungraun's runner from tools.toml
+        uses: ./.github/actions/install-tools
+        with:
+          tools: gungraun-runner
+
+      - name: Count main
+        run: scripts/benchmarks "$RUNNER_TEMP/main" "$RUNNER_TEMP/counts/main"
+
+      - name: Count the pull request
+        run: scripts/benchmarks "$GITHUB_WORKSPACE" "$RUNNER_TEMP/counts/pull-request"
+
+      - name: Any benchmark that rose is reported, and the arena is within its budget
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          scripts/benchmark-gate --main "$RUNNER_TEMP/counts/main" \
+            --pull-request "$RUNNER_TEMP/counts/pull-request" \
+            --label "$ARCH" --summary "$GITHUB_STEP_SUMMARY"
+
+      # The gate's own negative test, on one architecture since the gate is the same on both: a
+      # copy with the matcher slowed must raise an alert without failing, and one with the
+      # arena's building slowed must fail on its budget, each saying so.  GITHUB_ACTIONS is unset
+      # so the slowed copies' alerts are not raised on the pull request, and the output is kept
+      # out of the job summary, which reports the real comparison.
+      - name: Show the gate alerts on a slowed matcher and fails on a slowed adapter
+        if: matrix.arch == 'amd64'
+        run: |
+          judge() {
+            how="$1"
+            scripts/break-benchmarks "$RUNNER_TEMP/worse-$how" "$how"
+            scripts/benchmarks "$RUNNER_TEMP/worse-$how" "$RUNNER_TEMP/counts/worse-$how"
+            status=0
+            env -u GITHUB_ACTIONS scripts/benchmark-gate --main "$RUNNER_TEMP/counts/pull-request" \
+              --pull-request "$RUNNER_TEMP/counts/worse-$how" >/dev/null 2>"$RUNNER_TEMP/err-$how" || status=$?
+          }
+          said() {
+            how="$1" expected="$2"
+            grep -F "$expected" "$RUNNER_TEMP/err-$how" || {
+              echo "::error::scripts/benchmark-gate did not say '$expected' of the slowed $how:"
+              cat "$RUNNER_TEMP/err-$how"
+              exit 1
+            }
+          }
+          judge matcher
+          if [ "$status" -ne 0 ]; then
+            echo "::error::scripts/benchmark-gate failed, status $status, on a slowed matcher, which should only raise an alert:"
+            cat "$RUNNER_TEMP/err-matcher"
+            exit 1
+          fi
+          said matcher "alert - matching a_name_used_twice: "
+          judge adapter
+          if [ "$status" -ne 1 ]; then
+            echo "::error::scripts/benchmark-gate exited $status on a slowed adapter, not 1 for the budget:"
+            cat "$RUNNER_TEMP/err-adapter"
+            exit 1
+          fi
+          said adapter "of Ruff's parse, over its budget of"
+
+      # Saved whether or not the gate held: each benchmark's Callgrind profile is what a
+      # reviewer reads to see where the instructions went.
+      - name: Keep the counts and profiles
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: benchmarks-${{ matrix.arch }}
+          path: ${{ runner.temp }}/counts
+          if-no-files-found: warn

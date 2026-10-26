@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Count the instructions of the front end's benchmarks for one tree, for scripts/benchmark-gate.
+#
+#   scripts/benchmarks TREE OUT
+#
+# Runs crates/python/benches/front_end.rs in TREE under gungraun's runner and Valgrind's
+# Callgrind, built with the benchmarks profile - the shipped binary's optimisation, with its
+# symbols kept so each benchmark's profile names every function, and no debug information, which
+# Callgrind on arm64 cannot count through (Cargo.toml says why) - and leaves a summary.json for
+# each benchmark, with its Callgrind profile, under OUT.
+#
+# The runner is the version TREE's own tools.toml pins, since gungraun refuses a runner of
+# another version than its library: one on PATH at that version is used, and otherwise TREE's
+# scripts/install-tools installs it under OUT.  So main's tree and a pull request that moves the
+# pin are each counted with their own.
+#
+# A tree with no benchmark target - main before the benchmarks existed - gets the file
+# OUT/no-benchmarks instead, which scripts/benchmark-gate accepts for main only.
+#
+# Every failure stops the script naming what failed, because a side that measured nothing must
+# not reach the gate looking like one that measured well.
+#
+# Needs: valgrind, cargo, Linux.
+
+set -euo pipefail
+
+die() {
+    printf 'benchmarks: %s\n' "$*" >&2
+    exit 1
+}
+
+[[ $# -eq 2 ]] || die "usage: scripts/benchmarks TREE OUT"
+tree="$(cd "$1" && pwd)" || die "tree $1 does not exist"
+mkdir -p "$2"
+out="$(cd "$2" && pwd)"
+
+if [[ ! -f "$tree/crates/python/benches/front_end.rs" ]]; then
+    : >"$out/no-benchmarks"
+    printf 'benchmarks: %s has no crates/python/benches/front_end.rs, so it has no benchmarks to count\n' "$tree" >&2
+    exit 0
+fi
+
+version="$("$tree/scripts/install-tools" --list | awk '$1 == "cargo-install" && $2 == "gungraun-runner" { print $3 }')"
+[[ -n "$version" ]] || die "$tree/tools.toml pins no gungraun-runner, though the tree has benchmarks"
+
+runner=""
+if found="$(command -v gungraun-runner)" && [[ "$("$found" --version 2>/dev/null)" == *" $version" ]]; then
+    runner="$found"
+else
+    CARGO_INSTALL_ROOT="$out/runner" "$tree/scripts/install-tools" gungraun-runner
+    runner="$out/runner/bin/gungraun-runner"
+fi
+[[ -x "$runner" ]] || die "no gungraun-runner $version at $runner"
+printf 'benchmarks: counting %s with gungraun-runner %s at %s\n' "$tree" "$version" "$runner" >&2
+
+# GUNGRAUN_RUNNER is read when the benchmark is compiled, naming the runner it hands over to.
+# Each tree builds in its own target directory, whatever CARGO_TARGET_DIR says: copies of one
+# checkout differ in a file or two and keep its timestamps, so a shared one could take one
+# tree's build for another's.
+(
+    cd "$tree"
+    CARGO_TARGET_DIR="$tree/target" GUNGRAUN_RUNNER="$runner" GUNGRAUN_HOME="$out" \
+        cargo bench --locked --profile benchmarks -p quaffed-python --bench front_end -- \
+        --save-summary=json
+) || die "the benchmarks in $tree failed; cargo's and gungraun's output is above"
+
+count="$(find "$out" -name summary.json | wc -l | tr -d ' ')"
+[[ "$count" -gt 0 ]] || die "the benchmarks in $tree ran but left no summary under $out"
+printf 'benchmarks: %s benchmark summaries under %s\n' "$count" "$out" >&2
