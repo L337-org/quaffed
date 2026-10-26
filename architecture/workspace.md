@@ -156,9 +156,8 @@ in `architecture/verification.md`, under failed runs are posted to Slack.
 means updating the branch ruleset in the same change, or the branch waits on a check that never
 reports, or a new job gates nothing.  The exceptions are the review, below; `Announce to
 Slack`, which runs only when a pull request opens, so never reports on a later push; and the two
-`Benchmarks` jobs, by the owner's decision until the figures they hold are sized about right: a
-benchmark that rose, the arena over its budget and a count that could not be compared each show
-on the pull request for the reviewer to weigh, and none blocks a merge
+`Benchmarks` jobs: a benchmark that rose, the arena over its budget and a count that could not
+be compared each show on the pull request for the reviewer to weigh
 (`architecture/verification.md`, under the benchmarks).
 
 ### Shared CI
