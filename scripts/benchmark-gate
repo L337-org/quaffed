@@ -7,32 +7,39 @@ section for the job summary.  architecture/verification.md has the reasoning.
 
     scripts/benchmark-gate --main DIR --pull-request DIR [--label TEXT] [--summary FILE]
 
-Two rules, each failing the run on its own:
+Two rules:
 
 - A benchmark whose instruction count on the pull request is more than RULE_PERCENT above
-  main's regresses.  A benchmark only on the pull request is new and is reported with nothing to
-  compare; one only on main was removed and is reported too.
+  main's rose, and is an alert: marked in the summary and, in GitHub Actions, raised as a
+  warning on the pull request, but never failing the run.  Until v1 the edit operations are
+  still being added, and the front end and matcher grow as they come, so a rise is for a
+  reviewer to read rather than a gate.  A benchmark only on the pull request is new and is
+  reported with nothing to compare; one only on main was removed and is reported too.
 - Building the arena may cost at most ARENA_BUDGET_PERCENT of Ruff's own parse: the
   `parse_into_arena` benchmark less `ruff_parse`, as a share of `ruff_parse`, on the pull
-  request.  It is a rule of its own so that a slower arena cannot hide inside a faster parse.
+  request.  Over it fails the run: a change that has to cost more raises the budget in the same
+  pull request.  It is a rule of its own so that a slower arena cannot hide inside a faster
+  parse.
 
 A side with no benchmarks is only accepted for main, and only when `scripts/benchmarks` said so
 by writing NONE_MARKER there because main's tree has no benchmark target: otherwise a
 measurement that produced nothing would pass having compared nothing.
 
-Exit status: 0 when both rules hold, 1 when one does not, 2 when the counts could not be
-compared - no benchmark ran on the pull request, a summary unreadable or in a format this
+Exit status: 0 when the arena is within its budget, whatever rose, 1 when it is over, 2 when
+the counts could not be compared - no benchmark ran on the pull request, a summary unreadable or in a format this
 script does not know, the arena's two benchmarks missing - since a gate that could not compare
 has not passed.  The summary is written in every case, so the job page says which.
 """
 
 import argparse
 import json
+import os
 import pathlib
 import sys
 from fractions import Fraction
 
-# More than this much above main fails a benchmark, as a percentage of main's count.
+# More than this much above main raises an alert for a benchmark, as a percentage of main's
+# count.
 RULE_PERCENT = Fraction(2)
 
 # The most building the arena may cost, as a percentage of Ruff's parse alone.  Set by the
@@ -117,10 +124,10 @@ def judge(main_counts, head):
     """Apply both rules.
 
     Returns:
-        tuple: the table's rows, the regressions, the problems that stop a comparison, and the
-        notes to show, each a list of strings.
+        tuple: the table's rows, the rises past the rule, what fails the run, the problems that
+        stop a comparison, and the notes to show, each a list of strings.
     """
-    rows, regressed, problems, notes = [], [], [], []
+    rows, rose, failed, problems, notes = [], [], [], [], []
     if main_counts is None:
         notes.append("main has no benchmarks, so nothing was compared; every benchmark is new.")
         main_counts = {}
@@ -134,9 +141,9 @@ def judge(main_counts, head):
         change = percent(head[name], main_counts[name])
         mark = ""
         if change > RULE_PERCENT:
-            mark = " **regressed**"
-            regressed.append(f"{name}: {main_counts[name]:,} on main, {head[name]:,} on the pull "
-                             f"request, {show(change)}, more than the {float(RULE_PERCENT):g}% allowed")
+            mark = " **rose**"
+            rose.append(f"{name}: {main_counts[name]:,} on main, {head[name]:,} on the pull "
+                             f"request, {show(change)}, more than {float(RULE_PERCENT):g}% above main")
         rows.append(f"| `{name}` | {main_counts[name]:,} | {head[name]:,} | {show(change)}{mark} |")
 
     share = arena_share(head)
@@ -151,20 +158,23 @@ def judge(main_counts, head):
             line += f"; on main it costs {float(on_main):.1f}%"
         notes.append(line + ".")
         if share > ARENA_BUDGET_PERCENT:
-            regressed.append(f"building the arena costs {float(share):.1f}% of Ruff's parse, over "
+            failed.append(f"building the arena costs {float(share):.1f}% of Ruff's parse, over "
                              f"its budget of {float(ARENA_BUDGET_PERCENT):g}%")
-    return rows, regressed, problems, notes
+    return rows, rose, failed, problems, notes
 
 
-def render(label, rows, regressed, problems, notes):
+def render(label, rows, rose, failed, problems, notes):
     """The Markdown section for the job summary."""
     title = "## Instruction counts" + (f" ({label})" if label else "")
     out = [title, ""]
     if rows:
         out += ["| benchmark | main | pull request | change |", "| --- | ---: | ---: | ---: |", *rows, ""]
     out += notes
-    if regressed:
-        out += ["", "**Failed:**", *[f"- {line}" for line in regressed]]
+    if rose:
+        out += ["", "**Alert, not failing the run** - check the rise is expected:",
+                *[f"- {line}" for line in rose]]
+    if failed:
+        out += ["", "**Failed:**", *[f"- {line}" for line in failed]]
     if problems:
         out += ["", "**Not evaluated:**", *[f"- {line}" for line in problems]]
     return "\n".join(out) + "\n\n"
@@ -193,14 +203,14 @@ def main(argv):
         head, problems = {}, problems + [f"pull request: {exc}"]
 
     if head:
-        rows, regressed, more, notes = judge(main_counts, head)
+        rows, rose, failed, more, notes = judge(main_counts, head)
         problems += more
     else:
-        rows, regressed, notes = [], [], []
+        rows, rose, failed, notes = [], [], [], []
     if problems:
         # A side that could not be read leaves nothing to judge against, whatever the other says.
-        regressed = []
-    text = render(args.label, rows, regressed, problems, notes)
+        rose, failed = [], []
+    text = render(args.label, rows, rose, failed, problems, notes)
     sys.stdout.write(text)
     if args.summary:
         with open(args.summary, "a", encoding="utf-8") as f:
@@ -209,8 +219,14 @@ def main(argv):
         for line in problems:
             print(f"benchmark-gate: not evaluated - {line}", file=sys.stderr)
         return 2
-    if regressed:
-        for line in regressed:
+    in_actions = os.environ.get("GITHUB_ACTIONS") == "true"
+    for line in rose:
+        print(f"benchmark-gate: alert - {line}", file=sys.stderr)
+        if in_actions:
+            # A workflow command, so the rise shows on the pull request as well as in the log.
+            print(f"::warning title=Instruction count rose::{line}")
+    if failed:
+        for line in failed:
             print(f"benchmark-gate: {line}", file=sys.stderr)
         return 1
     return 0

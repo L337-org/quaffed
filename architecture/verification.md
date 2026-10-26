@@ -467,8 +467,8 @@ correct.
 
 The budgets hold the whole binary; the benchmarks hold the parts of it most likely to grow, the
 Python front end and the matcher, closer.  `.github/workflows/benchmarks.yaml` counts them on
-every pull request, once on amd64 and once on arm64, and fails the pull request when one does
-more work than on main.  As with the budgets, nothing is timed: the counts are instructions,
+every pull request, once on amd64 and once on arm64, and raises an alert when one does more work
+than on main.  As with the budgets, nothing is timed: the counts are instructions,
 from gungraun under Valgrind's Callgrind.
 
 - **What is counted is `crates/python/benches/front_end.rs`**, over the synthetic corpus only,
@@ -489,13 +489,19 @@ from gungraun under Valgrind's Callgrind.
   compared with itself.  Each tree is counted with the runner its own `tools.toml` pins,
   because gungraun refuses a runner of another version than its library, so a pull request that
   moves the pin is still compared.
-- **The 2% rule**: a benchmark more than `RULE_PERCENT` above main's count fails, named with
-  both counts.  A benchmark only on the pull request is reported as new, one only on main as
-  removed; neither fails.
+- **The 2% rule is an alert, not a gate**: a benchmark more than `RULE_PERCENT` above main's
+  count is marked in the job summary and raised as a warning on the pull request, named with
+  both counts, and the job still passes.  Until v1 the edit operations are still being added,
+  and the front end and matcher grow as they come, so a rise is for the reviewer to judge
+  rather than a block.  A benchmark only on the pull request is reported as new, one only on
+  main as removed.
 - **The arena's budget**: building the arena may cost at most `ARENA_BUDGET_PERCENT` of Ruff's
   parse, that is `parse_into_arena` less `ruff_parse`, as a share of `ruff_parse`, on the pull
-  request.  It is a rule of its own so that a slower arena cannot hide inside a faster parse.
-  Both figures are in `scripts/benchmark-gate`.
+  request.  Over it fails the job; a change whose arena has to cost more raises the budget in
+  the same pull request.  It is a rule of its own so that a slower arena cannot hide inside a
+  faster parse.  Both figures are in `scripts/benchmark-gate`.
+- **Neither job is a required status check**, a deliberate exception to every job being one
+  (`architecture/workspace.md`): a failure is seen on the pull request, and blocks nothing.
 - **A gate that could not compare has not passed.**  No benchmark on the pull request, a summary
   unreadable or in a version of gungraun's format the script does not know, or the arena's two
   benchmarks missing, fails the job as not evaluated.  Main may have no benchmarks only when
@@ -506,8 +512,9 @@ from gungraun under Valgrind's Callgrind.
 
 **The gate has a negative test on every run**, on amd64: `scripts/break-benchmarks` makes a copy
 with the matcher slowed and one with the arena's building slowed, and the job fails unless
-`scripts/benchmark-gate` fails each, the first on the 2% rule and the second on the budget.
-`crates/quaffed/tests/benchmark_gate.rs` holds the script itself to each rule and each refusal.
+`scripts/benchmark-gate` raises an alert on the first, passing, and fails the second on the
+budget.  `crates/quaffed/tests/benchmark_gate.rs` holds the script itself to each rule and each
+refusal.
 
 Locally the benchmarks need Linux with Valgrind, and gungraun's runner at the version
 `tools.toml` pins.  On any other machine, run them in a container of the toolchain's version:
@@ -538,18 +545,22 @@ in the same container.
 3. Run it locally as above, and check its count is the work it names: `callgrind_annotate` its
    profile under the gungraun directory.
 4. On the pull request it shows as new, compared with nothing; from the next pull request on it
-   is held to the 2% rule like the rest.
+   raises an alert past the 2% rule like the rest.
 5. Renaming a benchmark or its case shows it as removed and new, so the rename's pull request
-   holds it to nothing; say so in the description.
+   compares it with nothing; say so in the description.
 
-### Checklist: changing a figure
+### Checklist: an alert or a blown budget
 
-A count that rises more than 2% is a defect until shown otherwise: find where in the profile
-the instructions went, from the job's artefact, as for a budget.  Where the work is right - new
-behaviour that has to cost something - the pull request says which benchmark rose, by how much,
-and why, and the reviewer agrees it; the rule itself is not loosened to let one change through.
-Changing `RULE_PERCENT` or `ARENA_BUDGET_PERCENT` is the owner's decision, recorded with its
-reason.
+1. Read the job summary for the benchmark that rose, or the arena's share, and download the
+   `benchmarks-<arch>` artefact.
+2. Find where the instructions went: `callgrind_annotate` the benchmark's Callgrind profile on
+   both sides, from the pull request's counts and main's, and compare.
+3. Decide whether that is what the change should cost.  If not, it is a defect: fix the code.
+4. If it is, say in the pull request description which benchmark rose, by how much, and why, so
+   the reviewer can agree it.  For the arena, set `ARENA_BUDGET_PERCENT` in
+   `scripts/benchmark-gate` in the same pull request, with the reason in the commit.
+5. Changing `RULE_PERCENT`, or making the 2% rule a gate again, is the owner's decision, recorded
+   with its reason.
 
 ## The package install test
 

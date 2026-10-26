@@ -154,8 +154,10 @@ in `architecture/verification.md`, under failed runs are posted to Slack.
 
 **Every job here is meant to be a required status check.**  Adding, renaming or removing one
 means updating the branch ruleset in the same change, or the branch waits on a check that never
-reports, or a new job gates nothing.  The exceptions are the review, below, and `Announce to
-Slack`, which runs only when a pull request opens, so never reports on a later push.
+reports, or a new job gates nothing.  The exceptions are the review, below; `Announce to
+Slack`, which runs only when a pull request opens, so never reports on a later push; and the two
+`Benchmarks` jobs, whose rises are alerts for a reviewer while the edit operations are still
+being added (`architecture/verification.md`, under the benchmarks).
 
 ### Shared CI
 

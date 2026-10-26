@@ -3,8 +3,11 @@ permissions:
   contents: read
 
 # A pull request that makes the front end or the matcher execute more than 2% more instructions
-# than main, in any benchmark, fails; so does one that takes building the arena past its budget
-# as a share of Ruff's own parse.  Main is counted in the same job as the pull request, at the
+# than main, in any benchmark, raises an alert - in the job summary and as a warning on the pull
+# request - without failing: until v1 the edit operations are still being added, and growth is
+# expected, so a rise is for the reviewer to judge.  One that takes building the arena past its
+# budget as a share of Ruff's own parse fails, and raises the budget in the same pull request
+# where the cost is right.  Neither job is a required status check.  Main is counted in the same job as the pull request, at the
 # tip the pull request would merge into, because a count moves with the runner image and its
 # Valgrind: a stored figure would move with every image update, while two counts from one job
 # compare exactly.  amd64 and arm64 count differently, so each is compared with itself.
@@ -76,7 +79,7 @@ jobs:
       - name: Count the pull request
         run: scripts/benchmarks "$GITHUB_WORKSPACE" "$RUNNER_TEMP/counts/pull-request"
 
-      - name: No benchmark rose more than 2%, and the arena is within its budget
+      - name: Any rise of more than 2% is reported, and the arena is within its budget
         env:
           ARCH: ${{ matrix.arch }}
         run: |
@@ -85,29 +88,43 @@ jobs:
             --label "$ARCH" --summary "$GITHUB_STEP_SUMMARY"
 
       # The gate's own negative test, on one architecture since the gate is the same on both: a
-      # copy slowed each way must fail on the rule that guards it, saying so.
-      - name: Show the gate fails on a slowed matcher and a slowed adapter
+      # copy with the matcher slowed must raise an alert without failing, and one with the
+      # arena's building slowed must fail on its budget, each saying so.  GITHUB_ACTIONS is unset
+      # so the slowed copies' alerts are not raised on the pull request, and the output is kept
+      # out of the job summary, which reports the real comparison.
+      - name: Show the gate alerts on a slowed matcher and fails on a slowed adapter
         if: matrix.arch == 'amd64'
         run: |
-          check() {
-            how="$1" expected="$2"
+          judge() {
+            how="$1"
             scripts/break-benchmarks "$RUNNER_TEMP/worse-$how" "$how"
             scripts/benchmarks "$RUNNER_TEMP/worse-$how" "$RUNNER_TEMP/counts/worse-$how"
-            # These failures are expected: kept out of the job summary, which reports the real
-            # comparison.
-            if scripts/benchmark-gate --main "$RUNNER_TEMP/counts/pull-request" \
-                --pull-request "$RUNNER_TEMP/counts/worse-$how" >/dev/null 2>"$RUNNER_TEMP/err-$how"; then
-              echo "::error::scripts/benchmark-gate passed a copy with a slowed $how"
-              exit 1
-            fi
+            status=0
+            env -u GITHUB_ACTIONS scripts/benchmark-gate --main "$RUNNER_TEMP/counts/pull-request" \
+              --pull-request "$RUNNER_TEMP/counts/worse-$how" >/dev/null 2>"$RUNNER_TEMP/err-$how" || status=$?
+          }
+          said() {
+            how="$1" expected="$2"
             grep -F "$expected" "$RUNNER_TEMP/err-$how" || {
-              echo "::error::scripts/benchmark-gate failed on the slowed $how, but not with '$expected':"
+              echo "::error::scripts/benchmark-gate did not say '$expected' of the slowed $how:"
               cat "$RUNNER_TEMP/err-$how"
               exit 1
             }
           }
-          check matcher "matching a_name_used_twice: "
-          check adapter "of Ruff's parse, over its budget of 60%"
+          judge matcher
+          if [ "$status" -ne 0 ]; then
+            echo "::error::scripts/benchmark-gate failed, status $status, on a slowed matcher, which should only raise an alert:"
+            cat "$RUNNER_TEMP/err-matcher"
+            exit 1
+          fi
+          said matcher "alert - matching a_name_used_twice: "
+          judge adapter
+          if [ "$status" -ne 1 ]; then
+            echo "::error::scripts/benchmark-gate exited $status on a slowed adapter, not 1 for the budget:"
+            cat "$RUNNER_TEMP/err-adapter"
+            exit 1
+          fi
+          said adapter "of Ruff's parse, over its budget of 60%"
 
       # Saved whether or not the gate held: each benchmark's Callgrind profile is what a
       # reviewer reads to see where the instructions went.

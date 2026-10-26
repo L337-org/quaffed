@@ -1,6 +1,6 @@
-//! `scripts/benchmark-gate` fails a benchmark more than 2% above main's count, naming it and both
-//! counts, fails an arena that costs more than its budget's share of Ruff's parse, and fails
-//! rather than passes when it has nothing to compare.
+//! `scripts/benchmark-gate` raises an alert, without failing, for a benchmark more than 2% above
+//! main's count, naming it and both counts; fails an arena that costs more than its budget's share
+//! of Ruff's parse; and fails rather than passes when it has nothing to compare.
 //!
 //! Each test writes gungraun summaries in the shape `--save-summary=json` produces and runs the
 //! script with `python3`.  The counting itself runs in CI's **Benchmarks** job, where
@@ -76,7 +76,18 @@ const MAIN: &[(&str, &str, u64)] = &[
 ];
 
 fn gate(main: &Path, pull_request: &Path, extra: &[&str]) -> Output {
-    Command::new("python3")
+    gate_in(main, pull_request, extra, None)
+}
+
+/// As [`gate`], with `GITHUB_ACTIONS` set to `actions` or, by default, unset: these tests run
+/// in GitHub Actions too, where an inherited one would have the script annotate the test job.
+fn gate_in(main: &Path, pull_request: &Path, extra: &[&str], actions: Option<&str>) -> Output {
+    let mut command = Command::new("python3");
+    match actions {
+        Some(value) => command.env("GITHUB_ACTIONS", value),
+        None => command.env_remove("GITHUB_ACTIONS"),
+    };
+    command
         .arg(workspace_root().join("scripts/benchmark-gate"))
         .arg("--main")
         .arg(main)
@@ -136,7 +147,7 @@ fn unchanged_counts_pass_and_show_every_benchmark_and_the_arenas_share() {
 }
 
 #[test]
-fn a_rise_of_more_than_two_percent_fails_naming_the_benchmark_and_both_counts() {
+fn a_rise_of_more_than_two_percent_is_an_alert_naming_the_benchmark_and_both_counts() {
     let scratch = Scratch::new();
     let out = gate(
         &scratch.side("main", MAIN),
@@ -144,15 +155,65 @@ fn a_rise_of_more_than_two_percent_fails_naming_the_benchmark_and_both_counts() 
         &[],
     );
     let all = text(&out);
-    assert_eq!(out.status.code(), Some(1), "{all}");
+    assert_eq!(out.status.code(), Some(0), "{all}");
     assert!(
         all.contains(
-            "benchmark-gate: matching a_name_used_twice: 200,000 on main, 204,002 on the pull request, +2.0%, more than the 2% allowed"
+            "benchmark-gate: alert - matching a_name_used_twice: 200,000 on main, 204,002 on the pull request, +2.0%, more than 2% above main"
         ),
         "{all}"
     );
     assert!(
-        all.contains("| `matching a_name_used_twice` | 200,000 | 204,002 | +2.0% **regressed** |"),
+        all.contains("| `matching a_name_used_twice` | 200,000 | 204,002 | +2.0% **rose** |"),
+        "{all}"
+    );
+    assert!(
+        all.contains("**Alert, not failing the run** - check the rise is expected:"),
+        "{all}"
+    );
+    assert!(!all.contains("::warning"), "{all}");
+}
+
+#[test]
+fn in_github_actions_a_rise_is_raised_as_a_warning_on_the_pull_request() {
+    let scratch = Scratch::new();
+    let out = gate_in(
+        &scratch.side("main", MAIN),
+        &scratch.side("pr", &with(&[("matching", "a_name_used_twice", 300_000)])),
+        &[],
+        Some("true"),
+    );
+    let all = text(&out);
+    assert_eq!(out.status.code(), Some(0), "{all}");
+    assert!(
+        all.contains(
+            "::warning title=Instruction count rose::matching a_name_used_twice: 200,000 on main, 300,000 on the pull request, +50.0%"
+        ),
+        "{all}"
+    );
+}
+
+#[test]
+fn a_rise_does_not_hide_an_arena_over_its_budget() {
+    let scratch = Scratch::new();
+    let out = gate(
+        &scratch.side("main", MAIN),
+        &scratch.side(
+            "pr",
+            &with(&[
+                ("matching", "a_name_used_twice", 300_000),
+                ("parse_into_arena", "synthetic", 1_700_000),
+            ]),
+        ),
+        &[],
+    );
+    let all = text(&out);
+    assert_eq!(out.status.code(), Some(1), "{all}");
+    assert!(
+        all.contains("benchmark-gate: alert - matching a_name_used_twice"),
+        "{all}"
+    );
+    assert!(
+        all.contains("building the arena costs 70.0% of Ruff's parse, over its budget of 60%"),
         "{all}"
     );
 }
@@ -202,7 +263,7 @@ fn an_arena_over_its_budget_fails_saying_the_share_and_the_budget() {
 #[test]
 fn a_slower_arena_cannot_hide_inside_a_faster_parse() {
     // Ruff's parse falls and the arena's cost rises by as much: the total moves by nothing, so
-    // the 2% rule passes it, and only the budget fails it.
+    // the 2% rule raises nothing, and only the budget fails it.
     let scratch = Scratch::new();
     let out = gate(
         &scratch.side("main", MAIN),
@@ -215,7 +276,7 @@ fn a_slower_arena_cannot_hide_inside_a_faster_parse() {
         all.contains("building the arena costs 66.7% of Ruff's parse, over its budget of 60%"),
         "{all}"
     );
-    assert!(!all.contains("more than the 2% allowed"), "{all}");
+    assert!(!all.contains("more than 2% above main"), "{all}");
 }
 
 #[test]
