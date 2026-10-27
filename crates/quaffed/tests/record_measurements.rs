@@ -725,3 +725,27 @@ fn a_url_naming_its_database_and_another_precision_posts_in_seconds_to_that_data
         "/write-here?db=quaffed_db&precision=s"
     );
 }
+
+#[test]
+fn a_kept_artefact_with_no_points_is_deleted_and_blocks_none_behind_it() {
+    let scratch = Scratch::new();
+    // The fake downloads the same files for every artefact: none here, so both hold no points.
+    let bin = fake_gh(
+        &scratch,
+        "77\t1234\n78\t1235\n",
+        OURS,
+        &[("notes.txt", "x")],
+        false,
+    );
+    let (url, received) = server(&[]);
+    let output = catch_up(&scratch, &bin, &url);
+    assert_eq!(output.status.code(), Some(1), "{}", text(&output));
+    assert!(received.lock().unwrap().is_empty());
+    let calls = calls(&bin);
+    assert!(calls.contains("artifacts/77"), "{calls}");
+    assert!(
+        calls.contains("run download 1235"),
+        "the second was not reached: {calls}"
+    );
+    assert!(calls.contains("artifacts/78"), "{calls}");
+}

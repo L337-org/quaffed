@@ -458,6 +458,7 @@ def catch_up(endpoint, rejected):
     if not artefacts:
         print("record-measurements: nothing unrecorded from earlier runs", file=sys.stderr)
         return 0
+    status = 0
     for artefact, run_id in artefacts:
         try:
             if not left_by_recording(repository, run_id):
@@ -468,14 +469,17 @@ def catch_up(endpoint, rejected):
                 )
                 annotate("warning", f"ignored artefact {artefact} of run {run_id}: not ours")
                 continue
-            if catch_up_one(endpoint, repository, artefact, run_id, rejected):
+            outcome = catch_up_one(endpoint, repository, artefact, run_id, rejected)
+            if outcome == "unposted":
                 # The endpoint is down; the rest wait for the next run rather than the job.
                 return 1
+            if outcome == "empty":
+                status = 1
         except Gone:
             # Another run posted and deleted it between the listing and now: posting is
             # idempotent, so whichever run got there first, it is recorded.
             print(f"record-measurements: artefact {artefact} is already gone", file=sys.stderr)
-    return 0
+    return status
 
 
 def left_by_recording(repository, run_id):
@@ -499,7 +503,8 @@ class Gone(Exception):
 
 
 def catch_up_one(endpoint, repository, artefact, run_id, rejected):
-    """Post one artefact's files, deleting it once none is left unposted: 0, or 1 if it stays."""
+    """Post one artefact's files, deleting it once none is left unposted: "posted", "unposted"
+    if it stays, or "empty" if it held no points, deleted so that it blocks nothing behind it."""
     with tempfile.TemporaryDirectory() as scratch:
         gh(
             ["run", "download", run_id, "--repo", repository, "--name", UNRECORDED]
@@ -508,22 +513,30 @@ def catch_up_one(endpoint, repository, artefact, run_id, rejected):
         )
         files = sorted(p for p in Path(scratch).rglob("*.lp") if p.is_file())
         if not files:
-            raise Unrecordable(f"artefact {artefact} of run {run_id} holds no points")
+            message = f"artefact {artefact} of run {run_id} held no points, so it is deleted"
+            print(f"record-measurements: {message}", file=sys.stderr)
+            annotate("error", message)
+            delete(repository, artefact)
+            return "empty"
         # A rejected file is kept by this run instead, so either way the artefact is done with;
         # one not posted stays in the artefact, which is left to be tried again.  Once, without
         # retrying: the run that kept it already retried.
         for f in files:
             if post_file(endpoint, f, None, rejected, retry=False) == "unposted":
-                return 1
-    gh(
-        ["api", "--method", "DELETE", f"repos/{repository}/actions/artifacts/{artefact}"],
-        f"deleting artefact {artefact}, now posted",
-    )
+                return "unposted"
+    delete(repository, artefact)
     print(
         f"record-measurements: posted and deleted artefact {artefact} of run {run_id}",
         file=sys.stderr,
     )
-    return 0
+    return "posted"
+
+
+def delete(repository, artefact):
+    gh(
+        ["api", "--method", "DELETE", f"repos/{repository}/actions/artifacts/{artefact}"],
+        f"deleting artefact {artefact}",
+    )
 
 
 def gh(arguments, doing):
