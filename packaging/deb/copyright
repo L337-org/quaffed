@@ -2,134 +2,305 @@ Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: quaffed
 Upstream-Contact: Gavin Lucas <Gavin@L337.org>
 Source: https://github.com/L337-org/quaffed
+Comment: usr/bin/quaff is a statically linked binary, so it contains every
+ crate it is built from as well as quaffed itself.  quaffed is the first
+ paragraph below; each paragraph after it is a part of the binary that came
+ from elsewhere, with that part's own copyright holders and licence.
+ .
+ The binary is built from crates rather than from files in quaffed's source,
+ so a paragraph for a crate names it as crates.io/NAME/* and one for a part of
+ the Rust toolchain as toolchain/NAME/*.  The crates include procedural macros
+ and the crates those are built from, because the code a macro generates is
+ compiled into the binary.  Where a crate is offered under a choice of
+ licences, its paragraph says which one it is used under here.
+ .
+ The binary also contains LLVM's libunwind, from the Rust toolchain, whose
+ licence's LLVM exception waives the notice for code embedded in a binary.
+ .
+ The crates are checked against the binary's dependency graph by
+ crates/quaffed/tests/packaging.rs in the source repository.  The toolchain's
+ parts are outside that graph, so they are kept here by hand.
 
 Files: *
 Copyright: 2026 Gavin Lucas
- 2019 Octavian Oncescu
- 2018-2025 Microsoft Corporation, Daan Leijen
- 2015-2019 Andrew Gallant
- 2014 The Rust Project Developers
- 2019 The Crossbeam Project Developers
- 2005-2020 Rich Felker and other contributors
- 2001 Python Software Foundation
- The Rust Project Developers
- 2022 Charles Marsh
- 2020 RustPython Team
- 2014 Huon Wilson
- 1991-2023 Unicode, Inc.
- 2014-2022 Steven Fackler, Yuki Okushi
- 2015-2023 Ulrik Sverdrup "bluss"
- 2016 Amanieu d'Antras
- 2014 Alex Crichton
- 2018 Simonas Kazlauskas
- 2018 The Servo Project Developers
- 2017 Nikolai Vazquez
- 2019 Daniel "Lokathor" Gee
- 2021 Stephen M. Coakley
- 2021 Parker Timmerman
- 2024 ryota2357
- 2022 Denis Kerp, 2025 Nicolas
+License: GPL-3+
+
+Files: crates/encoding/src/codecs.rs
+Copyright: 2001 Python Software Foundation
+ 2026 Gavin Lucas
+License: GPL-3+ and PSF-2.0
+Comment: Character-mapping tables derived from CPython's codecs, the encodings
+ package of Python 3.14.8 (Copyright (c) 2001 Python Software Foundation; All
+ Rights Reserved), under the PSF License Version 2.  CPython generated those
+ codecs from the Unicode Consortium's mapping files.  The change made: each
+ single-byte codec's decoding table, what each run of bytes decodes to in each
+ multi-byte codec quaff reads, and the codec and alias names, are read from
+ CPython by decoding with it and written out as Rust data by
+ scripts/generate-codecs in the source repository.  Being data in the source
+ tree rather than a crate, it is kept here by hand.
+
+Files: toolchain/musl/*
+Copyright: 2005-2020 Rich Felker and other contributors
+License: Expat
+Comment: The musl C library.
+
+Files: toolchain/rust-std/*
+Copyright: The Rust Project Developers
+License: Expat or Apache-2.0
+Comment: The Rust standard library.
+
+Files: crates.io/mimalloc/*
+ crates.io/libmimalloc-sys/*
+Copyright: 2019 Octavian Oncescu
+License: Expat
+
+Files: crates.io/libmimalloc-sys/c_src/mimalloc/*
+Copyright: 2018-2025 Microsoft Corporation, Daan Leijen
+License: Expat
+Comment: The mimalloc C library, which libmimalloc-sys bundles.
+
+Files: crates.io/aho-corasick/*
+ crates.io/globset/*
+ crates.io/ignore/*
+ crates.io/memchr/*
+ crates.io/walkdir/*
+Copyright: 2015 Andrew Gallant
+License: Expat
+Comment: Each offered under the Unlicense or Expat; used here under Expat.
+
+Files: crates.io/same-file/*
+Copyright: 2017 Andrew Gallant
+License: Expat
+Comment: Offered under the Unlicense or Expat; used here under Expat.
+
+Files: crates.io/bstr/*
+Copyright: 2018-2019 Andrew Gallant
+License: Expat
+Comment: Offered under Expat or Apache-2.0; used here under Expat.
+
+Files: crates.io/bitflags/*
+ crates.io/log/*
+ crates.io/regex-automata/*
+ crates.io/regex-syntax/*
+Copyright: 2014 The Rust Project Developers
+License: Expat
+Comment: Each offered under Expat or Apache-2.0; used here under Expat.
+
+Files: crates.io/heck/*
+ crates.io/unicode-normalization/*
+Copyright: 2015 The Rust Project Developers
+License: Expat
+Comment: Each offered under Expat or Apache-2.0; used here under Expat.
+
+Files: crates.io/libc/*
+ crates.io/rustc-hash/*
+Copyright: The Rust Project Developers
+License: Expat
+Comment: Each offered under Expat or Apache-2.0; used here under Expat.
+
+Files: crates.io/siphasher/*
+Copyright: 2012-2016 The Rust Project Developers
  2016-2026 Frank Denis
- Aleksey Kladov
- Aria Beingessner
- David Tolnay
- The indexmap, either and equivalent developers
- 2021-2024 Roland Fredenhagen
- 2015 The Rust Project Developers
- The collection_literals Contributors
- 강동윤
-License: GPL-3+ and Expat and (Expat or Apache-2.0) and Apache-2.0 and PSF-2.0
- and Unicode-DFS-2016 and Unicode-3.0
-Comment: usr/bin/quaff is a statically linked binary.  quaffed itself is
- licensed GPL-3+.  The binary also contains these crates, each under the Expat
- licence: mimalloc 0.1.52 and libmimalloc-sys 0.1.49 (copyright 2019 Octavian
- Oncescu), the latter bundling the mimalloc C library (copyright 2018-2025
- Microsoft Corporation, Daan Leijen).
- .
- It contains these crates, each offered under a choice of licences and used
- here under the Expat licence: ignore 0.4.33, globset 0.4.20, memchr 2.8.3,
- aho-corasick 1.1.5 and walkdir 2.5.0 (copyright 2015 Andrew Gallant),
- same-file 1.0.6 (copyright 2017 Andrew Gallant) and bstr 1.13.1 (copyright
- 2018-2019 Andrew Gallant), each Unlicense or Expat, or for bstr Expat or
- Apache-2.0; regex-automata 0.4.18, regex-syntax 0.8.11 and log 0.4.34
- (copyright 2014 The Rust Project Developers), each Expat or Apache-2.0; and
- crossbeam-deque 0.8.8, crossbeam-epoch 0.9.21 and crossbeam-utils 0.8.23
- (copyright 2019 The Crossbeam Project Developers), each Expat or Apache-2.0.
- .
- It contains Ruff's Python parser, under the Expat licence (copyright 2022
- Charles Marsh): ruff_python_ast 0.0.18, ruff_python_parser 0.0.18,
- ruff_python_trivia 0.0.18, ruff_source_file 0.0.18 and ruff_text_size
- 0.0.18.  The crates ship no licence file; Ruff's repository licence is Expat,
- and names the projects parts of them are derived from, among them RustPython's
- parser (copyright 2020 RustPython Team, Expat) and rust-analyzer's text-size
- (Expat).  ruff_unicode_names2 0.0.18 (copyright 2014 Huon Wilson), Expat or
- Apache-2.0, used here under Expat, holds tables generated from the Unicode
- Character Database, under the Unicode-DFS-2016 licence (copyright Unicode,
- Inc.).
- .
- It contains these crates under the Expat licence: castaway 0.2.4 (copyright
- 2021 Stephen M. Coakley), char_str 0.0.4 (copyright 2024 ryota2357),
- compact_str 0.10.0 (copyright 2021 Parker Timmerman), phf 0.11.3 and
- phf_shared 0.11.3 (copyright 2014-2022 Steven Fackler, Yuki Okushi), and
- zmij 1.0.23 (David Tolnay).
- .
- It contains these crates, each Expat or Apache-2.0 and used here under the
- Expat licence: arrayvec 0.7.8 and itertools 0.15.0 (copyright 2015-2023 Ulrik
- Sverdrup "bluss"), bitflags 2.13.2, libc 0.2.190, rustc-hash 2.1.3 and
- unicode-normalization 0.1.25 (copyright The Rust Project Developers), cfg-if
- 1.0.5 (copyright 2014 Alex Crichton), stacker 0.1.25 (copyright 2014 Alex
- Crichton, Simonas Kazlauskas), psm 0.1.32 (copyright 2018 Simonas Kazlauskas),
- drop_bomb 0.1.5 (Aleksey Kladov), either 1.18.0, equivalent 1.0.2, indexmap
- 2.14.2 and ordermap 1.2.2 (their developers), get-size2 0.11.0 (copyright 2022
- Denis Kerp, 2025 Nicolas), hashbrown 0.17.1 (copyright 2016 Amanieu d'Antras),
- itoa 1.0.18 and thiserror 2.0.21 (David Tolnay), siphasher 1.0.4 (copyright
- 2012-2016 The Rust Project Developers, 2016-2026 Frank Denis), smallvec 1.16.2
- (copyright 2018 The Servo Project Developers), static_assertions 1.1.0
- (copyright 2017 Nikolai Vazquez) and thin-vec 0.2.20 (Aria
- Beingessner).  tinyvec 1.13.3 (copyright 2019 Daniel "Lokathor" Gee) is Zlib,
- Apache-2.0 or Expat, used here under Expat.  ryu 1.0.23 (David Tolnay) is
- Apache-2.0 or BSL-1.0, used here under Apache-2.0.  unicode-ident 1.0.26
- (David Tolnay), Expat or Apache-2.0 and used here under Expat, holds tables
- derived from the Unicode Character Database under the Unicode-3.0 licence
- (copyright 1991-2023 Unicode, Inc.).
- .
- It contains code generated by procedural macros that Ruff's crates use, and
- the crates those macros are built from.  These are each Expat or Apache-2.0,
- used here under the Expat licence: syn 2.0.119, syn 3.0.6, quote 1.0.47,
- rustversion 1.0.23 and thiserror-impl 2.0.21 (David Tolnay), proc-macro2
- 1.0.107 (David Tolnay, Alex Crichton), heck 0.5.0 (copyright 2015 The Rust
- Project Developers), get-size-derive2 0.11.0 (copyright 2022 Denis Kerp),
- derive-where 1.7.0 (copyright 2021 Roland Fredenhagen), manyhow-macros 0.11.4
- (copyright 2022 Roland Fredenhagen), interpolator 0.5.0, manyhow 0.11.4 and
- proc-macro-utils 0.10.0 (copyright 2023 Roland Fredenhagen), and
- attribute-derive 0.10.5 (copyright 2024 Roland Fredenhagen).  These are
- Expat: attribute-derive-macro 0.10.5 (copyright 2022 Roland Fredenhagen),
- collection_literals 1.0.3 (copyright The collection_literals Contributors),
- and quote-use 0.8.4 and quote-use-macros 0.8.4, which ship no licence file or
- author; their repository is github.com/ModProg/quote-use.  is-macro 0.3.8
- (강동윤) is Apache-2.0.
- .
- It contains the musl C library
- (copyright 2005-2020 Rich Felker and other contributors), under the Expat
- licence, and the Rust standard library, licensed Expat or Apache-2.0.  It also
- contains LLVM's libunwind, whose licence's LLVM exception waives the notice
- for code embedded in a binary.
- .
- It contains character-mapping tables derived from CPython's codecs, the
- encodings package of Python 3.14.8 (Copyright (c) 2001 Python Software
- Foundation; All Rights Reserved), under the PSF License Version 2.  CPython
- generated those codecs from the Unicode Consortium's mapping files.  The
- change made: each single-byte codec's decoding table, what each run of bytes
- decodes to in each multi-byte codec quaff reads, and the codec and alias
- names, are read from CPython by decoding with it and written out as Rust
- data by scripts/generate-codecs in the source repository, to
- crates/encoding/src/codecs.rs.  Being data in the source tree rather than a
- crate, it is kept here by hand.
- .
- The crates listed here are checked against the binary's dependency graph by
- crates/quaffed/tests/packaging.rs in the source repository.  musl and
- libunwind come with the Rust toolchain rather than as crates, so that test
- cannot see them and they are kept here by hand.
+License: Expat
+Comment: Offered under Expat or Apache-2.0; used here under Expat.
+
+Files: crates.io/crossbeam-deque/*
+ crates.io/crossbeam-epoch/*
+ crates.io/crossbeam-utils/*
+Copyright: 2019 The Crossbeam Project Developers
+License: Expat
+Comment: Each offered under Expat or Apache-2.0; used here under Expat.
+
+Files: crates.io/ruff_python_ast/*
+ crates.io/ruff_python_parser/*
+ crates.io/ruff_python_trivia/*
+ crates.io/ruff_source_file/*
+ crates.io/ruff_text_size/*
+Copyright: 2022 Charles Marsh
+ 2020 RustPython Team
+License: Expat
+Comment: Ruff's Python parser.  The crates ship no licence file; Ruff's
+ repository licence is Expat, and names the projects parts of them are
+ derived from, among them RustPython's parser (copyright 2020 RustPython Team,
+ Expat) and rust-analyzer's text-size (Expat).
+
+Files: crates.io/ruff_unicode_names2/*
+Copyright: 2014 Huon Wilson
+ Unicode, Inc.
+License: Expat and Unicode-DFS-2016
+Comment: Offered under Expat or Apache-2.0; used here under Expat.  It holds
+ tables generated from the Unicode Character Database, under the
+ Unicode-DFS-2016 licence.
+
+Files: crates.io/castaway/*
+Copyright: 2021 Stephen M. Coakley
+License: Expat
+
+Files: crates.io/char_str/*
+Copyright: 2024 ryota2357
+License: Expat
+
+Files: crates.io/compact_str/*
+Copyright: 2021 Parker Timmerman
+License: Expat
+
+Files: crates.io/phf/*
+ crates.io/phf_shared/*
+Copyright: 2014-2022 Steven Fackler, Yuki Okushi
+License: Expat
+
+Files: crates.io/zmij/*
+Copyright: David Tolnay
+License: Expat
+
+Files: crates.io/itoa/*
+ crates.io/quote/*
+ crates.io/rustversion/*
+ crates.io/syn/*
+ crates.io/thiserror/*
+ crates.io/thiserror-impl/*
+Copyright: David Tolnay
+License: Expat
+Comment: Each offered under Expat or Apache-2.0; used here under Expat.
+
+Files: crates.io/proc-macro2/*
+Copyright: David Tolnay, Alex Crichton
+License: Expat
+Comment: Offered under Expat or Apache-2.0; used here under Expat.
+
+Files: crates.io/ryu/*
+Copyright: David Tolnay
+License: Apache-2.0
+Comment: Offered under Apache-2.0 or BSL-1.0; used here under Apache-2.0.
+
+Files: crates.io/unicode-ident/*
+Copyright: David Tolnay
+ 1991-2023 Unicode, Inc.
+License: Expat and Unicode-3.0
+Comment: Offered under Expat or Apache-2.0; used here under Expat.  It holds
+ tables derived from the Unicode Character Database, under the Unicode-3.0
+ licence.
+
+Files: crates.io/arrayvec/*
+Copyright: 2015-2023 Ulrik Sverdrup "bluss"
+License: Expat
+Comment: Offered under Expat or Apache-2.0; used here under Expat.
+
+Files: crates.io/itertools/*
+Copyright: 2015 Ulrik Sverdrup "bluss"
+License: Expat
+Comment: Offered under Expat or Apache-2.0; used here under Expat.
+
+Files: crates.io/cfg-if/*
+Copyright: 2014 Alex Crichton
+License: Expat
+Comment: Offered under Expat or Apache-2.0; used here under Expat.
+
+Files: crates.io/stacker/*
+Copyright: 2014 Alex Crichton, Simonas Kazlauskas
+License: Expat
+Comment: Offered under Expat or Apache-2.0; used here under Expat.
+
+Files: crates.io/psm/*
+Copyright: 2018 Simonas Kazlauskas
+License: Expat
+Comment: Offered under Expat or Apache-2.0; used here under Expat.
+
+Files: crates.io/drop_bomb/*
+Copyright: Aleksey Kladov
+License: Expat
+Comment: Offered under Expat or Apache-2.0; used here under Expat.
+
+Files: crates.io/either/*
+Copyright: 2015 The either developers
+License: Expat
+Comment: Offered under Expat or Apache-2.0; used here under Expat.
+
+Files: crates.io/equivalent/*
+Copyright: 2016-2023 The equivalent developers
+License: Expat
+Comment: Offered under Expat or Apache-2.0; used here under Expat.
+
+Files: crates.io/indexmap/*
+ crates.io/ordermap/*
+Copyright: 2016-2017 The indexmap developers
+License: Expat
+Comment: Each offered under Expat or Apache-2.0; used here under Expat.
+
+Files: crates.io/get-size2/*
+Copyright: 2022 Denis Kerp
+ 2025 Nicolas
+License: Expat
+Comment: Offered under Expat or Apache-2.0; used here under Expat.
+
+Files: crates.io/get-size-derive2/*
+Copyright: 2022 Denis Kerp
+License: Expat
+Comment: Offered under Expat or Apache-2.0; used here under Expat.
+
+Files: crates.io/hashbrown/*
+Copyright: 2016 Amanieu d'Antras
+License: Expat
+Comment: Offered under Expat or Apache-2.0; used here under Expat.
+
+Files: crates.io/smallvec/*
+Copyright: 2018 The Servo Project Developers
+License: Expat
+Comment: Offered under Expat or Apache-2.0; used here under Expat.
+
+Files: crates.io/static_assertions/*
+Copyright: 2017 Nikolai Vazquez
+License: Expat
+Comment: Offered under Expat or Apache-2.0; used here under Expat.
+
+Files: crates.io/thin-vec/*
+Copyright: Aria Beingessner
+License: Expat
+Comment: Offered under Expat or Apache-2.0; used here under Expat.
+
+Files: crates.io/tinyvec/*
+Copyright: 2019 Daniel "Lokathor" Gee
+License: Expat
+Comment: Offered under Zlib, Apache-2.0 or Expat; used here under Expat.
+
+Files: crates.io/derive-where/*
+Copyright: 2021 Roland Fredenhagen
+License: Expat
+Comment: Offered under Expat or Apache-2.0; used here under Expat.
+
+Files: crates.io/attribute-derive-macro/*
+ crates.io/manyhow-macros/*
+Copyright: 2022 Roland Fredenhagen
+License: Expat
+Comment: attribute-derive-macro is Expat.  manyhow-macros is offered under
+ Expat or Apache-2.0; used here under Expat.
+
+Files: crates.io/interpolator/*
+ crates.io/manyhow/*
+ crates.io/proc-macro-utils/*
+Copyright: 2023 Roland Fredenhagen
+License: Expat
+Comment: Each offered under Expat or Apache-2.0; used here under Expat.
+
+Files: crates.io/attribute-derive/*
+Copyright: 2024 Roland Fredenhagen
+License: Expat
+Comment: Offered under Expat or Apache-2.0; used here under Expat.
+
+Files: crates.io/collection_literals/*
+Copyright: The collection_literals Contributors
+License: Expat
+
+Files: crates.io/quote-use/*
+ crates.io/quote-use-macros/*
+Copyright: The quote-use developers
+License: Expat
+Comment: The crates ship no licence file or author; their repository is
+ github.com/ModProg/quote-use.
+
+Files: crates.io/is-macro/*
+Copyright: 강동윤
+License: Apache-2.0
 
 License: GPL-3+
  This program is free software: you can redistribute it and/or modify it

@@ -195,7 +195,7 @@ To read a new codec, or to follow a CPython release that changed one:
 3. Run `cargo test -p quaffed-encoding`.  The tables must stay sorted, every codec must spell CR
    and LF one way each, which a textual search relies on to find line endings, and every
    multi-byte reading must match CPython's.
-4. If the tables now come from another CPython release, name it in the attribution in
+4. If the tables now come from another CPython release, name it in the tables' paragraph in
    `packaging/deb/copyright`; `crates/quaffed/tests/packaging.rs` fails until it does.
 5. Update this page in the same change.
 

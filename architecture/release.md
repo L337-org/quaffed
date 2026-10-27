@@ -23,18 +23,39 @@ symbols, for flamegraphs (`verification.md`).
 fails with *"failed to find tool "x86_64-linux-musl-gcc""*.  Ruff's parser needs one as well,
 through `stacker` and `psm`'s assembly, so this stays a requirement whatever happens to mimalloc.
 
-**The copyright file is hand-written**, in Debian's machine-readable format, and names everything
-linked into the binary with its copyright and licence, because the binary distributes it.
+**The copyright file is hand-written**, in Debian's machine-readable format, and accounts for
+everything linked into the binary, because the binary distributes it.  **Each part has its own
+`Files` paragraph with its own holders and licence**, so that nobody reads another project's
+authors as quaffed's: `Files: *` is quaffed alone, and each crate, or each group of crates sharing
+holders and a licence, follows as `crates.io/NAME/*`.  The crates are not in the source tree, so
+those patterns name crates rather than files; the toolchain's parts are `toolchain/NAME/*`.  **A
+crate is named without its version**, so a dependency update that brings no new crate needs no
+change to the file.  Where a crate offers a choice of licences, its paragraph's `License` is the
+one used here and its `Comment` says what was offered.
+
 `crates/quaffed/tests/packaging.rs` reads the binary's dependency graph for both packaged targets
-with `cargo tree` and fails naming any crate the file does not mention, so adding a dependency means
-adding it there.  It leaves out build scripts' dependencies, which run inside the compiler, but
-not procedural macros or the crates they are built from: the code a derive generates is compiled
-into the binary, and the graph cannot tell which macros' output ships.  **What comes with the Rust
+with `cargo tree` and fails naming any crate no paragraph covers.  It leaves out build scripts'
+dependencies, which run inside the compiler, but not procedural macros or the crates they are
+built from: the code a derive generates is compiled into the binary, and the graph cannot tell
+which macros' output ships.  It also fails on a `Files` paragraph without a `Copyright` or a
+`License`, or whose licence has no paragraph carrying its text.  **What comes with the Rust
 toolchain rather than as a crate - the musl C library and LLVM's libunwind - is outside that graph,
 so the test cannot see it**, and nor is data in the source tree derived from someone else's work -
 the codec tables generated from CPython (`encoding.md`).  Both are kept by hand: check the first
-when the toolchain's musl target changes.  For the second, `packaging.rs` fails if the attribution
-does not name the CPython release the tables were generated from.
+when the toolchain's musl target changes.  For the second, `packaging.rs` fails if the tables'
+paragraph does not name the CPython release they were generated from.  **Nor does the test see a
+licence change between versions of a crate**: matching by name means a new version is taken to
+keep its licence.
+
+When the test names a crate:
+
+1. Read the crate's licence files and its `Cargo.toml` for its holders and its licence.
+2. If an existing paragraph has exactly those holders and that licence, add
+   `crates.io/NAME/*` to its `Files`; otherwise add a paragraph for it.
+3. If its licence is not yet carried, add a `License` paragraph with the text, or the
+   `/usr/share/common-licenses` path where Debian ships it.
+4. When a crate offers a choice, use one the file already carries, and say what was offered in the
+   paragraph's `Comment`.
 
 **The version** is the workspace's, read by `scripts/workspace-version`, and the release's tag
 must be `v` followed by it.  The changelog has one entry per version pointing at the release notes,
