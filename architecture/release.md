@@ -28,10 +28,14 @@ everything linked into the binary, because the binary distributes it.  **Each pa
 `Files` paragraph with its own holders and licence**, so that nobody reads another project's
 authors as quaffed's: `Files: *` is quaffed alone, and each crate, or each group of crates sharing
 holders and a licence, follows as `crates.io/NAME/*`.  The crates are not in the source tree, so
-those patterns name crates rather than files; the toolchain's parts are `toolchain/NAME/*`.  **A
-crate is named without its version**, so a dependency update that brings no new crate needs no
-change to the file.  Where a crate offers a choice of licences, its paragraph's `License` is the
-one used here and its `Comment` says what was offered.
+those patterns name crates rather than files; the toolchain's parts are `toolchain/NAME/*`.  A
+crate is covered only by `crates.io/NAME/*` itself: a paragraph for part of one, such as the C
+library `libmimalloc-sys` bundles, comes after it and does not cover the rest.  The one part with
+no paragraph is LLVM's libunwind, whose licence's LLVM exception waives the notice for code
+embedded in a binary; the file's header says so.  **A crate is named without its version**, so a
+dependency update that brings no new crate needs no change to the file.  Where a crate offers a
+choice of licences, its paragraph's `License` is the one used here and its `Comment` says what was
+offered.
 
 `crates/quaffed/tests/packaging.rs` reads the binary's dependency graph for both packaged targets
 with `cargo tree` and fails naming any crate no paragraph covers.  It leaves out build scripts'

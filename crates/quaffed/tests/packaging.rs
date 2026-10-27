@@ -138,18 +138,23 @@ fn copyright_paragraphs() -> (PathBuf, Vec<BTreeMap<String, String>>) {
     (path, paragraphs)
 }
 
-/// The crate a `Files` pattern names, `NAME` for `crates.io/NAME/*` or a path under it.
+/// The crate a `Files` pattern covers whole, `NAME` for `crates.io/NAME/*` and nothing else.
+///
+/// A pattern for part of a crate, such as the C library one bundles, does not cover it: the rest
+/// would fall through to `Files: *`, which is quaffed's own.
 fn crate_of(pattern: &str) -> Option<&str> {
-    pattern.strip_prefix("crates.io/")?.split('/').next()
+    pattern
+        .strip_prefix("crates.io/")?
+        .strip_suffix("/*")
+        .filter(|name| !name.is_empty() && !name.contains('/'))
 }
 
 #[test]
-fn a_crate_is_named_by_its_files_pattern() {
+fn a_crate_is_covered_only_by_a_pattern_for_the_whole_crate() {
     assert_eq!(crate_of("crates.io/mimalloc/*"), Some("mimalloc"));
-    assert_eq!(
-        crate_of("crates.io/libmimalloc-sys/c_src/mimalloc/*"),
-        Some("libmimalloc-sys")
-    );
+    assert_eq!(crate_of("crates.io/libmimalloc-sys/c_src/mimalloc/*"), None);
+    assert_eq!(crate_of("crates.io/mimalloc"), None);
+    assert_eq!(crate_of("crates.io//*"), None);
     assert_eq!(crate_of("toolchain/musl/*"), None);
     assert_eq!(crate_of("*"), None);
 }
@@ -197,11 +202,13 @@ fn the_package_copyright_file_has_a_paragraph_for_every_linked_crate() {
 #[test]
 fn every_files_paragraph_has_a_copyright_and_a_licence_whose_text_is_carried() {
     let (path, paragraphs) = copyright_paragraphs();
-    // A paragraph with a License field and no Files field carries that licence's text.
+    // A paragraph with a License field and no Files field carries that licence's text, in the
+    // lines after its name; one with the name alone carries nothing.
     let carried: BTreeSet<&str> = paragraphs
         .iter()
         .filter(|paragraph| !paragraph.contains_key("Files"))
         .filter_map(|paragraph| paragraph.get("License"))
+        .filter(|license| license.lines().skip(1).any(|line| !line.trim().is_empty()))
         .filter_map(|license| license.lines().next())
         .collect();
     let mut faults = Vec::new();
