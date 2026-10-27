@@ -2,7 +2,7 @@
 //!
 //! Run under gungraun's runner and Valgrind's Callgrind, Linux only: `cargo bench -p
 //! quaffed-python --bench front_end`.  `scripts/benchmarks` counts one tree's, and
-//! `scripts/benchmark-gate` compares main's with a pull request's; architecture/verification.md
+//! `scripts/benchmark-gate` compares main's with a pull request's; architecture/performance.md
 //! has how, and why.
 //!
 //! Reading and decoding the files, building arenas to search and compiling patterns are setup,

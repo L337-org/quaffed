@@ -33,7 +33,7 @@ codegen-units = 1
 strip = "symbols"
 
 # For profiling: the shipped build's optimisation, with full debug information and nothing
-# stripped, so a profiler can name every frame.  architecture/verification.md has the workflow.
+# stripped, so a profiler can name every frame.  architecture/performance.md has the workflow.
 [profile.profiling]
 inherits = "dist"
 debug = true
@@ -41,7 +41,7 @@ strip = "none"
 
 # The instruction-count benchmarks: the shipped optimisation, with the symbols that let gungraun
 # find each benchmark and a profile name its functions, but no debug information, with which some
-# counts on arm64 collapse.  architecture/verification.md says why.
+# counts on arm64 collapse.  architecture/performance.md says why.
 [profile.benchmarks]
 inherits = "dist"
 strip = "none"

@@ -7,7 +7,7 @@ permissions:
 # condition coverage is measured alongside and reported, never failing it.  Main is measured in
 # the same run as the pull request, at the tip the pull request would merge into, so the two
 # sides share a runner image, toolchain and tool versions and no figure is stored between runs.
-# architecture/verification.md has the reasoning; scripts/coverage measures and
+# architecture/testing.md has the reasoning; scripts/coverage measures and
 # scripts/coverage-ratchet compares.
 on:
   pull_request:

@@ -4,50 +4,36 @@
 text to the operation representation (`representation.md`).  `parse_source` reads one source -
 a script file, standard input, or one `-e` expression - and appends its statements to a
 `Program`.  Sources compose in the order they are parsed, and inline text goes through the same
-parser as a file, never split on `;` first, because an operand may contain one.
+parser as a file, never split on `;` first, because an operand may contain one.  What each
+construct means to a user is in `docs/language.md`; this page is how the parser is built.
 
 ## Operands (`src/lexer.rs`)
 
 A double-quoted operand is text; a backticked one is a pattern in the target language.
-**Nothing inside either is escaped:**
+**Nothing inside either is escaped**: a backslash is always a backslash, and an operand that
+holds its own delimiter is fenced with a longer run of it instead.  The fencing and trimming
+rules are `docs/language.md`'s _Operands_.
 
-- A backslash is always a backslash.
-- An operand opens with a run of one delimiter, or of three or more, and closes at the next run
-  of exactly that length; a run of another length inside is content.
-- Two delimiters in a row are the empty operand, so a run of two never opens a fence.
-- In an operand fenced with three or more, content that both starts and ends with a space, and
-  is at least two characters long, loses one space from each end.  A single-delimiter operand
-  is never trimmed.
-- Only `"` and `` ` `` are delimiters.  An operand may span lines.
+**Holes in a pattern.**  Inside a backticked operand, `$name` binds one node, `$_` one node bound
+to nothing, `$name...` a sequence of one or more nodes, and `$...` such a sequence bound to
+nothing; a hole never matches nothing.  Whether a `$name` is a hole is the target language's
+grammar's to decide, not the script parser's: one that lands in code is a hole, and one inside a
+string literal or a comment is literal text.  Where they are holes, these are refused:
 
-The shortest spelling of any content is a single delimiter when no lone one occurs in it and it
-neither starts nor ends with one.  Otherwise it is the shortest fence of three or more whose
-length does not occur as a run in it, padded with a space at each end when the content starts
-or ends with the delimiter, or already starts and ends with a space - which the fence would
-otherwise trim.
-The unit tests check every spelling the design lists, and a property test checks that any
-content read back from its shortest spelling is unchanged.
+- `$_...`, since `$...` already spells it;
+- one name used both for one node and for a sequence;
+- a sequence hole at the start or end of a run of statements, which nothing would bound;
+- a pattern whose search could grow faster than the square of a block's or list's length
+  (`syntax.md` says which);
+- a pattern with no code, or with nothing but holes.
 
-**Holes in a pattern.**  Inside a backticked operand, `$name` is a hole that binds one node,
-`$_` one node bound to nothing, `$name...` a sequence of one or more nodes, and `$...` such a
-sequence bound to nothing; a hole never matches nothing.  Whether a `$name` is a hole is the
-target language's grammar's to decide, not the script parser's: one that lands in code is a
-hole, and one inside a string literal or a comment is literal text.  Where they are holes, `$_...`
-is refused, since `$...` already spells that, and so is one name used both for one node and for a
-sequence; so is a sequence hole at the start or end of a run of statements, which nothing would
-bound; so is a pattern whose search could grow faster than the square of a block's or list's
-length - two sequences together in a run of statements, or a second place where what a sequence
-takes decides what later code must match; and so is a pattern with no code, or with nothing but
-holes.  The script parser carries the operand as written; compiling it is the language adapter's,
-which `python.md` describes for Python.
+The script parser carries the operand as written; compiling it is the language adapter's, which
+`python.md` describes for Python.
 
-**A string literal in a pattern matches by its content**: what lies between its delimiters,
-exactly as written, the parts of an implicit concatenation joined.  The quotes, the prefix and
-the quote style take no part, so `"x"` matches `'x'` and `r"x"`; escapes are compared as written,
-so `"\n"` matches `r"\n"`, both being a backslash and an `n` in the file.  This is the same
-content a `where` comparison uses, so that a script says what a string says without spelling any
-one language's quoting.  A string's decoded value is not compared: escapes would become
-characters that are not in the file, and an interpolated string cannot be decoded at all.
+**A string literal in a pattern matches by its content** as written between its delimiters, so
+that a script says what a string says without spelling any one language's quoting.  It is the
+same content a `where` comparison uses.  A string's decoded value is never compared: escapes
+would become characters that are not in the file, and an interpolated string cannot be decoded.
 
 ## Statements (`src/parser.rs`)
 
@@ -59,33 +45,24 @@ replace `f($a)` with `g($a)` expect 1         # a structural edit
 delete `breakpoint()` expect any
 ```
 
-- **Statements** are separated by a newline or `;`.  **Comments** run from `#` to the end of
-  the line, outside operands; a `#` inside an operand is content.
-- **A `find` with an `expect` is an assertion.**  Consecutive ones form one assertion block,
-  as `Program::push` groups them.  There is no standalone `expect`.
+The grammar a user sees is `docs/language.md`'s _Statements_.  The parser's own rules:
+
+- **A `find` with an `expect` is an assertion**, and consecutive ones form one assertion block,
+  as `Program::push` groups them.
 - **Clauses come in one order** - `in`, `where`, `expect` - each at most once; a clause out of
-  order or repeated is an error naming it.  `in` takes a quoted glob; `where` takes conditions
-  joined by `and`, each `not`-able, testing a metavariable or `FILE` with `matches` or
-  `contains`.  There is no `or`.
-- **Counts:** `N`, `at least N`, `at most N`, `N or none`, `none`, `any`.
+  order or repeated is an error naming it.
 - **Textual operations are spelled textually.**  `replace string` takes quoted operands and
-  `replace` backticked ones; a mismatch is an error naming it, never a guess.  `delete` removes
-  matched nodes and takes only a backticked pattern: there is no textual delete, and text is
-  removed by replacing it with `""`.
+  `replace` backticked ones; a mismatch is an error naming it, never a guess.  `delete` takes
+  only a backticked pattern.
 - **An edit without an `expect` parses**, and the representation's checker refuses it, so the
   rule holds however a program was built.
 
 ## Joining, line breaks and anchors
 
-A textual operand is built from **pieces**: adjacent quoted operands join with nothing between
-them, `$^` between two pieces is a line break, `^` before the first piece and `$` after the last
-anchor it.  Whitespace may sit between pieces and markers.  `$` followed by a name or `_` is a
-metavariable, `$^` a line break, and any other `$` the end anchor.
-
-- On a backticked operand, joining, `$^` and anchors are errors: a pattern is already anchored
-  by its shape.
-- In a replacement, anchors are errors - they match a position, and a replacement only writes
-  text - and an empty operand is allowed, to delete text.  An empty search is refused.
+A textual operand is built from **pieces** joined, with `$^` for a line break and `^` and `$`
+anchoring it, as `docs/language.md` describes.  On a backticked operand all three are errors,
+since a pattern is already anchored by its shape; in a replacement anchors are errors, since a
+replacement only writes text, and an empty operand is allowed, to delete text.
 
 ## Errors
 
@@ -105,22 +82,18 @@ codes.  Nothing outside the MVP is parsed and ignored:
 advice to use a longer fence, because it is almost always an operand that held its own
 delimiter.
 
-**Locations** (`src/location.rs`) name the source: `refactor.quaff:12:5` for a file,
-`<stdin>:12:5` for standard input, `-e expression 2, at character 10` for an inline script,
-and `-p, at character 4` for a `-p` pattern, the one command-line query that can be wrong at a
-place in it.  Lines and columns count from 1, columns in characters.  A script file or standard
-input is read as UTF-8, and a leading byte-order mark is dropped before parsing, so line 1,
-column 1 is the first visible character; the command line does that
-(`crates/quaffed/src/run.rs`), and the parser never sees the mark.
+**Locations** (`src/location.rs`) name the source: a file or `<stdin>` by line and column, an
+`-e` expression or a `-p` pattern by character.  Lines and columns count from 1, columns in
+characters.  The command line (`crates/quaffed/src/run.rs`) drops a leading byte-order mark
+before parsing, so the parser never sees one and line 1, column 1 is the first visible
+character.
 
 ## Running a script
 
-The command line (`crates/quaffed/src/run.rs`) reads each source in order - `-s` and the bare
-query become a `find` of their text, and `-p` a `find` of its pattern - parses it into one
-`Program`, runs the checker, then refuses anything this build cannot yet run: an `in` or `where`
-clause, and `replace` and `delete`, each exit 5 at where it was written.  It compiles every
-backticked pattern, so one that is not a pattern is exit 3 there too.  Only then does it look at
-a file.
+The command line (`crates/quaffed/src/run.rs`) parses every source into one `Program`, runs the
+checker, then refuses anything this build cannot yet run - an `in` or `where` clause, and
+`replace` and `delete` - each exit 5 at where it was written.  It compiles every backticked
+pattern, so one that is not a pattern is exit 3 there too.  Only then does it look at a file.
 Every file is read once, for every query in the program, and the statements are evaluated in
 order over the results.  Output, notes, assertion failures and exit codes are in `search.md`.
 

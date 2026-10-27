@@ -7,7 +7,7 @@
 # TREE is the checkout to measure, by default this one.  The ratchet measures main from a second
 # worktree with the pull request's copy of this script, so both sides are measured the same way.
 # File names in the summary are made relative to TREE, so the two sides can be compared file by
-# file.  scripts/coverage-ratchet compares them; architecture/verification.md has the reasoning.
+# file.  scripts/coverage-ratchet compares them; architecture/testing.md has the reasoning.
 #
 # Needs cargo-llvm-cov from tools.toml (scripts/install-tools cargo-llvm-cov) and, for
 # `condition`, the nightly it pins (scripts/install-tools nightly-coverage).  A `stable` run adds

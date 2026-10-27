@@ -24,7 +24,7 @@ ignores that file, so check `rustc --version` against it; see
 The tests also need `python3` on your `PATH`, at 3.12 or later: some of them run
 `scripts/fetch-corpus`, which is Python.  Fetching the real-world corpus itself needs the exact
 CPython release named in `corpus/real-world.toml`; see
-[architecture/verification.md](architecture/verification.md).
+[architecture/corpus.md](architecture/corpus.md).
 
 ```bash
 cargo build                                        # build
@@ -36,7 +36,7 @@ cargo fmt --all                                    # format
 
 The verification tools - coverage, mutation testing, snapshot review and the rest - are not
 crate dependencies.  Install the ones you need at the versions CI uses with
-`scripts/install-tools` (`--all` for every one); [architecture/verification.md](architecture/verification.md)
+`scripts/install-tools` (`--all` for every one); [architecture/tools.md](architecture/tools.md)
 has the details.  A tool at another version can disagree with CI about what clean means.
 
 Add a dependency with `cargo add`, and commit the updated `Cargo.lock` alongside `Cargo.toml`:
@@ -70,7 +70,7 @@ must be named in the Linux package's copyright file - a test says so if it is no
   denied - and assert what a failure *says*, not only that it happened.
 - What `quaff` prints and how it exits is recorded in reviewed snapshots.  A change to either
   fails until you review the snapshot with `cargo insta review` (`cargo-insta` comes from
-  `scripts/install-tools`); [architecture/verification.md](architecture/verification.md) says how
+  `scripts/install-tools`); [architecture/testing.md](architecture/testing.md) says how
   to add an end-to-end test.
 - A green suite shows the code behaves as the tests assert.  Before calling a feature working,
   run the real binary against a real file.

@@ -10,7 +10,7 @@ not judged, and the run says so.
 Usage: scripts/check-synthetic [--manifest FILE] [--corpus DIR]
 
 Run it with the oracle's Python, or it stops, naming the version it needs.
-architecture/verification.md describes the corpus.
+architecture/corpus.md describes the corpus.
 """
 
 import argparse

@@ -14,7 +14,7 @@
 #   read-twice:PATH  reads PATH, a file the search reads too, so it is opened twice
 #   outside          reads /etc/passwd, outside any project
 #
-# A guard that cannot fail is a comment: the budgets section of architecture/verification.md
+# A guard that cannot fail is a comment: the budgets section of architecture/performance.md
 # has where this is run.
 #
 # Needs: git, cargo with the x86_64-unknown-linux-musl target, musl-tools.

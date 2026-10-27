@@ -24,7 +24,7 @@ updates:
 
   # The clean distributions scripts/test-deb installs the package into, pinned by digest.  Only
   # the digest moves: each is a deliberate choice of release (the package install test section of
-  # architecture/verification.md), so no other release is ever proposed in its place.  Minor and
+  # architecture/release.md), so no other release is ever proposed in its place.  Minor and
   # patch are ignored as well as major, because Ubuntu's YY.MM tags make 24.04 to 24.10 a minor
   # update, which would swap a long-term release for an interim one.
   - package-ecosystem: "docker"

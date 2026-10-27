@@ -12,7 +12,7 @@ Instructions and memory are held to a limit with a margin, since they move sligh
 operating system image and the Valgrind version.  The files are held exactly: how many paths in
 the project are opened and how many bytes are read from them must equal budgets.toml, no path
 in the project may be opened twice, and nothing outside the project may be opened but what
-budgets.toml allows.  architecture/verification.md has the reasoning and how to change a limit.
+budgets.toml allows.  architecture/performance.md has the reasoning and how to change a limit.
 
     scripts/budgets BINARY [--repeat N] [--out DIR] [--env NAME=VALUE ...] [--scenario NAME ...]
 

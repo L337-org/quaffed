@@ -4,7 +4,7 @@
 //! to any invariant harness, budget or benchmark, so a construct missing from it is a construct
 //! none of them checks.  This test parses every file - `modules/*.py` as modules,
 //! `expressions/*.pyexpr` as single expressions, `ipython/*.ipy` as `IPython` source - and
-//! fails naming each kind of node that no file contains.  `architecture/verification.md` says
+//! fails naming each kind of node that no file contains.  `architecture/corpus.md` says
 //! how to add to the corpus.
 
 mod common;
@@ -61,7 +61,7 @@ fn every_kind_in_the_grammar_appears_in_the_synthetic_corpus() {
     assert!(
         gaps.is_empty(),
         "{} kinds of node appear in no file of the synthetic corpus: {}.  Add Python that \
-         produces each, as architecture/verification.md describes",
+         produces each, as architecture/corpus.md describes",
         gaps.len(),
         gaps.join(", ")
     );

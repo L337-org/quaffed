@@ -12,7 +12,7 @@
 //! real-world corpus is fetched, not checked in, so its test is ignored by default and the
 //! **Real-world corpus** CI job runs it with `--ignored`: every file `CPython` accepts must
 //! round-trip, and every file it refuses, as `refused.txt` records, must be refused.
-//! `architecture/verification.md` describes both.
+//! `architecture/corpus.md` describes both.
 
 mod common;
 mod fetched;

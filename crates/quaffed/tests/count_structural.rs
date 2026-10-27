@@ -3,7 +3,7 @@
 //!
 //! Each test builds a small fetched source, names the running `python3` as its oracle in a
 //! manifest so the script's version check passes, and runs it.  The real corpus is counted by the
-//! **Real-world corpus** CI job; `architecture/verification.md` describes it.
+//! **Real-world corpus** CI job; `architecture/corpus.md` describes it.
 
 use std::fmt::Write as _;
 use std::fs;

@@ -10,7 +10,7 @@ A source already fetched with the same pin is not fetched again.
 Usage: scripts/fetch-corpus [--manifest FILE] [--dest DIR]
 
 Run it with the oracle's Python, the CPython release the manifest names, or it stops, naming
-the version it needs.  architecture/verification.md describes the corpus.
+the version it needs.  architecture/corpus.md describes the corpus.
 """
 
 import argparse

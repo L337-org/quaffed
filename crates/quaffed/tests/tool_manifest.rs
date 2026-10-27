@@ -7,7 +7,7 @@
 //! the tool and version named when an install fails, no workflow names a version or installs a
 //! tool itself, no workflow installs from apt but through the action that caches the packages,
 //! and `gungraun-runner` moves with the `gungraun` library.
-//! `architecture/verification.md` has the reasoning.
+//! `architecture/tools.md` has the reasoning.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -107,7 +107,7 @@ fn is_dated_nightly(value: &str) -> bool {
             .all(|(len, p)| p.len() == *len && p.chars().all(|c| c.is_ascii_digit()))
 }
 
-/// Returns every way the parsed manifest breaks the rules `architecture/verification.md` sets.
+/// Returns every way the parsed manifest breaks the rules `architecture/tools.md` sets.
 fn manifest_problems(entries: &[Entry]) -> Vec<String> {
     let mut problems = Vec::new();
     let mut seen = BTreeSet::new();

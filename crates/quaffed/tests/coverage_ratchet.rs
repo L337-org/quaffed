@@ -4,7 +4,7 @@
 //!
 //! Each test writes llvm-cov summaries in the shape `scripts/coverage` produces and runs the script
 //! with `python3`.  The measurement itself runs in CI's **Coverage** workflow;
-//! `architecture/verification.md` describes the ratchet.
+//! `architecture/testing.md` describes the ratchet.
 
 use std::fs;
 use std::path::{Path, PathBuf};

@@ -8,7 +8,7 @@
 #
 # Local runs and CI both install through this script, so the version comes from tools.toml and
 # nowhere else.  Cargo tools go wherever `cargo install` puts them, which is CARGO_INSTALL_ROOT
-# when that is set; CI sets it to a directory it caches.  architecture/verification.md has the
+# when that is set; CI sets it to a directory it caches.  architecture/tools.md has the
 # reasoning and the checklist for adding a tool.
 #
 # Every failure stops the script, naming the tool and version, because a job that carried on
