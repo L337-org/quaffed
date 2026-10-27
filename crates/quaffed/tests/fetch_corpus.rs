@@ -4,7 +4,7 @@
 //! Each test builds a small archive with Python's own `tarfile`, names it in a manifest by a
 //! `file://` URL, and runs the script with `python3`, giving the manifest that Python's version as
 //! the oracle so the script's version check passes.  The real corpus is fetched by the
-//! **Real-world corpus** CI job; `architecture/verification.md` describes it.
+//! **Real-world corpus** CI job; `architecture/corpus.md` describes it.
 
 use std::fs;
 use std::path::{Path, PathBuf};

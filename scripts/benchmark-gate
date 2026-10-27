@@ -3,7 +3,7 @@
 
 Reads the summaries gungraun writes with `--save-summary=json`, one `summary.json` per benchmark
 under each side's GUNGRAUN_HOME, as `scripts/benchmarks` measures them, and writes a Markdown
-section for the job summary.  architecture/verification.md has the reasoning.
+section for the job summary.  architecture/performance.md has the reasoning.
 
     scripts/benchmark-gate --main DIR --pull-request DIR [--label TEXT] [--summary FILE]
 

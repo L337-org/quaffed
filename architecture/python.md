@@ -98,10 +98,10 @@ for this reason; a pull request from that group starts the checklist below, not 
 3. **Fix the adapter.**  A new or renamed kind fails the kind list's `match`: list it in
    `src/kinds.rs` and update the count in `every_kind_is_listed_once_by_ruffs_name`.  Run
    `cargo test -p quaffed-python`: a kind the synthetic corpus does not produce fails its coverage
-   check, so add Python that produces it (`verification.md`), and a change in where Ruff's root
+   check, so add Python that produces it (`corpus.md`), and a change in where Ruff's root
    starts or ends fails `ruffs_root_spans_the_text_but_blank_lines_before_an_expression`.
 4. **Run the round trip and the CPython oracle** over the real-world corpus, as the Real-world
-   corpus CI job does (`verification.md`): `scripts/fetch-corpus` with the oracle's Python, the
+   corpus CI job does (`corpus.md`): `scripts/fetch-corpus` with the oracle's Python, the
    round trip, then `scripts/count-structural` and `real_world_matches.rs`.
 5. **Check the quirks.**  Delete the workaround a failing quirk test names.  Record any new quirk
    here, with a test of its own.

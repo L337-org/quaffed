@@ -3,7 +3,7 @@
 //! docker-mcp is the repository quaff's first version will be trialled on, so code from it in
 //! the corpora would tune quaff against the very code it is then judged by, and flatter the
 //! trial.  Code enters the corpora two ways, and this test closes both: a fetched source named in
-//! `corpus/real-world.toml`, and a file added to `corpus/synthetic/`.  `verification.md` says why.
+//! `corpus/real-world.toml`, and a file added to `corpus/synthetic/`.  `corpus.md` says why.
 
 use std::fs;
 use std::path::{Path, PathBuf};

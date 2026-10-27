@@ -15,7 +15,7 @@ memory.  mimalloc is a dependency only for musl targets; other builds keep the p
 
 **The package is built with the `dist` profile** in the root `Cargo.toml`, kept separate so that a
 developer's `--release` build stays quick to link.  The `profiling` profile inherits it
-(`verification.md`).
+(`performance.md`).
 
 **Building it needs a musl C compiler**, `musl-tools`, for mimalloc and for Ruff's parser through
 `stacker` and `psm`.  Without it the build fails with *"failed to find tool
@@ -79,10 +79,45 @@ out, not held to Debian policy.
 ## CI
 
 `.github/workflows/package.yaml` builds both packages on every pull request, each on a runner of its
-own architecture, then installs and runs each on every target distribution (`verification.md`, the
-package install test), keeping the packages, lintian's output and the install logs as an artefact.
+own architecture, then installs and runs each on every target distribution (the package install
+test, above), keeping the packages, lintian's output and the install logs as an artefact.
 Its jobs are meant to be required status checks, and `release.yaml` calls it, so a package is
 installed and run before it can ship.
+
+## The package install test
+
+`scripts/test-deb PACKAGE` checks that a built package installs and runs, on every pull request
+and before every release, in the *Debian package* job.  For each target distribution it starts a
+clean container with no network and runs `packaging/deb/install-test/check`, which installs the
+package with `dpkg -i`, checks its version and path, runs `quaff --help`, and runs searches whose
+results are known, so a binary that runs but answers wrongly fails.  A failure names the step;
+each distribution's whole log is kept in the job's artefact.  Only a registry 5xx while building
+an image is retried.
+
+**The target distributions are the Dockerfiles in `packaging/deb/install-test/`**, each a single
+`FROM` pinned by digest, which Dependabot refreshes without ever proposing another release.  For
+each of Debian and Ubuntu there are two:
+
+- **A floor**: a release old enough that a glibc build would not run there (above), since
+  the static musl binary exists to run on one.  It is a chosen release, and may be past its own
+  support, since the test needs no package archive.
+- **A current release**: what a new user is most likely to have, re-chosen by hand, below.
+
+**The guard has a negative test on every run**: `scripts/break-deb` builds two broken copies, and
+the job fails unless `test-deb` fails each at the expected step.
+
+Locally, `test-deb` needs docker on a host of the package's architecture;
+`scripts/test-deb PACKAGE debian-13` tests one distribution.  `break-deb` needs `dpkg-deb`.
+
+### Checklist: changing the target distributions
+
+1. Add, remove or rename a Dockerfile in `packaging/deb/install-test/`, named for the
+   distribution and release, with a single `FROM <image>:<tag>@sha256:<digest>`.  The digest is
+   the multi-architecture index's, from `docker buildx imagetools inspect`, which must list both
+   `linux/amd64` and `linux/arm64`.
+2. Run `scripts/test-deb` against it locally; CI runs every Dockerfile on both architectures.
+3. When Debian publishes a new stable release or Ubuntu a new long-term release, re-choose the
+   current release this way.
 
 ## Releasing
 
@@ -104,4 +139,4 @@ from the release and checks it is the one built.
    preflight reads the pre-release flag from the release itself.  If the cause is a defect, fix it
    and release a new version: a published package is never replaced.
 
-A failed release run is posted to Slack (`verification.md`).
+A failed release run is posted to Slack (`workspace.md`).

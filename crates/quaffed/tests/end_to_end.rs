@@ -3,7 +3,7 @@
 //! Each test runs the real binary in a throwaway project directory, records what it printed
 //! and how it exited as a reviewed snapshot, and checks the files it left behind.  A changed
 //! message or exit code therefore fails until the snapshot is reviewed, and shows on the pull
-//! request as a diff.  `architecture/verification.md` says how to add a test and how to review
+//! request as a diff.  `architecture/testing.md` says how to add a test and how to review
 //! a snapshot.
 
 use std::collections::BTreeMap;

@@ -157,7 +157,7 @@ the path or argument it concerns, and says what to do where there is something t
 
 1. Change the code, and the unit tests in the module that owns the behaviour.
 2. Update the end-to-end snapshot that shows it, reviewing the new `.snap` before accepting it;
-   `verification.md` says how.  A new message or exit path gets its own snapshot.
+   `testing.md` says how.  A new message or exit path gets its own snapshot.
 3. Update `docs/language.md`, and this page where the design changes, in the same change.
 4. If the dependency graph changed, cover every new crate in `packaging/deb/copyright`, as
    `release.md` says; `crates/quaffed/tests/packaging.rs` fails until it is there.

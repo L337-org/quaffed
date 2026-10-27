@@ -218,7 +218,7 @@ jobs:
   budgets:
     # The work the shipped build does over the synthetic corpus - instructions, peak memory, and
     # the files it opens and reads - held to budgets.toml by scripts/budgets.  Counted rather
-    # than timed, so the runner's speed cannot move it; architecture/verification.md has the
+    # than timed, so the runner's speed cannot move it; architecture/performance.md has the
     # reasoning and how to change a limit.  The runner image is named, not ubuntu-latest,
     # because Valgrind comes from it and its version moves the instruction counts.
     runs-on: [ubuntu-24.04]

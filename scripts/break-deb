@@ -9,7 +9,7 @@
 # The copy keeps the original's file name, so test-deb reads the same version and architecture
 # from it, and is written into DIRECTORY, which must not be the original's.  Prints the copy's
 # path on standard output, and nothing else there.  A guard that cannot fail is a comment:
-# the package install test section of architecture/verification.md has where this is run.
+# the package install test section of architecture/release.md has where this is run.
 #
 # Needs: dpkg-deb.
 

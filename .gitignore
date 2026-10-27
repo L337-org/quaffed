@@ -14,7 +14,7 @@
 /target/
 **/*.rs.bk
 
-# What cargo flamegraph records into the directory it runs in; architecture/verification.md.
+# What cargo flamegraph records into the directory it runs in; architecture/performance.md.
 perf.data
 perf.data.old
 cargo-flamegraph.trace

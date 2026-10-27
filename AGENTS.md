@@ -41,9 +41,9 @@ the work instead.  The shared hygiene check that CI runs fails on either.
 |---|---|
 | `Cargo.toml`, `rust-toolchain.toml`, `rustfmt.toml`, anything under `crates/` structurally, or `.github/workflows/` | [architecture/workspace.md](architecture/workspace.md) |
 | adding a workspace member | the checklist in [architecture/workspace.md](architecture/workspace.md) |
-| `tools.toml`, `scripts/install-tools`, `.github/actions/install-tools` or `.github/actions/apt-install`, or adding a verification tool or an apt package | [architecture/verification.md](architecture/verification.md) |
-| `scripts/coverage`, `scripts/coverage-ratchet` or `.github/workflows/coverage.yaml` | the coverage ratchet section of [architecture/verification.md](architecture/verification.md) |
-| an end-to-end test, or anything that changes what `quaff` prints or how it exits | the snapshot sections of [architecture/verification.md](architecture/verification.md) |
+| `tools.toml`, `scripts/install-tools`, `.github/actions/install-tools` or `.github/actions/apt-install`, or adding a verification tool or an apt package | [architecture/tools.md](architecture/tools.md) |
+| `scripts/coverage`, `scripts/coverage-ratchet` or `.github/workflows/coverage.yaml` | the coverage ratchet section of [architecture/testing.md](architecture/testing.md) |
+| an end-to-end test, or anything that changes what `quaff` prints or how it exits | the snapshot sections of [architecture/testing.md](architecture/testing.md) |
 | `crates/quaffed/src/`: the command line, discovery, matching or output | [architecture/search.md](architecture/search.md) |
 | `crates/encoding/`: what a file's bytes are, Python's declared encodings or the codec tables, or `scripts/generate-codecs` | [architecture/encoding.md](architecture/encoding.md) |
 | how a file's encoding is decided: `crates/quaffed/src/resolve.rs`, `src/workspace/`, `src/editorconfig.rs`, or `scripts/generate-declaration-cases` | [architecture/encoding.md](architecture/encoding.md) |
@@ -53,12 +53,13 @@ the work instead.  The shared hygiene check that CI runs fails on either.
 | `crates/script/`: the script language's operands, grammar, errors or locations | [architecture/script.md](architecture/script.md) |
 | `crates/syntax/`: the arena a parsed file becomes, for every language | [architecture/syntax.md](architecture/syntax.md) |
 | `crates/python/`, or a `ruff_*` dependency or its version | [architecture/python.md](architecture/python.md) |
-| `crates/python/tests/round_trip.rs`, or how the corpus is judged by the oracle | the round trip section of [architecture/verification.md](architecture/verification.md) |
-| `corpus/`, `scripts/fetch-corpus` or `scripts/check-synthetic`, or adding Python to the synthetic corpus | the corpus sections of [architecture/verification.md](architecture/verification.md) |
-| `scripts/count-structural` or `crates/python/tests/real_world_matches.rs` | the structural counts section of [architecture/verification.md](architecture/verification.md) |
+| `crates/python/tests/round_trip.rs`, or how the corpus is judged by the oracle | the round trip section of [architecture/corpus.md](architecture/corpus.md) |
+| `corpus/`, `scripts/fetch-corpus` or `scripts/check-synthetic`, or adding Python to the synthetic corpus | the corpus sections of [architecture/corpus.md](architecture/corpus.md) |
+| `scripts/count-structural` or `crates/python/tests/real_world_matches.rs` | the structural counts section of [architecture/corpus.md](architecture/corpus.md) |
 | `packaging/`, `scripts/build-deb`, the package or release workflows, or a dependency the binary links | [architecture/release.md](architecture/release.md) |
-| `scripts/test-deb`, `scripts/break-deb` or `packaging/deb/install-test/`, or adding a target distribution | the package install test section of [architecture/verification.md](architecture/verification.md) |
-| `budgets.toml`, `scripts/budgets` or `scripts/break-budgets`, or a change that moves a budget | the budgets section of [architecture/verification.md](architecture/verification.md) |
+| `scripts/test-deb`, `scripts/break-deb` or `packaging/deb/install-test/`, or adding a target distribution | the package install test section of [architecture/release.md](architecture/release.md) |
+| `budgets.toml`, `scripts/budgets` or `scripts/break-budgets`, or a change that moves a budget | the budgets section of [architecture/performance.md](architecture/performance.md) |
+| `crates/python/benches/`, `scripts/benchmarks`, `scripts/benchmark-gate`, `scripts/break-benchmarks` or `.github/workflows/benchmarks.yaml` | the benchmarks section of [architecture/performance.md](architecture/performance.md) |
 
 ## Commands
 
@@ -76,7 +77,7 @@ python3.X scripts/check-synthetic                  # the oracle over the synthet
 python3.X scripts/count-structural                 # CPython's counts of structural matches
 scripts/build-deb --dev amd64                      # a development package (on amd64 Linux)
 scripts/test-deb target/deb/quaffed_*.deb          # install and run it on each target distribution
-scripts/budgets <quaff> --repeat 3                 # the budgets, on amd64 Linux (verification.md)
+scripts/budgets <quaff> --repeat 3                 # the budgets, on amd64 Linux (performance.md)
 ```
 
 CI builds `--locked`, so a dependency change must commit `Cargo.lock` alongside `Cargo.toml`.

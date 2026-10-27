@@ -16,7 +16,7 @@
 #
 # Fails if the package is missing, if any distribution fails, or if no distribution was tested.
 # CI's package workflow and a contributor both run exactly this.  The package install test section
-# of architecture/verification.md has the reasoning.
+# of architecture/release.md has the reasoning.
 #
 # Needs: docker, on a host of the package's architecture.
 

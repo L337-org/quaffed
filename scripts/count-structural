@@ -19,7 +19,7 @@ found by reading the file the counts differ on.
 Usage: scripts/count-structural [--dest DIR] [--manifest FILE]
 
 Run it with the oracle's Python, as fetch-corpus is, so that the tree is the one the corpus was
-judged by.  architecture/verification.md describes the corpus.
+judged by.  architecture/corpus.md describes the corpus.
 """
 
 import argparse

@@ -13,16 +13,16 @@ Each member's design is in its own note: textual search in `search.md`, encoding
 ├── Cargo.lock            # committed; every build in CI is --locked
 ├── rust-toolchain.toml   # the Rust version and components
 ├── rustfmt.toml          # pins the style edition, nothing else
-├── tools.toml            # the verification tools' versions; see verification.md
+├── tools.toml            # the verification tools' versions; see tools.md
 ├── packaging/deb/        # the Linux package's copyright file; see release.md
-│   └── install-test/     # the install test's distributions and its in-container check; see verification.md
+│   └── install-test/     # the install test's distributions and its in-container check; see release.md
 ├── scripts/
-│   ├── install-tools     # installs from tools.toml, locally and in CI; see verification.md
+│   ├── install-tools     # installs from tools.toml, locally and in CI; see tools.md
 │   ├── build-deb         # builds the Linux package; see release.md
-│   ├── test-deb          # installs and runs a package on each target distribution; see verification.md
-│   ├── break-deb         # breaks a package on purpose, to show test-deb fails; see verification.md
-│   ├── fetch-corpus      # fetches the real-world corpus and runs the oracle; see verification.md
-│   ├── check-synthetic   # the oracle over the synthetic corpus; see verification.md
+│   ├── test-deb          # installs and runs a package on each target distribution; see release.md
+│   ├── break-deb         # breaks a package on purpose, to show test-deb fails; see release.md
+│   ├── fetch-corpus      # fetches the real-world corpus and runs the oracle; see corpus.md
+│   ├── check-synthetic   # the oracle over the synthetic corpus; see corpus.md
 │   ├── generate-codecs   # the codec tables, from the oracle's own codecs; see encoding.md
 │   ├── generate-declaration-cases # git's and EditorConfig's answers the readers are held to; see encoding.md
 │   └── workspace-version # prints the declared version; see release.md
@@ -36,8 +36,8 @@ Each member's design is in its own note: textual search in `search.md`, encoding
 │   ├── script/           # quaffed-script: the script language, text to program; see script.md
 │   └── syntax/           # quaffed-syntax: the arena a parsed file becomes, for every language; see syntax.md
 ├── corpus/
-│   ├── synthetic/        # the synthetic Python corpus, checked in; see verification.md
-│   └── real-world.toml   # pins the fetched real-world corpus; see verification.md
+│   ├── synthetic/        # the synthetic Python corpus, checked in; see corpus.md
+│   └── real-world.toml   # pins the fetched real-world corpus; see corpus.md
 └── architecture/         # detail notes, each routed from AGENTS.md
 ```
 
@@ -84,7 +84,7 @@ minor version, because no older one is tested.
    RUSTFLAGS=-Ccoverage-options=condition cargo llvm-cov --workspace --no-report
    ```
 
-   If it builds, move condition coverage into the gate (`verification.md`, the coverage ratchet):
+   If it builds, move condition coverage into the gate (`testing.md`, the coverage ratchet):
    1. in `scripts/coverage`, build the `stable` run with that flag and report it with `--branch`,
       and remove the `condition` mode;
    2. in `scripts/coverage-ratchet`, read `conditions` from the stable summary and add it to
@@ -92,7 +92,7 @@ minor version, because no older one is tested.
    3. in `.github/workflows/coverage.yaml`, remove `condition` from the matrix and its install
       step;
    4. remove `nightly-coverage` from `tools.toml`;
-   5. update the coverage ratchet section of `verification.md`.
+   5. update the coverage ratchet section of `testing.md`.
 3. Update anything else that names the old version.
 
 ## Lints and formatting
@@ -127,10 +127,9 @@ enforces it.
   name and comments say what it checks.
 - `.github/workflows/package.yaml` builds the Linux package on every pull request (`release.md`).
 - `.github/workflows/benchmarks.yaml` counts the front end's and the matcher's instructions against
-  main's on every pull request (`verification.md`).
+  main's on every pull request (`performance.md`).
 - `.github/workflows/report-failures.yaml` posts a failed run to Slack.  A new workflow that runs on
-  a schedule, a push, a release or a pull request is added there (`verification.md`, under failed
-  runs are posted to Slack).
+  a schedule, a push, a release or a pull request is added there, as below.
 
 **Every job is meant to be a required status check.**  Adding, renaming or removing one means
 updating the branch ruleset in the same change, or the branch waits on a check that never reports,
@@ -139,7 +138,25 @@ or a new job gates nothing.  The exceptions:
 - the review, which is advisory and does not approve the pull request;
 - `Announce to Slack`, which runs only when a pull request opens, so never reports on a later push;
 - the two `Benchmarks` jobs, whose alerts and refusals are for the reviewer to weigh
-  (`verification.md`, under the benchmarks).
+  (`performance.md`, under the benchmarks).
+
+### Failed runs are posted to Slack
+
+`.github/workflows/report-failures.yaml` posts a failed run of the workflows it names to the
+project's Slack channel, through the shared reporter from `github-workflows`, whose README says
+which runs it posts.  A run started by hand is left out, because whoever started it is watching.
+To add a workflow that runs on a schedule, a push, a release or a pull request:
+
+1. Give it a `name:`, and every job a `timeout-minutes:` (a job calling a reusable workflow
+   cannot take one).
+2. Add its `name:` to the `workflows:` list in `report-failures.yaml`, exactly as written; the
+   repository hygiene check enforces the list.
+
+It posts through the `SLACK_BOT_TOKEN` secret.  **Accepted limitation:** a failed post is only a
+failed *Report failures* run, so a dead token shows as an absence of posts.
+
+`announce-pull-requests.yaml` announces pull requests through the shared announcer, whose README
+says which.  `SLACK_BOT_TOKEN` must also be a Dependabot secret, or Dependabot's are not announced.
 
 ### Shared CI
 

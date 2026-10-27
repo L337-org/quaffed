@@ -1,5 +1,5 @@
 # What the quaff binary may do over the synthetic corpus, checked by scripts/budgets on every
-# pull request.  architecture/verification.md has the reasoning, how to read a failure's trace,
+# pull request.  architecture/performance.md has the reasoning, how to read a failure's trace,
 # and how to change a limit: in the pull request that moves it, once its trace has been
 # reviewed and the new behaviour agreed to be correct.
 #

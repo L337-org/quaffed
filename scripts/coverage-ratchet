@@ -3,7 +3,7 @@
 
 Reads the summaries `scripts/coverage` writes - one from the pinned stable toolchain, one from the
 condition-coverage nightly - for main and for the pull request, and writes a Markdown section
-for the pull request's job summary.  architecture/verification.md has the reasoning.
+for the pull request's job summary.  architecture/testing.md has the reasoning.
 
     scripts/coverage-ratchet --base-stable F --head-stable F [--head-stable-repeat F]
                              [--base-condition F] [--head-condition F] [--summary F]

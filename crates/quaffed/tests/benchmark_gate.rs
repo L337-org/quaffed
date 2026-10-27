@@ -6,7 +6,7 @@
 //! script with `python3`.  The counting itself runs in CI's **Benchmarks** job, where
 //! `scripts/break-benchmarks` shows the gate alerting on a really slowed matcher and failing on a
 //! really slowed adapter, and
-//! `architecture/verification.md` describes the gate.
+//! `architecture/performance.md` describes the gate.
 
 use std::fs;
 use std::path::{Path, PathBuf};

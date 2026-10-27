@@ -10,7 +10,7 @@ permissions:
 # the runner image and its Valgrind: a stored figure would move with every image update, while
 # two counts from one job compare exactly.  amd64 and arm64 count differently, so each is
 # compared with itself.  architecture/workspace.md says why these jobs are not required checks;
-# architecture/verification.md has the reasoning, scripts/benchmarks counts and
+# architecture/performance.md has the reasoning, scripts/benchmarks counts and
 # scripts/benchmark-gate compares.
 on:
   pull_request:

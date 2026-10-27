@@ -1,7 +1,7 @@
 name: 'Announce pull requests'
 
 # Posts a pull request that needs action to the Slack channel named below, through the shared
-# announcer, whose README says which pull requests it posts (architecture/verification.md).
+# announcer, whose README says which pull requests it posts (architecture/workspace.md).
 on:
   pull_request:
     types: [opened, reopened, ready_for_review]

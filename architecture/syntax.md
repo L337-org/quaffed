@@ -40,7 +40,7 @@ An adapter must keep three invariants:
 before and after it is the arena's `leading` and `trailing` text, and no node is invented to
 cover the file.  So every byte is in exactly one place - the leading or trailing text, a
 childless node, or between a node's edges and its children - and the round trip
-(`verification.md`) prints an arena from those places and requires the file's bytes back, which
+(`corpus.md`) prints an arena from those places and requires the file's bytes back, which
 is what holds an adapter to the invariants.
 
 ## Offsets are 32-bit

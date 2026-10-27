@@ -1,7 +1,7 @@
 # The verification tools, at the exact versions local runs and CI both install.
 #
 # Install from this file with `scripts/install-tools`; never name a version anywhere else.  How
-# to add a tool, and why the format is restricted, is in architecture/verification.md.
+# to add a tool, and why the format is restricted, is in architecture/tools.md.
 #
 # The format is a strict subset of TOML that the install script reads without a TOML parser:
 # section headers, `name = "value"` lines, comments and blank lines.  Anything else is an error.
