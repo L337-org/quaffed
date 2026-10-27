@@ -1,0 +1,521 @@
+#!/usr/bin/env python3
+"""Record the budgets' and the benchmarks' measurements to InfluxDB, after a merge to main.
+
+    scripts/record-measurements budgets JSON --out FILE
+    scripts/record-measurements benchmarks DIR --out FILE
+    scripts/record-measurements post FILE... --pending DIR --rejected DIR
+    scripts/record-measurements catch-up --rejected DIR
+
+`budgets` and `benchmarks` run in the job that measured, so that what they record about the run -
+the commit, the runner's operating system, architecture and image - is that job's.  Each writes
+InfluxDB 1.x line protocol to FILE: `budgets` from the file `scripts/budgets --json` writes, one
+point per scenario, and `benchmarks` from the `summary.json` files gungraun writes under DIR, one
+point per benchmark.  Every point carries the time it was measured, in seconds, so a point posted
+late keeps it.
+
+`post` sends each FILE to InfluxDB, retrying a failure that may pass with time.  A file that could
+not be posted is copied into the --pending directory, to be posted later; one InfluxDB refused as
+malformed is copied into --rejected, since posting it again cannot succeed.  `catch-up` posts the
+files of every `unrecorded-measurements` artefact earlier runs left, deleting each artefact once
+all of its files are posted, through the GitHub CLI.  A point posted twice is the same point, so
+posting again is always safe.
+
+The endpoint and its credentials come from QUAFFED_INFLUX_URL, QUAFFED_INFLUX_USER and
+QUAFFED_INFLUX_PASSWORD, and are never printed.  architecture/performance.md describes the
+records and their names.
+
+Exit status: 0 when everything was written or posted, 1 when something was not posted and is
+kept, 2 when something could not be read or written, since a measurement that was not recorded
+has not been recorded.
+
+Needs: Python 3.11 or later; `gh`, for catch-up.
+"""
+
+import argparse
+import base64
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+
+# The measurements, as InfluxDB names them.  Tags are what a dashboard groups or filters by; the
+# commit is a field, so that the series do not multiply with every commit.
+BUDGET = "quaffed_budget"
+BENCHMARK = "quaffed_benchmark"
+
+# What a budget point records, from scripts/budgets --json.
+BUDGET_FIELDS = ("instructions", "peak_memory_kib", "paths_opened", "bytes_read")
+
+# What a benchmark point records: Callgrind's counts, under Callgrind's own names.  Its hit and
+# miss rates are left out, since each is one of these divided by another.
+BENCHMARK_FIELDS = (
+    "Ir",
+    "Dr",
+    "Dw",
+    "I1mr",
+    "D1mr",
+    "D1mw",
+    "ILmr",
+    "DLmr",
+    "DLmw",
+    "L1hits",
+    "LLhits",
+    "RamHits",
+    "TotalRW",
+    "EstimatedCycles",
+)
+
+# The summary format this reads, as scripts/benchmark-gate does.
+GUNGRAUN_SUMMARY_VERSION = "7"
+
+# GitHub's names for a runner's architecture, as the packages and the budgets name it.
+ARCHITECTURES = {"X64": "amd64", "ARM64": "arm64"}
+
+# The pauses between attempts to post, in seconds: about eight minutes in all, enough for the
+# endpoint to come back from a restart.  The test sets RECORD_MEASUREMENTS_DELAYS to make them
+# short.
+DELAYS = (10, 30, 60, 120, 300)
+
+# Each attempt's limit, and the most of a response that is read.
+TIMEOUT = 30
+RESPONSE_LIMIT = 64 * 1024
+
+# The artefact earlier runs left what they could not post in.
+UNRECORDED = "unrecorded-measurements"
+
+# A `gh` call's limit; downloading an artefact of a few kilobytes is quick.
+GH_TIMEOUT = 120
+
+
+class Unrecordable(Exception):
+    """Something could not be read or written: exit 2, naming it."""
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    commands = parser.add_subparsers(dest="command", required=True)
+    budgets = commands.add_parser("budgets")
+    budgets.add_argument("json", type=Path)
+    budgets.add_argument("--out", type=Path, required=True)
+    benchmarks = commands.add_parser("benchmarks")
+    benchmarks.add_argument("dir", type=Path)
+    benchmarks.add_argument("--out", type=Path, required=True)
+    for name in ("post", "catch-up"):
+        command = commands.add_parser(name)
+        if name == "post":
+            command.add_argument("files", type=Path, nargs="+")
+            command.add_argument("--pending", type=Path, required=True)
+        command.add_argument("--rejected", type=Path, required=True)
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "budgets":
+            write(args.out, budget_points(args.json, context()))
+            return 0
+        if args.command == "benchmarks":
+            write(args.out, benchmark_points(args.dir, context()))
+            return 0
+        endpoint = Endpoint.from_environment()
+        try:
+            if args.command == "post":
+                outcomes = [post_file(endpoint, f, args.pending, args.rejected) for f in args.files]
+                return 0 if all(outcome == "posted" for outcome in outcomes) else 1
+            return catch_up(endpoint, args.rejected)
+        finally:
+            summarise(args.command)
+    except Unrecordable as err:
+        print(f"record-measurements: not recorded: {err}", file=sys.stderr)
+        annotate("error", f"measurements not recorded: {err}")
+        return 2
+
+
+# --- Line protocol -------------------------------------------------------------------------
+
+
+def context():
+    """What every point records about the run that measured it, from GitHub's own variables."""
+    needed = {}
+    for name in ("GITHUB_SHA", "RUNNER_OS", "RUNNER_ARCH", "ImageOS", "ImageVersion"):
+        value = os.environ.get(name, "")
+        if not value:
+            raise Unrecordable(
+                f"{name} is not set, so the points could not say what measured them; this runs "
+                "in the GitHub Actions job that measured"
+            )
+        needed[name] = value
+    arch = ARCHITECTURES.get(needed["RUNNER_ARCH"])
+    if arch is None:
+        raise Unrecordable(f"RUNNER_ARCH {needed['RUNNER_ARCH']!r} is not one this records")
+    return {
+        "tags": {
+            "arch": arch,
+            "os": needed["RUNNER_OS"],
+            "runner_image": f"{needed['ImageOS']}-{needed['ImageVersion']}",
+        },
+        "commit": needed["GITHUB_SHA"],
+    }
+
+
+def budget_points(path, run):
+    """One point per scenario, from scripts/budgets --json."""
+    document = read_json(path)
+    if document.get("version") != 1 or not isinstance(document.get("scenarios"), dict):
+        raise Unrecordable(f"{str(path)!r} is not a version 1 budgets file")
+    if not document["scenarios"]:
+        raise Unrecordable(f"{str(path)!r} has no scenario in it")
+    points = []
+    for scenario, measured in sorted(document["scenarios"].items()):
+        fields = {
+            name: whole(measured.get(name), f"{scenario} {name}", path) for name in BUDGET_FIELDS
+        }
+        at = whole(measured.get("measured_at"), f"{scenario} measured_at", path)
+        points.append(point(BUDGET, {"scenario": scenario, **run["tags"]}, fields, run, at))
+    return points
+
+
+def benchmark_points(directory, run):
+    """One point per benchmark, from the summary.json files gungraun writes under the directory."""
+    paths = sorted(directory.rglob("summary.json"))
+    if not paths:
+        raise Unrecordable(f"no summary.json under {str(directory)!r}, so nothing was counted")
+    points = []
+    seen = set()
+    for path in paths:
+        summary = read_json(path)
+        if str(summary.get("version")) != GUNGRAUN_SUMMARY_VERSION:
+            raise Unrecordable(
+                f"{str(path)!r} is gungraun summary version {summary.get('version')!r}, not "
+                f"{GUNGRAUN_SUMMARY_VERSION}, which this reads"
+            )
+        function, bench_id = summary.get("function_name"), summary.get("id")
+        if not function or not bench_id:
+            raise Unrecordable(f"{str(path)!r} does not name its benchmark")
+        name = f"{function}.{bench_id}"
+        if name in seen:
+            raise Unrecordable(f"{name} has two summaries under {str(directory)!r}")
+        seen.add(name)
+        try:
+            (profile,) = [p for p in summary["profiles"] if p.get("tool") == "Callgrind"]
+            metrics = profile["data"]["total"]["metrics"]
+            started = profile["started_at"]
+        except (KeyError, TypeError, ValueError) as err:
+            raise Unrecordable(f"{str(path)!r} has no one Callgrind profile: {err!r}") from err
+        fields = {}
+        for field in BENCHMARK_FIELDS:
+            try:
+                value = metrics[field]["values"]["new"]
+            except (KeyError, TypeError) as err:
+                raise Unrecordable(f"{str(path)!r} has no {field}") from err
+            fields[field] = whole(value, f"{name} {field}", path)
+        tags = {"benchmark": name, "function": function, **run["tags"]}
+        points.append(point(BENCHMARK, tags, fields, run, seconds(started, path)))
+    return points
+
+
+def point(measurement, tags, fields, run, at):
+    """One line of line protocol: integer fields, the commit as a string field, and the time."""
+    tag_text = ",".join(f"{escape(k)}={escape(v)}" for k, v in sorted(tags.items()))
+    field_text = ",".join(f"{escape(k)}={v}i" for k, v in fields.items())
+    return f'{measurement},{tag_text} {field_text},commit="{run["commit"]}" {at}'
+
+
+def escape(text):
+    """A tag key, tag value or field key with line protocol's special characters escaped."""
+    return re.sub(r"([,= ])", r"\\\1", str(text))
+
+
+def whole(value, what, path):
+    """A count, which must be a whole number of zero or more."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise Unrecordable(f"{what} in {str(path)!r} is {value!r}, not a count")
+    return value
+
+
+def seconds(timestamp, path):
+    """Unix seconds from gungraun's UTC time, which carries nanoseconds Python will not parse."""
+    match = re.fullmatch(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.\d+)?Z", str(timestamp))
+    if match is None:
+        raise Unrecordable(f"{str(path)!r} has a start time {timestamp!r} this cannot read")
+    moment = datetime.strptime(match.group(1), "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+    return int(moment.timestamp())
+
+
+def read_json(path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as err:
+        raise Unrecordable(f"reading {str(path)!r}: {err}") from err
+
+
+def write(path, points):
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(points) + "\n", encoding="utf-8")
+    except OSError as err:
+        raise Unrecordable(f"writing {str(path)!r}: {err}") from err
+    print(f"record-measurements: {len(points)} points in {path}", file=sys.stderr)
+
+
+# What this run posted and kept, for the job summary.
+RESULTS = []
+
+
+def summarise(command):
+    """The job summary: each file's outcome, and how what was kept gets posted."""
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not path or not RESULTS:
+        return
+    lines = [f"## Measurements recorded to InfluxDB ({command})", ""]
+    lines += [f"- {name}: {outcome}" for name, outcome in RESULTS]
+    if any(outcome != "posted" for _, outcome in RESULTS):
+        lines += [
+            "",
+            f"**Not everything was posted.**  What was not is kept in this run's `{UNRECORDED}` "
+            "artefact, which the next merge's run and the daily run post and then delete; what "
+            "InfluxDB refused as malformed is kept in `rejected-measurements`, which is never "
+            "posted again.  To post the kept files by hand, download the artefact and run "
+            "`scripts/record-measurements post FILE... --pending DIR --rejected DIR` with "
+            "QUAFFED_INFLUX_URL, QUAFFED_INFLUX_USER and QUAFFED_INFLUX_PASSWORD set.",
+        ]
+    try:
+        with open(path, "a", encoding="utf-8") as out:
+            out.write("\n".join(lines) + "\n")
+    except OSError as err:
+        # The outcome is already on standard error; a summary that cannot be written is noted.
+        print(f"record-measurements: writing the job summary {path!r}: {err}", file=sys.stderr)
+
+
+# --- Posting -------------------------------------------------------------------------------
+
+
+class Endpoint:
+    """Where points are posted, and as whom; neither is ever printed."""
+
+    def __init__(self, url, user, password):
+        self.url = url
+        token = base64.b64encode(f"{user}:{password}".encode()).decode()
+        self.authorization = f"Basic {token}"
+
+    @classmethod
+    def from_environment(cls):
+        values = {}
+        for name in ("QUAFFED_INFLUX_URL", "QUAFFED_INFLUX_USER", "QUAFFED_INFLUX_PASSWORD"):
+            values[name] = os.environ.get(name, "")
+            if not values[name]:
+                raise Unrecordable(f"{name} is not set; it comes from the repository's secret")
+        if not values["QUAFFED_INFLUX_URL"].startswith("https://"):
+            # Only the tests set this, to post to a server on the loopback interface; with it,
+            # the credentials cross the network in clear.
+            if os.environ.get("RECORD_MEASUREMENTS_ALLOW_PLAINTEXT_HTTP") != "1":
+                raise Unrecordable("QUAFFED_INFLUX_URL is not an https:// URL")
+            print(
+                "record-measurements: WARNING: posting over plain HTTP, as "
+                "RECORD_MEASUREMENTS_ALLOW_PLAINTEXT_HTTP allows; the credentials are not "
+                "encrypted",
+                file=sys.stderr,
+            )
+        return cls(*values.values())
+
+
+def post_file(endpoint, path, pending, rejected):
+    """Post one file: "posted", or "rejected", kept in the rejected directory, or "unposted",
+    kept in the pending one unless that is None, as when its artefact is kept instead."""
+    try:
+        body = path.read_bytes()
+    except OSError as err:
+        raise Unrecordable(f"reading {str(path)!r}: {err}") from err
+    outcome, detail = post(endpoint, body)
+    RESULTS.append((path.name, outcome))
+    if outcome == "posted":
+        print(f"record-measurements: posted {path.name}", file=sys.stderr)
+        return outcome
+    keep_in = rejected if outcome == "rejected" else pending
+    if keep_in is not None:
+        keep(path, keep_in)
+        message = f"{path.name} was not posted and is kept in {keep_in}: {detail}"
+    else:
+        message = f"{path.name} was not posted and stays in its artefact: {detail}"
+    print(f"record-measurements: {message}", file=sys.stderr)
+    annotate("error", message)
+    return outcome
+
+
+def post(endpoint, body):
+    """("posted", ""), ("rejected", why) for a body InfluxDB will never accept, or
+    ("unposted", why) for one that might be accepted later."""
+    delays = retry_delays()
+    detail = ""
+    for attempt in range(len(delays) + 1):
+        if attempt:
+            time.sleep(delays[attempt - 1])
+        request = urllib.request.Request(
+            endpoint.url,
+            data=body,
+            method="POST",
+            headers={"Authorization": endpoint.authorization, "Content-Type": "text/plain"},
+        )
+        try:
+            with OPENER.open(request, timeout=TIMEOUT) as response:
+                response.read(RESPONSE_LIMIT)
+                return "posted", ""
+        except urllib.error.HTTPError as err:
+            text = err.read(RESPONSE_LIMIT).decode("utf-8", "replace").strip()
+            detail = f"InfluxDB answered {err.code}: {text!r}"
+            # Malformed points: no later attempt can succeed.
+            if err.code in (400, 413):
+                return "rejected", detail
+            # Refused credentials, a missing database or a redirect, which a wrong URL draws: fixed
+            # by fixing the configuration, so kept to be posted once it is, but not retried now.
+            if err.code in (401, 403, 404) or 300 <= err.code < 400:
+                return "unposted", f"{detail}; check the endpoint's secrets and the database"
+        except (urllib.error.URLError, OSError) as err:
+            detail = f"could not reach the endpoint: {err!r}"
+        print(f"record-measurements: attempt {attempt + 1} failed: {detail}", file=sys.stderr)
+    return "unposted", detail
+
+
+class NoRedirects(urllib.request.HTTPRedirectHandler):
+    """Refuses every redirect, which would carry the credentials to wherever it points."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+OPENER = urllib.request.build_opener(NoRedirects)
+
+
+def retry_delays():
+    configured = os.environ.get("RECORD_MEASUREMENTS_DELAYS")
+    if configured is None:
+        return DELAYS
+    try:
+        return tuple(float(d) for d in configured.split(",") if d)
+    except ValueError as err:
+        raise Unrecordable(f"RECORD_MEASUREMENTS_DELAYS {configured!r} is not a list") from err
+
+
+def keep(path, directory):
+    """Copy a file into a directory, under a name no other kept file has."""
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        target = directory / path.name
+        index = 1
+        while target.exists():
+            index += 1
+            target = directory / f"{path.stem}.{index}{path.suffix}"
+        shutil.copyfile(path, target)
+    except OSError as err:
+        raise Unrecordable(f"keeping {str(path)!r} in {str(directory)!r}: {err}") from err
+
+
+# --- Catching up ---------------------------------------------------------------------------
+
+
+def catch_up(endpoint, rejected):
+    """Post what earlier runs could not, deleting each artefact once all of it is posted."""
+    repository = os.environ.get("GITHUB_REPOSITORY", "")
+    if not repository:
+        raise Unrecordable("GITHUB_REPOSITORY is not set, so there is no repository to look in")
+    listing = gh(
+        [
+            "api",
+            "--paginate",
+            f"repos/{repository}/actions/artifacts?name={UNRECORDED}&per_page=100",
+            "--jq",
+            ".artifacts[] | select(.expired | not) | [.id, .workflow_run.id] | @tsv",
+        ],
+        "listing earlier runs' unrecorded measurements",
+    )
+    artefacts = [line.split("\t") for line in listing.splitlines() if line.strip()]
+    if not artefacts:
+        print("record-measurements: nothing unrecorded from earlier runs", file=sys.stderr)
+        return 0
+    status = 0
+    for artefact, run_id in artefacts:
+        try:
+            status = max(status, catch_up_one(endpoint, repository, artefact, run_id, rejected))
+        except Gone:
+            # Another run posted and deleted it between the listing and now: posting is
+            # idempotent, so whichever run got there first, it is recorded.
+            print(f"record-measurements: artefact {artefact} is already gone", file=sys.stderr)
+    return status
+
+
+class Gone(Exception):
+    """An artefact another run deleted after this one listed it."""
+
+
+def catch_up_one(endpoint, repository, artefact, run_id, rejected):
+    """Post one artefact's files, deleting it once none is left unposted: 0, or 1 if it stays."""
+    with tempfile.TemporaryDirectory() as scratch:
+        gh(
+            ["run", "download", run_id, "--repo", repository, "--name", UNRECORDED]
+            + ["--dir", scratch],
+            f"downloading artefact {artefact} of run {run_id}",
+        )
+        files = sorted(p for p in Path(scratch).rglob("*") if p.is_file())
+        if not files:
+            raise Unrecordable(f"artefact {artefact} of run {run_id} holds no file")
+        # A rejected file is kept by this run instead, so either way the artefact is done with;
+        # one not posted stays in the artefact, which is left to be tried again.
+        outcomes = [post_file(endpoint, f, None, rejected) for f in files]
+    if "unposted" in outcomes:
+        return 1
+    gh(
+        ["api", "--method", "DELETE", f"repos/{repository}/actions/artifacts/{artefact}"],
+        f"deleting artefact {artefact}, now posted",
+    )
+    print(
+        f"record-measurements: posted and deleted artefact {artefact} of run {run_id}",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def gh(arguments, doing):
+    """The GitHub CLI's standard output, through an environment holding only what it needs."""
+    executable = shutil.which("gh")
+    if executable is None:
+        raise Unrecordable("gh is not on PATH; catch-up needs the GitHub CLI")
+    env = {name: os.environ[name] for name in ("PATH", "HOME", "GH_TOKEN") if name in os.environ}
+    try:
+        done = subprocess.run(
+            [executable, *arguments],
+            env=env,
+            capture_output=True,
+            timeout=GH_TIMEOUT,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as err:
+        raise Unrecordable(f"{doing}: {err!r}") from err
+    if done.returncode != 0:
+        stderr = done.stderr.decode("utf-8", "replace").strip()
+        # gh's own words for an artefact that is no longer there.
+        if "HTTP 404" in stderr or "no valid artifacts found" in stderr:
+            raise Gone(stderr)
+        raise Unrecordable(f"{doing}: gh exited {done.returncode}: {stderr[-2000:]!r}")
+    return done.stdout.decode("utf-8", "replace")
+
+
+def annotate(level, message):
+    """A GitHub Actions annotation, when running there."""
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        print(f"::{level}::{message}", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    # An unexpected error is a recording that did not happen, so it exits 2 like the rest.
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except Exception:  # noqa: BLE001 - reported in full, then the exit says it was not recorded
+        import traceback
+
+        traceback.print_exc()
+        sys.exit(2)

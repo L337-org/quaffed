@@ -127,7 +127,9 @@ enforces it.
   name and comments say what it checks.
 - `.github/workflows/package.yaml` builds the Linux package on every pull request (`release.md`).
 - `.github/workflows/benchmarks.yaml` counts the front end's and the matcher's instructions against
-  main's on every pull request (`performance.md`).
+  main's on every pull request, and the merged commit's after a merge (`performance.md`).
+- `.github/workflows/record-measurements.yaml` posts each merge's budgets and benchmark counts to
+  InfluxDB (`performance.md`).
 - `.github/workflows/report-failures.yaml` posts a failed run to Slack.  A new workflow that runs on
   a schedule, a push, a release or a pull request is added there, as below.
 

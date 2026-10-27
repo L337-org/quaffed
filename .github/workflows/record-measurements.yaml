@@ -1,0 +1,92 @@
+name: 'Record measurements'
+permissions: {}
+
+# Posts each merge to main's budgets and benchmark counts to InfluxDB, through
+# scripts/record-measurements, so performance can be followed over time; and first posts whatever
+# an earlier run could not.  The Budgets job and the Benchmarks workflow write the points, since
+# only they know the runner they measured on; this workflow holds the secrets, so nothing a pull
+# request runs can reach them.  architecture/performance.md has the records and their names.
+on:
+  workflow_run:
+    workflows:
+      - 'Check inbound changes'
+      - 'Benchmarks'
+    types: [completed]
+    branches: [main]
+  # Daily, so what a failed post kept is posted without waiting for the next merge.
+  schedule:
+    - cron: '37 5 * * *'
+
+jobs:
+  record:
+    name: Record measurements
+    # Only a push to main in this repository, or the daily run.  A pull request's run, including
+    # one from a fork's branch named main, is skipped before the job starts.
+    if: >-
+      github.repository == 'L337-org/quaffed' &&
+      (github.event_name == 'schedule' ||
+       (github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.head_repository.full_name == github.repository))
+    runs-on: ubuntu-24.04
+    # Covers each post's retries, about eight minutes, for this merge's files and any kept ones.
+    timeout-minutes: 30
+    permissions:
+      # To download other runs' artefacts, and delete a kept one once it is posted.
+      actions: write
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      QUAFFED_INFLUX_URL: ${{ secrets.QUAFFED_INFLUX_URL }}
+      QUAFFED_INFLUX_USER: ${{ secrets.QUAFFED_INFLUX_USER }}
+      QUAFFED_INFLUX_PASSWORD: ${{ secrets.QUAFFED_INFLUX_PASSWORD }}
+    steps:
+      # The default branch's scripts, never the measured run's own files beyond its points.
+      - name: Check out source repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Post what earlier runs could not
+        run: scripts/record-measurements catch-up --rejected "$RUNNER_TEMP/rejected"
+
+      - name: Download this merge's points
+        if: ${{ !cancelled() && github.event_name == 'workflow_run' }}
+        env:
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --pattern 'measurements-*' \
+            --dir "$RUNNER_TEMP/measurements"
+
+      - name: Post this merge's points
+        if: ${{ !cancelled() && github.event_name == 'workflow_run' }}
+        run: |
+          shopt -s nullglob
+          files=("$RUNNER_TEMP"/measurements/*/*.lp)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::run $RUN_ID left no measurements to post"
+            exit 1
+          fi
+          scripts/record-measurements post "${files[@]}" \
+            --pending "$RUNNER_TEMP/unrecorded" --rejected "$RUNNER_TEMP/rejected"
+        env:
+          RUN_ID: ${{ github.event.workflow_run.id }}
+
+      # A later run posts these, then deletes them; kept for 30 days, after which they are lost.
+      - name: Keep what could not be posted
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unrecorded-measurements
+          path: ${{ runner.temp }}/unrecorded
+          if-no-files-found: ignore
+          retention-days: 30
+
+      # Never posted again: kept for someone to read why InfluxDB refused them.
+      - name: Keep what InfluxDB refused
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rejected-measurements
+          path: ${{ runner.temp }}/rejected
+          if-no-files-found: ignore

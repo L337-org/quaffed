@@ -9,15 +9,20 @@ permissions:
 # as the pull request, at the tip the pull request would merge into, because a count moves with
 # the runner image and its Valgrind: a stored figure would move with every image update, while
 # two counts from one job compare exactly.  amd64 and arm64 count differently, so each is
-# compared with itself.  architecture/workspace.md says why these jobs are not required checks;
-# architecture/performance.md has the reasoning, scripts/benchmarks counts and
-# scripts/benchmark-gate compares.
+# compared with itself.  After a merge to main, only the merged commit is counted, for the
+# Record measurements workflow to post to InfluxDB.  architecture/workspace.md says why these
+# jobs are not required checks; architecture/performance.md has the reasoning,
+# scripts/benchmarks counts and scripts/benchmark-gate compares.
 on:
   pull_request:
+  push:
+    branches: [main]
 
+# A pull request's newer push replaces its older run; each merge to main is counted, so none is
+# cancelled.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   benchmarks:
@@ -48,6 +53,7 @@ jobs:
       # main's side is that merge's first parent: the comparison then covers exactly what the
       # pull request adds, whatever has reached main since it branched.
       - name: Check out main's side
+        if: github.event_name == 'pull_request'
         run: |
           base="$(git rev-parse HEAD^1)"
           git worktree add --detach "$RUNNER_TEMP/main" "$base"
@@ -59,6 +65,7 @@ jobs:
         run: rustup toolchain install
 
       - name: Install main's pinned toolchain
+        if: github.event_name == 'pull_request'
         working-directory: ${{ runner.temp }}/main
         run: rustup toolchain install
 
@@ -73,17 +80,36 @@ jobs:
           tools: gungraun-runner
 
       - name: Count main
+        if: github.event_name == 'pull_request'
         run: scripts/benchmarks "$RUNNER_TEMP/main" "$RUNNER_TEMP/counts/main"
 
-      - name: Count the pull request
-        run: scripts/benchmarks "$GITHUB_WORKSPACE" "$RUNNER_TEMP/counts/pull-request"
+      - name: Count this commit
+        run: scripts/benchmarks "$GITHUB_WORKSPACE" "$RUNNER_TEMP/counts/head"
+
+      # What the Record measurements workflow posts to InfluxDB after a merge to main, written
+      # here because only this job knows the runner it counted on.  Written on every run, so a
+      # pull request that breaks it fails here rather than after it merges.
+      - name: Write the counts as InfluxDB points
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          scripts/record-measurements benchmarks "$RUNNER_TEMP/counts/head" \
+            --out "$RUNNER_TEMP/measurements/benchmarks-$ARCH.lp"
+
+      - name: Keep the points
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: measurements-benchmarks-${{ matrix.arch }}
+          path: ${{ runner.temp }}/measurements
+          if-no-files-found: error
 
       - name: Any benchmark that rose is reported, and the arena is within its budget
+        if: github.event_name == 'pull_request'
         env:
           ARCH: ${{ matrix.arch }}
         run: |
           scripts/benchmark-gate --main "$RUNNER_TEMP/counts/main" \
-            --pull-request "$RUNNER_TEMP/counts/pull-request" \
+            --pull-request "$RUNNER_TEMP/counts/head" \
             --label "$ARCH" --summary "$GITHUB_STEP_SUMMARY"
 
       # The gate's own negative test, on one architecture since the gate is the same on both: a
@@ -92,14 +118,14 @@ jobs:
       # so the slowed copies' alerts are not raised on the pull request, and the output is kept
       # out of the job summary, which reports the real comparison.
       - name: Show the gate alerts on a slowed matcher and fails on a slowed adapter
-        if: matrix.arch == 'amd64'
+        if: github.event_name == 'pull_request' && matrix.arch == 'amd64'
         run: |
           judge() {
             how="$1"
             scripts/break-benchmarks "$RUNNER_TEMP/worse-$how" "$how"
             scripts/benchmarks "$RUNNER_TEMP/worse-$how" "$RUNNER_TEMP/counts/worse-$how"
             status=0
-            env -u GITHUB_ACTIONS scripts/benchmark-gate --main "$RUNNER_TEMP/counts/pull-request" \
+            env -u GITHUB_ACTIONS scripts/benchmark-gate --main "$RUNNER_TEMP/counts/head" \
               --pull-request "$RUNNER_TEMP/counts/worse-$how" >/dev/null 2>"$RUNNER_TEMP/err-$how" || status=$?
           }
           said() {

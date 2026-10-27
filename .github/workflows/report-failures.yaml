@@ -14,6 +14,7 @@ on:
       - 'Package'
       - 'Release'
       - 'Announce pull requests'
+      - 'Record measurements'
     types: [completed]
 
 permissions:
@@ -28,6 +29,7 @@ jobs:
     uses: L337-org/github-workflows/.github/workflows/slack-on-failure.yaml@v2
     with:
       channel: '#quaffed'
-      events: '["schedule", "push", "release", "pull_request"]'
+      # workflow_run: Record measurements runs after each merge's measuring workflows.
+      events: '["schedule", "push", "release", "pull_request", "workflow_run"]'
     secrets:
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
