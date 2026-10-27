@@ -16,14 +16,14 @@ workspace = true
 [dependencies]
 # Pinned exactly: Ruff says its Rust API "will have frequent breaking changes", so an
 # upgrade is a deliberate piece of work through this crate, never a lock-file refresh.
-ruff_python_ast = "=0.0.18"
-ruff_python_parser = "=0.0.18"
+ruff_python_ast = "=0.0.19"
+ruff_python_parser = "=0.0.19"
 # For the trait that gives a node its range; released with the other two, and moves with them.
-ruff_text_size = "=0.0.18"
+ruff_text_size = "=0.0.19"
 quaffed-syntax = { path = "../syntax" }
 # The identifier rules Ruff's own lexer uses, XID_Start and XID_Continue, so a hole's name ends
 # where Python's name would.
-unicode-ident = "=1.0.26"
+unicode-ident = "=1.0.27"
 
 [dev-dependencies]
 # The round trip decodes each corpus file as quaff does, then encodes the printed text back.
