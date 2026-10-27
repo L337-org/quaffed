@@ -16,13 +16,16 @@ late keeps it.
 `post` sends each FILE to InfluxDB, retrying a failure that may pass with time.  A file that could
 not be posted is copied into the --pending directory, to be posted later; one InfluxDB refused as
 malformed is copied into --rejected, since posting it again cannot succeed.  `catch-up` posts the
-files of every `unrecorded-measurements` artefact earlier runs left, deleting each artefact once
-all of its files are posted, through the GitHub CLI.  A point posted twice is the same point, so
-posting again is always safe.
+files of every `unrecorded-measurements` artefact a Record measurements run left, through the
+GitHub CLI, deleting each once all of it is posted.  It tries each file once and stops at the
+first that does not post, since the endpoint is then down and the next run tries again; and it
+ignores an artefact of that name any other run left, since a pull request's run, a fork's
+included, can upload one.  A point posted twice is the same point, so posting again is safe.
 
 The endpoint and its credentials come from QUAFFED_INFLUX_URL, QUAFFED_INFLUX_USER and
-QUAFFED_INFLUX_PASSWORD, and are never printed.  architecture/performance.md describes the
-records and their names.
+QUAFFED_INFLUX_PASSWORD, and are never printed.  The URL is InfluxDB 1.x's `/write` with its
+`db`, or a proxy for it; this sets `precision=s` on it, since the points' times are in seconds.
+architecture/performance.md describes the records and their names.
 
 Exit status: 0 when everything was written or posted, 1 when something was not posted and is
 kept, 2 when something could not be read or written, since a measurement that was not recorded
@@ -42,6 +45,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -88,8 +92,13 @@ DELAYS = (10, 30, 60, 120, 300)
 TIMEOUT = 30
 RESPONSE_LIMIT = 64 * 1024
 
-# The artefact earlier runs left what they could not post in.
+# The artefact earlier runs left what they could not post in, and the only workflow whose
+# artefacts of that name are trusted: anything else uploading one is ignored.
 UNRECORDED = "unrecorded-measurements"
+RECORDING_WORKFLOW = ".github/workflows/record-measurements.yaml"
+
+# The most a kept file may hold; the points of one merge are a few kilobytes.
+FILE_LIMIT = 1024 * 1024
 
 # A `gh` call's limit; downloading an artefact of a few kilobytes is quick.
 GH_TIMEOUT = 120
@@ -299,7 +308,7 @@ class Endpoint:
     """Where points are posted, and as whom; neither is ever printed."""
 
     def __init__(self, url, user, password):
-        self.url = url
+        self.url = with_precision(url)
         token = base64.b64encode(f"{user}:{password}".encode()).decode()
         self.authorization = f"Basic {token}"
 
@@ -324,14 +333,17 @@ class Endpoint:
         return cls(*values.values())
 
 
-def post_file(endpoint, path, pending, rejected):
+def post_file(endpoint, path, pending, rejected, retry=True):
     """Post one file: "posted", or "rejected", kept in the rejected directory, or "unposted",
     kept in the pending one unless that is None, as when its artefact is kept instead."""
     try:
+        size = path.stat().st_size
+        if size > FILE_LIMIT:
+            raise Unrecordable(f"{str(path)!r} holds {size:,} bytes, more than points ever do")
         body = path.read_bytes()
     except OSError as err:
         raise Unrecordable(f"reading {str(path)!r}: {err}") from err
-    outcome, detail = post(endpoint, body)
+    outcome, detail = post(endpoint, body, retry)
     RESULTS.append((path.name, outcome))
     if outcome == "posted":
         print(f"record-measurements: posted {path.name}", file=sys.stderr)
@@ -347,10 +359,10 @@ def post_file(endpoint, path, pending, rejected):
     return outcome
 
 
-def post(endpoint, body):
+def post(endpoint, body, retry=True):
     """("posted", ""), ("rejected", why) for a body InfluxDB will never accept, or
-    ("unposted", why) for one that might be accepted later."""
-    delays = retry_delays()
+    ("unposted", why) for one that might be accepted later.  Tried once without retry."""
+    delays = retry_delays() if retry else ()
     detail = ""
     for attempt in range(len(delays) + 1):
         if attempt:
@@ -379,6 +391,15 @@ def post(endpoint, body):
             detail = f"could not reach the endpoint: {err!r}"
         print(f"record-measurements: attempt {attempt + 1} failed: {detail}", file=sys.stderr)
     return "unposted", detail
+
+
+def with_precision(url):
+    """The URL with `precision=s` in its query, whatever precision it named, since every point's
+    time is in seconds; InfluxDB would otherwise read them as nanoseconds, near 1970."""
+    parts = urllib.parse.urlsplit(url)
+    query = [(k, v) for k, v in urllib.parse.parse_qsl(parts.query) if k != "precision"]
+    query.append(("precision", "s"))
+    return urllib.parse.urlunsplit(parts._replace(query=urllib.parse.urlencode(query)))
 
 
 class NoRedirects(urllib.request.HTTPRedirectHandler):
@@ -437,15 +458,40 @@ def catch_up(endpoint, rejected):
     if not artefacts:
         print("record-measurements: nothing unrecorded from earlier runs", file=sys.stderr)
         return 0
-    status = 0
     for artefact, run_id in artefacts:
         try:
-            status = max(status, catch_up_one(endpoint, repository, artefact, run_id, rejected))
+            if not left_by_recording(repository, run_id):
+                print(
+                    f"record-measurements: artefact {artefact} of run {run_id} was not left by "
+                    f"{RECORDING_WORKFLOW} on a merge to this repository, so it is ignored",
+                    file=sys.stderr,
+                )
+                annotate("warning", f"ignored artefact {artefact} of run {run_id}: not ours")
+                continue
+            if catch_up_one(endpoint, repository, artefact, run_id, rejected):
+                # The endpoint is down; the rest wait for the next run rather than the job.
+                return 1
         except Gone:
             # Another run posted and deleted it between the listing and now: posting is
             # idempotent, so whichever run got there first, it is recorded.
             print(f"record-measurements: artefact {artefact} is already gone", file=sys.stderr)
-    return status
+    return 0
+
+
+def left_by_recording(repository, run_id):
+    """Whether a run is Record measurements, started after a merge in this repository.  A pull
+    request's run, a fork's included, runs as a pull request and can name its workflow file
+    anything, so the event and the file are both checked."""
+    fields = gh(
+        [
+            "api",
+            f"repos/{repository}/actions/runs/{run_id}",
+            "--jq",
+            "[.event, .path, .head_repository.full_name] | @tsv",
+        ],
+        f"reading run {run_id}",
+    )
+    return fields.strip().split("\t") == ["workflow_run", RECORDING_WORKFLOW, repository]
 
 
 class Gone(Exception):
@@ -460,14 +506,15 @@ def catch_up_one(endpoint, repository, artefact, run_id, rejected):
             + ["--dir", scratch],
             f"downloading artefact {artefact} of run {run_id}",
         )
-        files = sorted(p for p in Path(scratch).rglob("*") if p.is_file())
+        files = sorted(p for p in Path(scratch).rglob("*.lp") if p.is_file())
         if not files:
-            raise Unrecordable(f"artefact {artefact} of run {run_id} holds no file")
+            raise Unrecordable(f"artefact {artefact} of run {run_id} holds no points")
         # A rejected file is kept by this run instead, so either way the artefact is done with;
-        # one not posted stays in the artefact, which is left to be tried again.
-        outcomes = [post_file(endpoint, f, None, rejected) for f in files]
-    if "unposted" in outcomes:
-        return 1
+        # one not posted stays in the artefact, which is left to be tried again.  Once, without
+        # retrying: the run that kept it already retried.
+        for f in files:
+            if post_file(endpoint, f, None, rejected, retry=False) == "unposted":
+                return 1
     gh(
         ["api", "--method", "DELETE", f"repos/{repository}/actions/artifacts/{artefact}"],
         f"deleting artefact {artefact}, now posted",

@@ -148,19 +148,22 @@ can be followed; nothing gates on what is recorded.
   measured on.  They write them on pull requests too, so a change that breaks them fails before
   it merges.  The benchmarks also run on a merge to main, counting only the merged commit.
 - **`.github/workflows/record-measurements.yaml` posts them**, once a merge's measuring workflows
-  finish, and is the only place the secrets `QUAFFED_INFLUX_URL`, `QUAFFED_INFLUX_USER` and
-  `QUAFFED_INFLUX_PASSWORD` are used.  Any run that is not a push to main in this repository, a
-  fork's included, skips its job before it starts.
+  finish, and it and the daily `catch-up-measurements.yaml` are the only workflows given the
+  secrets `QUAFFED_INFLUX_URL`, `QUAFFED_INFLUX_USER` and `QUAFFED_INFLUX_PASSWORD`.  Any run that
+  is not a push to main in this repository, a fork's included, skips its job before it starts.
+  No merge's run is cancelled by a later one, so every merge is measured.
 - **What is recorded**: `quaffed_budget`, one point per scenario, and `quaffed_benchmark`, one per
   benchmark and architecture with Callgrind's counts under Callgrind's own names.  Tags are what a
   dashboard groups by - `scenario`, or `benchmark` and `function`, then `arch`, `os` and
   `runner_image` - and the commit is a field, so the series do not multiply with every commit.
   Each point carries the time it was measured.  A new figure is a new field and a new
   architecture a new tag value, so neither changes what is already there.
-- **What could not be posted is kept**, as the run's `unrecorded-measurements` artefact, for 30
-  days; every later run, and the daily `catch-up-measurements.yaml`, posts it and then deletes
-  it.  The daily one is a workflow of its own, re-enabled by every merge's run, because GitHub
-  disables a scheduled workflow after 60 days without activity.  A point posted twice is
+- **What could not be posted is kept**, as the run's `unrecorded-measurements` artefact, for the
+  `retention-days` the workflow sets; every later run, after posting its own, and the daily
+  `catch-up-measurements.yaml` post it and then delete it.  Only an artefact a Record measurements
+  run left is posted, since any pull request's run can upload one of that name.  The daily one is
+  a workflow of its own, re-enabled by every merge's run, because GitHub disables a scheduled
+  workflow after 60 days without activity.  A point posted twice is
   the same point, so posting again is safe.  What InfluxDB refuses as malformed is kept as
   `rejected-measurements` and never posted again.  A failed run is posted to Slack, and its job
   summary says how to post by hand.

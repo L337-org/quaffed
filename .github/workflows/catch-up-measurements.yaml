@@ -14,8 +14,8 @@ jobs:
     name: Catch up on measurements
     if: github.repository == 'L337-org/quaffed'
     runs-on: ubuntu-24.04
-    # Covers each kept file's retries, about eight minutes apiece.
-    timeout-minutes: 30
+    # Catching up tries each kept file once, and stops at the first that does not post.
+    timeout-minutes: 15
     permissions:
       # To download other runs' artefacts, and delete a kept one once it is posted.
       actions: write

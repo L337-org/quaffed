@@ -60,7 +60,7 @@ the work instead.  The shared hygiene check that CI runs fails on either.
 | `scripts/test-deb`, `scripts/break-deb` or `packaging/deb/install-test/`, or adding a target distribution | the package install test section of [architecture/release.md](architecture/release.md) |
 | `budgets.toml`, `scripts/budgets` or `scripts/break-budgets`, or a change that moves a budget | the budgets section of [architecture/performance.md](architecture/performance.md) |
 | `crates/python/benches/`, `scripts/benchmarks`, `scripts/benchmark-gate`, `scripts/break-benchmarks` or `.github/workflows/benchmarks.yaml` | the benchmarks section of [architecture/performance.md](architecture/performance.md) |
-| `scripts/record-measurements` or `.github/workflows/record-measurements.yaml`, or what is recorded to InfluxDB | the recording section of [architecture/performance.md](architecture/performance.md) |
+| `scripts/record-measurements`, `.github/workflows/record-measurements.yaml` or `.github/workflows/catch-up-measurements.yaml`, or what is recorded to InfluxDB | the recording section of [architecture/performance.md](architecture/performance.md) |
 
 ## Commands
 

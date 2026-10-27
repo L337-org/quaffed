@@ -397,7 +397,8 @@ fn a_post_sends_the_points_with_the_credentials_to_the_endpoint() {
     let received = received.lock().unwrap();
     assert_eq!(received.len(), 1);
     assert_eq!(received[0].method, "POST");
-    assert_eq!(received[0].path, "/write-here");
+    // The points' times are seconds, so the precision is said whatever the URL said.
+    assert_eq!(received[0].path, "/write-here?precision=s");
     assert_eq!(received[0].body, POINTS);
     // github_ci:<password>, as HTTP basic authentication spells it.
     let expected = format!("github_ci:{PASSWORD}");
@@ -503,10 +504,19 @@ fn an_endpoint_that_is_not_https_is_refused() {
     );
 }
 
-/// A fake `gh` in its own directory, listing `listed` as the kept artefacts and downloading
-/// `files` from each, logging every call in `calls` beside it.  `gone` makes a download find the
-/// artefact deleted.
-fn fake_gh(scratch: &Scratch, listed: &str, files: &[(&str, &str)], gone: bool) -> PathBuf {
+/// The run that left an artefact, as `gh` describes it: Record measurements after a merge.
+const OURS: &str = "workflow_run\t.github/workflows/record-measurements.yaml\tL337-org/quaffed";
+
+/// A fake `gh` in its own directory, listing `listed` as the kept artefacts, describing each
+/// one's run as `run`, and downloading `files` from each, logging every call in `calls` beside
+/// it.  `gone` makes a download find the artefact deleted.
+fn fake_gh(
+    scratch: &Scratch,
+    listed: &str,
+    run: &str,
+    files: &[(&str, &str)],
+    gone: bool,
+) -> PathBuf {
     let bin = scratch.path("bin");
     let artefact = bin.join("artefact");
     fs::create_dir_all(&artefact).unwrap();
@@ -514,6 +524,7 @@ fn fake_gh(scratch: &Scratch, listed: &str, files: &[(&str, &str)], gone: bool) 
         fs::write(artefact.join(name), content).unwrap();
     }
     fs::write(bin.join("listing"), listed).unwrap();
+    fs::write(bin.join("run"), run).unwrap();
     if gone {
         fs::write(bin.join("gone"), "").unwrap();
     }
@@ -521,6 +532,7 @@ fn fake_gh(scratch: &Scratch, listed: &str, files: &[(&str, &str)], gone: bool) 
 here="$(cd "$(dirname "$0")" && pwd)"
 echo "$*" >> "$here/calls"
 if [ "$1" = api ] && [ "$2" = --method ]; then exit 0; fi
+case "$2" in */actions/runs/*) cat "$here/run"; exit 0;; esac
 if [ "$1" = api ]; then cat "$here/listing"; exit 0; fi
 if [ "$1" = run ]; then
   if [ -f "$here/gone" ]; then echo "no valid artifacts found to download" >&2; exit 1; fi
@@ -568,7 +580,13 @@ fn calls(bin: &Path) -> String {
 #[test]
 fn a_kept_artefact_is_posted_and_then_deleted() {
     let scratch = Scratch::new();
-    let bin = fake_gh(&scratch, "77\t1234\n", &[("budgets.lp", POINTS)], false);
+    let bin = fake_gh(
+        &scratch,
+        "77\t1234\n",
+        OURS,
+        &[("budgets.lp", POINTS)],
+        false,
+    );
     let (url, received) = server(&[(204, "")]);
     let output = catch_up(&scratch, &bin, &url);
     assert!(output.status.success(), "{}", text(&output));
@@ -582,19 +600,59 @@ fn a_kept_artefact_is_posted_and_then_deleted() {
 }
 
 #[test]
-fn a_kept_artefact_that_still_cannot_be_posted_stays_and_the_run_fails() {
+fn a_kept_artefact_that_still_cannot_be_posted_stays_and_catching_up_stops_there() {
     let scratch = Scratch::new();
-    let bin = fake_gh(&scratch, "77\t1234\n", &[("budgets.lp", POINTS)], false);
-    let (url, _) = server(&[(503, ""), (503, ""), (503, "")]);
+    let bin = fake_gh(
+        &scratch,
+        "77\t1234\n78\t1235\n",
+        OURS,
+        &[("budgets.lp", POINTS)],
+        false,
+    );
+    let (url, received) = server(&[(503, ""), (204, "")]);
     let output = catch_up(&scratch, &bin, &url);
     assert_eq!(output.status.code(), Some(1), "{}", text(&output));
-    assert!(!calls(&bin).contains("DELETE"), "{}", calls(&bin));
+    // Once, without retrying, and the next artefact is left for the next run.
+    assert_eq!(received.lock().unwrap().len(), 1);
+    let calls = calls(&bin);
+    assert!(!calls.contains("DELETE"), "{calls}");
+    assert!(!calls.contains("run download 1235"), "{calls}");
+}
+
+#[test]
+fn an_artefact_of_that_name_left_by_any_other_run_is_ignored() {
+    let scratch = Scratch::new();
+    // A fork's pull request, whose run uploaded an artefact of the name from a workflow file
+    // of the same name.
+    let theirs = "pull_request\t.github/workflows/record-measurements.yaml\tsomeone/quaffed";
+    let bin = fake_gh(
+        &scratch,
+        "77\t1234\n",
+        theirs,
+        &[("budgets.lp", POINTS)],
+        false,
+    );
+    let (url, received) = server(&[]);
+    let output = catch_up(&scratch, &bin, &url);
+    assert!(output.status.success(), "{}", text(&output));
+    assert!(
+        received.lock().unwrap().is_empty(),
+        "a foreign artefact was posted"
+    );
+    let calls = calls(&bin);
+    assert!(!calls.contains("run download"), "{calls}");
+    assert!(!calls.contains("DELETE"), "{calls}");
+    assert!(
+        text(&output).contains("so it is ignored"),
+        "{}",
+        text(&output)
+    );
 }
 
 #[test]
 fn with_nothing_kept_catching_up_downloads_and_posts_nothing() {
     let scratch = Scratch::new();
-    let bin = fake_gh(&scratch, "", &[], false);
+    let bin = fake_gh(&scratch, "", OURS, &[], false);
     let (url, received) = server(&[]);
     let output = catch_up(&scratch, &bin, &url);
     assert!(output.status.success(), "{}", text(&output));
@@ -610,7 +668,7 @@ fn with_nothing_kept_catching_up_downloads_and_posts_nothing() {
 #[test]
 fn an_artefact_another_run_already_posted_and_deleted_is_passed_over() {
     let scratch = Scratch::new();
-    let bin = fake_gh(&scratch, "77\t1234\n", &[], true);
+    let bin = fake_gh(&scratch, "77\t1234\n", OURS, &[], true);
     let (url, received) = server(&[]);
     let output = catch_up(&scratch, &bin, &url);
     assert!(output.status.success(), "{}", text(&output));
@@ -641,4 +699,29 @@ fn decode_base64(text: &str) -> String {
         }
     }
     String::from_utf8(out).expect("the credentials are UTF-8")
+}
+
+#[test]
+fn a_url_naming_its_database_and_another_precision_posts_in_seconds_to_that_database() {
+    let scratch = Scratch::new();
+    fs::write(scratch.path("points.lp"), POINTS).unwrap();
+    let (url, received) = server(&[(204, "")]);
+    let vars = endpoint(&format!("{url}?db=quaffed_db&precision=ns"));
+    let output = record(
+        &[
+            "post",
+            path_str(&scratch.path("points.lp")),
+            "--pending",
+            path_str(&scratch.path("pending")),
+            "--rejected",
+            path_str(&scratch.path("rejected")),
+        ],
+        &borrowed(&vars),
+        None,
+    );
+    assert!(output.status.success(), "{}", text(&output));
+    assert_eq!(
+        received.lock().unwrap()[0].path,
+        "/write-here?db=quaffed_db&precision=s"
+    );
 }

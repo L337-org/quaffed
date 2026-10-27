@@ -9,10 +9,11 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Cancel superseded runs on the same branch/PR
+# A pull request's newer push replaces its older run; each merge to main is measured, since the
+# Budgets job's measurements are recorded, so none is cancelled.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Every Rust job installs the toolchain from rust-toolchain.toml with `rustup toolchain install`
 # and no arguments, so no version is named here.  The explicit step matters: rustup

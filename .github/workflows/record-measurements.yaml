@@ -2,12 +2,12 @@ name: 'Record measurements'
 permissions: {}
 
 # Posts each merge to main's budgets and benchmark counts to InfluxDB, through
-# scripts/record-measurements, so performance can be followed over time; and first posts whatever an
-# earlier run could not.  The daily catch-up is a workflow of its own, catch-up-measurements.yaml,
-# because GitHub disables a scheduled workflow after 60 days without activity in the repository, and
-# a merge must still be recorded after a quiet spell; each run here re-enables it.  The Budgets job
-# and the Benchmarks workflow write the points, since only they know the runner they measured on;
-# this workflow holds the secrets, so nothing a pull request runs can reach them.
+# scripts/record-measurements, so performance can be followed over time; then posts whatever an
+# earlier run could not.  The Budgets job and the Benchmarks workflow write the points, since only
+# they know the runner they measured on; this workflow and catch-up-measurements.yaml are the only
+# ones given the secrets, and neither runs for a pull request.  The daily catch-up is a workflow of
+# its own because GitHub disables a scheduled workflow after 60 days without activity in the
+# repository, and a merge must still be recorded after a quiet spell; each run here re-enables it.
 # architecture/performance.md has the records and their names.
 on:
   workflow_run:
@@ -28,7 +28,8 @@ jobs:
       github.event.workflow_run.head_branch == 'main' &&
       github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-24.04
-    # Covers each post's retries, about eight minutes, for this merge's files and any kept ones.
+    # Covers this merge's posts with their retries, DELAYS in scripts/record-measurements, then
+    # catching up, which tries each kept file once.
     timeout-minutes: 30
     permissions:
       # To download other runs' artefacts, delete a kept one once it is posted, and re-enable the
@@ -47,14 +48,15 @@ jobs:
         with:
           persist-credentials: false
 
-      # A no-op when it is already enabled; after a quiet spell, this merge brings it back.
+      # Enabling an enabled workflow changes nothing; after a quiet spell, this merge brings it
+      # back.
       - name: Keep the daily catch-up enabled
-        run: gh workflow enable catch-up-measurements.yaml --repo "$GITHUB_REPOSITORY"
+        run: |
+          gh api --method PUT \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/catch-up-measurements.yaml/enable"
 
-      - name: Post what earlier runs could not
-        if: ${{ !cancelled() }}
-        run: scripts/record-measurements catch-up --rejected "$RUNNER_TEMP/rejected"
-
+      # This merge's points first, and kept if they cannot be posted, so that catching up on
+      # earlier ones can never use the job's time up before they are safe.
       - name: Download this merge's points
         if: ${{ !cancelled() }}
         env:
@@ -65,6 +67,8 @@ jobs:
 
       - name: Post this merge's points
         if: ${{ !cancelled() }}
+        env:
+          RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
           shopt -s nullglob
           files=("$RUNNER_TEMP"/measurements/*/*.lp)
@@ -74,10 +78,8 @@ jobs:
           fi
           scripts/record-measurements post "${files[@]}" \
             --pending "$RUNNER_TEMP/unrecorded" --rejected "$RUNNER_TEMP/rejected"
-        env:
-          RUN_ID: ${{ github.event.workflow_run.id }}
 
-      # A later run posts these, then deletes them; kept for 30 days, after which they are lost.
+      # A later run posts these, then deletes them; after retention-days they are lost.
       - name: Keep what could not be posted
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -86,6 +88,10 @@ jobs:
           path: ${{ runner.temp }}/unrecorded
           if-no-files-found: ignore
           retention-days: 30
+
+      - name: Post what earlier runs could not
+        if: ${{ !cancelled() }}
+        run: scripts/record-measurements catch-up --rejected "$RUNNER_TEMP/rejected"
 
       # Never posted again: kept for someone to read why InfluxDB refused them.
       - name: Keep what InfluxDB refused
