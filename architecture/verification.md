@@ -6,121 +6,77 @@ installed.
 ## End-to-end tests and snapshots
 
 `crates/quaffed/tests/end_to_end.rs` runs the built `quaff` binary as a user runs it, in a
-throwaway project directory, and records what it printed and how it exited as a snapshot with
-`insta` and `insta-cmd`.  The snapshot holds the exit status, standard output and standard
-error, so a changed message or exit code fails until somebody reviews it, and the reviewed
-change shows on the pull request as a diff of a `.snap` file under `tests/snapshots/`.  Every
-diagnostic `quaff` can print, and `--help`, has one.
+throwaway project directory, and snapshots its exit status, standard output and standard error
+with `insta` and `insta-cmd`.  A changed message or exit code fails until somebody reviews it, and
+shows on the pull request as a diff of a `.snap` file.  Every diagnostic `quaff` can print, and
+`--help`, has one.
 
-**The version is filtered out of snapshots**, shown as `[VERSION]`, because it is declared in one
-place and a snapshot recording it would be a second copy every version bump had to re-accept.
-`the_version_it_reports_is_the_workspace_version` checks the real value against
-`CARGO_PKG_VERSION` instead.
-
-**The binary is `CARGO_BIN_EXE_quaff`**, which cargo sets only when the crate has that binary, so
-a missing binary fails to compile rather than skipping; if the file is gone at run time the
-harness fails naming the path.  **The command's environment is cleared** and it runs from the
-project's root, so nothing from the machine running the tests reaches the binary's output, and
-arguments should be relative paths: the snapshot records them.  The one exception is
-`LLVM_PROFILE_FILE`, passed through when set, so that under coverage the instrumented binary
-writes its profile where the coverage tool reads it rather than into the project.
+- **The version is filtered out**, as `[VERSION]`, so a version bump re-accepts nothing;
+  `the_version_it_reports_is_the_workspace_version` checks the real value instead.
+- **The command's environment is cleared** and it runs from the project's root, so nothing from
+  the machine reaches the output; pass relative paths, since the snapshot records them.
+  `LLVM_PROFILE_FILE` alone is passed through, for coverage.
 
 ### Adding an end-to-end test
 
 1. Build the project the scenario needs with `Project::new(&[(path, content), ...])`.
-2. Run `assert_quaff_snapshot!(project.quaff(&[args...]))`, which snapshots the result with the
-   version filtered out.
-3. Check the files left behind: `project.assert_unchanged()` for anything that must not edit,
-   and assertions on the edited content for anything that must.  `assert_unchanged` compares each
-   file's content and permission bits, each directory, and each symbolic link's target, without
-   following links, so a rename that drops the executable bit or replaces a link with a file is
-   caught.  It uses Unix permissions, so like the tool-manifest tests it is Unix-only.
+2. Run `assert_quaff_snapshot!(project.quaff(&[args...]))`.
+3. Check the files left behind: `project.assert_unchanged()` for anything that must not edit
+   (it compares content, permission bits and link targets, so it is Unix-only), and assertions
+   on the edited content for anything that must.
 4. Run `cargo insta test`, read the new snapshot in `cargo insta review`, and accept it only if it
-   says what `quaff` should say.  A snapshot accepted unread asserts whatever the code happened to
-   print.
+   says what `quaff` should say.  A snapshot accepted unread asserts whatever the code printed.
 5. Commit the `.snap` file with the test.
 
 ### Reviewing a changed snapshot
 
-`cargo insta test` stores a changed result beside the old one as `.snap.new`, and
-`cargo insta review` shows each as a diff to accept or reject; `cargo insta reject` drops them
-all.  In CI, where `CI` is set, a changed or new snapshot fails the run and nothing is written.
-
-CI runs `cargo insta test --workspace --check --unreferenced=reject` after
-`cargo test --workspace --locked`, so a snapshot file that no test produces - a test renamed or
-deleted without its snapshot - also fails the run.  The `cargo test` step is the one that enforces
-`Cargo.lock`: `cargo insta test` passes arguments after `--` to the test binaries rather than to
-cargo, whatever its help says, so it cannot take `--locked`.
+`cargo insta test` writes a changed result as `.snap.new`; `cargo insta review` shows each as a
+diff to accept or reject, and `cargo insta reject` drops them all.  In CI a changed or new
+snapshot fails the run.  CI also runs `cargo insta test --workspace --check
+--unreferenced=reject`, so a snapshot no test produces fails; `cargo test --locked` runs
+separately because `cargo insta test` cannot take `--locked`.
 
 ## The synthetic corpus
 
 `corpus/synthetic/` is Python written to contain every construct quaff's Python front end must
-handle.  It is the primary input to any invariant harness, budget or benchmark, and it is
-checked in, so it needs no fetching and carries no third-party licence.
+handle.  It is the only input to the budgets and benchmarks, and it is checked in.
 
-- **`modules/*.py`** are parsed as modules: a file's worth of statements.  Each file has a
-  theme - statements, expressions, strings, match patterns, type parameters, non-ASCII text,
-  pragmas, indentation, line endings, a byte-order mark - so that a gap points at a file.
+- **`modules/*.py`** are parsed as modules, one theme per file, so that a gap points at a file.
 - **`expressions/*.pyexpr`** are parsed as a single expression, the only way to produce Ruff's
-  `ModExpression`, and the shape many structural patterns take.
-- **`ipython/*.ipy`** are parsed as `IPython` source: statements that may include its escape
-  commands - `%timeit`, `!ls`, `?len` - which IPython and Jupyter notebooks run before handing
-  the rest to Python.  They are not Python, so CPython refuses these files, and anything that
-  judges the corpus by CPython takes this directory as its own, without the oracle.  These files
-  cover Ruff's escape-command kinds like every other kind.
+  `ModExpression`.
+- **`ipython/*.ipy`** are `IPython` source with escape commands (`%timeit`, `!ls`).  They are not
+  Python, so nothing judges them by CPython, but they cover Ruff's escape-command kinds.
 
-**Its bytes are its point**, so `.gitattributes` marks it `-text`: git stores and checks out
-every file exactly, CRLF and lone-CR line endings and the byte-order mark included.
+**Its bytes are its point**, so `.gitattributes` marks it `-text`, keeping CRLF, lone-CR line
+endings and the byte-order mark exactly.
 
-`crates/python/tests/corpus.rs` checks it in the ordinary test run:
-
-- **Every kind of node in the grammar appears**, taken from the adapter's `all_kinds()` and so
-  held to Ruff's own enum (`python.md`).  It fails naming each kind no file produces.  There are
-  no exceptions: every kind Ruff lists comes from some file.
-- **Every layout form is there byte for byte**: a UTF-8 byte-order mark, LF, CRLF and a lone CR
-  in one file, tab and space indentation, non-ASCII text and a `# noqa` pragma.
-- **Every file parses**, and a file that does not fails the run naming it and Ruff's message.
-- **Fewer files than the floor fails**, saying how many it found, so an emptied or missing
-  directory cannot pass by checking nothing.
-
-**Every module and expression file is valid Python to the oracle**, checked by
-`scripts/check-synthetic` in the **Real-world corpus** CI job, which already installs the
-oracle's Python: CPython's `ast.parse` over `modules/` as modules and `expressions/` in
-expression mode, failing naming each file it refuses and why.  `ipython/` is not Python, so it is
-not judged, and the run says so.
+`crates/python/tests/corpus.rs` requires every node kind in `all_kinds()` (`python.md`) to appear,
+with no exceptions, every layout form to be present byte for byte, every file to parse, and at
+least the floor of files.  `scripts/check-synthetic`, in the **Real-world corpus** CI job, requires
+every module and expression file to be valid Python to the oracle.
 
 ### Adding to the synthetic corpus
 
 1. Add the construct to the file whose theme it fits, or a new themed file under `modules/`,
-   `expressions/` for a single expression, or `ipython/` for an `IPython` escape command.
-2. Keep it valid Python: run `scripts/check-synthetic` with the oracle's Python, the CPython
-   release `corpus/real-world.toml` names.  CI runs it too.
+   `expressions/` or `ipython/`.
+2. Keep it valid Python: run `scripts/check-synthetic` with the oracle's Python, the release
+   `corpus/real-world.toml` names.
 3. Run `cargo test -p quaffed-python`, which runs the coverage check and the docker-mcp exclusion
    below.
-4. A file kept for its bytes - line endings, a byte-order mark, tabs - must be written with
-   those bytes, not through an editor that normalises them; check with `od -c`.
+4. A file kept for its bytes must be written with those bytes, not through an editor that
+   normalises them; check with `od -c`.
 
 ## The real-world corpus
 
-Real Python, as a check on what the synthetic corpus did not think to write: **CPython's own
-`Lib/test` at the release tag matching the oracle**, a large body of Python written to exercise
-the language.  It is **used for the round trip and the structural counts, and as input when
-profiling by hand**, never by a budget or a benchmark, so its contents cannot move a measured
-number.  Nothing that measures reads `target/corpus/`.  A file it holds can fail a pull request
-through the round trip, by not round-tripping or by disagreeing with the oracle, or through the
-structural counts, by a count of a pattern's matches in a file that differs from the oracle's.
+**CPython's own `Lib/test` at the release tag matching the oracle**: real Python, as a check on
+what the synthetic corpus did not think to write.  It is used for the round trip and the
+structural counts, and for profiling by hand, **never by a budget or a benchmark**, so it cannot
+move a measured number.
 
-It is **fetched, not checked in**: it is CPython's code, under the PSF licence, and far larger
-than the rest of the repository.  `corpus/real-world.toml` pins it, and is the one place that
-names it:
-
-- **the archive**, python.org's source tarball for the release, by URL and SHA-256.  Not
-  GitHub's archive of the tag: GitHub generates those on request, and their bytes have changed
-  before;
-- **the path** extracted from it, `Lib/test`, under the archive's top directory;
-- **the oracle**, by exact version: the CPython whose `ast.parse` says which files are valid
-  Python.  Pinned to the release, never `main`, which carries syntax the release refuses;
-- **the floor**: fewer `.py` files than this means the fetch or the walk is broken.
+It is **fetched, not checked in**: it is under the PSF licence and large.  `corpus/real-world.toml`
+pins it and is the one place that names it: python.org's tarball by URL and SHA-256 (not GitHub's
+generated archive, whose bytes can change), the path in it, the oracle by exact version (a
+release, never `main`), and a floor of `.py` files below which the fetch counts as broken.
 
 ### Fetching it
 
@@ -128,94 +84,47 @@ names it:
 python3.X scripts/fetch-corpus      # 3.X: the oracle in corpus/real-world.toml
 ```
 
-**One command, run with the oracle's Python**; any other version, or a Python that is not
-CPython, stops it, naming the one it needs.  It downloads the archive, within an overall
-deadline, and refuses it unless the SHA-256 matches.  It refuses any member with a `..`
-step, then extracts only the named path with Python's `data` filter, which also refuses any
-member that would land outside the directory by an absolute path or a link.  Then it runs the
-oracle over every `.py` file.  It writes `refused.txt` beside the files, one line per refused
-file with the oracle's reason, and prints the counts and the refused files.  **Nothing is filtered
-out**: every file stays in the tree, and a
-refused one is listed, so a consumer must expect the oracle's refusal of exactly those files
-rather than skip them.
-
-The tree replaces an earlier one only once it is complete, by renames alone, so an interrupted
-run never leaves a partly replaced tree that looks finished; a failed refetch keeps the
-previous tree.  A fetch is reused only while everything that shaped it is unchanged - the
-source's whole entry in the manifest, and the script - which is also what CI's cache key covers.
-
-**The refused list is not committed.**  It can only change when the pin does, and it comes from
-running the oracle, so it is generated with the files rather than kept in step by hand.
+Run it with the oracle's Python; any other stops it.  It verifies the hash, extracts only the
+named path safely, runs the oracle over every file and writes `refused.txt`, one line per refused
+file with the reason.  **Nothing is filtered out**: a consumer must expect exactly those files to
+be refused rather than skip them.  A fetch is replaced only once complete, and reused while the
+manifest entry and the script are unchanged.  `refused.txt` is generated, never committed.
 
 ### In CI
 
 The **Real-world corpus** job in `premerge.yaml` runs `scripts/check-synthetic` and
-`scripts/fetch-corpus` with the oracle's Python, reusing a fetch whose manifest and script are
-unchanged, then the round trip over the fetched tree, then `scripts/count-structural` and the
-structural counts, both below.
-`crates/quaffed/tests/fetch_corpus.rs` tests the fetch script itself in the ordinary run, against
-small archives it builds: only the path is extracted, a changed hash is refused, a member with a
-`..` step or a link escaping the directory is refused, the floor fails saying how many it read,
-another Python is refused, a completed fetch is reused, a changed pin is fetched again, a failed
-download leaves nothing behind, and a failed refetch keeps the previous tree.
-`crates/quaffed/tests/check_synthetic.rs` tests the oracle check the same way: a refused file fails
-naming it in its parse mode, another Python is refused, and an empty group fails rather than passing
-having checked nothing.  Neither has a test of the overall download deadline or of a rename failing
-mid-replacement, which would need a slow server and fault injection.
+`scripts/fetch-corpus`, then the round trip, `scripts/count-structural` and the structural counts.
+`crates/quaffed/tests/fetch_corpus.rs` and `check_synthetic.rs` test the scripts themselves in the
+ordinary run.
 
 ### Checklist: moving the pin to a new CPython release
 
 1. Change `tag`, `archive`, `root` and `oracle` in `corpus/real-world.toml` together.
 2. Download the new tarball, and set `sha256` from it.
 3. Run `scripts/fetch-corpus` with the new Python, and read the refused files it prints: each
-   should be a deliberate fixture, not a file the parser should handle.  Run
-   `scripts/check-synthetic` with it too, since the oracle now judges the synthetic corpus as
-   that release.
-4. Raise `floor` if the release has many more files, keeping it below the count the fetch
-   prints.
-5. Run the round trip against the new release, `cargo test -p quaffed-python --test round_trip
-   -- --ignored`.  A newer `Lib/test` can carry syntax the new oracle accepts and the pinned
-   Ruff refuses, reported as refused but expected to parse.  If it does, upgrade Ruff first, by
-   the checklist in `python.md`, then move the pin.
+   should be a deliberate fixture.  Run `scripts/check-synthetic` with it too.
+4. Raise `floor` if the release has many more files, keeping it below the count printed.
+5. Run the round trip, `cargo test -p quaffed-python --test round_trip -- --ignored`.  Syntax the
+   new oracle accepts and the pinned Ruff refuses means upgrading Ruff first, by the checklist in
+   `python.md`.
 
 ## The round trip
 
 `crates/python/tests/round_trip.rs` holds the Python front end to two promises: **it loses no
-byte, and it agrees with CPython on what parses.**  For each file it does what quaff does - it
-decodes the bytes in the file's declared encoding (`encoding.md`), parses the text into an
-arena (`syntax.md`) - then prints the arena back and encodes the result in the same encoding.
-The printer emits each node's children in order with the text between them, and the text
-before and after the root, so the bytes come back only if the arena's ranges keep their
-invariants and decoding and encoding lose nothing.
+byte, and it agrees with CPython on what parses.**  It decodes each file as quaff does
+(`encoding.md`), parses it into an arena (`syntax.md`), prints the arena back and encodes it, and
+requires the original bytes.
 
-- **The synthetic corpus** runs in the ordinary test run.  Every file must round-trip, each
-  group parsed in its own mode.  `ipython/` is not Python, so the oracle does not judge it, but
-  it must round-trip like the rest.
-- **The real-world corpus** is fetched, so its test is `#[ignore]`d in the ordinary run, and
-  the **Real-world corpus** job runs it with `--ignored` after the fetch.  Every file the oracle
-  accepts must round-trip, and **every file in `refused.txt` must be refused**, by the decoder or
-  the parser; one that parses fails, naming the oracle's reason.  The oracle decides, never our
-  parser.  The job's step also fails unless exactly one test ran: if the test lost its
-  `#[ignore]`, `--ignored` would run nothing and pass.  A second ignored test in the file trips
-  the same check, so adding one means changing the step's count with it.
-- **A failure names the file and the first byte that differs**, with the bytes around it on
-  each side, and every failure in the run is listed, not only the first.
-- **It cannot pass having read nothing**: a synthetic group below its floor fails, a fetched
-  source whose count of `.py` files differs from the count the oracle read fails, a missing
-  fetch fails, and a file `refused.txt` lists that is not there fails.
+- **The synthetic corpus** runs in the ordinary test run; every file must round-trip.
+- **The real-world corpus** is `#[ignore]`d, and the **Real-world corpus** job runs it with
+  `--ignored`.  Every file the oracle accepts must round-trip, and **every file in `refused.txt`
+  must be refused**: the oracle decides, never our parser.  The job's step fails unless exactly
+  one test ran, so adding a second ignored test to the file means changing that count.
+- **It cannot pass having read nothing**: a group below its floor, a count differing from the
+  oracle's, or a missing fetch fails.
 
-**What it does not prove: that every construct is a node.**  A construct an adapter leaves out
-prints as the text between nodes, and the bytes still come back.  The synthetic corpus's
-coverage check, above, is what requires every kind.
-
-It is shown to fail by a printer that drops the text between nodes, the one way an arena of
-ranges can lose bytes: it must fail on every synthetic file.  Small fetched sources it writes
-show the rest: a refused file that parses, an accepted file that is refused, an empty source, a
-wrong count and a missing file each fail, a non-UTF-8 file and one with a byte-order mark and
-every kind of line ending round-trip, and a range out of place prints nothing rather than
-panicking.
-
-To run the real-world half locally, fetch first:
+It does not prove that every construct is a node, since text an adapter leaves out still prints
+back; the synthetic corpus's coverage check requires every kind.
 
 ```bash
 python3.X scripts/fetch-corpus        # 3.X: the oracle in corpus/real-world.toml
@@ -224,112 +133,53 @@ cargo test -p quaffed-python --test round_trip -- --ignored
 
 ## The structural counts
 
-`crates/python/tests/real_world_matches.rs` holds quaff's structural matching to **an
-independent count, made by CPython's own parser**, over every real-world file the oracle
-accepts.  `scripts/count-structural`, run with the oracle's Python, counts for each pattern in
-its `PATTERNS` the places it should match, by a predicate over `ast`'s tree written for that
-pattern alone; the patterns cover each kind of hole and a name used twice.  It writes the counts
-to `structural.txt` beside `refused.txt`, a total per pattern and a count per pattern for each
-file with any match.  The test compiles the same patterns, matches them over the same files and
-requires the same count for each pattern in each file, so a false match in one file cannot hide
-behind a missed one in another.
+`crates/python/tests/real_world_matches.rs` holds structural matching to **an independent count
+made by CPython's own parser**.  `scripts/count-structural`, run with the oracle's Python, counts
+each pattern in its `PATTERNS` by a predicate over `ast`'s tree written for that pattern alone,
+and writes `structural.txt`.  The test matches the same patterns over the same files and requires
+the same count per pattern per file.  It is ignored in the ordinary run and run like the round
+trip, with the same exactly-one-test check.
 
-**A disagreement is a defect in quaff or in a predicate**, and either is found by listing both
-sides' matches by file and line: `quaff -p` over the tree, with the refused files in a
-`.ignore`, against the predicate's walk, for the files the test names.
-
-`crates/quaffed/tests/count_structural.rs` tests the script itself in the ordinary run, as
-`check_synthetic.rs` does its: on a small source it builds, each pattern is counted once beside
-its near misses and its file's line written, a refused file is left out, another Python is
-refused, and no fetched source or a source with no accepted file fails.  `real_world_matches.rs`
-tests its own reading of the counts in the ordinary run: a malformed line, or files' counts that
-do not add up to a pattern's total, are refused saying why.  The predicates compare trees field
-by field rather than through `ast.dump`, whose text for a default field differs between
-releases.
-
-Like the round trip it is ignored in the ordinary run, and the **Real-world corpus** job runs it
-with `--ignored` after the script, its step failing unless exactly one test ran.  It cannot pass
-having read nothing: a count of files that differs from the oracle's, an empty pattern list, or
-a pattern that does not compile fails it.
+**A disagreement is a defect in quaff or in a predicate**: list both sides' matches by file and
+line, `quaff -p` over the tree with the refused files in a `.ignore` against the predicate's walk.
 
 ### Checklist: adding a pattern to the structural counts
 
-1. Add the pattern to `PATTERNS` in `scripts/count-structural`, with a predicate over `ast`'s
-   tree that says what it means, written from the language reference rather than from quaff's
-   matcher.
+1. Add the pattern to `PATTERNS` in `scripts/count-structural`, with a predicate written from the
+   language reference rather than from quaff's matcher.  Compare trees field by field, not
+   through `ast.dump`, whose text differs between releases.
 2. Run the script with the oracle's Python, then `cargo test -p quaffed-python --test
    real_world_matches -- --ignored`.
-3. If the counts differ, list both sides' matches by file and line, as above, and decide which
-   is wrong.  A predicate changed to agree with quaff checks nothing.
-
-To run it locally, after fetching:
-
-```bash
-python3.X scripts/count-structural    # 3.X: the oracle in corpus/real-world.toml
-cargo test -p quaffed-python --test real_world_matches -- --ignored
-```
+3. If the counts differ, list both sides' matches and decide which is wrong.  A predicate changed
+   to agree with quaff checks nothing.
 
 ## docker-mcp is never in either corpus
 
-docker-mcp is the repository quaff's first version is to be trialled on.  Code from it in either
-corpus would tune quaff against the very code it is then judged by, and the trial would flatter
-it, so it is excluded, and the exclusion is a check rather than a convention.
-
-Code reaches the corpora two ways, and `crates/python/tests/corpus_exclusion.rs` closes both:
-
-- **A fetched source**: it fails if any line of `corpus/real-world.toml` other than a whole-line
-  comment contains `docker-mcp` or `docker_mcp`, in any case - a table name, a repository, an
-  archive URL.  A whole-line comment is exempt, so the manifest may say why.
-- **A file in the synthetic corpus**: it fails if any file's path or content names docker-mcp or
-  its package, `docker_mcp`, which catches a file copied in from it.
-
-The check matches those two names, so a source that
-reaches docker-mcp's code without them - a mirror or fork under another name, or an archive URL
-by repository ID - is not caught, and nor is code rewritten from it so that it no longer names
-it.  Those are beyond a mechanical check; the corpus is written, not copied, and a new source
-in the manifest is reviewed.
+docker-mcp is the repository quaff's first version is to be trialled on, so code from it in either
+corpus would tune quaff against what it is then judged by.
+`crates/python/tests/corpus_exclusion.rs` fails if a non-comment line of `corpus/real-world.toml`,
+or any synthetic file's path or content, names `docker-mcp` or `docker_mcp`.  It cannot catch a
+renamed mirror or rewritten code; the corpus is written, not copied, and a new source in the
+manifest is reviewed.
 
 ## The coverage ratchet
 
 A pull request that lowers line or region coverage against main, with more of it uncovered than
-on main, fails the **Coverage ratchet**, in `.github/workflows/coverage.yaml`.  It is a floor,
-not a target: no percentage is set.
+on main, fails the **Coverage ratchet** (`.github/workflows/coverage.yaml`).  It is a floor, not a
+target.
 
-- **Both sides are measured in the same run.**  The pull request's side is the pull request
-  merged into main's tip, which is what would land; main's side is that merge's first parent,
-  so the comparison covers exactly what the pull request adds.  Main is measured from a second
-  worktree with the pull request's own `scripts/coverage`, so both are measured the same way, on
-  the same runner image and tools.  No figure is stored between runs, so none can drift.
-- **What is compared.**  `scripts/coverage-ratchet` reads the summaries the workflow passes it
-  and writes a *Coverage* section in the job summary, giving each metric on both sides and the
-  change.  A metric is compared as an exact fraction covered, so rounding cannot hide a fall or
-  invent one.
-- **The gated metrics are the `GATED` list in `scripts/coverage-ratchet`**, lines and regions.
-  One fails the job when its share covered falls and more of it is uncovered than on main, and
-  the summary names the files with more uncovered.  A share that falls with no more uncovered
-  comes from covered code removed or shrunk, such as deleting a well-tested feature; it is
-  reported and passes, because its only remedy would be tests for unrelated code.
-- **Condition coverage is reported only.**  It is the nightly's `branches` figure, built with
-  `-Zcoverage-options=condition`: llvm-cov counts each condition of a boolean expression as a
-  branch, which catches an untested right-hand side of `&&` that line and region coverage count
-  as covered.  It needs an unstable flag, so it runs on the nightly `tools.toml` pins and never
-  fails the job; it joins `GATED` when the flag reaches stable, which the toolchain-upgrade
-  checklist in `workspace.md` checks.  `--branch` is passed only when reporting, because at
-  build time it sets its own coverage level after this one and the last level wins.
-- **The measurement is deterministic.**  `scripts/coverage` fixes proptest's seed, so the
-  property tests exercise the same inputs on both sides and coverage differs only where the
-  code does.  With a random seed, two runs of the same code can cover different regions,
-  which the ratchet would fail on at random.
-- **Determinism is checked on every run.**  The pull request's stable coverage is measured twice,
-  on separate runners, and `scripts/coverage-ratchet` fails if the two differ, naming each file
-  that differed and both its figures.  A difference means coverage depends on something other
-  than the code - test order, timing, an input not fixed - so the comparison with main would
-  be noise; the file named is where to look, and what fixes it is a deterministic test.
-- **No figure fails rather than passes.**  A missing or unreadable summary, or a gated metric
-  that counts nothing, is reported as *no data* or *no baseline*, and the job fails.  A failing
-  test fails its measurement and leaves no summary, so a broken build is never compared.
-
-To measure locally, with rustup, from the root of the checkout:
+- **Both sides are measured in the same run**: the pull request merged into main, and main as that
+  merge's first parent, from a second worktree with the pull request's own `scripts/coverage`.  No
+  figure is stored, so none can drift.
+- **`scripts/coverage-ratchet` compares exact fractions**, for the metrics in its `GATED` list.  A
+  share that falls with no more uncovered, as when well-tested code is deleted, passes.
+- **Condition coverage is reported only**, because it needs an unstable flag and so runs on the
+  pinned nightly.  It joins `GATED` when the flag is stable, which the toolchain-upgrade checklist
+  in `workspace.md` checks.
+- **The measurement is deterministic**: `scripts/coverage` fixes proptest's seed, and the pull
+  request is measured twice on separate runners, failing if the two differ.  A difference means
+  a non-deterministic test, in the file named.
+- **No figure fails rather than passes**: a missing summary or a metric counting nothing fails.
 
 ```bash
 scripts/install-tools cargo-llvm-cov nightly-coverage   # once
@@ -337,192 +187,107 @@ scripts/coverage stable target/coverage-stable.json
 scripts/coverage condition target/coverage-condition.json
 ```
 
-`scripts/coverage` adds the `llvm-tools` component to the pinned toolchain if it is missing.  To
-compare against another checkout, measure it the same way, giving its path as the third argument,
+To compare with another checkout, measure it the same way, giving its path as the third argument,
 and pass both to `scripts/coverage-ratchet`.
 
 ## Profiling
 
 When a gate flags a regression, a flamegraph shows where the time goes.  The `profiling` Cargo
-profile is the shipped `dist` build (`Cargo.toml`) with full debug information and nothing
-stripped, so that every frame is named, inlined ones included.  It builds for the host, so on
-Linux it uses the platform allocator rather than the package's mimalloc (`release.md`), unless
-the package's own target is given, as below.
+profile is the shipped `dist` build with full debug information, so every frame is named.
 
 ```bash
-scripts/install-tools flamegraph    # once: cargo-flamegraph, at the manifest's version
+scripts/install-tools flamegraph    # once
 cargo flamegraph --profile profiling --bin quaff -o target/flamegraph.svg \
     -- 'def ' target/corpus/cpython/Lib/test > target/flamegraph.out
 ```
 
-- **On Linux**, `cargo flamegraph` records with `perf`, from Debian's `linux-perf` package
-  matching the running kernel.  Add `--root` where `perf` refuses an unprivileged user
-  (`sysctl kernel.perf_event_paranoid`; Debian's default does): it runs `perf` under `sudo` for
-  that one recording and changes nothing on the machine.  Inside a container, `perf` also needs
-  `--privileged`.
-- **To profile the package's own build** - musl, with mimalloc - add `--target` with the
-  package's triple for the host, `x86_64-unknown-linux-musl` or `aarch64-unknown-linux-musl` as
-  `scripts/build-deb` picks it, and leave out `--bin quaff`.  `cargo flamegraph` refuses `--bin`
-  alongside `--target`, so this works only while `quaff` is the workspace's sole binary.  The
-  target needs `rustup target add` and `musl-tools`, as the package build does.  mimalloc's own
-  frames, `mi_*`, then appear, and an `[unknown]` frame may sit directly under the process
-  rather than inside `quaff`'s code.
-- **On macOS** it records with Xcode's Time Profiler, through `xctrace`, so it needs Xcode, and
-  no `sudo`.  If `xctrace` fails with *"Failed stoping ktrace session"* and writes no SVG,
-  repeat the run.
-- **Profile a real run**: everything after `--` is `quaff`'s own arguments, here a search of the
-  fetched corpus (`scripts/fetch-corpus`), or the run being investigated.  Standard output goes
-  to a file, as a user's pipe would take it, rather than to the terminal, whose speed is not
-  `quaff`'s.  A larger scope gives more samples.
-- **Check it**: open the SVG in a browser.  Frames are named after `quaff`'s modules and its
-  dependencies' crates, and an `[unknown]` frame inside them means debug information is missing,
-  so check that the build used `--profile profiling`.
-- **Clean up**: on Linux, `perf` leaves `perf.data`, and `perf.data.old` from a second run, owned
-  by root under `--root`, so remove them with `sudo rm -f perf.data perf.data.old`.  On macOS
-  `cargo flamegraph` removes its `cargo-flamegraph.trace` directory after a successful run and
-  leaves it after a failed one, so remove it with `rm -rf cargo-flamegraph.trace`.
-  `.gitignore` covers all three wherever they are written, so a leftover cannot be committed.
+- **On Linux** it needs `perf` (`linux-perf`), and `--root` where `perf_event_paranoid` refuses an
+  unprivileged user; in a container, `--privileged`.  **On macOS** it needs Xcode; if `xctrace`
+  fails with *"Failed stoping ktrace session"*, repeat the run.
+- **To profile the package's own build** (musl, mimalloc), add `--target` with the package's
+  triple and leave out `--bin quaff`, which `cargo flamegraph` refuses alongside `--target`.
+- **Send standard output to a file**, as a user's pipe would; the terminal's speed is not quaff's.
+- **An `[unknown]` frame inside quaff's code** means debug information is missing: check the
+  profile.
+- **Clean up** `perf.data` and `perf.data.old` (root-owned under `--root`), or
+  `cargo-flamegraph.trace` on macOS after a failed run; `.gitignore` covers all three.
 
 ## The budgets
 
 The work the shipped build does over the synthetic corpus is held to budgets on every pull
-request, by the **Budgets** job in `.github/workflows/premerge.yaml`.  Nothing is timed: hosted
-runners are shared and their speed varies, so a time budget fails on noise, and the project has
-no hardware of its own to time on.  Each budget counts something that does not depend on the
-runner's speed.
+request, by the **Budgets** job in `premerge.yaml`.  **Nothing is timed**: hosted runners vary in
+speed, so a time budget fails on noise; each budget counts something the runner's speed cannot
+move.
 
-- **What is measured is the package's build**: the amd64 musl binary with the `dist` profile's
-  optimisation, built with the `profiling` profile so that symbols are kept and callgrind's
-  report names every function.  It runs on the runner image the job's `runs-on:` names, not
-  `ubuntu-latest`, because Valgrind comes from the image and its version moves the counts.
-- **The scenarios are `SCENARIOS` in `scripts/budgets`.**  Each runs in a scratch copy of the
-  synthetic corpus, made a project root with an empty `.git`, so nothing else in the checkout
-  can move a budget.  The copy is always made under `/tmp`, at the same depth: quaff handles
-  each file's absolute path, so a project one directory deeper executes thousands more
-  instructions.
-- **The limits are `budgets.toml`**, per scenario:
-  - `instructions`: counted under Valgrind's callgrind.  Repeated runs can differ, and a
-    different Valgrind or image moves the count, so the limit carries a margin, `MARGINS` in
-    `scripts/budgets`.
-  - `peak_memory_kib`: the peak resident memory, from GNU time, with its margin in `MARGINS`.
-    It is taken through `/usr/bin/time` because the kernel's peak for a process counts the
-    memory it had before it started quaff, and a child of the Python script starts as a copy of
-    Python.
-  - `paths_opened` and `bytes_read`: exactly how many paths in the project quaff opens,
-    directories included, and how many bytes it reads from them, traced with `strace`.  These
-    have no margin: a change in either is a change in behaviour.
-- **No path in the project may be opened twice**, and **nothing outside the project may be
-  opened** but what `budgets.toml` allows under `[outside]`, each with its reason.
-- **The job runs each scenario more than once**, as many times as its `--repeat` says, and judges
-  each budget with a margin on its worst run, which the summary names, so it shows how much the
-  counts moved; the file access must be identical every time, or nothing is judged.
-- **A blown budget fails the job naming the scenario, the budget, the limit and the measured
-  value**, and the summary gives the limit to set for each budget.  A tool missing, a run that
-  exits wrongly or a trace that cannot be read fails it as not measured, never as a pass.
-- **Every run's traces are kept** in the job's `budgets` artefact, passed or failed, under names
-  carrying the run's index, and the summary names the runs judged: the callgrind profile and
-  `callgrind_annotate`'s report of it, the `strace` log, and `<scenario>.<run>.files.txt`, each
-  path opened with the bytes read from it.  Those are what a reviewer reads to judge whether a
-  moved budget is still correct behaviour.
+- **What is measured** is the amd64 musl binary built with the `profiling` profile, on the
+  runner image `runs-on:` names, not `ubuntu-latest`, because Valgrind comes from the image and
+  its version moves the counts.
+- **The scenarios are `SCENARIOS` in `scripts/budgets`**, each in a scratch copy of the synthetic
+  corpus, always under `/tmp` at the same depth, because a deeper path executes more instructions.
+- **The limits are `budgets.toml`**: `instructions` (Callgrind) and `peak_memory_kib` (GNU time)
+  with a margin from `MARGINS`, and `paths_opened` and `bytes_read` (strace) exactly, since a
+  change in either is a change in behaviour.  No path in the project may be opened twice, and
+  nothing outside it but what `[outside]` allows, each with its reason.
+- **Each scenario runs `--repeat` times** and is judged on its worst run; the file access must be
+  identical every time.  Anything that could not be measured fails, never passes.
+- **Every run's traces are kept** in the job's `budgets` artefact: what a reviewer reads to judge
+  whether a moved budget is still correct behaviour.
 
-**The guard has a negative test on every run.**  `scripts/break-budgets` builds a copy of quaff
-worsened in each of the ways its header lists, and the job fails unless `scripts/budgets` fails
-on each, naming the budget that guards it.
+**The guard has a negative test on every run**: the job fails unless `scripts/budgets` fails on
+each broken copy `scripts/break-budgets` builds, naming the budget that guards it.
 
-Locally it needs Linux on amd64, with Valgrind, strace, GNU time and the musl target.  On any
-other machine, run it in a container of the image the job's `runs-on:` names:
+Locally it needs amd64 Linux with Valgrind, strace, GNU time and the musl target; elsewhere, a
+container of the job's image:
 
 ```bash
-docker run --rm -it -v "$PWD":/src -w /src ubuntu:<the runs-on release> bash
+docker run --rm -it --ulimit nofile=1024:1024 \
+  -v "$PWD":/src -w /src ubuntu:<the runs-on release> bash
 # inside: apt-get update && apt-get install -y valgrind strace time musl-tools curl build-essential
 #         python3 git, then rustup with the musl target, then:
 cargo build --locked --profile profiling --target x86_64-unknown-linux-musl --bin quaff
 scripts/budgets target/x86_64-unknown-linux-musl/profiling/quaff --repeat 3
 ```
 
-Docker's default limit on open files is higher than Valgrind accepts on some hosts; add
-`--ulimit nofile=1024:1024` to `docker run` if Valgrind refuses to start.
-
 ### Checklist: changing a limit
 
-Most changes that add behaviour move a budget, so limits change often.  The rule is that one
-changes only in the pull request that moves it, and only once the new behaviour is agreed to be
-correct.
+A limit changes only in the pull request that moves it, and only once the new behaviour is
+agreed to be correct.
 
-1. Read the failing job's summary for the budget, its limit, what was measured and the run
-   judged for it, and download the `budgets` artefact.
-2. Compare the trace with main's - the latest run of the job on main has its own artefact.  For
-   instructions, `callgrind_annotate` the profiles of the runs judged for instructions, or diff
-   their `.callgrind.txt` reports, and find where the count rose; for files, diff the
-   `.files.txt` lists.
-3. Decide whether that is what the change should do.  If not, it is a defect: fix the code, not
-   the limit.
-4. If it is, set the limit in `budgets.toml` to the summary's *Limit to set*, which is the
-   judged run plus its margin from `MARGINS`, or the measured value exactly for `paths_opened`
-   and `bytes_read`.
-5. Say in the pull request description which budget moved, by how much, and what in the trace
-   accounts for it, so the reviewer can agree it.
+1. Read the failing job's summary, and download the `budgets` artefact.
+2. Compare the trace with main's latest artefact: `callgrind_annotate` the judged runs' profiles
+   for instructions, or diff the `.files.txt` lists for files.
+3. Decide whether that is what the change should do.  If not, fix the code, not the limit.
+4. If it is, set the limit in `budgets.toml` to the summary's *Limit to set*.
+5. Say in the pull request description which budget moved, by how much, and why.
 
 ## The benchmarks
 
-The budgets hold the whole binary; the benchmarks hold the parts of it most likely to grow, the
-Python front end and the matcher, closer.  `.github/workflows/benchmarks.yaml` counts them on
-every pull request, once on amd64 and once on arm64, and raises an alert when one does more work
-than on main.  As with the budgets, nothing is timed: the counts are instructions,
-from gungraun under Valgrind's Callgrind.
+The benchmarks hold the Python front end and the matcher, the parts most likely to grow, closer
+than the budgets.  `.github/workflows/benchmarks.yaml` counts instructions with gungraun under
+Callgrind on every pull request, on amd64 and arm64.
 
-- **What is counted is `crates/python/benches/front_end.rs`**, over the synthetic corpus only,
-  so a change to the real-world corpus can never move a count: Ruff's parse of every file
-  alone (`ruff_parse`), the parse with the arena built from it (`parse_into_arena`), compiling a
-  pattern (`compiling`), and searching every file for each of the structural counts' patterns
-  (`matching`).  Reading files, building the arenas a search runs over and compiling its
-  pattern are setup, which gungraun does not count, and each benchmark hands its input back so
-  that freeing it is not counted either: each counts only the work it names.  They live in the
-  adapter because only it may name Ruff's types, and Ruff's parse alone is one of them.
-- **They are built with the `benchmarks` profile**: the shipped binary's optimisation, so the
-  counts are the shipped code's, with its symbols kept, so gungraun finds each benchmark and its
-  Callgrind profile names every function, and **no debug information**, so the profiles name
-  functions but not source lines.  With debug information, line tables alone included, some
-  benchmarks' counts on arm64 collapse to a small fraction of the work, apparently because
-  Callgrind there mismatches calls and returns and gungraun's collection, switched on as a
-  benchmark is entered, starts in the wrong place.  `LEAST_COUNT` in `scripts/benchmark-gate`
-  refuses such a count.
-- **Main is counted in the same job, at the merge's first parent**, in a second worktree.
-  Counts do not vary from run to run on one image, but the same build counts differently under
-  another image or Valgrind, so a stored figure would move with every runner-image update, while
-  two counts from one job compare exactly.  amd64 and arm64 count differently too, so each is
-  compared with itself.  Each tree is counted with the runner its own `tools.toml` pins,
-  because gungraun refuses a runner of another version than its library, so a pull request that
-  moves the pin is still compared.
-- **A rise is an alert, not a gate**: a benchmark more than `RULE_PERCENT` above main's count
-  is marked in the job summary and raised as a warning on the pull request, named with both
-  counts, and the job still passes, since whether the rise is expected is the reviewer's to
-  judge.  A benchmark only on the pull request is reported as new, one only on main as
-  removed.
+- **What is counted is `crates/python/benches/front_end.rs`**, over the synthetic corpus only:
+  Ruff's parse alone, the parse with the arena, compiling a pattern, and matching.  Everything
+  else is setup, which gungraun does not count, and each benchmark hands its input back so that
+  freeing it is not counted.
+- **They build with the `benchmarks` profile**: the shipped optimisation with symbols but **no
+  debug information**, because with any, line tables included, some counts on arm64 collapse to a
+  fraction of the work.  `LEAST_COUNT` in `scripts/benchmark-gate` refuses such a count.
+- **Main is counted in the same job**, at the merge's first parent, because a count moves with the
+  runner image and Valgrind; each architecture is compared with itself, and each tree uses the
+  runner version its own `tools.toml` pins.
+- **A rise is an alert, not a gate**: a benchmark more than `RULE_PERCENT` above main is flagged in
+  the summary and as a warning, and the job passes; the reviewer judges it.
 - **The arena's budget**: building the arena may cost at most `ARENA_BUDGET_PERCENT` of Ruff's
-  parse, that is `parse_into_arena` less `ruff_parse`, as a share of `ruff_parse`, on the pull
-  request.  Over it fails the job; a change whose arena has to cost more raises the budget in
-  the same pull request.  It is a rule of its own so that a slower arena cannot hide inside a
-  faster parse.  Both figures are in `scripts/benchmark-gate`.
-- **Whether the jobs are required status checks**, and why, is in `architecture/workspace.md`.
-- **A gate that could not compare has not passed.**  No benchmark on the pull request, a summary
-  unreadable or in a version of gungraun's format the script does not know, two benchmarks of
-  one name, a count below `LEAST_COUNT` or a parse with the arena counting no more than the parse
-  alone - counts that missed the work they name - or the arena's two benchmarks missing, fails
-  the job as not evaluated.  Main may have no benchmarks only when `scripts/benchmarks` says
-  so, because its tree has no benchmark target.
-- **The job summary** shows every benchmark's count on main and on the pull request with the
-  change, and the arena's share against its budget, on each side.  Every count and Callgrind
-  profile is kept in the job's `benchmarks-<arch>` artefact.
+  parse, or the job fails, so that a slower arena cannot hide inside a faster parse.
+- **A gate that could not compare has not passed**: the refusals are in `scripts/benchmark-gate`,
+  and fail the job as not evaluated.
+- **Whether the jobs are required checks** is in `workspace.md`.
 
-**The gate has a negative test on every run**, on amd64: `scripts/break-benchmarks` makes a copy
-with the matcher slowed and one with the arena's building slowed, and the job fails unless
-`scripts/benchmark-gate` raises an alert on the first, passing, and fails the second on the
-budget.  `crates/quaffed/tests/benchmark_gate.rs` holds the script itself to each rule and each
-refusal.
+**The gate has a negative test on every run**, on amd64: the job fails unless the matcher slowed
+by `scripts/break-benchmarks` raises an alert and passes, and the arena slowed fails the budget.
 
-Locally the benchmarks need Linux with Valgrind, and gungraun's runner at the version
-`tools.toml` pins.  On any other machine, run them in a container of the toolchain's version:
+Locally they need Linux with Valgrind and gungraun's runner at the pinned version; elsewhere:
 
 ```bash
 docker run --rm -it --security-opt seccomp=unconfined --ulimit nofile=1024:1024 \
@@ -535,175 +300,109 @@ scripts/benchmarks /src "$(mktemp -d)/pull-request"
 scripts/benchmark-gate --main <main's directory> --pull-request <the pull request's directory>
 ```
 
-Docker's default seccomp profile refuses the call gungraun makes to turn off address-space
-randomisation (*"setarch: failed to set personality"*), hence `seccomp=unconfined`; the file
-limit is the same one the budgets need.  A count made locally compares only with another made
-in the same container.
+`seccomp=unconfined` lets gungraun turn off address-space randomisation.  A local count compares
+only with another made in the same container.
 
 ### Checklist: adding a benchmark
 
-1. Add a `#[bench::<id>(...)]` case to a benchmark in `crates/python/benches/front_end.rs`, or a
-   new `#[library_benchmark]` function listed in its group.  Put everything that is not the work
-   being counted in the case's setup call, whose instructions gungraun leaves out.  A comment
-   above a benchmark is a plain `//` comment: gungraun's attribute refuses a doc comment.
+1. Add a `#[bench::<id>(...)]` case or a new `#[library_benchmark]` function in
+   `crates/python/benches/front_end.rs`, with everything not being counted in its setup call.  A
+   comment above a benchmark is `//`: gungraun refuses a doc comment.
 2. Use only the synthetic corpus, through the tests' `common` module.
-3. Run it locally as above, and check its count is the work it names: `callgrind_annotate` its
-   profile under the gungraun directory.
-4. On the pull request it shows as new, compared with nothing; from the next pull request on it
-   raises an alert past the rule like the rest.
-5. Renaming a benchmark or its case shows it as removed and new, so the rename's pull request
-   compares it with nothing; say so in the description.
+3. Run it locally, and check with `callgrind_annotate` that its count is the work it names.
+4. A new or renamed benchmark is compared with nothing on its own pull request; say so in the
+   description when renaming.
 
 ### Checklist: an alert or a blown budget
 
-1. Read the job summary for the benchmark that rose, or the arena's share, and download the
-   `benchmarks-<arch>` artefact.
-2. Find where the instructions went: `callgrind_annotate` the benchmark's Callgrind profile on
-   both sides, from the pull request's counts and main's, and compare.
-3. Decide whether that is what the change should cost.  If not, it is a defect: fix the code.
-4. If it is, say in the pull request description which benchmark rose, by how much, and why, so
-   the reviewer can agree it.
-5. For the arena, once the owner agrees the new cost, change `ARENA_BUDGET_PERCENT` in
-   `scripts/benchmark-gate` in the same pull request, with the reason in the commit, and with
-   it:
-   1. the budget's figure in `crates/quaffed/tests/benchmark_gate.rs`'s assertions, and its
-      fixtures, which sit either side of the budget (`MAIN` well under it, the failing cases
-      just over);
-   2. the slowed adapter in `scripts/break-benchmarks`, which must still cost more than the new
-      budget for the negative test to fail it: read its share from the job's log.
-6. Changing `RULE_PERCENT`, or making a rise fail the job, is the owner's decision, recorded with
-   its reason.
+1. Read the job summary, and download the `benchmarks-<arch>` artefact.
+2. `callgrind_annotate` the benchmark's profile on both sides and compare.
+3. Decide whether that is what the change should cost.  If not, fix the code.
+4. If it is, say in the pull request description which benchmark rose, by how much, and why.
+5. For the arena, once the owner agrees the new cost, change `ARENA_BUDGET_PERCENT` in the same
+   pull request, with the reason in the commit, and with it the figure and fixtures in
+   `crates/quaffed/tests/benchmark_gate.rs`, and the slowed adapter in
+   `scripts/break-benchmarks`, which must still exceed the new budget.
+6. Changing `RULE_PERCENT`, or making a rise fail the job, is the owner's decision.
 
 ## The package install test
 
-A package that builds is not yet a package that installs, and an installed binary is not yet
-one that runs.  `scripts/test-deb PACKAGE` checks both, on every pull request and before every
-release, inside the *Debian package* job that built the package.  For each target distribution
-it starts a clean container with no network, the package and the checkout mounted read-only,
-and runs `packaging/deb/install-test/check` there, which:
+`scripts/test-deb PACKAGE` checks that a built package installs and runs, on every pull request
+and before every release, in the *Debian package* job.  For each target distribution it starts a
+clean container with no network and runs `packaging/deb/install-test/check`, which installs the
+package with `dpkg -i`, checks its version and path, runs `quaff --help`, and runs searches whose
+results are known, so a binary that runs but answers wrongly fails.  A failure names the step;
+each distribution's whole log is kept in the job's artefact.  Only a registry 5xx while building
+an image is retried.
 
-1. installs the package with `dpkg -i`, from the file alone;
-2. checks that dpkg reports the version in the package's file name, and that `quaff` resolves
-   to `/usr/bin/quaff`;
-3. runs `quaff --help`;
-4. searches the quaffed checkout itself - a real repository - with an assertion that holds on
-   any commit that passes CI: the licence header every source file under `crates/` opens with;
-5. searches a small project it writes, whose exact output is known, and checks a failed
-   assertion there exits 2 saying what it expected and what it found, so a binary that runs but
-   answers wrongly fails too.
+**The target distributions are the Dockerfiles in `packaging/deb/install-test/`**, each a single
+`FROM` pinned by digest, which Dependabot refreshes without ever proposing another release.  For
+each of Debian and Ubuntu there are two:
 
-Building each distribution's image pulls its pinned base image from a registry outside the
-test's control.  A registry server error, 5xx, says nothing about the package, so it alone is
-retried, twice, after a pause that `TEST_DEB_RETRY_PAUSE` sets and that doubles; each retry says
-what the registry answered.  Any other failure, or a third server error, fails with docker's own
-words.  `crates/quaffed/tests/test_deb.rs` runs the script against a stand-in `docker` to hold
-it to that.
+- **A floor**: a release old enough that a glibc build would not run there (`release.md`), since
+  the static musl binary exists to run on one.  It is a chosen release, and may be past its own
+  support, since the test needs no package archive.
+- **A current release**: what a new user is most likely to have, re-chosen by hand, below.
 
-Each step is named before it runs, and a failure ends `check: FAILED at: <step>`.  Each
-distribution's whole output is kept beside the package as
-`<package>.install-<distribution>.txt`, passed or failed, and is part of the job's artefact; a
-failure also prints the end of its log in the job.  `test-deb` fails naming the path when there
-is no package, and fails rather than passes when no distribution was tested.
+**The guard has a negative test on every run**: `scripts/break-deb` builds two broken copies, and
+the job fails unless `test-deb` fails each at the expected step.
 
-**The target distributions are the Dockerfiles in `packaging/deb/install-test/`**, each a
-single `FROM` pinned by digest, which Dependabot refreshes without ever proposing a different
-release.  For each of Debian and Ubuntu there are two kinds:
-
-- **A floor**: a release old enough that a glibc build would not run there (`release.md`, on why
-  the binary is static musl).  The binary exists to run on such a release, and only an old
-  userland shows that it does.  Which release is the floor is a decision, not "the oldest that
-  exists"; a floor may be past its distribution's own support, which does not matter to a test
-  that needs no package archive.
-- **A current release**: what a new user of that distribution is most likely to have.  Nothing
-  announces a new one, because Dependabot is told never to move a release, so it is re-chosen
-  by hand, below.
-
-**The guard has a negative test on every run.**  `scripts/break-deb` makes two deliberately
-broken copies of the package just built - one depending on a package that does not exist, one
-whose `quaff` exits 1 - and the job fails unless `test-deb` fails on each, at the install step
-and the `--help` step respectively.
-
-Locally, `test-deb` needs docker on a host of the package's architecture: it refuses an arm64
-package on an amd64 docker rather than emulating it.  `scripts/test-deb PACKAGE debian-13` tests
-one distribution.  `break-deb` needs `dpkg-deb`, so runs on Linux.
+Locally, `test-deb` needs docker on a host of the package's architecture;
+`scripts/test-deb PACKAGE debian-13` tests one distribution.  `break-deb` needs `dpkg-deb`.
 
 ### Checklist: changing the target distributions
 
 1. Add, remove or rename a Dockerfile in `packaging/deb/install-test/`, named for the
    distribution and release, with a single `FROM <image>:<tag>@sha256:<digest>`.  The digest is
-   the multi-architecture index's, from `docker buildx imagetools inspect <image>:<tag>`, which
-   must list both `linux/amd64` and `linux/arm64`.
-2. Run `scripts/test-deb` on a package against the new one locally; CI runs every Dockerfile
-   there on both architectures with no further change.
+   the multi-architecture index's, from `docker buildx imagetools inspect`, which must list both
+   `linux/amd64` and `linux/arm64`.
+2. Run `scripts/test-deb` against it locally; CI runs every Dockerfile on both architectures.
 3. When Debian publishes a new stable release or Ubuntu a new long-term release, re-choose the
    current release this way.
 
 ## Failed runs are posted to Slack
 
-A failed run is otherwise one red entry in a list nobody opens, so failures are posted to the
-project's Slack channel.  `.github/workflows/report-failures.yaml` names the workflows to report
-and the triggers to report them for - a schedule, a push, a release and a pull request - and
-calls the shared Slack reporter from `github-workflows`, whose README says which of those runs
-it posts, when, and to where.  A run started by hand, or a review asked for by comment, is left
-out on purpose, because whoever started it is watching.  To add a workflow
-that runs on a schedule, a push, a release or a pull request:
+`.github/workflows/report-failures.yaml` posts a failed run of the workflows it names to the
+project's Slack channel, through the shared reporter from `github-workflows`, whose README says
+which runs it posts.  A run started by hand is left out, because whoever started it is watching.
+To add a workflow that runs on a schedule, a push, a release or a pull request:
 
-1. Give it a `name:`, and give every job a `timeout-minutes:`, so a hang ends as a failure
-   instead of running for six hours.  A job that calls a reusable workflow cannot take one; it
-   is bounded by the jobs of the workflow it calls.
-2. Add its `name:` to the `workflows:` list in `report-failures.yaml`, exactly as written,
-   since GitHub matches on it.  The repository hygiene check enforces the list.
+1. Give it a `name:`, and every job a `timeout-minutes:` (a job calling a reusable workflow
+   cannot take one).
+2. Add its `name:` to the `workflows:` list in `report-failures.yaml`, exactly as written; the
+   repository hygiene check enforces the list.
 
-The post goes to the channel named in the `channel:` input of `report-failures.yaml`, through
-the bot token in the `SLACK_BOT_TOKEN` secret.  **Accepted limitation:** a post that fails is
-seen only as a failed *Report failures* run, which is itself a run nobody is watching, so a
-token that stops working is noticed by the absence of posts.
+It posts through the `SLACK_BOT_TOKEN` secret.  **Accepted limitation:** a failed post is only a
+failed *Report failures* run, so a dead token shows as an absence of posts.
 
 `announce-pull-requests.yaml` announces pull requests through the shared announcer, whose README
-says which.  `SLACK_BOT_TOKEN` must also be a Dependabot secret, or Dependabot's pull requests
-are not announced.
+says which.  `SLACK_BOT_TOKEN` must also be a Dependabot secret, or Dependabot's are not announced.
 
 ## The tool manifest
 
-Most verification tools are binaries installed with `cargo install`, not crate dependencies,
-so `Cargo.lock` does not pin them.  Left alone, CI would name its own versions and a local run
-and CI would disagree about what clean means.  So every such tool is pinned in **`tools.toml`**
-at the repository root, and **`scripts/install-tools`** is the one way to install one, locally
-and in CI alike.  No workflow names a tool version.
+Verification tools installed with `cargo install` are not pinned by `Cargo.lock`, so every one is
+pinned in **`tools.toml`**, and **`scripts/install-tools`** is the one way to install one, locally
+and in CI.  No workflow names a tool version.
 
 ```toml
-# Crate name = exact version, for `cargo install --locked`.
 [cargo-install]
-cargo-insta = "X.Y.Z"
+cargo-insta = "X.Y.Z"           # crate = exact version
 
-# A dated nightly per purpose, for the one job that needs it.
 [toolchain]
 nightly-coverage = "nightly-YYYY-MM-DD"
 
-# Its components, space-separated.
 [toolchain-components]
 nightly-coverage = "llvm-tools-preview"
 ```
 
-**The format is a strict subset of TOML** - section headers, `name = "value"` lines, whole-line
-comments and blank lines - so that a shell script can read it without a TOML parser.  A line
-outside the subset, a trailing comment included, is an error rather than skipped, because a
-half-understood manifest would install something other than what it says.
+**The format is a strict subset of TOML**, so a shell script can read it without a parser; a line
+outside it, a trailing comment included, is an error, because a half-understood manifest would
+install something else.  Entries are keyed by crate, not command (`flamegraph` provides
+`cargo flamegraph`).
 
-**Entries are keyed by crate, not by command.**  They usually match; `flamegraph` is the crate
-that provides `cargo flamegraph`.
-
-**What is not in the manifest:**
-
-- **Test libraries** (`proptest`, `insta` and the like) are dependencies, pinned with `=` in the
-  `Cargo.toml` that uses them, and `Cargo.lock` holds them.
-- **Operating-system packages** - Valgrind, the C++ compiler `cargo-fuzz` needs - come from the
-  runner's or contributor's package manager.
-- **A nightly that can be scoped by directory** is pinned in that directory's
-  `rust-toolchain.toml` and installed with `rustup toolchain install` run from there, so it has
-  one copy.
-  `[toolchain]` is for a nightly that cannot be scoped, such as coverage's, which instruments
-  the whole workspace.
+Not in the manifest: test libraries, which are `=`-pinned dependencies; operating-system packages
+such as Valgrind; and a nightly that can be scoped by directory, which that directory's
+`rust-toolchain.toml` pins.  `[toolchain]` is for one that cannot, such as coverage's.
 
 ## Installing
 
@@ -714,104 +413,41 @@ scripts/install-tools --all                          # everything, toolchains in
 scripts/install-tools --list                         # the manifest as the script reads it
 ```
 
-`cargo install` skips a crate already installed at the pinned version, so re-running is cheap,
-and it installs into `CARGO_INSTALL_ROOT` when that is set.  Run from the repository, it builds
-each tool with the toolchain `rust-toolchain.toml` pins rather than rustup's default, so a tool
-builds the same everywhere; cargo warns that the default toolchain was overridden, and that is
-expected.  The version is passed as `=X.Y.Z`,
-because a bare version is a caret requirement to `cargo install` and would take a newer release.
-A toolchain needs rustup; a Rust installed another way, such as Homebrew's, cannot install one,
-and the script says so rather than falling back to whatever Rust is on PATH.
-
-Any failure stops the script at once, naming the tool and version, with the underlying tool's
-own output above it.  A job that carried on without its tool would run something else, or
-nothing, and could still pass.
+It installs `=X.Y.Z`, since a bare version would take a newer release, builds with the pinned
+toolchain, and needs rustup for toolchains.  Any failure stops it, naming the tool and version,
+because a job without its tool could still pass.
 
 ## In CI
 
-A job installs what it uses with the local action, and nothing else:
+A job installs only what it uses, with `./.github/actions/install-tools` (`tools:` names them),
+which caches `~/.quaffed-tools` keyed on `tools.toml`.  The **Verification tools install** job
+installs every `[cargo-install]` entry and checks each version, so a bad pin fails on the pull
+request that introduces it.
 
-```yaml
-      - name: Install cargo-insta from tools.toml
-        uses: ./.github/actions/install-tools
-        with:
-          tools: cargo-insta
-```
-
-The action installs cargo tools into `~/.quaffed-tools`, caches that directory and puts its
-`bin` on `PATH`.  The cache key carries a hash of `tools.toml`, so a changed pin misses and builds
-from source, while an unchanged tool is restored from an older entry and skipped.  Toolchains are
-not cached; rustup installs a nightly quickly.
-
-The **Verification tools install** job in `premerge.yaml` installs every `[cargo-install]` entry
-that way on Linux and checks each pinned version against cargo's own record of the install.  It
-costs a cache restore until `tools.toml` changes, and then builds what changed, so a bad pin
-fails on the pull request that introduces it rather than in the first job to use the tool.
-
-**Packages from apt go through `.github/actions/apt-install`**, which caches the downloaded
-`.deb` files, so a slow Ubuntu mirror costs a cache restore rather than minutes of download:
-
-```yaml
-      - name: Install Valgrind, strace, GNU time and the musl C toolchain
-        uses: ./.github/actions/apt-install
-        with:
-          packages: valgrind strace time musl-tools
-```
-
-Only the package files are cached.  apt still reads the package lists from the mirror and
-installs the versions they name, so the cache changes how fast a package arrives, never which
-version: the Budgets job's Valgrind is the one an uncached install would get.  The key is what
-apt is about to install - each package, version and architecture, from a simulated install - so
-an update published to the mirror makes a new key and its files are saved, rather than
-downloaded again on every run.  An older entry is restored by prefix for what has not changed,
-and its files for versions apt no longer installs are deleted unused.
-
-**A restored file is checked before it is installed.**  apt checks only the size of a file
-already in its archive directory, not its content: a file of the right size goes to dpkg as
-found.  So the action compares each restored file's SHA-256 with the one the signed index lists
-for its package, version and architecture, and deletes any that differ, with a warning naming
-both hashes, since apt resolved that exact version and a different hash means the file is not
-the one the index signs for.  apt then downloads it, so a cached package is held to the same
-check as a downloaded one.  An entry is never overwritten, so when the bad file came from an exact
-hit the warning names the `gh cache delete` that removes it; from an older entry, the job's own
-save replaces it.  A simulated install whose `Inst` lines the action cannot all read fails the
-job, rather than leave files unchecked.
+**Packages from apt go through `.github/actions/apt-install`**, which caches the downloaded `.deb`
+files.  The cache changes how fast a package arrives, never which version, and each restored file
+is checked against the SHA-256 the signed index lists before it is installed, since apt checks
+only the size of a file already in its archive.
 
 ## What the tests enforce
 
-`crates/quaffed/tests/tool_manifest.rs`, in the ordinary test run:
+`crates/quaffed/tests/tool_manifest.rs`, in the ordinary run: the manifest is well formed; the
+script reads it exactly as the test does; no workflow or local action installs a tool another way,
+names a toolchain or a manifest tool's version, or installs from apt except `apt-install`; and
+`gungraun-runner` and `gungraun` are pinned to one version, because gungraun refuses a mismatched
+runner.  The script is tested under macOS's bash 3.2, the oldest it supports.
 
-- the manifest is well formed: exact `MAJOR.MINOR.PATCH` versions, nightlies pinned by date,
-  each name once, components only for a listed toolchain, and at least one tool;
-- the script reads the manifest exactly as the test does, compared through `--list`;
-- the script installs the exact version, stops naming the tool and version when cargo or rustup
-  fails, and says what is missing when cargo, rustup or a named entry is;
-- no workflow or local action calls `cargo install`, `cargo binstall` or an install action,
-  names a toolchain or a dated nightly, or names a version of a manifest tool;
-- no workflow or local action but `.github/actions/apt-install` installs from apt;
-- `gungraun-runner` in the manifest and `gungraun` in `Cargo.lock` are either both absent or
-  both present at one version, because gungraun refuses to run against a runner of a different
-  version.
-
-Each rule has a test showing it fails on the thing it guards against, and every malformed
-manifest the test's parser refuses is shown to be refused by the script at the same line.  The
-script's tests run it under the oldest bash it has to support - macOS's 3.2 - with stub `cargo`
-and `rustup` commands whose exit status and message were recorded from the real tools.
-
-**These tests are Unix-only**: they run a bash script and set Unix file permissions.  When
-Windows joins the test matrix, how the tools install there needs deciding, rather than these
-tests being compiled out, which would report a pass having checked nothing.
+**These tests are Unix-only.**  When Windows joins the test matrix, how tools install there needs
+deciding, rather than these tests being compiled out, which would pass having checked nothing.
 
 ## Checklist: adding or changing a tool
 
-1. Add the crate and its exact version under `[cargo-install]`, or change the version there.
-   Nothing else names it.
-2. If it has a matching library - `gungraun-runner` with `gungraun` - add or change both in the
-   same change; the pair test fails otherwise.
+1. Add the crate and its exact version under `[cargo-install]`, or change it there.  Nothing else
+   names it.
+2. If it has a matching library - `gungraun-runner` with `gungraun` - change both together.
 3. If it needs a nightly that cannot be scoped by directory, add `nightly-<purpose>` under
    `[toolchain]` and its components under `[toolchain-components]`.
 4. In the job that uses it, install it with `./.github/actions/install-tools`, naming only what
    that job uses.
-5. Run `cargo test --locked --test tool_manifest`.  On the pull request, the **Verification tools
-   install** job builds the new pin from source.
-6. A new CI job is a new required status check: see `architecture/workspace.md`.
+5. Run `cargo test --locked --test tool_manifest`.
+6. A new CI job is a new required status check: see `workspace.md`.

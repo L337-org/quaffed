@@ -1,69 +1,49 @@
 # The Linux package and releasing
 
-How the `.deb` is built, what is in it and why, and how a release is published.  A release ships
-a `.deb` for `amd64` and `arm64`, attached to a GitHub release and in no APT repository.
+A release ships a `.deb` for `amd64` and `arm64`, attached to a GitHub release and in no APT
+repository.
 
 ## What is in the package
 
 `quaffed_<version>_<arch>.deb` installs `/usr/bin/quaff`, a copyright file and a changelog, and
 nothing else.  There is no man page.
 
-**The binary is static musl with mimalloc as its global allocator.**  A glibc build needs
-`GLIBC_2.34`, so it does not run on older distributions such as Debian 11 or Ubuntu 20.04, while a
-static musl build runs on those as well.  musl's own allocator makes parsing markedly slower than
-glibc's; mimalloc more than recovers that, at the cost of a higher peak memory.  mimalloc is a
-dependency only for musl targets, so macOS and glibc builds keep the platform allocator.
+**The binary is static musl with mimalloc as its global allocator.**  A glibc build does not run on
+older distributions such as Debian 11 or Ubuntu 20.04, and a static musl build does.  musl's own
+allocator makes parsing markedly slower, so mimalloc replaces it, at the cost of a higher peak
+memory.  mimalloc is a dependency only for musl targets; other builds keep the platform allocator.
 
-**The `dist` profile** - release optimisation, thin LTO, one codegen unit, symbols stripped - is
-what the package is built with.  It is a separate profile so that a developer's `--release` build
-stays quick to link.  The `profiling` profile inherits it, keeping debug information and
-symbols, for flamegraphs (`verification.md`).
+**The package is built with the `dist` profile** in the root `Cargo.toml`, kept separate so that a
+developer's `--release` build stays quick to link.  The `profiling` profile inherits it
+(`verification.md`).
 
-**Building it needs a musl C compiler**, because mimalloc is C.  Without `musl-tools` the build
-fails with *"failed to find tool "x86_64-linux-musl-gcc""*.  Ruff's parser needs one as well,
-through `stacker` and `psm`'s assembly, so this stays a requirement whatever happens to mimalloc.
+**Building it needs a musl C compiler**, `musl-tools`, for mimalloc and for Ruff's parser through
+`stacker` and `psm`.  Without it the build fails with *"failed to find tool
+"x86_64-linux-musl-gcc""*.
 
-**The copyright file is hand-written**, in Debian's machine-readable format, and accounts for
-everything linked into the binary, because the binary distributes it.  **Each part has its own
-`Files` paragraph with its own holders and licence**, so that nobody reads another project's
-authors as quaffed's: `Files: *` is quaffed alone, and each crate, or each group of crates sharing
-holders and a licence, follows as `crates.io/NAME/*`.  The crates are not in the source tree, so
-those patterns name crates rather than files; the toolchain's parts are `toolchain/NAME/*`.  A
-crate is covered only by `crates.io/NAME/*` itself: a paragraph for part of one, such as the C
-library `libmimalloc-sys` bundles, comes after it and does not cover the rest.  The one part with
-no paragraph is LLVM's libunwind, whose licence's LLVM exception waives the notice for code
-embedded in a binary; the file's header says so.  **A crate is named without its version**, so a
-dependency update that brings no new crate needs no change to the file.  Where a crate offers a
-choice of licences, its paragraph's `License` is the one used here and its `Comment` says what was
-offered.
-
-`crates/quaffed/tests/packaging.rs` reads the binary's dependency graph for both packaged targets
-with `cargo tree` and fails naming any crate no paragraph covers.  It leaves out build scripts'
-dependencies, which run inside the compiler, but not procedural macros or the crates they are
-built from: the code a derive generates is compiled into the binary, and the graph cannot tell
-which macros' output ships.  It also fails on a `Files` paragraph without a `Copyright` or a
-`License`, or whose licence has no paragraph carrying its text.  **What comes with the Rust
-toolchain rather than as a crate - the musl C library and LLVM's libunwind - is outside that graph,
-so the test cannot see it**, and nor is data in the source tree derived from someone else's work -
-the codec tables generated from CPython (`encoding.md`).  Both are kept by hand: check the first
-when the toolchain's musl target changes.  For the second, `packaging.rs` fails if the tables'
-paragraph does not name the CPython release they were generated from.  **Nor does the test see a
-licence change between versions of a crate**: matching by name means a new version is taken to
-keep its licence.
+**The copyright file**, `packaging/deb/copyright`, is hand-written in Debian's machine-readable
+format and accounts for everything the binary contains.  `Files: *` is quaffed alone.  Each crate,
+or group of crates sharing holders and a licence, has its own paragraph as `crates.io/NAME/*`,
+named without its version, and the toolchain's parts are `toolchain/NAME/*`.  LLVM's libunwind has
+no paragraph, because its licence waives the notice for code embedded in a binary.
+`crates/quaffed/tests/packaging.rs` fails naming any linked crate without a paragraph, and takes a
+new version of a crate to keep its licence.  The toolchain's parts and the codec tables generated
+from CPython (`encoding.md`) are outside the dependency graph it reads, so they are kept by hand:
+check musl's paragraph when the toolchain's musl target changes.
 
 When the test names a crate:
 
 1. Read the crate's licence files and its `Cargo.toml` for its holders and its licence.
-2. If an existing paragraph has exactly those holders and that licence, add
-   `crates.io/NAME/*` to its `Files`; otherwise add a paragraph for it.
+2. If an existing paragraph has exactly those holders and that licence, add `crates.io/NAME/*` to
+   its `Files`; otherwise add a paragraph for it.
 3. If its licence is not yet carried, add a `License` paragraph with the text, or the
    `/usr/share/common-licenses` path where Debian ships it.
 4. When a crate offers a choice, use one the file already carries, and say what was offered in the
    paragraph's `Comment`.
 
-**The version** is the workspace's, read by `scripts/workspace-version`, and the release's tag
-must be `v` followed by it.  The changelog has one entry per version pointing at the release notes,
-which are the history.
+**The version** is the workspace's (`workspace.md`), read by `scripts/workspace-version`, and the
+release's tag must be `v` followed by it.  The changelog has one entry per version, pointing at the
+release notes.
 
 ## Building it
 
@@ -75,82 +55,53 @@ scripts/build-deb --dev amd64              # a development build, for testing
 scripts/test-deb target/deb/quaffed_*.deb  # install it on each target distribution and run it
 ```
 
-**A development build says so in its version**: `--dev` makes it
-`<version>~dev+g<commit>`, with `.dirty` appended when the working tree has uncommitted changes,
-untracked files included, and its changelog entry says it is not a release.  `~` sorts before
-the release in Debian's version ordering, so a development build never looks newer than the
-release it leads up to, and a package built locally for testing cannot be mistaken for one that
-shipped.  Without `--dev` the version is the workspace's, as a release needs; CI builds without
-it, so that every pull request runs exactly the packaging a release runs, and so that an upgrade
-test, when there is one, upgrades between the versions a release would really carry.
+**A development build says so in its version**: `--dev` makes it `<version>~dev+g<commit>`, with
+`.dirty` appended for uncommitted changes, so it sorts before the release it leads up to and cannot
+be mistaken for one that shipped.  CI builds without `--dev`, so every pull request runs exactly the
+packaging a release runs.
 
-Each architecture is built on a machine of that architecture; the script refuses otherwise.  The
-package lands in `target/deb/`, with lintian's full output beside it.  Package timestamps come from
-the commit, so two builds of one commit in the same environment give the same bytes, and a re-run of
-a release relies on that to tell an identical asset from a different one.  **The environment is only
-partly pinned**: Rust is, by `rust-toolchain.toml`, but the C compiler that builds mimalloc comes
-from the runner image's `musl-tools` and gcc, which GitHub updates.  So a re-run after an image
-update can rebuild a package that differs from one already attached with nothing wrong; the attach
-step stops rather than replace it, and says so.
+Each architecture is built on a machine of that architecture; the script refuses otherwise.
+Timestamps come from the commit, so a re-run of a release can tell an identical package from a
+different one.  **Only Rust is pinned**: the C compiler that builds mimalloc comes from the runner
+image, so a re-run after an image update can build different bytes, and the attach step then stops
+rather than replace the published package.
 
-**The package is compressed with xz, chosen explicitly.**  `dpkg-deb` otherwise uses the build
-machine's default, which can be zstd, and Debian 11's dpkg refuses a zstd member: *"uses unknown
-compression for member 'control.tar.zst', giving up"*.  A package that installs everywhere the
-binary runs needs a compression every target's dpkg reads.
+**The package is compressed with xz, chosen explicitly**, because `dpkg-deb` may otherwise choose
+zstd, which Debian 11's dpkg refuses.
 
-**lintian is a gate.**  The script accepts exactly two findings and fails on any other, so a new
-one is seen rather than buried:
-
-| | amd64 | arm64 |
-|---|---|---|
-| no man page | `W: no-manual-page` | `W: no-manual-page` |
-| the static binary | `W: shared-library-lacks-prerequisites` | `E: statically-linked-binary` |
-
-The static-binary finding differs because Rust builds a **static PIE** for `x86_64` musl - an ELF of
-type `DYN` with no `NEEDED` entries, which keeps address-space randomisation - and a non-PIE static
-executable, type `EXEC`, for `aarch64` musl.  lintian reads the first as a shared library with no
-prerequisites.  A non-PIE amd64 build draws `statically-linked-binary` like arm64's, but gives up
-address-space randomisation to do so.  Both findings, and the missing man page, are accepted for the
-MVP: its package is for trying quaff out in a container, not held to Debian policy.
+**lintian is a gate**: `scripts/build-deb` accepts exactly the missing man page and one
+static-binary finding, and fails on any other.  The static-binary finding is
+`shared-library-lacks-prerequisites` on amd64 and `statically-linked-binary` on arm64, because Rust
+builds a static PIE for `x86_64` musl, keeping address-space randomisation, and a non-PIE static
+executable for `aarch64` musl.  Both are accepted for the MVP, whose package is for trying quaff
+out, not held to Debian policy.
 
 ## CI
 
-`.github/workflows/package.yaml` builds both packages on every pull request, each natively
-on a runner of its own architecture, then installs each into a clean container of every target
-distribution and runs it there, as `verification.md` describes under the package install test.
-It keeps each package, its lintian output and the install logs as a workflow artefact, so a
-change that breaks packaging, or a package that does not install or run, fails where it is made.
-Its jobs, *Debian package (amd64)* and *Debian package (arm64)*, are meant to be required status
-checks, and because `release.yaml` calls this workflow, a package is installed and run before it
-can ship.
+`.github/workflows/package.yaml` builds both packages on every pull request, each on a runner of its
+own architecture, then installs and runs each on every target distribution (`verification.md`, the
+package install test), keeping the packages, lintian's output and the install logs as an artefact.
+Its jobs are meant to be required status checks, and `release.yaml` calls it, so a package is
+installed and run before it can ship.
 
 ## Releasing
 
-`.github/workflows/release.yaml` runs when a release is **published**; pushing a tag ships
-nothing.  It:
-
-1. **Preflight** - fails unless the release belongs to `L337-org`, its tag is `v` plus the
-   workspace version, and - for any version below 1.0.0 - it is marked as a pre-release; then
-   resolves the commit once for everything after it;
-2. **Package** - calls `package.yaml` at that commit;
-3. **Attach the packages** - only once both architectures built, uploads each `.deb` to the
-   release ID from the event.  A package already attached is compared, not replaced: identical is
-   a re-run and is skipped, and different stops the run, because a published asset is never
-   replaced;
-4. **The release serves both packages** - downloads each asset back from the release and checks it
-   is byte-identical to the one built, with the right package name, version and architecture.
+`.github/workflows/release.yaml` runs when a release is **published**; pushing a tag ships nothing.
+It refuses a release outside `L337-org`, a tag other than `v` plus the workspace version, and a
+version below 1.0.0 not marked as a pre-release.  It builds with `package.yaml` at one commit,
+attaches the packages only once both architectures built, and never replaces a published package:
+one already attached is skipped if identical and stops the run if not.  Then it downloads each back
+from the release and checks it is the one built.
 
 ### Checklist
 
-1. On the branch for the release's work, the workspace version is already the release's (it is
-   bumped when that work starts).  Merge to `main`.
+1. The workspace version is already the release's, bumped when its work started.  Merge to `main`.
 2. Draft a release on GitHub with tag `v<version>` on `main`'s commit, **mark it as a pre-release**,
    and write the notes by hand on top of the generated ones.
 3. Publish it, then watch the Release workflow to the end: the first run after a change to it is
    the test of that change.
 4. If a job failed, read why and re-run it; the attach step skips what is already there, and
-   preflight reads the pre-release flag from the release itself, so ticking it and re-running is
-   enough.  If the cause is a defect, fix it and release a new version - a published package is
-   never replaced.
+   preflight reads the pre-release flag from the release itself.  If the cause is a defect, fix it
+   and release a new version: a published package is never replaced.
 
-A failed release run is posted to Slack (`verification.md`, failed runs are posted to Slack).
+A failed release run is posted to Slack (`verification.md`).

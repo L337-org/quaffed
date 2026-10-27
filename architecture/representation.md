@@ -22,7 +22,7 @@ without the engine noticing, and keeps a script's meaning in one place.
   from the pieces a script writes.  Adjacent literals join as it is built, so `"ab"` and
   `"a" "b"` are the same pattern.
 - **`Expectation`**: a `Count` - exactly, at least, at most, exactly-or-none, none, any - of
-  something counted, in the MVP a query's matches.
+  something counted, such as a query's matches.
 - **`Span`** and **`Spanned<T>`** (`src/span.rs`): every node carries the source and byte
   range it was written at.
 
@@ -32,20 +32,17 @@ without the engine noticing, and keeps a script's meaning in one place.
   two statements that parse the same are the same statement wherever they were written.
 - **Assertion blocks.**  `Program::push` joins an `Assert` to an `Assert` it follows, so a run
   of asserting statements is one block, and an action between two runs keeps them apart.
-  Within a block an expectation is kept once, whether an equal one is already there or two
-  arrive together.  `Program`'s statements are private, read through `body()`, so nothing can
-  append one any other way.  A block is evaluated to the end before a failure stops the run.
+  Within a block an equal expectation is kept once.  `Program`'s statements are private, read
+  through `body()`, so nothing can append one any other way.
 - **The checker** (`src/check.rs`) refuses an edit with no `expect`, and an `expect` on an edit
   whose target is a node already bound.  `first_outside_mvp` is the one answer to whether a
   program is inside the MVP subset; what it finds is an unknown statement, which the command
   line exits with a code of its own, as its exit-code table says.
 - **Determinism.**  Every collection is a `Vec` in source order.  `clippy.toml` forbids
-  `HashMap` and `HashSet` in this crate, and `tests/disallowed_types.rs` shows the lint firing:
-  it builds a throwaway crate with this `clippy.toml` and checks that clippy refuses a hash map
-  and a hash set and accepts the same crate without them.
+  `HashMap` and `HashSet` in this crate, and `tests/disallowed_types.rs` shows the lint firing.
 - **Additive only.**  Every enum is `non_exhaustive`, so a construct outside the MVP joins as a
-  new variant.  `Operand::Bound` is already here - the checker's bound-target rule needs it -
-  but nothing in the MVP's syntax can produce it, and `first_outside_mvp` reports it.
+  new variant.  `Operand::Bound` exists for the checker's bound-target rule, though nothing in
+  the MVP's syntax produces it, and `first_outside_mvp` reports it.
 
 ## Checklist: adding a construct
 

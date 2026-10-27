@@ -8,159 +8,102 @@ Ruff warns "will have frequent breaking changes", is absorbed here and reaches n
 
 ## What it offers
 
-- **`parse_module(source)`**, **`parse_expression(source)`** and **`parse_ipython(source)`**:
-  source parsed into a syntax arena (`syntax.md`), as a module, as a single expression, or as
-  `IPython` source with its `%magic` and `!shell` escape commands.  Every arena carries the
-  language `PYTHON`.  Source that does not parse is `ParseError::Invalid`, carrying Ruff's
-  message verbatim and the byte offset; text too long for an arena's offsets is
-  `ParseError::TooLong`, refused before Ruff sees it.  Never a partial arena.
-- **`compile_pattern(text)`**: a structural pattern compiled into a `Pattern`, below.
-- **`kinds_in_module(source)`**, **`kinds_in_expression(source)`** and
-  **`kinds_in_ipython(source)`**: the kinds of node in the arena, which the synthetic corpus's
+- **`parse_module`**, **`parse_expression`** and **`parse_ipython`**: source parsed into a syntax
+  arena (`syntax.md`) of language `PYTHON`.  Source that does not parse is `ParseError::Invalid`,
+  with Ruff's message verbatim and the byte offset; text too long for an arena is
+  `ParseError::TooLong`.  Never a partial arena.
+- **`compile_pattern`**: a structural pattern compiled into a `Pattern`, below.
+- **`kinds_in_module`**, **`kinds_in_expression`**, **`kinds_in_ipython`** and **`all_kinds`**:
+  the kinds an arena holds, and every kind the pinned Ruff knows, which the synthetic corpus's
   coverage check reads.
-- **`all_kinds()`**: every kind of node in Python's grammar as the pinned Ruff knows it, each
-  once, in Ruff's order.  `every_kind_is_listed_once_by_ruffs_name` asserts how many.
-- **`Kind`**, re-exported from `quaffed-syntax`: a kind by the name Ruff gives it -
-  `StmtFunctionDef`, `ExprCall` - so nothing outside the adapter sees Ruff's own enum.
+- **`Kind`**, re-exported from `quaffed-syntax`: a kind by Ruff's name for it, so nothing outside
+  the adapter sees Ruff's own enum.
 
-The arena is built in one walk of Ruff's tree, `enter` on the way in and `leave` on the way out.
-A module's root runs from the start of the text to its end; an expression's starts at its first
-token, so blank lines before it are the arena's leading text.
-`ruffs_root_spans_the_text_but_blank_lines_before_an_expression` pins both.
-
-It takes source as text.  Decoding a file is `quaffed-encoding`'s (`encoding.md`), so that the
-adapter and a textual search read a file's bytes the same way, as CPython does.
+The arena is built in one walk of Ruff's tree (`src/parse.rs`).  It takes source as text:
+decoding a file is `quaffed-encoding`'s (`encoding.md`), so the adapter and a textual search read
+a file's bytes the same way.
 
 ## Patterns
 
-`compile_pattern(text)` turns a structural pattern - `handle_request($a, $b)`, a `-p` argument or
-a backticked operand - into a `Pattern` (`syntax.md`), keeping the rules for holes `script.md`
-gives.  A hole is not Python, so it takes two stages:
+`compile_pattern` turns a pattern into a `Pattern` (`syntax.md`), keeping the rules for holes
+`script.md` gives.  A hole is not Python, so it takes two stages (`src/pattern.rs`):
 
-1. **Claim before parsing.**  Every `$name`, `$_`, `$name...` and `$...` is replaced by a
-   placeholder identifier, on a stem the pattern does not contain so a placeholder never meets
-   a name the pattern wrote.  A `$` not followed by a name or `...` is left as written, so
-   `${HOME}` is never claimed.  A name ends where Python's would, by the identifier rules
-   Ruff's own lexer uses: `_` or `XID_Start`, then `XID_Continue`.
-2. **Let the grammar decide.**  The result is parsed - as a single expression if it is one,
-   otherwise as statements - and a placeholder is a hole when a node below the root spans
-   exactly it.  Where several nodes do, the outermost is the hole, so a hole at statement level
-   is the statement.  A placeholder spanned by none, or by a string's literal text - an
-   f-string's literal part is a node of its own, so `f"$x"` has one spanning just the
-   placeholder - lies inside a string or a comment: it is literal text, and is put back as
-   written before the pattern is parsed again, which a string's or comment's content cannot
-   change the shape of.  A hole in an f-string's field is in an expression, so it is a hole.
-   A hole written against a name, `x$a`, merges with it so that no node spans it either; it is
-   put back too, and the pattern fails to parse.  A placeholder that is a token of its own, outside
-   any string, but that no node spans is part of a name Python reads as one - a dotted module
-   name, `import a.$m` - and is refused as such (`PatternError::InsideAName`), rather than put
-   back to fail on its `$`.
+1. **Claim before parsing.**  Every `$name`, `$_`, `$name...` and `$...` becomes a placeholder
+   identifier on a stem the pattern does not contain.  A `$` not followed by a name or `...` is
+   left as written, and a name ends where Python's would, by the identifier rules Ruff's lexer
+   uses.
+2. **Let the grammar decide.**  The result is parsed, as an expression if it is one and otherwise
+   as statements, and a placeholder is a hole when a node spans exactly it, the outermost where
+   several do.  One that no node spans, or only a string's literal text, is inside a string or a
+   comment: it is put back as written and the pattern parsed again.  A hole merged into a name,
+   `x$a`, is put back too and fails to parse; one inside a dotted module name, `import a.$m`, is
+   refused as `PatternError::InsideAName`.
 
-It refuses `$_...`, since a sequence that binds nothing is spelt `$...`; a pattern with no code,
-only whitespace or comments; a pattern that is only holes, which has no shape to match; a
-sequence hole that starts or ends a run of statements, which nothing would bound (`syntax.md`),
-naming the hole and suggesting code on both sides of it; and a pattern whose search could grow
-faster than the square of a block's or list's length (`syntax.md`), naming the hole that makes it
-so: two sequences together in a run of statements, or a second place where what a sequence takes
-decides later code.  An error that is Ruff's is placed in the pattern as written, not in the
-text with placeholders.  Each error with a place carries it as a byte offset into the pattern, which
-`PatternError::offset` returns, and its message leaves it out: the caller says where, in the
-terms its reader knows.
+`compile_pattern`'s doc comment lists what it refuses, including the two limits `syntax.md` sets
+and one name used for both a node and a sequence.  An error from Ruff is placed in the pattern as
+written, not in the text with placeholders.  Each error with a place carries it as a byte offset
+into the pattern (`PatternError::offset`) and leaves it out of its message: the caller says where,
+in the terms its reader knows.
 
 ## What a match compares
 
-The arena keeps Ruff's own tokens, less those that carry no meaning in Python: comments, line
-breaks, indentation, the end of the file, semicolons between statements, a comma just before a
-closing bracket - the one Black adds when it splits a call - and redundant parentheses, those
-`ruff_python_ast::token::parentheses_iterator` finds around an expression, which excludes a
-call's own, since they are its arguments'.  A tuple's or a generator's own parentheses are left
-out too, though Ruff puts them inside the node rather than among the redundant: `a, b` and `(a,
-b)` are one tree to CPython, as are `f(x for x in y)` and `f((x for x in y))`, and where the
-parentheses change the meaning - `f((a, b))` passes one argument, `f(a, b)` two - the tree
-changes too.  An empty tuple keeps its, as its only spelling.  A one-element tuple keeps the
-comma after its element even before a closing bracket, as `tuple_comma` finds it: it is the
-tuple's only spelling, and without it `x[a,]`, a subscript by a tuple, would hold the same code as
-`x[a]`, a subscript by a name, to a name used twice.  A comma ending a tuple of several, `a, b,`,
-is layout, and so is one just before a closing bracket whether or not that bracket takes part, so
-`(a, b,)` is `a, b`.
+**The arena keeps Ruff's tokens less those that carry no meaning in Python**, judged by whether
+`CPython`'s tree records them: comments, line breaks, indentation, the end of the file,
+semicolons between statements, a comma before a closing bracket or ending a tuple of several,
+redundant parentheses, a tuple's or a generator's own parentheses, those around a `from` import's
+names or a `with` statement's items, and a class's empty argument list.  Each has a function in
+`src/parse.rs` whose doc comment gives the case, such as `redundant_parentheses`,
+`own_parentheses`, `trailing_tuple_comma`, `statement_parentheses` and `empty_class_arguments`.
+What stays is what changes the tree: an empty tuple's parentheses, and a one-element tuple's comma
+(`tuple_comma`).
 
-Three more pairs of parentheses `CPython`'s tree does not record take no part, though none is
-around an expression: those around a `from` import's names, `from x import (a, b)`
-(`statement_parentheses`); those around a `with` statement's items, `with (open(p),
-open(q)):`, found as the pair before the first item and after the last, which leaves `with (a,
-b) as c:`'s alone, since there they are the tuple's; and a class's empty argument list, `class
-A():`, which is left out of the arena altogether (`empty_class_arguments`), as `CPython` leaves
-it out of the tree.
-
-**A self-documenting field prints its own spacing**: `f"{v = }"` prints `v = 1`, and `f"{v=}"`
-`v=1`.  So in a field with `=`, the `{` token takes in the text before the expression and the
-`=` token the text from the expression to the conversion, the format spec or the `}`
-(`self_documenting`), and a match compares them as written.  In any other field the spacing is
-layout.  An f-string's or
-t-string's opening and closing compare by a fixed text, so their prefix and quotes take no
-part.  A string or bytes literal's value is its content as the script language defines it for
-comparing: what lies between each part's delimiters as written, the parts of an implicit
-concatenation joined, by Ruff's own `opener_len` and `closer_len`.  An f-string's parts are
-compared one by one; unlike a plain string's, an implicit concatenation of them is not joined.
+**A self-documenting field prints its own spacing**, so in `f"{v = }"` the spacing takes part
+(`self_documenting`); in any other field it is layout.  An f-string's or t-string's opening and
+closing compare by a fixed text, so prefix and quotes take no part.  A string or bytes literal's
+value is its content as the script language defines it for comparing, an implicit concatenation
+joined; an f-string's parts are compared one by one and not joined.
 
 Each statement list Ruff's walk visits - a module's, a function's, a branch's, an `else` or a
-`finally` - is marked as a list, so `$body...` never takes in an `else:` clause and a run of
-statements never starts in a function's header.  A plain string part inside an f-string's
-concatenation is given its content too.
-
-The pattern compiler also refuses one name used both for one node and for a sequence, `$x` and
-`$x...`, which cannot both hold.
+`finally` - is marked as a list, so `$body...` never takes in an `else:` clause.
 
 ## The kind list is held to Ruff's enum by the compiler
 
-Ruff's `NodeKind` offers no list of its variants, so the list is written once in
-`src/kinds.rs`, in a macro that builds both the list and a `match` from `NodeKind` with no
-catch-all arm.  The compiler then holds it to the enum: a kind Ruff adds is a non-exhaustive
-match until it is listed, and a name Ruff does not have fails to resolve.  The names are the
-same identifiers, so they are Ruff's own.
+Ruff's `NodeKind` offers no list of its variants, so `src/kinds.rs` writes it once in a macro that
+builds both the list and a `match` from `NodeKind` with no catch-all arm.  A kind Ruff adds is then
+a non-exhaustive match until it is listed, and a name Ruff does not have fails to resolve.
 
 ## Ruff quirks it absorbs
 
-- **A format spec is invisible to Ruff's walk.**  `InterpolatedElement::visit_source_order`
-  visits a format spec's parts but never enters the `InterpolatedStringFormatSpec` node, so the
-  arena would hang the parts on the element with no spec around them.  The builder in
-  `src/parse.rs` walks such an element's children itself - the expression, then the spec
-  entered around its parts - and `a_format_spec_is_a_node_around_its_parts` checks the result.
-  `ruffs_walk_still_skips_the_format_spec` pins the quirk: an upgrade that fixes it fails that
-  test, which says to delete the workaround.
+Each quirk is pinned by a test that fails when an upgrade fixes it, which says to delete the
+workaround.
+
+- **A format spec is invisible to Ruff's walk.**  `InterpolatedElement::visit_source_order` never
+  enters the `InterpolatedStringFormatSpec` node, so the builder in `src/parse.rs` walks such an
+  element's children itself.  `ruffs_walk_still_skips_the_format_spec` pins the quirk.
 
 ## Pins
 
-`ruff_python_ast`, `ruff_python_parser` and `ruff_text_size`, which gives a node its range, are
-pinned with `=` in this crate's `Cargo.toml`, and `Cargo.lock` holds them.  An upgrade is
-deliberate work in this crate, never a lock-file refresh.
-
-The three move together.  `ruff_python_parser` depends on `ruff_python_ast` at its own version, so
-bumping one alone puts two copies of `ruff_python_ast` in the build, and the adapter fails to
-compile with *"there are multiple different versions of crate `ruff_python_ast` in the
-dependency graph"*.  `.github/dependabot.yml` keeps the `ruff_*` crates in a group of their own
-for this reason; a pull request from that group is where the checklist below starts, not a merge
-on green.
+`ruff_python_ast`, `ruff_python_parser` and `ruff_text_size` are pinned with `=` in this crate's
+`Cargo.toml`, so an upgrade is deliberate work here, never a lock-file refresh.  **The three move
+together**: `ruff_python_parser` depends on `ruff_python_ast` at its own version, so bumping one
+alone fails to compile with two copies of `ruff_python_ast`.  `.github/dependabot.yml` groups them
+for this reason; a pull request from that group starts the checklist below, not a merge on green.
 
 ## Checklist: upgrading Ruff
 
-1. **Read the changelog.**  Read Ruff's changelog for the three crates between the two
-   versions, for changes to node kinds, ranges, tokens and the parser's modes.
-2. **Bump the pin.**  Change all three `=` pins together.  `ruff_containment.rs` fails if any is
+1. **Read the changelog** for the three crates between the two versions, for changes to node
+   kinds, ranges, tokens and the parser's modes.
+2. **Bump the pin.**  Change all three `=` pins together; `ruff_containment.rs` fails if any is
    not exact, or the three differ.
-3. **Fix the adapter.**  Build.  A new or renamed node kind fails the kind list's `match`: list
-   it in `src/kinds.rs`, and update the count in `every_kind_is_listed_once_by_ruffs_name`.
-   Run `cargo test -p quaffed-python`: a new kind the synthetic corpus does not produce fails its
-   coverage check, so add Python that produces it, as `verification.md` describes, and a change
-   in where Ruff's root starts or ends fails the root test above.
-4. **Run the invariant harness and the CPython oracle** over the real-world corpus, as the
-   Real-world corpus CI job does (`verification.md`): `scripts/fetch-corpus` with the oracle's
-   Python, then the round trip, which fails on a change in Ruff's ranges that breaks the arena's
-   invariants, naming the file and the byte; then `scripts/count-structural` and
-   `real_world_matches.rs`, which fail on a change in what a pattern matches, naming the pattern
-   and both counts.
-5. **Check the quirks.**  Each quirk above is pinned by a test that fails when it stops holding;
-   delete the workaround that test names.  Record any new quirk here, with a test of its own.
-6. **Record what changed**: in the commit message, what in Ruff moved and what the adapter did
-   about it, and on this page anything a later change must know.  Update this page in the same
-   change.
+3. **Fix the adapter.**  A new or renamed kind fails the kind list's `match`: list it in
+   `src/kinds.rs` and update the count in `every_kind_is_listed_once_by_ruffs_name`.  Run
+   `cargo test -p quaffed-python`: a kind the synthetic corpus does not produce fails its coverage
+   check, so add Python that produces it (`verification.md`), and a change in where Ruff's root
+   starts or ends fails `ruffs_root_spans_the_text_but_blank_lines_before_an_expression`.
+4. **Run the round trip and the CPython oracle** over the real-world corpus, as the Real-world
+   corpus CI job does (`verification.md`): `scripts/fetch-corpus` with the oracle's Python, the
+   round trip, then `scripts/count-structural` and `real_world_matches.rs`.
+5. **Check the quirks.**  Delete the workaround a failing quirk test names.  Record any new quirk
+   here, with a test of its own.
+6. **Record what changed**: in the commit message, what moved in Ruff and what the adapter did;
+   on this page, only what a later change must know.
