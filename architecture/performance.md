@@ -158,7 +158,9 @@ can be followed; nothing gates on what is recorded.
   Each point carries the time it was measured.  A new figure is a new field and a new
   architecture a new tag value, so neither changes what is already there.
 - **What could not be posted is kept**, as the run's `unrecorded-measurements` artefact, for 30
-  days; every later run, and a daily one, posts it and then deletes it.  A point posted twice is
+  days; every later run, and the daily `catch-up-measurements.yaml`, posts it and then deletes
+  it.  The daily one is a workflow of its own, re-enabled by every merge's run, because GitHub
+  disables a scheduled workflow after 60 days without activity.  A point posted twice is
   the same point, so posting again is safe.  What InfluxDB refuses as malformed is kept as
   `rejected-measurements` and never posted again.  A failed run is posted to Slack, and its job
   summary says how to post by hand.

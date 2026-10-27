@@ -2,10 +2,13 @@ name: 'Record measurements'
 permissions: {}
 
 # Posts each merge to main's budgets and benchmark counts to InfluxDB, through
-# scripts/record-measurements, so performance can be followed over time; and first posts whatever
-# an earlier run could not.  The Budgets job and the Benchmarks workflow write the points, since
-# only they know the runner they measured on; this workflow holds the secrets, so nothing a pull
-# request runs can reach them.  architecture/performance.md has the records and their names.
+# scripts/record-measurements, so performance can be followed over time; and first posts whatever an
+# earlier run could not.  The daily catch-up is a workflow of its own, catch-up-measurements.yaml,
+# because GitHub disables a scheduled workflow after 60 days without activity in the repository, and
+# a merge must still be recorded after a quiet spell; each run here re-enables it.  The Budgets job
+# and the Benchmarks workflow write the points, since only they know the runner they measured on;
+# this workflow holds the secrets, so nothing a pull request runs can reach them.
+# architecture/performance.md has the records and their names.
 on:
   workflow_run:
     workflows:
@@ -13,26 +16,23 @@ on:
       - 'Benchmarks'
     types: [completed]
     branches: [main]
-  # Daily, so what a failed post kept is posted without waiting for the next merge.
-  schedule:
-    - cron: '37 5 * * *'
 
 jobs:
   record:
     name: Record measurements
-    # Only a push to main in this repository, or the daily run.  A pull request's run, including
-    # one from a fork's branch named main, is skipped before the job starts.
+    # Only a push to main in this repository.  A pull request's run, including one from a fork's
+    # branch named main, is skipped before the job starts.
     if: >-
       github.repository == 'L337-org/quaffed' &&
-      (github.event_name == 'schedule' ||
-       (github.event.workflow_run.event == 'push' &&
-        github.event.workflow_run.head_branch == 'main' &&
-        github.event.workflow_run.head_repository.full_name == github.repository))
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-24.04
     # Covers each post's retries, about eight minutes, for this merge's files and any kept ones.
     timeout-minutes: 30
     permissions:
-      # To download other runs' artefacts, and delete a kept one once it is posted.
+      # To download other runs' artefacts, delete a kept one once it is posted, and re-enable the
+      # daily catch-up.
       actions: write
       contents: read
     env:
@@ -47,11 +47,16 @@ jobs:
         with:
           persist-credentials: false
 
+      # A no-op when it is already enabled; after a quiet spell, this merge brings it back.
+      - name: Keep the daily catch-up enabled
+        run: gh workflow enable catch-up-measurements.yaml --repo "$GITHUB_REPOSITORY"
+
       - name: Post what earlier runs could not
+        if: ${{ !cancelled() }}
         run: scripts/record-measurements catch-up --rejected "$RUNNER_TEMP/rejected"
 
       - name: Download this merge's points
-        if: ${{ !cancelled() && github.event_name == 'workflow_run' }}
+        if: ${{ !cancelled() }}
         env:
           RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
@@ -59,7 +64,7 @@ jobs:
             --dir "$RUNNER_TEMP/measurements"
 
       - name: Post this merge's points
-        if: ${{ !cancelled() && github.event_name == 'workflow_run' }}
+        if: ${{ !cancelled() }}
         run: |
           shopt -s nullglob
           files=("$RUNNER_TEMP"/measurements/*/*.lp)
