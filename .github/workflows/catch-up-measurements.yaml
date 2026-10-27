@@ -1,0 +1,44 @@
+name: 'Catch up on measurements'
+permissions: {}
+
+# Posts, daily, whatever a Record measurements run could not post to InfluxDB, so it does not wait
+# for the next merge, through scripts/record-measurements.  A workflow of its own, because GitHub
+# disables a scheduled workflow after 60 days without activity in the repository; each run of
+# record-measurements.yaml re-enables it.  architecture/performance.md describes the recording.
+on:
+  schedule:
+    - cron: '37 5 * * *'
+
+jobs:
+  catch-up:
+    name: Catch up on measurements
+    if: github.repository == 'L337-org/quaffed'
+    runs-on: ubuntu-24.04
+    # Catching up tries each kept file once, and stops at the first that does not post.
+    timeout-minutes: 15
+    permissions:
+      # To download other runs' artefacts, and delete a kept one once it is posted.
+      actions: write
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      QUAFFED_INFLUX_URL: ${{ secrets.QUAFFED_INFLUX_URL }}
+      QUAFFED_INFLUX_USER: ${{ secrets.QUAFFED_INFLUX_USER }}
+      QUAFFED_INFLUX_PASSWORD: ${{ secrets.QUAFFED_INFLUX_PASSWORD }}
+    steps:
+      - name: Check out source repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Post what earlier runs could not
+        run: scripts/record-measurements catch-up --rejected "$RUNNER_TEMP/rejected"
+
+      # Never posted again: kept for someone to read why InfluxDB refused them.
+      - name: Keep what InfluxDB refused
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rejected-measurements
+          path: ${{ runner.temp }}/rejected
+          if-no-files-found: ignore

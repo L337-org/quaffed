@@ -127,7 +127,9 @@ enforces it.
   name and comments say what it checks.
 - `.github/workflows/package.yaml` builds the Linux package on every pull request (`release.md`).
 - `.github/workflows/benchmarks.yaml` counts the front end's and the matcher's instructions against
-  main's on every pull request (`performance.md`).
+  main's on every pull request, and the merged commit's after a merge (`performance.md`).
+- `.github/workflows/record-measurements.yaml` posts each merge's budgets and benchmark counts to
+  InfluxDB, and `catch-up-measurements.yaml` posts daily what it could not (`performance.md`).
 - `.github/workflows/report-failures.yaml` posts a failed run to Slack.  A new workflow that runs on
   a schedule, a push, a release or a pull request is added there, as below.
 
@@ -145,12 +147,15 @@ or a new job gates nothing.  The exceptions:
 `.github/workflows/report-failures.yaml` posts a failed run of the workflows it names to the
 project's Slack channel, through the shared reporter from `github-workflows`, whose README says
 which runs it posts.  A run started by hand is left out, because whoever started it is watching.
-To add a workflow that runs on a schedule, a push, a release or a pull request:
+To add a workflow that runs on a schedule, a push, a release, a pull request or another
+workflow's run:
 
 1. Give it a `name:`, and every job a `timeout-minutes:` (a job calling a reusable workflow
    cannot take one).
 2. Add its `name:` to the `workflows:` list in `report-failures.yaml`, exactly as written; the
    repository hygiene check enforces the list.
+3. If its trigger is not yet in that file's `events`, add it there, or its failures are not
+   posted.
 
 It posts through the `SLACK_BOT_TOKEN` secret.  **Accepted limitation:** a failed post is only a
 failed *Report failures* run, so a dead token shows as an absence of posts.

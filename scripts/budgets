@@ -15,6 +15,7 @@ in the project may be opened twice, and nothing outside the project may be opene
 budgets.toml allows.  architecture/performance.md has the reasoning and how to change a limit.
 
     scripts/budgets BINARY [--repeat N] [--out DIR] [--env NAME=VALUE ...] [--scenario NAME ...]
+                    [--json FILE]
 
 The scenarios run on a scratch copy of corpus/synthetic, made a project root with an empty
 `.git`, so nothing else in the checkout can move a budget.  Every trace is kept under DIR
@@ -26,6 +27,10 @@ goes to standard output and, in GitHub Actions, to the job summary.
 
 --repeat runs each scenario N times, judges the worst, and reports the spread, so that every
 run shows how much the counts move; the file access must be the same every time.
+
+--json writes each scenario's judged values to FILE, with the time its last run finished, for
+scripts/record-measurements; it is written whether or not the budgets hold, since a measurement
+over budget is still a measurement, and not when something could not be measured.
 
 --env passes a variable to the binary, `{project}` in its value standing for the scratch
 project's path; the negative test uses it to drive a deliberately worsened build.
@@ -39,12 +44,14 @@ Needs: valgrind (with callgrind_annotate), strace, GNU time at /usr/bin/time, Li
 
 import argparse
 import fnmatch
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 from collections import defaultdict
 from pathlib import Path
@@ -94,6 +101,7 @@ def main(argv):
     parser.add_argument("--scenario", action="append", choices=sorted(SCENARIOS))
     parser.add_argument("--repeat", type=int, default=1, metavar="N")
     parser.add_argument("--budgets", type=Path, default=ROOT / "budgets.toml")
+    parser.add_argument("--json", type=Path, metavar="FILE")
     args = parser.parse_args(argv)
     try:
         return run_all(args)
@@ -139,6 +147,7 @@ def run_all(args):
                 for index in range(1, args.repeat + 1)
             ]
             measured = worst(name, runs)
+            measured["measured_at"] = int(time.time())
             failures += judge(
                 name,
                 measured,
@@ -147,6 +156,8 @@ def run_all(args):
                 project,
             )
             rows.append((name, measured, limits))
+    if args.json:
+        write_json(args.json, rows)
     report = render(rows, failures, args.out)
     print(report)
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
@@ -157,6 +168,29 @@ def run_all(args):
         print(f"budgets: {failure}", file=sys.stderr)
         annotate("error", failure)
     return 1 if failures else 0
+
+
+def write_json(path, rows):
+    """Each scenario's judged values, and when its last run finished, in Unix seconds."""
+    scenarios = {
+        name: {
+            key: measured[key]
+            for key in (
+                "measured_at",
+                "instructions",
+                "peak_memory_kib",
+                "paths_opened",
+                "bytes_read",
+            )
+        }
+        for name, measured, _ in rows
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        document = {"version": 1, "scenarios": scenarios}
+        path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    except OSError as err:
+        raise Unmeasured(f"writing {str(path)!r}: {err}") from err
 
 
 def read_budgets(path):
