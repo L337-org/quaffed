@@ -436,9 +436,9 @@ def judge(name, measured, limits, outside, project):
             failures.append(
                 f"{name}: {str(shown)!r} in the project was opened to read {opens} times"
             )
-        # An edit writes a file once; a second open to write is a second write, or a restore
-        # that should not have happened.
-        if writes > 1:
+        # An edit opens a file to write twice: to check it can be written before any file is, then
+        # to write it.  A third open is a second write, or a restore that should not have happened.
+        if writes > 2:
             failures.append(
                 f"{name}: {str(shown)!r} in the project was opened to write {writes} times"
             )

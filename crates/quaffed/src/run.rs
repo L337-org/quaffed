@@ -2329,6 +2329,50 @@ mod tests {
             "{message}"
         );
         assert!(message.ends_with("so that the files still parse, or give a narrower scope on the command line to leave them out"), "{message}");
+        for failure in [
+            &broken,
+            &Failure::Unwritable {
+                files: vec![unwritable("a.txt", true), unwritable("b.txt", false)],
+            },
+        ] {
+            refuses_every_write(failure);
+        }
+    }
+
+    /// A destination refusing one write, the `refused`th from 0, and accepting every other, so
+    /// that a message dropping the refusal goes on to succeed.
+    struct Refusing {
+        writes: usize,
+        refused: Option<usize>,
+    }
+
+    impl fmt::Write for Refusing {
+        fn write_str(&mut self, _: &str) -> fmt::Result {
+            self.writes += 1;
+            if Some(self.writes - 1) == self.refused {
+                return Err(fmt::Error);
+            }
+            Ok(())
+        }
+    }
+
+    /// Displays `failure` into destinations that refuse its first write, then its second, and so
+    /// on to its last, and requires each refusal to end the message as an error, not be dropped.
+    fn refuses_every_write(failure: &dyn fmt::Display) {
+        let display = |refused| {
+            let mut destination = Refusing { writes: 0, refused };
+            fmt::Write::write_fmt(&mut destination, format_args!("{failure}"))
+                .map(|()| destination.writes)
+        };
+        let writes = display(None).unwrap();
+        assert!(writes > 1, "{failure} was written in {writes} writes");
+        for refused in 0..writes {
+            assert!(
+                display(Some(refused)).is_err(),
+                "a refusal of write {} of {writes} was dropped: {failure}",
+                refused + 1
+            );
+        }
     }
 
     #[test]
@@ -2347,6 +2391,20 @@ mod tests {
             cause,
             Some(io::Error::from(io::ErrorKind::PermissionDenied).to_string())
         );
+        refuses_every_write(&Failure::Write(write::Failure::Write {
+            path: "a.txt".into(),
+            cause: io::Error::from(io::ErrorKind::StorageFull),
+            unrestored: vec![
+                (
+                    "a.txt".into(),
+                    io::Error::from(io::ErrorKind::PermissionDenied),
+                ),
+                (
+                    "b.txt".into(),
+                    io::Error::from(io::ErrorKind::PermissionDenied),
+                ),
+            ],
+        }));
     }
 
     #[test]

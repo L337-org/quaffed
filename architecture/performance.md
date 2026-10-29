@@ -41,8 +41,9 @@ move.
 - **The limits are `budgets.toml`**: `instructions` (Callgrind) and `peak_memory_kib` (GNU time)
   with a margin from `MARGINS`, and `paths_opened`, `bytes_read` and `paths_written` (strace)
   exactly, since a change in any is a change in behaviour.  No path in the project may be opened
-  to read twice, or to write twice - an edited file is opened once to read and once to write -
-  and nothing outside it but what `[outside]` allows, each with its reason.
+  to read twice, or to write more than twice - an edited file is opened once to read, and to write
+  once to check it can be and once to write it - and nothing outside it but what `[outside]`
+  allows, each with its reason.
 - **Each scenario runs `--repeat` times** and is judged on its worst run; the file access must be
   identical every time.  Anything that could not be measured fails, never passes.
 - **Every run's traces are kept** in the job's `budgets` artefact: what a reviewer reads to judge

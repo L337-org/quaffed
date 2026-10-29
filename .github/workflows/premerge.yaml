@@ -296,7 +296,7 @@ jobs:
           check memory "search peak_memory_kib: limit"
           check "read-twice:{project}/modules/statements.py" "'modules/statements.py' in the project was opened to read 2 times"
           check outside "'/etc/passwd', outside the project, was opened"
-          check "write-twice:{project}/modules/patterns.py" "'modules/patterns.py' in the project was opened to write 2 times" edit
+          check "write-again:{project}/modules/statements.py" "'modules/statements.py' in the project was opened to write 3 times" edit
 
       # Saved whether or not the budgets held: the traces are what a reviewer reads to judge
       # whether a moved budget is still correct behaviour.
