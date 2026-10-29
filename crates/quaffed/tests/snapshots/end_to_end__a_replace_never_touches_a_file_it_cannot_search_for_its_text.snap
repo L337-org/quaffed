@@ -1,0 +1,18 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "replace string \"TO DO\" with \"DONE\" expect 1"
+---
+success: true
+exit_code: 0
+----- stdout -----
+plain.txt:1:1-1:5: TO DO
+
+----- stderr -----
+quaff: replaced 1 match in 1 file
+quaff: "arabic.txt" not searched for "TO DO": it is in "mac_arabic", which spells a character of it more than one way
+quaff: "refused.py" not searched: line 1 declares the encoding "uft-8", which Python does not know
+quaff: 1 binary file not searched

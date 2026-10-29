@@ -2226,6 +2226,130 @@ mod tests {
     }
 
     #[test]
+    fn a_replace_this_build_cannot_run_is_named_where_it_was_written() {
+        let span = |start| Span {
+            source: 0,
+            start,
+            end: start + 1,
+        };
+        let text = |t: &str| Spanned::new(Operand::Text(TextPattern::literal(t)), span(0));
+        let count = vec![Spanned::new(Count::Any, span(9))];
+        let replace = |query: Query, expect: Vec<Spanned<Count>>| {
+            Action::new(ActionKind::Replace(text("b")), query, expect)
+        };
+        let scoped = Query::with(text("a"), vec![Spanned::new("x".into(), span(3))], None);
+        assert_eq!(
+            replacing(&replace(scoped, count.clone()), span(1)).err(),
+            Some(("an `in` clause", span(3)))
+        );
+        let filter = Spanned::new(
+            quaffed_representation::program::Filter::And(Vec::new()),
+            span(5),
+        );
+        let filtered = Query::with(text("a"), Vec::new(), Some(filter));
+        assert_eq!(
+            replacing(&replace(filtered, count.clone()), span(1)).err(),
+            Some(("a `where` clause", span(5)))
+        );
+        // The checker refuses an edit with no `expect` first; the planner still names it.
+        assert_eq!(
+            replacing(&replace(Query::new(text("a")), Vec::new()), span(1)).err(),
+            Some(("a replace with no `expect`", span(1)))
+        );
+        let delete = Action::new(ActionKind::Delete, Query::new(text("a")), count.clone());
+        assert_eq!(replacing(&delete, span(1)).err(), Some(("delete", span(1))));
+        let pattern = Spanned::new(Operand::Pattern("f()".into()), span(0));
+        let structural = Action::new(
+            ActionKind::Replace(pattern.clone()),
+            Query::new(pattern),
+            count,
+        );
+        assert_eq!(
+            replacing(&structural, span(1)).err(),
+            Some(("a structural replace", span(1)))
+        );
+    }
+
+    #[test]
+    fn the_refusals_of_an_edit_are_worded_for_one_file_and_for_many() {
+        let unwritable = |path: &str, ambiguous| Unwritable {
+            path: path.into(),
+            encoding: "mac_arabic",
+            text: "a b".into(),
+            ambiguous,
+        };
+        let one = Failure::Unwritable {
+            files: vec![unwritable("a.txt", true)],
+        }
+        .to_string();
+        assert!(
+            one.contains("\"a.txt\": mac_arabic spells \"a b\" more than one way"),
+            "{one}"
+        );
+        assert!(one.ends_with("Use a replacement its encoding can hold, or give a narrower scope on the command line to leave it out"), "{one}");
+        let many = Failure::Unwritable {
+            files: vec![unwritable("a.txt", false), unwritable("b.txt", false)],
+        }
+        .to_string();
+        assert!(many.contains("the encoding of 2 files"), "{many}");
+        assert!(
+            many.contains("a replacement their encodings can hold"),
+            "{many}"
+        );
+        assert!(many.ends_with("to leave them out"), "{many}");
+        let broken = Failure::BrokenByEdit {
+            files: vec![
+                Broken {
+                    path: "a.py".into(),
+                    why: "line 1, column 1: x".into(),
+                    by: vec![
+                        "-e expression 1, at character 1".into(),
+                        "-e expression 2, at character 1".into(),
+                    ],
+                },
+                Broken {
+                    path: "b.py".into(),
+                    why: "line 2, column 1: y".into(),
+                    by: Vec::new(),
+                },
+            ],
+        };
+        let message = broken.to_string();
+        assert_eq!(broken.exit_code(), 9);
+        assert!(
+            message.contains("2 Python files that parse unparseable"),
+            "{message}"
+        );
+        assert!(
+            message.contains("x; changed by the replace at -e expression 1, at character 1 and at -e expression 2, at character 1"),
+            "{message}"
+        );
+        assert!(
+            message.contains("\"b.py\": line 2, column 1: y\n"),
+            "{message}"
+        );
+        assert!(message.ends_with("so that the files still parse, or give a narrower scope on the command line to leave them out"), "{message}");
+    }
+
+    #[test]
+    fn a_write_failure_exits_7_with_the_systems_error_on_the_chain() {
+        use std::error::Error as _;
+        let failure = Failure::Write(write::Failure::Open {
+            path: "a.txt".into(),
+            cause: io::Error::from(io::ErrorKind::PermissionDenied),
+        });
+        assert_eq!(failure.exit_code(), 7);
+        let cause = failure
+            .source()
+            .and_then(|err| err.source())
+            .map(ToString::to_string);
+        assert_eq!(
+            cause,
+            Some(io::Error::from(io::ErrorKind::PermissionDenied).to_string())
+        );
+    }
+
+    #[test]
     fn counts_are_worded_for_one_and_for_many() {
         assert_eq!(count(1, "binary file", "binary files"), "1 binary file");
         assert_eq!(count(3, "binary file", "binary files"), "3 binary files");

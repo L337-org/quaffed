@@ -1568,3 +1568,24 @@ fn an_assertion_that_fails_after_a_replace_says_nothing_was_written() {
     ]));
     project.assert_unchanged();
 }
+
+#[test]
+fn a_replace_never_touches_a_file_it_cannot_search_for_its_text() {
+    let mut project = Project::new(&[
+        (".git/HEAD", ""),
+        // mac_arabic spells the space two ways, so "TO DO" has no one spelling there.
+        (
+            ".gitattributes",
+            "arabic.txt working-tree-encoding=mac-arabic\n",
+        ),
+        ("arabic.txt", "TO DO\n"),
+        // CPython refuses a declaration it does not know.
+        ("refused.py", "# coding: uft-8\nx = 'TO DO'\n"),
+        ("plain.txt", "TO DO\n"),
+    ]);
+    project.add_bytes("binary.dat", b"TO DO\0");
+    assert_quaff_snapshot!(
+        project.quaff(&["-e", "replace string \"TO DO\" with \"DONE\" expect 1"])
+    );
+    project.assert_changed(&[("plain.txt", b"DONE\n")]);
+}

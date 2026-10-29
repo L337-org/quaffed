@@ -896,6 +896,9 @@ mod tests {
             b"x\r\na\r\nb"
         );
         assert_eq!(edited(Encoding::Utf8, b"a;b", ";", "|"), b"a\nb");
+        // After a plain LF, the last line's matches take LF; after a lone CR, CR.
+        assert_eq!(edited(Encoding::Utf8, b"x\na;b", ";", "|"), b"x\na\nb");
+        assert_eq!(edited(Encoding::Utf8, b"x\ra;b", ";", "|"), b"x\ra\rb");
         // Several matches on that last line all take the ending before it, and matches on lines
         // with endings each take their own.
         assert_eq!(
@@ -967,6 +970,23 @@ mod tests {
                 text: None
             }
         );
+    }
+
+    #[test]
+    fn a_pattern_the_encoding_cannot_hold_or_an_empty_one_replaces_nothing() {
+        let koi8 = Encoding::SingleByte(quaffed_encoding::Codec::named("koi8_r").unwrap());
+        let nothing = Replaced::Edited {
+            matches: vec![],
+            text: None,
+        };
+        assert_eq!(replaced(koi8, b"caf\xc5", "café", "x"), nothing);
+        let empty = super::replace(
+            b"abc",
+            Encoding::Utf8,
+            &TextPattern::default(),
+            &TextPattern::literal("x"),
+        );
+        assert_eq!(empty, nothing);
     }
 
     #[test]

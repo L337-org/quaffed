@@ -271,6 +271,29 @@ mod tests {
     }
 
     #[test]
+    fn the_systems_error_stays_on_the_chain() {
+        use std::error::Error as _;
+        let open = Failure::Open {
+            path: "a".into(),
+            cause: io::Error::from(io::ErrorKind::PermissionDenied),
+        };
+        let write = Failure::Write {
+            path: "a".into(),
+            cause: io::Error::from(io::ErrorKind::StorageFull),
+            unrestored: Vec::new(),
+        };
+        for (failure, kind) in [
+            (open, io::ErrorKind::PermissionDenied),
+            (write, io::ErrorKind::StorageFull),
+        ] {
+            assert_eq!(
+                failure.source().map(ToString::to_string),
+                Some(io::Error::from(kind).to_string())
+            );
+        }
+    }
+
+    #[test]
     fn a_file_that_cannot_be_opened_stops_the_run_before_anything_is_written() {
         let disk = disk(&[("a", "old a"), ("b", "old b")]);
         let edits = [edit("a", "old a", "new a"), edit("b", "old b", "new b")];
