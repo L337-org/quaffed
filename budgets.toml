@@ -11,7 +11,7 @@
 #   paths_written    exactly how many paths in the project it opens to write
 
 [startup]
-instructions = 235_100
+instructions = 240_500
 peak_memory_kib = 5_800
 paths_opened = 1
 bytes_read = 0
