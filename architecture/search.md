@@ -22,8 +22,8 @@ The forms and options are in `docs/language.md`.  What the parser (`src/cli.rs`)
   otherwise it is the scope.  More than one scope is refused, naming the shell's glob expansion
   as the likely cause, since the search would otherwise look successful over one file.
 - **The query is literal**: anchors and line breaks are script constructs, outside the quotes.
-- **An option in the MVP that is not built** - `-o`, `--dry-run`, `--version` - is refused as
-  not built, not as unknown.  Both exit 3.  A short option never takes `=VALUE`.
+- **An option in the MVP that is not built** - `-o`, `--version` - is refused as not built, not
+  as unknown.  Both exit 3.  A short option never takes `=VALUE`.
 
 ## Discovery
 
@@ -155,7 +155,7 @@ the path or argument it concerns, and says what to do where there is something t
 
 ## Editing
 
-`replace string` is the first edit (`src/run.rs`, `src/search.rs`, `src/write.rs`).
+`replace string` edits text (`src/run.rs`, `src/search.rs`, `src/write.rs`).
 
 - **Each file is taken through the program's statements in order** and read once: the patterns
   between two replaces are searched in one pass over the file as it then is, and a replace changes
@@ -172,9 +172,12 @@ the path or argument it concerns, and says what to do where there is something t
   break as the file's own line ending (`search::replace`).  A file of unknown encoding is reported
   as in a search and never touched, so a replace counts what the same `find` counts.
 - **Files are written in place**, into the file itself, never by renaming a new file over it,
-  which would break its hard links and change its owner.  Every file is opened for writing before
-  any is written, and a failed write puts back every file already written from its original
-  bytes.  **Accepted limitation:** a process killed, or a machine losing power, during the writes
+  which would break its hard links and change its owner.  Every file is opened for writing, and
+  closed, before any is written, then opened again only while it is written, so no limit on open
+  files is reached; a failed write puts back every file already written from its original bytes.
+- **A file an earlier replace broke is refused as an edit** when a later structural statement
+  needs it, naming the replaces that changed it, not as a file that cannot be parsed, since on
+  disk it parses.  **Accepted limitation:** a process killed, or a machine losing power, during the writes
   can leave a file half-written.  `src/write.rs` is the only file besides `src/contents.rs` that
   opens a project's files, and only to write; `contents_containment.rs` holds both.
 

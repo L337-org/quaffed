@@ -95,8 +95,8 @@ fn text(output: &Output) -> String {
 }
 
 const BUDGETS: &str = r#"{"version": 1, "scenarios": {
-  "search": {"measured_at": 1793098000, "instructions": 1034000, "peak_memory_kib": 5600, "paths_opened": 17, "bytes_read": 5951},
-  "startup": {"measured_at": 1793097900, "instructions": 235000, "peak_memory_kib": 5500, "paths_opened": 1, "bytes_read": 0}}}"#;
+  "search": {"measured_at": 1793098000, "instructions": 1034000, "peak_memory_kib": 5600, "paths_opened": 17, "bytes_read": 5951, "paths_written": 0},
+  "startup": {"measured_at": 1793097900, "instructions": 235000, "peak_memory_kib": 5500, "paths_opened": 1, "bytes_read": 0, "paths_written": 0}}}"#;
 
 #[test]
 fn the_budgets_are_one_point_per_scenario_carrying_the_run_and_when_it_was_measured() {
@@ -118,10 +118,10 @@ fn the_budgets_are_one_point_per_scenario_carrying_the_run_and_when_it_was_measu
         fs::read_to_string(&out).unwrap(),
         "quaffed_budget,arch=arm64,os=Linux,runner_image=ubuntu24-20261020.1,scenario=search \
          instructions=1034000i,peak_memory_kib=5600i,paths_opened=17i,bytes_read=5951i,\
-         commit=\"0123456789abcdef\" 1793098000\n\
+         paths_written=0i,commit=\"0123456789abcdef\" 1793098000\n\
          quaffed_budget,arch=arm64,os=Linux,runner_image=ubuntu24-20261020.1,scenario=startup \
          instructions=235000i,peak_memory_kib=5500i,paths_opened=1i,bytes_read=0i,\
-         commit=\"0123456789abcdef\" 1793097900\n"
+         paths_written=0i,commit=\"0123456789abcdef\" 1793097900\n"
     );
 }
 

@@ -8,8 +8,10 @@
 //! renaming it over the old one would be atomic, but it is a different file: a hard link would
 //! keep the old contents, and the owner would become whoever ran quaff.
 //!
-//! Every file is opened for writing before any is written, so a file that cannot be written stops
-//! the run with nothing changed.  If writing then fails - a full disk, say - every file already
+//! Every file is opened for writing, and closed again, before any is written, so a file that
+//! cannot be written stops the run with nothing changed.  Each is then opened again only while it
+//! is written, so a run that changes thousands of files never holds more than one open, whatever
+//! the limit on open files.  If writing then fails - a full disk, say - every file already
 //! written, and the one that failed, is written back from its original bytes, which the run still
 //! holds.  What this cannot cover is the process being killed, or the machine losing power, while
 //! a file is being written: that file can be left half-written.
@@ -133,24 +135,23 @@ fn commit_with<T: Target>(
     edits: &[Edit],
     mut open: impl FnMut(&Path) -> io::Result<T>,
 ) -> Result<(), Failure> {
-    // Every file opened before any is written, so one that cannot be written changes nothing.
-    let mut targets = Vec::with_capacity(edits.len());
+    // Every file opened, and closed again, before any is written, so one that cannot be written
+    // changes nothing.
     for edit in edits {
-        let target = open(edit.path).map_err(|cause| Failure::Open {
+        drop(open(edit.path).map_err(|cause| Failure::Open {
             path: edit.shown.to_path_buf(),
             cause,
-        })?;
-        targets.push(target);
+        })?);
     }
     for (written, edit) in edits.iter().enumerate() {
-        if let Err(cause) = targets[written].overwrite(edit.edited) {
+        let wrote = open(edit.path).and_then(|mut target| target.overwrite(edit.edited));
+        if let Err(cause) = wrote {
             // The one that failed may be half-written, so it is put back too.
             let unrestored = edits[..=written]
                 .iter()
-                .zip(&mut targets)
-                .filter_map(|(edit, target)| {
-                    target
-                        .overwrite(edit.original)
+                .filter_map(|edit| {
+                    open(edit.path)
+                        .and_then(|mut target| target.overwrite(edit.original))
                         .err()
                         .map(|why| (edit.shown.to_path_buf(), why))
                 })
@@ -173,10 +174,15 @@ mod tests {
     use std::collections::HashMap;
     use std::rc::Rc;
 
-    /// Files in memory.
+    /// Files in memory, failing the writes they are told to, and counting what is open.
     #[derive(Default)]
     struct Disk {
         files: HashMap<PathBuf, Vec<u8>>,
+        /// For each file, how many more of its writes fail, each leaving it half-written.
+        failures: HashMap<PathBuf, usize>,
+        /// How many files are open now, and the most ever open at once.
+        open: usize,
+        most_open: usize,
     }
 
     struct InMemory {
@@ -186,11 +192,21 @@ mod tests {
 
     impl Target for InMemory {
         fn overwrite(&mut self, bytes: &[u8]) -> io::Result<()> {
-            self.disk
-                .borrow_mut()
-                .files
-                .insert(self.path.clone(), bytes.to_vec());
+            let mut disk = self.disk.borrow_mut();
+            if let Some(left) = disk.failures.get_mut(&self.path).filter(|left| **left > 0) {
+                *left -= 1;
+                // A byte that is neither old nor new: a write that stopped partway.
+                disk.files.get_mut(&self.path).unwrap()[0] = b'#';
+                return Err(io::Error::from(io::ErrorKind::StorageFull));
+            }
+            disk.files.insert(self.path.clone(), bytes.to_vec());
             Ok(())
+        }
+    }
+
+    impl Drop for InMemory {
+        fn drop(&mut self) {
+            self.disk.borrow_mut().open -= 1;
         }
     }
 
@@ -217,36 +233,48 @@ mod tests {
         }
     }
 
-    fn opener(
+    /// Commits `edits` to `disk`, refusing to open the files named in `unopenable`.
+    fn commit_to(
         disk: &Rc<RefCell<Disk>>,
-        unopenable: &'static [&'static str],
-    ) -> impl FnMut(&Path) -> io::Result<InMemory> {
-        let disk = Rc::clone(disk);
-        move |path: &Path| {
+        edits: &[Edit],
+        unopenable: &[&str],
+    ) -> Result<(), Failure> {
+        commit_with(edits, |path: &Path| {
             if unopenable.iter().any(|p| Path::new(p) == path) {
                 return Err(io::Error::from(io::ErrorKind::PermissionDenied));
             }
+            let mut state = disk.borrow_mut();
+            state.open += 1;
+            state.most_open = state.most_open.max(state.open);
             Ok(InMemory {
                 path: path.to_path_buf(),
-                disk: Rc::clone(&disk),
+                disk: Rc::clone(disk),
             })
-        }
+        })
     }
 
     #[test]
-    fn every_edit_is_written() {
-        let disk = disk(&[("a", "old a"), ("b", "old b")]);
-        let edits = [edit("a", "old a", "new a"), edit("b", "old b", "new b")];
-        commit_with(&edits, opener(&disk, &[])).unwrap();
+    fn every_edit_is_written_with_one_file_open_at_a_time() {
+        let disk = disk(&[("a", "old a"), ("b", "old b"), ("c", "old c")]);
+        let edits = [
+            edit("a", "old a", "new a"),
+            edit("b", "old b", "new b"),
+            edit("c", "old c", "new c"),
+        ];
+        commit_to(&disk, &edits, &[]).unwrap();
         assert_eq!(contents(&disk, "a"), "new a");
         assert_eq!(contents(&disk, "b"), "new b");
+        assert_eq!(contents(&disk, "c"), "new c");
+        // However many files change, the limit on open files is never reached.
+        assert_eq!(disk.borrow().most_open, 1);
+        assert_eq!(disk.borrow().open, 0);
     }
 
     #[test]
     fn a_file_that_cannot_be_opened_stops_the_run_before_anything_is_written() {
         let disk = disk(&[("a", "old a"), ("b", "old b")]);
         let edits = [edit("a", "old a", "new a"), edit("b", "old b", "new b")];
-        let failure = commit_with(&edits, opener(&disk, &["b"])).unwrap_err();
+        let failure = commit_to(&disk, &edits, &["b"]).unwrap_err();
         assert_eq!(contents(&disk, "a"), "old a");
         assert_eq!(contents(&disk, "b"), "old b");
         let message = failure.to_string();
@@ -257,57 +285,17 @@ mod tests {
         assert!(message.ends_with("; nothing was written"), "{message}");
     }
 
-    /// An in-memory file whose writes fail `failures` times, each leaving it half-written, then
-    /// succeed.
-    struct Flaky {
-        inner: InMemory,
-        failures: usize,
-    }
-
-    impl Target for Flaky {
-        fn overwrite(&mut self, bytes: &[u8]) -> io::Result<()> {
-            if self.failures > 0 {
-                self.failures -= 1;
-                // A write that failed partway, leaving a byte that is neither old nor new.
-                let mut disk = self.inner.disk.borrow_mut();
-                let file = disk.files.get_mut(&self.inner.path).unwrap();
-                file[0] = b'#';
-                return Err(io::Error::from(io::ErrorKind::StorageFull));
-            }
-            self.inner.overwrite(bytes)
-        }
-    }
-
-    /// Commits `edits` to `disk`, the writes to `failing` failing `failures` times each.
-    fn commit_flaky(
-        disk: &Rc<RefCell<Disk>>,
-        edits: &[Edit],
-        failing: &str,
-        failures: usize,
-    ) -> Result<(), Failure> {
-        let mut open = opener(disk, &[]);
-        commit_with(edits, |path: &Path| {
-            open(path).map(|inner| Flaky {
-                failures: if path == Path::new(failing) {
-                    failures
-                } else {
-                    0
-                },
-                inner,
-            })
-        })
-    }
-
     #[test]
     fn a_write_that_fails_puts_every_file_written_back_as_it_was() {
         let disk = disk(&[("a", "old a"), ("b", "old b"), ("c", "old c")]);
+        // b's write fails partway; putting it back succeeds.
+        disk.borrow_mut().failures.insert(PathBuf::from("b"), 1);
         let edits = [
             edit("a", "old a", "new a"),
             edit("b", "old b", "new b"),
             edit("c", "old c", "new c"),
         ];
-        // b's write fails partway; putting it back succeeds.
-        let failure = commit_flaky(&disk, &edits, "b", 1).unwrap_err();
+        let failure = commit_to(&disk, &edits, &[]).unwrap_err();
         assert_eq!(contents(&disk, "a"), "old a");
         assert_eq!(contents(&disk, "b"), "old b");
         assert_eq!(
@@ -329,9 +317,10 @@ mod tests {
     #[test]
     fn a_file_that_cannot_be_put_back_is_named_as_left_changed() {
         let disk = disk(&[("a", "old a"), ("b", "old b")]);
-        let edits = [edit("a", "old a", "new a"), edit("b", "old b", "new b")];
         // b's write fails, and so does putting it back.
-        let failure = commit_flaky(&disk, &edits, "b", 2).unwrap_err();
+        disk.borrow_mut().failures.insert(PathBuf::from("b"), 2);
+        let edits = [edit("a", "old a", "new a"), edit("b", "old b", "new b")];
+        let failure = commit_to(&disk, &edits, &[]).unwrap_err();
         assert_eq!(contents(&disk, "a"), "old a");
         assert_eq!(contents(&disk, "b"), "#ld b", "b is left half-written");
         let message = failure.to_string();

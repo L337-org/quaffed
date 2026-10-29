@@ -12,4 +12,5 @@ exit_code: 9
 
 ----- stderr -----
 quaff: refused: the edit would leave 1 Python file that parses unparseable, so nothing was written:
-  "fine.py": line 2, column 5: Expected an expression
+  "fine.py": line 2, column 5: Expected an expression; changed by the replace at -e expression 1, at character 1
+Change the replacement so that the file still parses, or give a narrower scope on the command line to leave it out

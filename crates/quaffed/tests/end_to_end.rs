@@ -282,9 +282,14 @@ struct Locked {
 
 impl Locked {
     fn new(path: PathBuf) -> Self {
-        let mode = fs::metadata(&path).expect("reading the mode").permissions();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).expect("locking");
-        Locked { path, mode }
+        Locked::to(path, 0o000)
+    }
+
+    /// Gives the path only the permissions `mode`, until it is dropped.
+    fn to(path: PathBuf, mode: u32) -> Self {
+        let was = fs::metadata(&path).expect("reading the mode").permissions();
+        fs::set_permissions(&path, fs::Permissions::from_mode(mode)).expect("locking");
+        Locked { path, mode: was }
     }
 }
 
@@ -1505,14 +1510,13 @@ fn a_later_statement_sees_an_earlier_edit() {
 #[test]
 fn a_file_that_cannot_be_written_stops_the_run_before_any_file_is_written() {
     let project = Project::new(EDITABLE);
-    let path = project.dir.join("b.txt");
-    let mode = fs::metadata(&path).unwrap().permissions();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+    // Readable, so it is searched, but not writable.
+    let read_only = Locked::to(project.dir.join("b.txt"), 0o444);
     let output = project
         .quaff(&["-e", "replace string \"TODO\" with \"DONE\" expect 3"])
         .output()
         .unwrap();
-    fs::set_permissions(&path, mode).unwrap();
+    drop(read_only);
     assert_eq!(output.status.code(), Some(7));
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
@@ -1525,5 +1529,42 @@ fn a_file_that_cannot_be_written_stops_the_run_before_any_file_is_written() {
             && stderr.trim_end().ends_with("; nothing was written"),
         "{stderr}"
     );
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_structural_search_after_a_replace_sees_the_code_as_edited() {
+    let project = Project::new(&[(".git/HEAD", ""), ("fine.py", "f(x)\nh(y)\n")]);
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "find `f($a)` expect 1\nreplace string \"f(\" with \"g(\" expect 1\nfind `g($a)` expect 1"
+    ]));
+    project.assert_changed(&[("fine.py", b"g(x)\nh(y)\n")]);
+}
+
+#[test]
+fn a_structural_search_needing_a_file_an_earlier_replace_broke_refuses_the_edit() {
+    let project = Project::new(&[(".git/HEAD", ""), ("fine.py", "def f(x):\n    return x\n")]);
+    // Refused as an edit, naming the statement that broke the file, not as a file that cannot
+    // be parsed, which it can, on disk.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "replace string \"(x)\" with \"(x\" expect 1\nfind `f($a)`"
+    ]));
+    // A replace whose own count fails decides the run first, as an assertion that failed.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "replace string \"(x)\" with \"(x\" expect 5\nfind `f($a)`"
+    ]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn an_assertion_that_fails_after_a_replace_says_nothing_was_written() {
+    let project = Project::new(EDITABLE);
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "replace string \"TODO\" with \"DONE\" expect 3\nfind \"DONE\" expect none"
+    ]));
     project.assert_unchanged();
 }

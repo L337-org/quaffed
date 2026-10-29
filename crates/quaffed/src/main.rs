@@ -63,8 +63,9 @@ A script is statements separated by newlines or ;, with # comments:
 Consecutive assertions are one block: every one is checked, each that fails is reported,
 and the run stops after the block.  Counts are N, at least N, at most N, N or none, none and
 any.  An edit is made only if its count holds, and every edit is written at the end of the
-run, into each file in place, or none is.  Nothing in quoted text is escaped: to include a \",
-fence the text with three or more, as \"\"\" say \"hi\" \"\"\".
+run, into each file in place, or none is - unless quaff is killed while writing, which can
+leave a file half-written.  Nothing in quoted text is escaped: to include a \", fence the text
+with three or more, as \"\"\" say \"hi\" \"\"\".
 
 A search covers the whole project - the nearest directory at or above this one that holds
 .git - or this directory when there is no project.  PATH narrows it to one file or directory

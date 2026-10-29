@@ -56,7 +56,7 @@ BUDGET = "quaffed_budget"
 BENCHMARK = "quaffed_benchmark"
 
 # What a budget point records, from scripts/budgets --json.
-BUDGET_FIELDS = ("instructions", "peak_memory_kib", "paths_opened", "bytes_read")
+BUDGET_FIELDS = ("instructions", "peak_memory_kib", "paths_opened", "bytes_read", "paths_written")
 
 # What a benchmark point records: Callgrind's counts, under Callgrind's own names.  Its hit and
 # miss rates are left out, since each is one of these divided by another.

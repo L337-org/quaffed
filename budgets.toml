@@ -31,13 +31,12 @@ paths_opened = 12
 bytes_read = 5_523
 paths_written = 0
 
-# Set from the first measurement on the Budgets job's runner.
 [edit]
-instructions = 0
-peak_memory_kib = 0
-paths_opened = 0
-bytes_read = 0
-paths_written = 0
+instructions = 2_337_300
+peak_memory_kib = 9_300
+paths_opened = 17
+bytes_read = 5_951
+paths_written = 6
 
 # What may be opened outside the project, each for a reason the project cannot change.  Each
 # is a pattern, in which * matches anything, / included.

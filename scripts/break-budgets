@@ -12,6 +12,7 @@
 #   instructions     executes a few million instructions more
 #   memory           allocates and fills 32 MiB
 #   read-twice:PATH  reads PATH, a file the search reads too, so it is opened twice
+#   write-twice:PATH opens PATH to write twice, writing nothing
 #   outside          reads /etc/passwd, outside any project
 #
 # A guard that cannot fail is a comment: the budgets section of architecture/performance.md
@@ -58,6 +59,11 @@ worsening='    // Added by scripts/break-budgets; never in a real build.
         }
         Ok(how) if how.starts_with("read-twice:") => {
             let _ = std::fs::read(&how["read-twice:".len()..]);
+        }
+        Ok(how) if how.starts_with("write-twice:") => {
+            for _ in 0..2 {
+                let _ = std::fs::OpenOptions::new().write(true).open(&how["write-twice:".len()..]);
+            }
         }
         Ok("outside") => {
             let _ = std::fs::read("/etc/passwd");

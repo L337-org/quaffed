@@ -1,0 +1,15 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "replace string \"(x)\" with \"(x\" expect 5\nfind `f($a)`"
+---
+success: false
+exit_code: 2
+----- stdout -----
+fine.py:1:6-1:8: (x)
+
+----- stderr -----
+quaff: -e expression 1, at character 1: expected exactly 5 matches of "(x)" to replace, found 1; nothing was written

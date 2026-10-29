@@ -13,3 +13,4 @@ exit_code: 9
 ----- stderr -----
 quaff: refused: the replacement cannot be written in the encoding of 1 file, so nothing was written:
   "latin1.txt": latin_1 cannot hold "日本"
+Use a replacement its encoding can hold, or give a narrower scope on the command line to leave it out

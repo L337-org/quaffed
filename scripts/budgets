@@ -12,8 +12,9 @@ fast the machine is:
 Instructions and memory are held to a limit with a margin, since they move slightly with the
 operating system image and the Valgrind version.  The files are held exactly: how many paths in
 the project are opened to read, how many bytes are read from them and how many paths are opened
-to write must equal budgets.toml, no path in the project may be opened to read twice, and
-nothing outside the project may be opened but what budgets.toml allows.  architecture/performance.md has the reasoning and how to change a limit.
+to write must equal budgets.toml, no path in the project may be opened to read twice or to
+write twice, and nothing outside the project may be opened but what budgets.toml allows.
+architecture/performance.md has the reasoning and how to change a limit.
 
     scripts/budgets BINARY [--repeat N] [--out DIR] [--env NAME=VALUE ...] [--scenario NAME ...]
                     [--json FILE]
@@ -429,11 +430,17 @@ def judge(name, measured, limits, outside, project):
             failures.append(
                 f"{name} {budget}: limit {limit:,}, measured {measured[budget]:,}{over}"
             )
-    for path, (opens, _, _) in sorted(measured["inside"].items()):
+    for path, (opens, _, writes) in sorted(measured["inside"].items()):
+        shown = Path(path).relative_to(project)
         if opens > 1:
-            shown = Path(path).relative_to(project)
             failures.append(
                 f"{name}: {str(shown)!r} in the project was opened to read {opens} times"
+            )
+        # An edit writes a file once; a second open to write is a second write, or a restore
+        # that should not have happened.
+        if writes > 1:
+            failures.append(
+                f"{name}: {str(shown)!r} in the project was opened to write {writes} times"
             )
     allowed = set(outside.get("allowed", []))
     for path in measured["outside"]:

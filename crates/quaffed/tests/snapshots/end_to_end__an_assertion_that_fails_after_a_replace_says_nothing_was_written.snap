@@ -1,0 +1,21 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "replace string \"TODO\" with \"DONE\" expect 3\nfind \"DONE\" expect none"
+---
+success: false
+exit_code: 2
+----- stdout -----
+a.txt:1:1-1:4: TODO
+a.txt:2:1-2:4: TODO
+b.txt:1:1-1:4: TODO
+a.txt:1:1-1:4: DONE
+a.txt:2:1-2:4: DONE
+b.txt:1:1-1:4: DONE
+
+----- stderr -----
+quaff: -e expression 1, at character 44: expected no matches of "DONE", found 3
+quaff: nothing was written: the edits before the failed assertion are made only if every assertion holds

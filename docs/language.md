@@ -331,8 +331,11 @@ Without `--dry-run`, the files are written, and the note is `replaced 5 matches 
   ```
 
 - **Every edit is written at the end of the run, or none is.**  Each file is written in place, so
-  its hard links, owner and permissions are kept, and every file is opened for writing before any
-  is written: one that cannot be written stops the run with nothing changed, exit 7.
+  its hard links, owner and permissions are kept, and every file is checked for writing before any
+  is written: one that cannot be written stops the run with nothing changed, exit 7.  If a write
+  fails partway, every file already written is put back as it was, and the message names any that
+  could not be.  **One gap remains:** if quaff is killed, or the machine loses power, while it is
+  writing, a file can be left half-written.
 - **A later statement sees an earlier edit**: after `replace string "subtotal" with "net" expect
   3`, a `find "net"` counts the three new matches.
 - **Every byte outside the matches is kept**, line endings included, mixed ones too.  The text is
@@ -723,6 +726,14 @@ The options `-o` and `--version` are refused as not built yet too, with exit 3.
 ## Peculiarities
 
 Edge cases and decisions that are easy to trip over, with the reason for each.
+
+- **After a replace, positions are in the file as edited.**  A statement after a replace sees its
+  edits, so the lines and columns it prints are where the text is after them, which is where it
+  will be once written - but not where it is on disk, even with `--dry-run`.
+- **A file's encoding is decided once, from disk.**  A replace that edits an `.editorconfig` or a
+  `.gitattributes` does not change how the other files are read or written in the same run.
+- **A match replaced by the same text counts as replaced**, towards the `expect` and the note,
+  but changes no bytes, so nothing is written to its file.
 
 - **An empty program is an error, not an empty answer.**  `-e "$CHECKS"` with the variable unset
   exits 3, naming the sources, rather than searching for nothing and exiting 1.

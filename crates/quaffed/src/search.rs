@@ -141,15 +141,20 @@ pub fn replace(
             _ => None,
         });
     }
+    let breaks = spelled.iter().any(Option::is_none);
+    let mut endings = Endings::default();
     let mut edited = Vec::with_capacity(text.len());
     let mut from = 0;
     for &(start, end) in &ranges {
         edited.extend_from_slice(&text[from..start]);
+        // Found once a match, and only for a replacement that writes a line break.
+        let ending = if breaks {
+            endings.for_match(&compiled, text, start)
+        } else {
+            &[][..]
+        };
         for bytes in &spelled {
-            match bytes {
-                Some(bytes) => edited.extend_from_slice(bytes),
-                None => edited.extend_from_slice(&compiled.ending_for(text, start)),
-            }
+            edited.extend_from_slice(bytes.as_deref().unwrap_or(ending));
         }
         from = end;
     }
@@ -157,6 +162,37 @@ pub fn replace(
     Replaced::Edited {
         matches,
         text: Some(edited),
+    }
+}
+
+/// The line endings a replace has found, remembered as the matches move forward through the file,
+/// so that a long last line with no ending is not scanned once a match.
+#[derive(Default)]
+struct Endings {
+    /// The next line ending at or after the last match, where it starts, and its bytes; `None`
+    /// before the first lookup.  A start of `usize::MAX` means there is none.
+    next: Option<(usize, Vec<u8>)>,
+    /// The ending a match on the last line, which has none, takes: found once.
+    last_line: Option<Vec<u8>>,
+}
+
+impl Endings {
+    /// The line ending a line break written at `at` takes, `at` never before the last one asked.
+    fn for_match<'e>(&'e mut self, compiled: &Compiled, text: &[u8], at: usize) -> &'e [u8] {
+        let stale = self.next.as_ref().is_none_or(|(start, _)| *start < at);
+        if stale {
+            self.next = Some(
+                compiled
+                    .next_ending(text, at)
+                    .unwrap_or((usize::MAX, Vec::new())),
+            );
+        }
+        match &self.next {
+            Some((start, bytes)) if *start != usize::MAX => bytes,
+            _ => self
+                .last_line
+                .get_or_insert_with(|| compiled.ending_before(text, at)),
+        }
     }
 }
 
@@ -275,22 +311,27 @@ impl Compiled {
         rest.starts_with(&self.lf).then_some(self.lf.len())
     }
 
-    /// The line ending a line break written at byte `at` takes: the one ending the line `at` is
-    /// on, or where that line has none, the last before it, or LF in a file with none.
+    /// The first line ending at or after byte `at`: where it starts, and its bytes.  This is the
+    /// one ending the line `at` is on.
     ///
     /// A line ending's bytes are never part of another character, in any encoding quaff reads:
     /// in UTF-16 and UTF-32 the search steps by code unit, and in the multi-byte encodings no
     /// trailing byte is CR or LF.
-    fn ending_for(&self, text: &[u8], at: usize) -> Vec<u8> {
-        let aligned = at - at % self.unit;
-        let mut position = aligned;
+    fn next_ending(&self, text: &[u8], at: usize) -> Option<(usize, Vec<u8>)> {
+        let mut position = at - at % self.unit;
         while position < text.len() {
             if let Some(length) = self.line_ending(&text[position..]) {
-                return text[position..position + length].to_vec();
+                return Some((position, text[position..position + length].to_vec()));
             }
             position += self.unit;
         }
-        let mut position = aligned;
+        None
+    }
+
+    /// The line ending a line break written on the last line, which has none, takes: the last
+    /// one before `at`, or LF in a file with none.
+    fn ending_before(&self, text: &[u8], at: usize) -> Vec<u8> {
+        let mut position = at - at % self.unit;
         while position >= self.unit {
             position -= self.unit;
             if let Some(length) = self.line_ending(&text[position..]) {
@@ -855,6 +896,12 @@ mod tests {
             b"x\r\na\r\nb"
         );
         assert_eq!(edited(Encoding::Utf8, b"a;b", ";", "|"), b"a\nb");
+        // Several matches on that last line all take the ending before it, and matches on lines
+        // with endings each take their own.
+        assert_eq!(
+            edited(Encoding::Utf8, b"a;b\nx\r\nc;d;e", ";", "|"),
+            b"a\nb\nx\r\nc\r\nd\r\ne"
+        );
         // A match that spans lines takes the ending of the line it starts on.
         assert_eq!(
             edited(Encoding::Utf8, b"a\r\nb\nc", "a|b", "x|y"),
