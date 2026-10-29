@@ -6,26 +6,38 @@
 # Per scenario, from SCENARIOS in scripts/budgets:
 #   instructions     the most it may execute, under callgrind: the worst run plus MARGINS's share
 #   peak_memory_kib  the most resident memory it may use, in KiB: the worst run plus MARGINS's share
-#   paths_opened     exactly how many paths in the project it opens, directories included
+#   paths_opened     exactly how many paths in the project it opens to read, directories included
 #   bytes_read       exactly how many bytes it reads from them
+#   paths_written    exactly how many paths in the project it opens to write
 
 [startup]
 instructions = 235_100
 peak_memory_kib = 5_800
 paths_opened = 1
 bytes_read = 0
+paths_written = 0
 
 [search]
 instructions = 1_034_200
 peak_memory_kib = 5_800
 paths_opened = 17
 bytes_read = 5_951
+paths_written = 0
 
 [scope]
 instructions = 866_900
 peak_memory_kib = 5_800
 paths_opened = 12
 bytes_read = 5_523
+paths_written = 0
+
+# Set from the first measurement on the Budgets job's runner.
+[edit]
+instructions = 0
+peak_memory_kib = 0
+paths_opened = 0
+bytes_read = 0
+paths_written = 0
 
 # What may be opened outside the project, each for a reason the project cannot change.  Each
 # is a pattern, in which * matches anything, / included.

@@ -1,0 +1,17 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "replace string \"TODO\" with \"DONE\" expect 2"
+---
+success: false
+exit_code: 2
+----- stdout -----
+a.txt:1:1-1:4: TODO
+a.txt:2:1-2:4: TODO
+b.txt:1:1-1:4: TODO
+
+----- stderr -----
+quaff: -e expression 1, at character 1: expected exactly 2 matches of "TODO" to replace, found 3; nothing was written

@@ -21,6 +21,8 @@ pub enum Invocation {
         sources: Vec<SourceArg>,
         /// The one positional scope argument, as given.
         scope: Option<OsString>,
+        /// `--dry-run`: work everything out, and write nothing.
+        dry_run: bool,
     },
 }
 
@@ -97,7 +99,7 @@ pub enum UsageError {
 }
 
 /// Options in the MVP whose stories have not landed, so saying "unknown" would be wrong.
-const NOT_BUILT_YET: &[&str] = &["-o", "--output", "--dry-run", "--version"];
+const NOT_BUILT_YET: &[&str] = &["-o", "--output", "--version"];
 
 impl fmt::Display for UsageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -175,6 +177,7 @@ where
     let mut sources = Vec::new();
     let mut positionals = Vec::new();
     let mut options_ended = false;
+    let mut dry_run = false;
     while let Some(arg) = args.next() {
         if options_ended {
             positionals.push(arg);
@@ -205,6 +208,7 @@ where
         match name {
             "--" if inline.is_none() => options_ended = true,
             "-h" | "--help" if inline.is_none() => return Ok(Invocation::Help),
+            "--dry-run" if inline.is_none() => dry_run = true,
             // `--output=X` is the not-built option as surely as `--output X` is.
             _ if NOT_BUILT_YET.contains(&name) => {
                 return Err(UsageError::NotBuiltYet(name.to_owned()));
@@ -229,6 +233,7 @@ where
     Ok(Invocation::Run {
         sources,
         scope: scopes.into_iter().next(),
+        dry_run,
     })
 }
 
@@ -305,6 +310,7 @@ mod tests {
         Invocation::Run {
             sources,
             scope: scope.map(OsString::from),
+            dry_run: false,
         }
     }
 

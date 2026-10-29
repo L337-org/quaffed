@@ -11,4 +11,4 @@ exit_code: 5
 ----- stdout -----
 
 ----- stderr -----
-quaff: -e expression 1, at character 1: replace is not built yet
+quaff: -e expression 1, at character 1: a structural replace is not built yet

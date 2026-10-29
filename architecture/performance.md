@@ -37,10 +37,12 @@ move.
   its version moves the counts.
 - **The scenarios are `SCENARIOS` in `scripts/budgets`**, each in a scratch copy of the synthetic
   corpus, always under `/tmp` at the same depth, because a deeper path executes more instructions.
+  A scenario that edits gets a fresh copy, at the same path, before each run of quaff.
 - **The limits are `budgets.toml`**: `instructions` (Callgrind) and `peak_memory_kib` (GNU time)
-  with a margin from `MARGINS`, and `paths_opened` and `bytes_read` (strace) exactly, since a
-  change in either is a change in behaviour.  No path in the project may be opened twice, and
-  nothing outside it but what `[outside]` allows, each with its reason.
+  with a margin from `MARGINS`, and `paths_opened`, `bytes_read` and `paths_written` (strace)
+  exactly, since a change in any is a change in behaviour.  No path in the project may be opened
+  to read twice - an edited file is opened once to read and once to write - and nothing outside
+  it but what `[outside]` allows, each with its reason.
 - **Each scenario runs `--repeat` times** and is judged on its worst run; the file access must be
   identical every time.  Anything that could not be measured fails, never passes.
 - **Every run's traces are kept** in the job's `budgets` artefact: what a reviewer reads to judge

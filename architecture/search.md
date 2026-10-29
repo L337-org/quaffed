@@ -134,8 +134,8 @@ The format is in `docs/language.md`, _Output_.  The rules behind it:
 | 2 | an assertion failed |
 | 3 | a usage error, a malformed script, a program with no statements, an edit with no `expect`, or a scope outside the project |
 | 5 | a statement or construct this build does not have: outside the MVP, or in it and not built |
-| 7 | an I/O error, naming the path and quoting the system's error |
-| 9 | a structural search needs a Python file quaff cannot parse, naming each and how to leave it out |
+| 7 | an I/O error, naming the path and quoting the system's error; for edits that could not be written, saying what was left |
+| 9 | the script or a file must change first: a structural search needs a Python file quaff cannot parse, naming each and how to leave it out; an edit would break a Python file that parsed; or a file's encoding cannot write a replacement |
 
 **An assertion block** - consecutive `find ... expect` statements - is evaluated to the end, and
 if any assertion failed the run stops after it, exit 2.
@@ -146,12 +146,37 @@ those it can, and a `find` and an edit with the same `expect` count the same mat
 
 **The whole program is read, parsed and checked before any file is looked at**, so a script with
 an error anywhere does not run.  The constructs that parse but are not built - an `in` or `where`
-clause, `replace` and `delete` - exit 5, named, where they were written.
+clause, a structural `replace`, and `delete` - exit 5, named, where they were written.
 
 **A run that cannot give an answer - exit 3, 5, 7 or 9 - prints nothing on standard output**, so
 a partial answer never passes for a whole one.  Every message says what was being done, quotes
 the path or argument it concerns, and says what to do where there is something to do
 (`src/run.rs`).
+
+## Editing
+
+`replace string` is the first edit (`src/run.rs`, `src/search.rs`, `src/write.rs`).
+
+- **Each file is taken through the program's statements in order** and read once: the patterns
+  between two replaces are searched in one pass over the file as it then is, and a replace changes
+  it for the statements after.  With no replace, that is one pass, as for any search.  The
+  encoding is decided once, from the file on disk.
+- **Edits are held in memory to the end of the run**, with every changed file's original bytes,
+  so an edit holds every file it changes until then.
+- **The outcome is decided before anything is printed or written.**  A silent first pass over the
+  results finds whether every count holds and whether any file's encoding cannot write a
+  replacement; then every changed Python file that parsed must still parse; then the files are
+  written, unless `--dry-run`; and only then are the results printed.  So a run refused with exit
+  7 or 9 prints nothing and writes nothing.
+- **Only a file of known encoding is edited**, its replacement spelled in that encoding, a line
+  break as the file's own line ending (`search::replace`).  A file of unknown encoding is reported
+  as in a search and never touched, so a replace counts what the same `find` counts.
+- **Files are written in place**, into the file itself, never by renaming a new file over it,
+  which would break its hard links and change its owner.  Every file is opened for writing before
+  any is written, and a failed write puts back every file already written from its original
+  bytes.  **Accepted limitation:** a process killed, or a machine losing power, during the writes
+  can leave a file half-written.  `src/write.rs` is the only file besides `src/contents.rs` that
+  opens a project's files, and only to write; `contents_containment.rs` holds both.
 
 ## Checklist: changing what a search prints or how it exits
 

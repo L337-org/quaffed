@@ -1,0 +1,15 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "replace string \"(x)\" with \"(x\" expect 2"
+---
+success: false
+exit_code: 9
+----- stdout -----
+
+----- stderr -----
+quaff: refused: the edit would leave 1 Python file that parses unparseable, so nothing was written:
+  "fine.py": line 2, column 5: Expected an expression

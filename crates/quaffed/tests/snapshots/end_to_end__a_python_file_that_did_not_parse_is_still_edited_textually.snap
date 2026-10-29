@@ -1,0 +1,15 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "replace string \"TODO\" with \"pass\" expect 1"
+---
+success: true
+exit_code: 0
+----- stdout -----
+broken.py:2:5-2:8: TODO
+
+----- stderr -----
+quaff: replaced 1 match in 1 file

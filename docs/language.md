@@ -94,6 +94,7 @@ with the exit status after it.  Structural examples over the whole project also 
 - [Textual search](#textual-search)
 - [Scripts](#scripts)
 - [Assertions](#assertions)
+- [Replacing text](#replacing-text)
 - [Structural search](#structural-search)
 - [What is searched](#what-is-searched)
 - [Encodings](#encodings)
@@ -110,6 +111,7 @@ quaff -s TEXT [PATH]       the same, with TEXT given as an option
 quaff -p PATTERN [PATH]    search the project's Python files for code shaped like PATTERN
 quaff -e SCRIPT [PATH]     run the statements in SCRIPT
 quaff -f FILE [PATH]       run the script in FILE; -f - reads it from standard input
+quaff --dry-run ...        work out every edit and print it, but write nothing
 quaff -h, --help           the help
 ```
 
@@ -191,9 +193,10 @@ find `return $x` expect at least 1 # every function returns
 | `find "TEXT"` | a textual search; `find` may be left out, so `"TEXT"` alone is the same |
 | ``find `PATTERN` `` | a structural search, the same as `-p PATTERN` |
 | `find ... expect COUNT` | an [assertion](#assertions) |
+| `replace string "TEXT" with "TEXT" expect COUNT` | a [textual replace](#replacing-text) |
 
-`replace` and `delete` parse but are [not built yet](#not-built-yet).  A misspelt statement is
-refused, naming the ones there are:
+A structural `replace` and `delete` parse but are [not built yet](#not-built-yet).  A misspelt
+statement is refused, naming the ones there are:
 
 ```
 $ quaff -e 'fnd "x"'
@@ -291,6 +294,60 @@ quaff: -e expression 1, at character 1: expected no matches of "TODO", found 2
   count.
 - **An assertion about structure in a scope with no searchable Python fails**, whatever it asks,
   because a count that could not be taken is not a passed one.
+
+## Replacing text
+
+`replace string "TEXT" with "TEXT" expect COUNT` replaces every match of the first text with the
+second.  Each match prints as `find` prints it, and a note says what was replaced:
+
+```
+$ quaff --dry-run -e 'replace string "response" with "reply" expect 5'
+docs/notes.md:4:25-4:32: response
+src/app.py:6:29-6:36: response
+src/app.py:10:16-10:23: response
+src/app.py:12:12-12:19: response
+src/app.py:12:37-12:44: response
+quaff: dry run: 5 matches in 2 files would be replaced; nothing was written
+[exit 0]
+```
+
+Without `--dry-run`, the files are written, and the note is `replaced 5 matches in 2 files`.
+
+- **An edit must say how many it changes.**  `expect` is required, with any of the counts an
+  [assertion](#assertions) takes; `expect any` opts out.  Zero is never implied: a replace that
+  finds nothing fails unless its count allows none.
+- **Nothing is written unless every count holds**, and the run stops at the first that does not,
+  exit 2:
+
+  ```
+  $ quaff -e 'replace string "response" with "reply" expect 3'
+  docs/notes.md:4:25-4:32: response
+  src/app.py:6:29-6:36: response
+  src/app.py:10:16-10:23: response
+  src/app.py:12:12-12:19: response
+  src/app.py:12:37-12:44: response
+  quaff: -e expression 1, at character 1: expected exactly 3 matches of "response" to replace, found 5; nothing was written
+  [exit 2]
+  ```
+
+- **Every edit is written at the end of the run, or none is.**  Each file is written in place, so
+  its hard links, owner and permissions are kept, and every file is opened for writing before any
+  is written: one that cannot be written stops the run with nothing changed, exit 7.
+- **A later statement sees an earlier edit**: after `replace string "subtotal" with "net" expect
+  3`, a `find "net"` counts the three new matches.
+- **Every byte outside the matches is kept**, line endings included, mixed ones too.  The text is
+  [joined, broken and anchored](#joining-line-breaks-and-anchors) as in a `find`, and a `$^` in
+  the replacement writes the file's own line ending: the one ending the line the match starts on,
+  the last one before it when that line has none, or LF in a file with none.  An anchor in the
+  replacement is an error, since it matches rather than writes.
+- **A file is written back in its own encoding**, a byte-order mark and a declared encoding
+  included.  One of [unknown encoding](#encodings) is never edited: its possible matches are
+  noted, and do not count towards the `expect`, so a replace counts what the same `find` would.
+  If a file's encoding cannot hold the replacement, or spells it more than one way, the run is
+  refused, exit 9, naming the file, and nothing is written.
+- **A replace that would break a Python file that parsed is refused**, exit 9, naming the file
+  and where it would no longer parse, and nothing is written.  A Python file that did not parse
+  before is still edited, since a textual edit needs no parse.
 
 ## Structural search
 
@@ -640,8 +697,8 @@ src/app.py:16:5-17:32: return lookup(request.args["id"], default=None,)
 | 2 | an assertion failed |
 | 3 | a usage error, a malformed script or pattern, an empty program, or a scope outside the project |
 | 5 | a statement or construct this build does not have |
-| 7 | an I/O error, naming the path and quoting the system's error |
-| 9 | a structural search needs a Python file quaff cannot parse |
+| 7 | an I/O error, naming the path and quoting the system's error, or edits that could not be written, saying what was left as it was |
+| 9 | a structural search needs a Python file quaff cannot parse, an edit would break a Python file that parses, or a file's encoding cannot write a replacement: the script or the file must change first |
 
 **A run that cannot give an answer - exit 3, 5, 7 or 9 - prints nothing on standard output**, so
 a partial answer never passes for a whole one.  The whole program is read and checked before any
@@ -652,7 +709,7 @@ file is looked at, so a script with an error anywhere does not run at all.
 These parse, and are refused with exit 5 at the place they were written, rather than being
 ignored or treated as unknown:
 
-- `replace` and `delete`;
+- a structural `replace`, and `delete`;
 - an `in` clause, and a `where` clause.
 
 ```
@@ -661,7 +718,7 @@ quaff: -e expression 1, at character 13: an `in` clause is not built yet
 [exit 5]
 ```
 
-The options `-o`, `--dry-run` and `--version` are refused as not built yet too, with exit 3.
+The options `-o` and `--version` are refused as not built yet too, with exit 3.
 
 ## Peculiarities
 

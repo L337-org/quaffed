@@ -59,6 +59,107 @@ pub fn search(text: &[u8], encoding: Encoding, pattern: &TextPattern) -> Option<
     Some(positions(text, encoding, &ranges))
 }
 
+/// What replacing a pattern in one file's bytes gives.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Replaced {
+    /// The pattern has no one spelling in the encoding, so the file was not searched for it, as
+    /// [`search`] returns `None`.
+    NotSearched,
+    /// The matches, where they were before the edit, and the file's new bytes: `None` when there
+    /// were none, so nothing changes.
+    Edited {
+        /// Each match replaced, in order.
+        matches: Vec<Match>,
+        /// The text with every match replaced, or `None` with no match.
+        text: Option<Vec<u8>>,
+    },
+    /// The pattern matched, but the encoding cannot write the replacement: the text named holds
+    /// a character it cannot hold, or spells more than one way.
+    Unwritable {
+        /// The matches, which still count, since the file holds them.
+        matches: Vec<Match>,
+        /// The replacement's text that cannot be written.
+        text: String,
+        /// Whether the encoding spells it more than one way, rather than not at all.
+        ambiguous: bool,
+    },
+}
+
+/// Replaces every match of `pattern` in `text`, the body of a file in `encoding` after any
+/// byte-order mark, with `with`, finding matches as [`search`] does.
+///
+/// Every byte outside the matches is left as it was.  The replacement is spelled in the file's
+/// encoding; a line break in it is written as the file's own line ending: the one ending the line
+/// the match starts on, or where that line has none, the last one before it, or LF in a file with
+/// none.
+pub fn replace(
+    text: &[u8],
+    encoding: Encoding,
+    pattern: &TextPattern,
+    with: &TextPattern,
+) -> Replaced {
+    let compiled = match Compiled::new(pattern, encoding) {
+        Ok(compiled) => compiled,
+        Err(Unspelled::Impossible) => {
+            return Replaced::Edited {
+                matches: Vec::new(),
+                text: None,
+            };
+        }
+        Err(Unspelled::Ambiguous) => return Replaced::NotSearched,
+    };
+    if compiled.parts.is_empty() {
+        return Replaced::Edited {
+            matches: Vec::new(),
+            text: None,
+        };
+    }
+    let starts = Starts::of(text, encoding);
+    let ranges = compiled.ranges(text, &starts);
+    if ranges.is_empty() {
+        return Replaced::Edited {
+            matches: Vec::new(),
+            text: None,
+        };
+    }
+    let matches = positions(text, encoding, &ranges);
+    // Each literal of the replacement spelled once; the line breaks depend on where each match is.
+    let mut spelled = Vec::new();
+    for part in with.parts() {
+        spelled.push(match part {
+            TextPart::Literal(literal) => match encoding.encode(literal) {
+                Spelling::Bytes(bytes) => Some(bytes),
+                Spelling::Impossible | Spelling::Ambiguous => {
+                    return Replaced::Unwritable {
+                        matches,
+                        text: literal.clone(),
+                        ambiguous: matches!(encoding.encode(literal), Spelling::Ambiguous),
+                    };
+                }
+            },
+            // A line break is the file's own, found per match.
+            _ => None,
+        });
+    }
+    let mut edited = Vec::with_capacity(text.len());
+    let mut from = 0;
+    for &(start, end) in &ranges {
+        edited.extend_from_slice(&text[from..start]);
+        for bytes in &spelled {
+            match bytes {
+                Some(bytes) => edited.extend_from_slice(bytes),
+                None => edited.extend_from_slice(&compiled.ending_for(text, start)),
+            }
+        }
+        from = end;
+    }
+    edited.extend_from_slice(&text[from..]);
+    Replaced::Edited {
+        matches,
+        text: Some(edited),
+    }
+}
+
 /// Where a file's characters start, for an encoding where that is not known from a byte's offset
 /// alone.
 enum Starts {
@@ -172,6 +273,38 @@ impl Compiled {
             return Some(self.cr.len());
         }
         rest.starts_with(&self.lf).then_some(self.lf.len())
+    }
+
+    /// The line ending a line break written at byte `at` takes: the one ending the line `at` is
+    /// on, or where that line has none, the last before it, or LF in a file with none.
+    ///
+    /// A line ending's bytes are never part of another character, in any encoding quaff reads:
+    /// in UTF-16 and UTF-32 the search steps by code unit, and in the multi-byte encodings no
+    /// trailing byte is CR or LF.
+    fn ending_for(&self, text: &[u8], at: usize) -> Vec<u8> {
+        let aligned = at - at % self.unit;
+        let mut position = aligned;
+        while position < text.len() {
+            if let Some(length) = self.line_ending(&text[position..]) {
+                return text[position..position + length].to_vec();
+            }
+            position += self.unit;
+        }
+        let mut position = aligned;
+        while position >= self.unit {
+            position -= self.unit;
+            if let Some(length) = self.line_ending(&text[position..]) {
+                // The LF of a CRLF is found first going back; its CR before it is the ending.
+                if text[position..].starts_with(&self.lf)
+                    && position >= self.unit
+                    && text[position - self.unit..].starts_with(&self.cr)
+                {
+                    return text[position - self.unit..position + length].to_vec();
+                }
+                return text[position..position + length].to_vec();
+            }
+        }
+        self.lf.clone()
     }
 
     /// Whether the code unit just before `at` ends a line.  Between the CR and the LF of a CRLF
@@ -659,6 +792,144 @@ mod tests {
     fn positions_hold_at_the_very_end_of_a_file() {
         assert_eq!(found(b"abc\nTODO", "TODO"), vec![(pos(2, 1), pos(2, 4))]);
         assert_eq!(found(b"x\r", "\r"), vec![(pos(1, 2), pos(1, 2))]);
+    }
+
+    /// `text` with `pattern` replaced by `with`, both written as for `pattern`.
+    fn replaced(encoding: Encoding, text: &[u8], pattern: &str, with: &str) -> Replaced {
+        super::replace(
+            text,
+            encoding,
+            &self::pattern(pattern),
+            &self::pattern(with),
+        )
+    }
+
+    fn edited(encoding: Encoding, text: &[u8], pattern: &str, with: &str) -> Vec<u8> {
+        match replaced(encoding, text, pattern, with) {
+            Replaced::Edited {
+                text: Some(text), ..
+            } => text,
+            other => panic!("expected an edit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_replace_changes_only_the_matched_bytes() {
+        assert_eq!(
+            edited(Encoding::Utf8, b"a TODO b TODO\n", "TODO", "DONE"),
+            b"a DONE b DONE\n"
+        );
+        // Shorter and longer replacements, and an empty one, which deletes.
+        assert_eq!(edited(Encoding::Utf8, b"xaay", "aa", "b"), b"xby");
+        assert_eq!(edited(Encoding::Utf8, b"xay", "a", "bbb"), b"xbbby");
+        assert_eq!(edited(Encoding::Utf8, b"xay", "a", ""), b"xy");
+        // Matches do not overlap, as in a search.
+        assert_eq!(edited(Encoding::Utf8, b"aaa", "aa", "b"), b"ba");
+    }
+
+    #[test]
+    fn no_match_is_no_edit() {
+        assert_eq!(
+            replaced(Encoding::Utf8, b"nothing", "TODO", "DONE"),
+            Replaced::Edited {
+                matches: vec![],
+                text: None
+            }
+        );
+    }
+
+    #[test]
+    fn a_line_break_in_the_replacement_is_the_files_own() {
+        // "|" is a line break, in the pattern and the replacement alike.
+        assert_eq!(edited(Encoding::Utf8, b"a;b\n", ";", "|"), b"a\nb\n");
+        assert_eq!(edited(Encoding::Utf8, b"a;b\r\n", ";", "|"), b"a\r\nb\r\n");
+        assert_eq!(edited(Encoding::Utf8, b"a;b\r", ";", "|"), b"a\rb\r");
+        // In a mixed file, the ending of the line the match starts on.
+        assert_eq!(
+            edited(Encoding::Utf8, b"a;b\r\nc;d\n", ";", "|"),
+            b"a\r\nb\r\nc\nd\n"
+        );
+        // A last line with no ending takes the ending before it; a file with none takes LF.
+        assert_eq!(
+            edited(Encoding::Utf8, b"x\r\na;b", ";", "|"),
+            b"x\r\na\r\nb"
+        );
+        assert_eq!(edited(Encoding::Utf8, b"a;b", ";", "|"), b"a\nb");
+        // A match that spans lines takes the ending of the line it starts on.
+        assert_eq!(
+            edited(Encoding::Utf8, b"a\r\nb\nc", "a|b", "x|y"),
+            b"x\r\ny\nc"
+        );
+    }
+
+    #[test]
+    fn a_line_break_in_utf16_is_written_in_utf16() {
+        let utf16 =
+            |text: &str| -> Vec<u8> { text.encode_utf16().flat_map(u16::to_le_bytes).collect() };
+        assert_eq!(
+            edited(Encoding::Utf16Le, &utf16("a;b\r\n"), ";", "|"),
+            utf16("a\r\nb\r\n")
+        );
+        assert_eq!(
+            edited(Encoding::Utf16Le, &utf16("a;b"), ";", "|"),
+            utf16("a\nb")
+        );
+    }
+
+    #[test]
+    fn a_multi_byte_file_is_edited_in_its_own_encoding_and_only_at_whole_characters() {
+        let sjis =
+            Encoding::MultiByte(quaffed_encoding::MultiByteCodec::named("shift_jis").unwrap());
+        // "ア" is 83 41: its "A" byte is not a match, so only the real "A" is replaced, and the
+        // replacement "日本" is written as Shift-JIS.
+        assert_eq!(
+            edited(sjis, b"\x83\x41A", "A", "日本"),
+            b"\x83\x41\x93\xfa\x96\x7b"
+        );
+    }
+
+    #[test]
+    fn a_replacement_the_encoding_cannot_write_is_refused_with_its_matches() {
+        let koi8 = Encoding::SingleByte(quaffed_encoding::Codec::named("koi8_r").unwrap());
+        let Replaced::Unwritable {
+            matches,
+            text,
+            ambiguous,
+        } = replaced(koi8, b"x = 1", "x", "café")
+        else {
+            panic!("expected a refusal")
+        };
+        assert_eq!(matches.len(), 1);
+        assert_eq!(text, "café");
+        assert!(!ambiguous);
+        // mac_arabic spells the space two ways.
+        let mac_arabic =
+            Encoding::SingleByte(quaffed_encoding::Codec::named("mac_arabic").unwrap());
+        assert!(matches!(
+            replaced(mac_arabic, b"x", "x", "a b"),
+            Replaced::Unwritable {
+                ambiguous: true,
+                ..
+            }
+        ));
+        // With no match there is nothing to write, so nothing is refused.
+        assert_eq!(
+            replaced(koi8, b"y", "x", "café"),
+            Replaced::Edited {
+                matches: vec![],
+                text: None
+            }
+        );
+    }
+
+    #[test]
+    fn a_pattern_with_no_one_spelling_is_not_searched_for_a_replace() {
+        let mac_arabic =
+            Encoding::SingleByte(quaffed_encoding::Codec::named("mac_arabic").unwrap());
+        assert_eq!(
+            replaced(mac_arabic, b"a b", "a b", "x"),
+            Replaced::NotSearched
+        );
     }
 
     #[test]

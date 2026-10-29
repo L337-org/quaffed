@@ -9,6 +9,9 @@
 //! the budgets' file trace did.  This reads every other source file of the `quaff` binary and
 //! fails naming any line that reads a file directly.  A script given with `-f` is read through
 //! the store too, as it may be in the scope and searched.
+//!
+//! `src/write.rs`, which writes a run's edits, is the one other file that opens a project's
+//! files, and only for writing: it may open a file, and it must never open one for reading.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -60,7 +63,12 @@ fn only_the_contents_store_reads_a_project_s_files() {
     let mut offenders = Vec::new();
     for path in &found {
         let text = fs::read_to_string(path).unwrap_or_else(|err| panic!("reading {path:?}: {err}"));
+        let writer = path.file_name().is_some_and(|name| name == "write.rs");
         for line in reads_directly(&text) {
+            // The writer opens files, for writing alone, which the test below holds it to.
+            if writer && (line.contains("OpenOptions") || line.contains("File, ")) {
+                continue;
+            }
             offenders.push(format!("{}: {}", path.display(), line.trim()));
         }
     }
@@ -69,6 +77,33 @@ fn only_the_contents_store_reads_a_project_s_files() {
         "these read a file directly, which would read a file also read for its rules a second \
          time; read through crate::contents::Contents instead:\n{}",
         offenders.join("\n")
+    );
+}
+
+#[test]
+fn the_writer_opens_files_for_writing_alone() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/write.rs");
+    let text = fs::read_to_string(&path).unwrap_or_else(|err| panic!("reading {path:?}: {err}"));
+    let product = text
+        .split("#[cfg(test)]\nmod tests")
+        .next()
+        .unwrap_or_default();
+    let opens: Vec<&str> = product
+        .lines()
+        .filter(|line| line.contains("OpenOptions::new()"))
+        .collect();
+    // A writer that opened nothing would pass having checked nothing.
+    assert!(!opens.is_empty(), "{path:?} opens no file");
+    for open in opens {
+        assert!(
+            open.contains(".write(true)") && !open.contains(".read(true)"),
+            "{path:?} opens a file other than for writing alone: {}",
+            open.trim()
+        );
+    }
+    assert!(
+        !product.contains("File::open(") && !product.contains("fs::read"),
+        "{path:?} reads a file directly"
     );
 }
 

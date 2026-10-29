@@ -294,7 +294,7 @@ jobs:
           }
           check instructions "search instructions: limit"
           check memory "search peak_memory_kib: limit"
-          check "read-twice:{project}/modules/statements.py" "'modules/statements.py' in the project was opened 2 times"
+          check "read-twice:{project}/modules/statements.py" "'modules/statements.py' in the project was opened to read 2 times"
           check outside "'/etc/passwd', outside the project, was opened"
 
       # Saved whether or not the budgets held: the traces are what a reviewer reads to judge
