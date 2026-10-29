@@ -74,7 +74,7 @@ fn quaff_binary() -> PathBuf {
 ///
 /// Read without following symbolic links, so a link replaced by a file holding the same content
 /// is a change, as is a dropped executable bit or a directory created and left empty.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Entry {
     File {
         mode: u32,
@@ -188,6 +188,42 @@ impl Project {
     }
 }
 
+impl Project {
+    /// Fails unless the files named, and only those, changed, each to exactly the bytes given;
+    /// every other entry must be as it was, permission bits included.
+    fn assert_changed(&self, changed: &[(&str, &[u8])]) {
+        let after = snapshot_files(&self.dir);
+        let mut expected = self.before.clone();
+        for (path, content) in changed {
+            let path = PathBuf::from(path);
+            let Some(Entry::File { mode, .. }) = self.before.get(&path) else {
+                panic!("{} was not a file before", path.display());
+            };
+            expected.insert(
+                path,
+                Entry::File {
+                    mode: *mode,
+                    content: content.to_vec(),
+                },
+            );
+        }
+        for (path, entry) in &expected {
+            let found = after.get(path);
+            assert_eq!(
+                found,
+                Some(entry),
+                "{} is not as expected after the run",
+                path.display()
+            );
+        }
+        let added: Vec<_> = after
+            .keys()
+            .filter(|p| !expected.contains_key(*p))
+            .collect();
+        assert!(added.is_empty(), "quaff added {added:?}");
+    }
+}
+
 impl Drop for Project {
     fn drop(&mut self) {
         // Not checked: a panic here, during the unwinding of a failed test, would abort the
@@ -246,9 +282,14 @@ struct Locked {
 
 impl Locked {
     fn new(path: PathBuf) -> Self {
-        let mode = fs::metadata(&path).expect("reading the mode").permissions();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).expect("locking");
-        Locked { path, mode }
+        Locked::to(path, 0o000)
+    }
+
+    /// Gives the path only the permissions `mode`, until it is dropped.
+    fn to(path: PathBuf, mode: u32) -> Self {
+        let was = fs::metadata(&path).expect("reading the mode").permissions();
+        fs::set_permissions(&path, fs::Permissions::from_mode(mode)).expect("locking");
+        Locked { path, mode: was }
     }
 }
 
@@ -783,7 +824,6 @@ fn each_construct_not_built_yet_exits_5_naming_it() {
     assert_quaff_snapshot!(project.quaff(&["-e", "find \"a\" in \"src/**\""]));
     assert_quaff_snapshot!(project.quaff(&["-e", "find \"a\" where not FILE matches \"x\""]));
     assert_quaff_snapshot!(project.quaff(&["-e", "find \"a\"; delete `a` expect 1"]));
-    assert_quaff_snapshot!(project.quaff(&["-e", "replace string \"a\" with \"b\" expect any"]));
     project.assert_unchanged();
 }
 
@@ -1258,4 +1298,294 @@ fn a_pattern_that_cannot_be_compiled_exits_3_saying_where() {
         project.quaff(&["-p", "w()\n$a...\nx()\n$b...\ny()\n$a...\nx()\n$b...\nz()"])
     );
     project.assert_unchanged();
+}
+
+/// A project of plain text files, for replacing.
+const EDITABLE: &[(&str, &str)] = &[
+    (".git/HEAD", ""),
+    ("a.txt", "TODO one\nTODO two\n"),
+    ("b.txt", "TODO\n"),
+    ("c.txt", "nothing\n"),
+];
+
+#[test]
+fn a_replace_whose_count_holds_writes_every_match_and_says_so() {
+    let project = Project::new(EDITABLE);
+    assert_quaff_snapshot!(
+        project.quaff(&["-e", "replace string \"TODO\" with \"DONE\" expect 3"])
+    );
+    project.assert_changed(&[("a.txt", b"DONE one\nDONE two\n"), ("b.txt", b"DONE\n")]);
+}
+
+#[test]
+fn a_replace_whose_count_does_not_hold_exits_2_and_writes_nothing() {
+    let project = Project::new(EDITABLE);
+    assert_quaff_snapshot!(
+        project.quaff(&["-e", "replace string \"TODO\" with \"DONE\" expect 2"])
+    );
+    project.assert_unchanged();
+}
+
+#[test]
+fn every_expect_form_decides_a_replace() {
+    // Each holds or fails as it would on a find of the same text; a failure writes nothing.
+    for (count, holds) in [
+        ("3", true),
+        ("at least 1", true),
+        ("at most 2", false),
+        ("3 or none", true),
+        ("none", false),
+        ("any", true),
+    ] {
+        let project = Project::new(EDITABLE);
+        let script = format!("replace string \"TODO\" with \"DONE\" expect {count}");
+        let output = project.quaff(&["-e", &script]).output().unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(if holds { 0 } else { 2 }),
+            "expect {count}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if holds {
+            project.assert_changed(&[("a.txt", b"DONE one\nDONE two\n"), ("b.txt", b"DONE\n")]);
+        } else {
+            project.assert_unchanged();
+        }
+    }
+    // A count that allows none holds on a replace that matches nothing, and writes nothing.
+    let project = Project::new(EDITABLE);
+    let output = project
+        .quaff(&[
+            "-e",
+            "replace string \"absent\" with \"x\" expect 3 or none",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    project.assert_unchanged();
+}
+
+#[test]
+fn an_acting_statement_without_an_expect_is_refused_before_anything_runs() {
+    let project = Project::new(EDITABLE);
+    assert_quaff_snapshot!(project.quaff(&["-e", "replace string \"TODO\" with \"DONE\""]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn line_endings_are_kept_byte_for_byte_and_a_written_line_break_is_the_files_own() {
+    let mut project = Project::new(&[(".git/HEAD", "")]);
+    project.add_bytes("lf.txt", b"a;b\nkeep\n");
+    project.add_bytes("crlf.txt", b"a;b\r\nkeep\r\n");
+    project.add_bytes("mixed.txt", b"a;b\r\nc;d\nkeep\r");
+    project.add_bytes("none.txt", b"a;b");
+    assert_quaff_snapshot!(
+        project.quaff(&["-e", "replace string \";\" with \"\" $^ \"\" expect 5"])
+    );
+    project.assert_changed(&[
+        ("lf.txt", b"a\nb\nkeep\n"),
+        ("crlf.txt", b"a\r\nb\r\nkeep\r\n"),
+        ("mixed.txt", b"a\r\nb\r\nc\nd\nkeep\r"),
+        ("none.txt", b"a\nb"),
+    ]);
+}
+
+#[test]
+fn joined_pieces_line_breaks_and_anchors_match_in_a_replace_as_in_a_find() {
+    let mut project = Project::new(&[(".git/HEAD", "")]);
+    project.add_bytes("a.txt", b"import os\r\n  import sys\nx = 1\r\n");
+    // An anchored pattern matches only at the start of a line; the line break matches CRLF.
+    let output = project
+        .quaff(&[
+            "-e",
+            "replace string ^\"im\" \"port \" with \"from \" expect 1",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = project
+        .quaff(&["-e", "replace string \"os\"$^\"  \" with \"os; \" expect 1"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    project.assert_changed(&[("a.txt", b"from os; import sys\nx = 1\r\n")]);
+}
+
+#[test]
+fn a_python_file_is_written_back_in_its_declared_encoding_or_with_its_byte_order_mark() {
+    let mut project = Project::new(&[(".git/HEAD", "")]);
+    // Shift-JIS, declared by its coding line: "x = '日本'".
+    project.add_bytes(
+        "sjis.py",
+        b"# -*- coding: shift_jis -*-\nx = '\x93\xfa\x96\x7b'\n",
+    );
+    project.add_bytes("bom.py", b"\xef\xbb\xbfx = '\xe6\x97\xa5\xe6\x9c\xac'\n");
+    assert_quaff_snapshot!(project.quaff(&["-e", "replace string \"日本\" with \"ア\" expect 2"]));
+    project.assert_changed(&[
+        // "ア" is 83 41 in Shift-JIS, and E3 82 A2 in UTF-8.
+        ("sjis.py", b"# -*- coding: shift_jis -*-\nx = '\x83\x41'\n"),
+        ("bom.py", b"\xef\xbb\xbfx = '\xe3\x82\xa2'\n"),
+    ]);
+}
+
+#[test]
+fn a_file_of_unknown_encoding_is_never_edited_and_its_matches_do_not_count() {
+    let mut project = Project::new(&[(".git/HEAD", ""), ("utf8.txt", "TODO here\n")]);
+    // Latin-1, undeclared: its "TODO" is only a possible match.
+    project.add_bytes("latin1.txt", b"caf\xe9 TODO\n");
+    // The same count a find of "TODO" would give: the hit in utf8.txt alone.
+    assert_quaff_snapshot!(
+        project.quaff(&["-e", "replace string \"TODO\" with \"DONE\" expect 1"])
+    );
+    project.assert_changed(&[("utf8.txt", b"DONE here\n")]);
+}
+
+#[test]
+fn a_replace_that_would_break_a_python_file_that_parsed_is_refused_with_exit_9() {
+    let project = Project::new(&[
+        (".git/HEAD", ""),
+        ("fine.py", "def f(x):\n    return x\n"),
+        ("other.txt", "def f(x)\n"),
+    ]);
+    assert_quaff_snapshot!(project.quaff(&["-e", "replace string \"(x)\" with \"(x\" expect 2"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_python_file_that_did_not_parse_is_still_edited_textually() {
+    let project = Project::new(&[(".git/HEAD", ""), ("broken.py", "def f(:\n    TODO\n")]);
+    assert_quaff_snapshot!(
+        project.quaff(&["-e", "replace string \"TODO\" with \"pass\" expect 1"])
+    );
+    project.assert_changed(&[("broken.py", b"def f(:\n    pass\n")]);
+}
+
+#[test]
+fn a_dry_run_reports_what_would_change_and_writes_nothing() {
+    let project = Project::new(EDITABLE);
+    assert_quaff_snapshot!(project.quaff(&[
+        "--dry-run",
+        "-e",
+        "replace string \"TODO\" with \"DONE\" expect 3"
+    ]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_replacement_a_files_encoding_cannot_write_is_refused_with_exit_9() {
+    let mut project = Project::new(&[
+        (".git/HEAD", ""),
+        (".editorconfig", "[*.txt]\ncharset = latin1\n"),
+        ("utf8.md", "TODO\n"),
+    ]);
+    project.add_bytes("latin1.txt", b"caf\xe9 TODO\n");
+    assert_quaff_snapshot!(
+        project.quaff(&["-e", "replace string \"TODO\" with \"日本\" expect 2"])
+    );
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_later_statement_sees_an_earlier_edit() {
+    let project = Project::new(EDITABLE);
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "replace string \"TODO\" with \"DONE\" expect 3\n\
+         replace string \"DONE one\" with \"finished\" expect 1\n\
+         find \"DONE\" expect 2"
+    ]));
+    project.assert_changed(&[("a.txt", b"finished\nDONE two\n"), ("b.txt", b"DONE\n")]);
+}
+
+#[test]
+fn a_file_that_cannot_be_written_stops_the_run_before_any_file_is_written() {
+    let project = Project::new(EDITABLE);
+    // Readable, so it is searched, but not writable.
+    let read_only = Locked::to(project.dir.join("b.txt"), 0o444);
+    let output = project
+        .quaff(&["-e", "replace string \"TODO\" with \"DONE\" expect 3"])
+        .output()
+        .unwrap();
+    drop(read_only);
+    assert_eq!(output.status.code(), Some(7));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "",
+        "a run that failed printed"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.starts_with("quaff: opening \"b.txt\" to write the edits: ")
+            && stderr.trim_end().ends_with("; nothing was written"),
+        "{stderr}"
+    );
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_structural_search_after_a_replace_sees_the_code_as_edited() {
+    let project = Project::new(&[(".git/HEAD", ""), ("fine.py", "f(x)\nh(y)\n")]);
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "find `f($a)` expect 1\nreplace string \"f(\" with \"g(\" expect 1\nfind `g($a)` expect 1"
+    ]));
+    project.assert_changed(&[("fine.py", b"g(x)\nh(y)\n")]);
+}
+
+#[test]
+fn a_structural_search_needing_a_file_an_earlier_replace_broke_refuses_the_edit() {
+    let project = Project::new(&[(".git/HEAD", ""), ("fine.py", "def f(x):\n    return x\n")]);
+    // Refused as an edit, naming the statement that broke the file, not as a file that cannot
+    // be parsed, which it can, on disk.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "replace string \"(x)\" with \"(x\" expect 1\nfind `f($a)`"
+    ]));
+    // A replace whose own count fails decides the run first, as an assertion that failed.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "replace string \"(x)\" with \"(x\" expect 5\nfind `f($a)`"
+    ]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn an_assertion_that_fails_after_a_replace_says_nothing_was_written() {
+    let project = Project::new(EDITABLE);
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "replace string \"TODO\" with \"DONE\" expect 3\nfind \"DONE\" expect none"
+    ]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_replace_never_touches_a_file_it_cannot_search_for_its_text() {
+    let mut project = Project::new(&[
+        (".git/HEAD", ""),
+        // mac_arabic spells the space two ways, so "TO DO" has no one spelling there.
+        (
+            ".gitattributes",
+            "arabic.txt working-tree-encoding=mac-arabic\n",
+        ),
+        ("arabic.txt", "TO DO\n"),
+        // CPython refuses a declaration it does not know.
+        ("refused.py", "# coding: uft-8\nx = 'TO DO'\n"),
+        ("plain.txt", "TO DO\n"),
+    ]);
+    project.add_bytes("binary.dat", b"TO DO\0");
+    assert_quaff_snapshot!(
+        project.quaff(&["-e", "replace string \"TO DO\" with \"DONE\" expect 1"])
+    );
+    project.assert_changed(&[("plain.txt", b"DONE\n")]);
 }

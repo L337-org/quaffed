@@ -1,0 +1,20 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "replace string \"TODO\" with \"DONE\" expect 3\nreplace string \"DONE one\" with \"finished\" expect 1\nfind \"DONE\" expect 2"
+---
+success: true
+exit_code: 0
+----- stdout -----
+a.txt:1:1-1:4: TODO
+a.txt:2:1-2:4: TODO
+b.txt:1:1-1:4: TODO
+a.txt:1:1-1:8: DONE one
+a.txt:2:1-2:4: DONE
+b.txt:1:1-1:4: DONE
+
+----- stderr -----
+quaff: replaced 4 matches in 2 files

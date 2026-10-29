@@ -1,0 +1,17 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "find `f($a)` expect 1\nreplace string \"f(\" with \"g(\" expect 1\nfind `g($a)` expect 1"
+---
+success: true
+exit_code: 0
+----- stdout -----
+fine.py:1:1-1:4: f(x)
+fine.py:1:1-1:2: f(
+fine.py:1:1-1:4: g(x)
+
+----- stderr -----
+quaff: replaced 1 match in 1 file

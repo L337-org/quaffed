@@ -14,7 +14,7 @@ use quaffed_encoding::{self as encoding, Encoding, Named, Refusal, python};
 use quaffed_python::compile_pattern;
 use quaffed_representation::check;
 use quaffed_representation::program::{
-    ActionKind, Count, Counted, Expectation, Operand, Program, Query, Statement, TextPart,
+    Action, ActionKind, Count, Counted, Expectation, Operand, Program, Query, Statement, TextPart,
     TextPattern,
 };
 use quaffed_representation::span::{Source, Span, Spanned};
@@ -30,6 +30,7 @@ use crate::resolve::{self, Declarations, Resolution, Unknown};
 use crate::search::{self, Match};
 use crate::structural;
 use crate::workspace::{self, Workspace};
+use crate::write;
 
 /// Why a run could not give an answer.  Each kind maps to one exit code, because each asks the
 /// caller for a different action.
@@ -91,6 +92,44 @@ pub enum Failure {
         /// Each such file, as the user would recognise it, and why it cannot be parsed.
         files: Vec<(PathBuf, String)>,
     },
+    /// A replace matched in files whose encoding cannot write its replacement, so the run is
+    /// refused and nothing written.  Exit 9: the script or the file must change first.
+    Unwritable {
+        /// Each such file, and what it cannot write.
+        files: Vec<Unwritable>,
+    },
+    /// The edits would leave Python files that parsed unparseable, so the run is refused and
+    /// nothing written.  Exit 9.
+    BrokenByEdit {
+        /// Each such file.
+        files: Vec<Broken>,
+    },
+    /// The edits could not all be written.  Exit 7.
+    Write(write::Failure),
+}
+
+/// A Python file an edit would leave unparseable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Broken {
+    /// The file, as the user would recognise it.
+    path: PathBuf,
+    /// Where and why it would not parse.
+    why: String,
+    /// Where each replace that changed it was written.
+    by: Vec<String>,
+}
+
+/// A file whose encoding cannot write a replacement.
+#[derive(Debug)]
+pub struct Unwritable {
+    /// The file, as the user would recognise it.
+    path: PathBuf,
+    /// Its encoding, as `CPython` names the codec.
+    encoding: &'static str,
+    /// The text of the replacement it cannot write.
+    text: String,
+    /// Whether the encoding spells the text more than one way, rather than not at all.
+    ambiguous: bool,
 }
 
 impl Failure {
@@ -103,8 +142,10 @@ impl Failure {
             | Failure::OutsideProject { .. }
             | Failure::OutsideCurrentDirectory { .. } => 3,
             Failure::Unknown { .. } => 5,
-            Failure::Io { .. } | Failure::Discovery(_) => 7,
-            Failure::Unparseable { .. } => 9,
+            Failure::Io { .. } | Failure::Discovery(_) | Failure::Write(_) => 7,
+            Failure::Unparseable { .. }
+            | Failure::Unwritable { .. }
+            | Failure::BrokenByEdit { .. } => 9,
         }
     }
 }
@@ -165,8 +206,79 @@ impl fmt::Display for Failure {
                     if files.len() == 1 { "it" } else { "them" }
                 )
             }
+            Failure::Unwritable { files } => unwritable(f, files),
+            Failure::BrokenByEdit { files } => broken(f, files),
+            Failure::Write(err) => err.fmt(f),
         }
     }
+}
+
+/// The refusal of a replacement files' encodings cannot write.
+fn unwritable(f: &mut fmt::Formatter<'_>, files: &[Unwritable]) -> fmt::Result {
+    write!(
+        f,
+        "refused: the replacement cannot be written in the encoding of {}, so nothing \
+             was written:",
+        count(files.len(), "file", "files")
+    )?;
+    for file in files {
+        if file.ambiguous {
+            write!(
+                f,
+                "\n  {:?}: {} spells {:?} more than one way",
+                file.path, file.encoding, file.text
+            )?;
+        } else {
+            write!(
+                f,
+                "\n  {:?}: {} cannot hold {:?}",
+                file.path, file.encoding, file.text
+            )?;
+        }
+    }
+    write!(
+        f,
+        "\nUse a replacement {} can hold, or give a narrower scope on the command line \
+             to leave {} out",
+        if files.len() == 1 {
+            "its encoding"
+        } else {
+            "their encodings"
+        },
+        if files.len() == 1 { "it" } else { "them" }
+    )
+}
+
+/// The refusal of edits that would leave Python files unparseable.
+fn broken(f: &mut fmt::Formatter<'_>, files: &[Broken]) -> fmt::Result {
+    write!(
+        f,
+        "refused: the edit would leave {} that {} unparseable, so nothing was written:",
+        count(files.len(), "Python file", "Python files"),
+        if files.len() == 1 { "parses" } else { "parse" }
+    )?;
+    for file in files {
+        write!(f, "\n  {:?}: {}", file.path, file.why)?;
+        if !file.by.is_empty() {
+            write!(
+                f,
+                "; changed by the replace at {}",
+                file.by.join(" and at ")
+            )?;
+        }
+    }
+    write!(
+        f,
+        "\nChange the replacement so that {} still {}, or give a narrower scope on the \
+             command line to leave {} out",
+        if files.len() == 1 {
+            "the file"
+        } else {
+            "the files"
+        },
+        if files.len() == 1 { "parses" } else { "parse" },
+        if files.len() == 1 { "it" } else { "them" }
+    )
 }
 
 impl std::error::Error for Failure {
@@ -174,13 +286,16 @@ impl std::error::Error for Failure {
         match self {
             Failure::Io { cause, .. } => Some(cause),
             Failure::Discovery(err) => Some(err),
+            Failure::Write(err) => Some(err),
             Failure::Usage(_)
             | Failure::Script { .. }
             | Failure::Empty { .. }
             | Failure::Unknown { .. }
             | Failure::OutsideProject { .. }
             | Failure::OutsideCurrentDirectory { .. }
-            | Failure::Unparseable { .. } => None,
+            | Failure::Unparseable { .. }
+            | Failure::Unwritable { .. }
+            | Failure::BrokenByEdit { .. } => None,
         }
     }
 }
@@ -227,6 +342,7 @@ impl Outcome {
 pub fn run(
     sources: Vec<SourceArg>,
     scope: Option<&OsString>,
+    dry_run: bool,
     cwd: &Path,
     stdin: &mut impl Read,
     out: &mut impl Write,
@@ -288,6 +404,8 @@ pub fn run(
 
     let searching: Vec<Searching> = steps.iter().flat_map(Step::patterns).collect();
     let patterns: Vec<Wanted> = searching.iter().map(|s| s.pattern).collect();
+    let replacements: Vec<Option<&TextPattern>> =
+        steps.iter().flat_map(Step::replacements).collect();
     // EditorConfig is read no higher than the project root, or where quaff runs with no
     // project, so that nothing outside the project changes an answer.
     let boundary = workspace
@@ -304,6 +422,7 @@ pub fn run(
         &found.files,
         &cwd,
         &patterns,
+        &replacements,
         &compiled,
         &mut declarations,
         locale.as_ref(),
@@ -316,13 +435,7 @@ pub fn run(
             files: searched.unparsed.clone(),
         });
     }
-    let mut evaluation = Evaluation {
-        searched: &searched,
-        printing: true,
-        next: 0,
-        notes: Vec::new(),
-    };
-    let outcome = evaluation.steps(&steps, &built, out)?;
+    let (outcome, evaluation) = conclude(&searched, &steps, &built, dry_run, out)?;
 
     // Notes are best effort: a run that cannot write to standard error has nowhere to say so.
     let mut note = |text: &str| {
@@ -344,6 +457,105 @@ pub fn run(
         note(&text);
     }
     Ok(outcome)
+}
+
+/// Decides the run's outcome from what the search found, writes its edits - unless it is a dry
+/// run - and prints its results, in that order.
+///
+/// The outcome is decided before anything is printed or written, so that a replace whose
+/// replacement a file cannot hold, an edit that breaks a Python file, or a file that cannot be
+/// written refuses the whole run with nothing written and nothing printed: a run that gives no
+/// answer prints nothing.  An assertion that fails is an answer, so its results print, and nothing
+/// is written.
+fn conclude<'s>(
+    searched: &'s Searched,
+    steps: &[Step],
+    built: &Built,
+    dry_run: bool,
+    out: &mut impl Write,
+) -> Result<(Outcome, Evaluation<'s>), Failure> {
+    let locations = replace_locations(steps, built);
+    let verdict =
+        Evaluation::new(searched, false, locations.clone()).steps(steps, built, &mut io::sink())?;
+    if verdict == Outcome::Success {
+        refuse_broken(&searched.changed, &locations)?;
+        if !dry_run {
+            let edits: Vec<write::Edit> = searched
+                .changed
+                .iter()
+                .map(|file| write::Edit {
+                    path: &file.path,
+                    shown: &file.shown,
+                    original: &file.original,
+                    edited: &file.edited,
+                })
+                .collect();
+            write::commit(&edits).map_err(Failure::Write)?;
+        }
+    }
+    let mut evaluation = Evaluation::new(searched, true, locations);
+    let outcome = evaluation.steps(steps, built, out)?;
+    if outcome == Outcome::Success && evaluation.replaced > 0 {
+        let files = count(evaluation.replaced_in.len(), "file", "files");
+        let matches = count(evaluation.replaced, "match", "matches");
+        evaluation.notes.push(if dry_run {
+            format!("dry run: {matches} in {files} would be replaced; nothing was written")
+        } else {
+            format!("replaced {matches} in {files}")
+        });
+    }
+    Ok((outcome, evaluation))
+}
+
+/// Refuses edits that would leave a Python file unparseable that parsed before them.  A file
+/// that did not parse before is not refused: the check protects a parse that existed, and a
+/// textual edit needs no parse tree.
+fn refuse_broken(changed: &[Changed], locations: &[Option<String>]) -> Result<(), Failure> {
+    let broken: Vec<Broken> = changed
+        .iter()
+        .filter(|file| file.python && parses(&file.original).is_ok())
+        .filter_map(|file| {
+            parses(&file.edited).err().map(|why| Broken {
+                path: file.shown.clone(),
+                why,
+                by: located(&file.by, locations),
+            })
+        })
+        .collect();
+    if broken.is_empty() {
+        Ok(())
+    } else {
+        Err(Failure::BrokenByEdit { files: broken })
+    }
+}
+
+/// Where each replace, by its pattern's index, was written.
+fn located(by: &[usize], locations: &[Option<String>]) -> Vec<String> {
+    by.iter()
+        .filter_map(|&index| locations.get(index).cloned().flatten())
+        .collect()
+}
+
+/// For each of the run's patterns, in order, where the replace it belongs to was written, or
+/// `None` for one only searched for.
+fn replace_locations(steps: &[Step], built: &Built) -> Vec<Option<String>> {
+    steps
+        .iter()
+        .flat_map(|step| match step {
+            Step::Replace(replacing) => {
+                vec![Some(built.locate(replacing.span, replacing.span.start))]
+            }
+            _ => step.patterns().iter().map(|_| None).collect(),
+        })
+        .collect()
+}
+
+/// Whether a Python file's bytes parse, decoded as `CPython` decodes them; where and why not.
+fn parses(bytes: &[u8]) -> Result<(), String> {
+    let source = python::Source::decode(bytes).map_err(|refusal| refusal.to_string())?;
+    structural::search(&source.text, &[])
+        .map(|_| ())
+        .map_err(|unparsed| unparsed_at(&unparsed))
 }
 
 /// The encoding the user's locale names, if it names one other than UTF-8 that quaff reads, from
@@ -521,6 +733,20 @@ enum Step<'p> {
     Find(Wanted<'p>),
     /// Search for each, print what was found, and check each count.
     Assert(Vec<Assertion<'p>>),
+    /// Replace text, print what was replaced, and check its count.
+    Replace(Replacing<'p>),
+}
+
+/// A textual replace this build can run.
+struct Replacing<'p> {
+    /// What it replaces.
+    pattern: &'p TextPattern,
+    /// What it writes in its place.
+    with: &'p TextPattern,
+    /// The count its `expect` requires.
+    count: Count,
+    /// Where the statement was written.
+    span: Span,
 }
 
 /// A program's steps, and each structural pattern in it with where it was written.
@@ -559,6 +785,19 @@ impl Step<'_> {
                 .iter()
                 .map(|a| Searching { pattern: a.pattern })
                 .collect(),
+            Step::Replace(replacing) => vec![Searching {
+                pattern: Wanted::Text(replacing.pattern),
+            }],
+        }
+    }
+
+    /// The replacement each of the step's patterns is replaced with, in the order
+    /// [`Step::patterns`] lists them: `None` for a pattern only searched for.
+    fn replacements(&self) -> Vec<Option<&TextPattern>> {
+        match self {
+            Step::Find(_) => vec![None],
+            Step::Assert(block) => block.iter().map(|_| None).collect(),
+            Step::Replace(replacing) => vec![Some(replacing.with)],
         }
     }
 }
@@ -578,17 +817,38 @@ fn plan(program: &Program) -> Result<Planned<'_>, (&'static str, Span)> {
                     .map(|a| assertion(a, &mut structural))
                     .collect::<Result<_, _>>()?,
             ),
-            Statement::Act(action) => {
-                let construct = match action.kind {
-                    ActionKind::Delete => "delete",
-                    _ => "replace",
-                };
-                return Err((construct, statement.span));
-            }
+            Statement::Act(action) => Step::Replace(replacing(action, statement.span)?),
             _ => return Err(("this statement", statement.span)),
         });
     }
     Ok((steps, structural))
+}
+
+/// The textual replace `action` is, if this build can run it.
+fn replacing(action: &Action, span: Span) -> Result<Replacing<'_>, (&'static str, Span)> {
+    let ActionKind::Replace(with) = &action.kind else {
+        return Err(("delete", span));
+    };
+    let (Operand::Text(pattern), Operand::Text(with)) = (&action.query.operand.node, &with.node)
+    else {
+        return Err(("a structural replace", span));
+    };
+    if let Some(glob) = action.query.scope.first() {
+        return Err(("an `in` clause", glob.span));
+    }
+    if let Some(filter) = &action.query.filter {
+        return Err(("a `where` clause", filter.span));
+    }
+    // The checker has refused an edit with no `expect`, and the parser takes at most one.
+    let Some(count) = action.expect.first() else {
+        return Err(("a replace with no `expect`", span));
+    };
+    Ok(Replacing {
+        pattern,
+        with,
+        count: count.node,
+        span,
+    })
 }
 
 fn assertion<'p>(
@@ -687,6 +947,16 @@ struct Searched {
     /// For each pattern, the files not searched for it because it has no one spelling there,
     /// by the paths a message shows, and why.
     unspelled: Vec<Vec<(PathBuf, Unspelled)>>,
+    /// For each replaced pattern, the files whose encoding cannot write its replacement, by the
+    /// paths a message shows, with the encoding, the text it cannot write, and whether it spells
+    /// that text more than one way rather than not at all.
+    unwritable: Vec<Vec<(PathBuf, Encoding, String, bool)>>,
+    /// Every file a replace changed, with its bytes before and after, held until the run ends.
+    changed: Vec<Changed>,
+    /// For each structural pattern, the Python files an earlier replace left unparseable, though
+    /// they parse on disk, with where and why: the pattern cannot be searched for in them, and
+    /// the edit is refused.
+    broken: Vec<Vec<(PathBuf, String, Vec<usize>)>>,
     /// Python files `CPython` refuses to read whatever they hold, so are searched for nothing, by
     /// the paths a message shows, with why.
     refused: Vec<(PathBuf, Refusal)>,
@@ -700,6 +970,22 @@ struct Searched {
     binary: usize,
 }
 
+/// A file a replace changed, held in memory until the run is over.
+struct Changed {
+    /// Where it is, to write it.
+    path: PathBuf,
+    /// The path a message shows.
+    shown: PathBuf,
+    /// Whether it is a Python file, which must still parse if it parsed before.
+    python: bool,
+    /// Its bytes as they were read, to write back if writing fails.
+    original: crate::contents::Bytes,
+    /// Its bytes after every replace.
+    edited: Vec<u8>,
+    /// The replaces that changed it, by their pattern's index.
+    by: Vec<usize>,
+}
+
 /// Why a file was not searched for a pattern.
 #[derive(Clone)]
 enum Unspelled {
@@ -709,33 +995,91 @@ enum Unspelled {
     Unknown(Unknown),
 }
 
-/// Searches each of `files` for each of `patterns`, reading each file once and deciding its
-/// encoding from what declares it.
+/// The run's patterns in the batches a file is searched in: the patterns between two replaces are
+/// searched in one pass over the file as it then is, and each replace changes it for the
+/// patterns after.  With no replace, every pattern is in one batch.
+enum Batch<'p> {
+    /// Search for these, by their index among all the run's patterns: the textual ones, and the
+    /// structural ones with their compiled pattern's index.
+    Search {
+        textual: Vec<(usize, &'p TextPattern)>,
+        structural: Vec<(usize, usize)>,
+    },
+    /// Replace the pattern at this index with this text.
+    Replace {
+        index: usize,
+        pattern: &'p TextPattern,
+        with: &'p TextPattern,
+    },
+}
+
+/// `patterns` in batches, `replacements` naming each one's replacement, if it is replaced.
+fn batches<'p>(
+    patterns: &[Wanted<'p>],
+    replacements: &[Option<&'p TextPattern>],
+) -> Vec<Batch<'p>> {
+    let mut batches = Vec::new();
+    let mut textual = Vec::new();
+    let mut structural = Vec::new();
+    for (index, (wanted, with)) in patterns.iter().zip(replacements).enumerate() {
+        match (wanted, with) {
+            (Wanted::Text(pattern), Some(with)) => {
+                if !textual.is_empty() || !structural.is_empty() {
+                    batches.push(Batch::Search {
+                        textual: std::mem::take(&mut textual),
+                        structural: std::mem::take(&mut structural),
+                    });
+                }
+                batches.push(Batch::Replace {
+                    index,
+                    pattern,
+                    with,
+                });
+            }
+            (Wanted::Text(pattern), None) => textual.push((index, *pattern)),
+            (Wanted::Structural { compiled, .. }, _) => structural.push((index, *compiled)),
+        }
+    }
+    if !textual.is_empty() || !structural.is_empty() {
+        batches.push(Batch::Search {
+            textual,
+            structural,
+        });
+    }
+    batches
+}
+
+/// What earlier replaces did to a file: its bytes on disk if they changed it, and which did, by
+/// their pattern's index.
+struct Earlier<'a> {
+    on_disk: Option<&'a [u8]>,
+    by: &'a [usize],
+}
+
+/// What a file is searched for: the batches of patterns, the compiled structural patterns, and
+/// whether there is any.
+struct Plan<'p> {
+    batches: Vec<Batch<'p>>,
+    compiled: &'p [Pattern],
+    any_structural: bool,
+}
+
+/// Searches each of `files` for each of `patterns`, in order, replacing as `replacements` says,
+/// reading each file once and deciding its encoding from what declares it.  A pattern after a
+/// replace is searched for in the file as the replace left it; the edits are held, not written.
 fn search_files(
     files: &[PathBuf],
     cwd: &Path,
     patterns: &[Wanted],
+    replacements: &[Option<&TextPattern>],
     compiled: &[Pattern],
     declarations: &mut Declarations,
     locale: Option<&(String, Encoding)>,
 ) -> Result<Searched, Failure> {
-    let textual: Vec<(usize, &TextPattern)> = patterns
+    let batches = batches(patterns, replacements);
+    let any_structural = patterns
         .iter()
-        .enumerate()
-        .filter_map(|(i, wanted)| match wanted {
-            Wanted::Text(pattern) => Some((i, *pattern)),
-            Wanted::Structural { .. } => None,
-        })
-        .collect();
-    let structural: Vec<(usize, usize)> = patterns
-        .iter()
-        .enumerate()
-        .filter_map(|(i, wanted)| match wanted {
-            Wanted::Structural { compiled, .. } => Some((i, *compiled)),
-            Wanted::Text(_) => None,
-        })
-        .collect();
-    let shapes: Vec<&Pattern> = structural.iter().map(|&(_, c)| &compiled[c]).collect();
+        .any(|wanted| matches!(wanted, Wanted::Structural { .. }));
     let mut searched = Searched {
         matches: (0..patterns.len()).map(|_| Vec::new()).collect(),
         unparsed: Vec::new(),
@@ -744,6 +1088,9 @@ fn search_files(
         not_applicable: 0,
         possible: vec![Vec::new(); patterns.len()],
         unspelled: vec![Vec::new(); patterns.len()],
+        unwritable: vec![Vec::new(); patterns.len()],
+        changed: Vec::new(),
+        broken: vec![Vec::new(); patterns.len()],
         refused: Vec::new(),
         hinted: Vec::new(),
         hint: locale.map(|(name, _)| name.clone()),
@@ -753,7 +1100,27 @@ fn search_files(
             .map(|w| w.declares_encodings_in()),
         binary: 0,
     };
+    let plan = Plan {
+        batches,
+        compiled,
+        any_structural,
+    };
     for file in files {
+        searched.file(file, cwd, &plan, declarations, locale)?;
+    }
+    Ok(searched)
+}
+
+impl Searched {
+    /// Searches one file for the run's patterns, batch by batch, holding its edits.
+    fn file(
+        &mut self,
+        file: &Path,
+        cwd: &Path,
+        plan: &Plan,
+        declarations: &mut Declarations,
+        locale: Option<&(String, Encoding)>,
+    ) -> Result<(), Failure> {
         let shown = output::relative(file, cwd);
         let bytes = declarations
             .contents
@@ -763,7 +1130,7 @@ fn search_files(
                 path: shown.clone(),
                 cause,
             })?;
-        // Decided once, whatever the number of patterns.
+        // Decided once, from the file as it is on disk, whatever the number of patterns.
         let resolution = resolve::resolve(
             &resolve::File {
                 path: file,
@@ -778,46 +1145,81 @@ fn search_files(
         })?;
         let binary = matches!(resolution, Resolution::Binary);
         let python = resolve::is_python(file);
-        if !shapes.is_empty() {
+        if plan.any_structural {
             if python {
                 // A binary one too: it is in scope, so the run does not say there is no Python,
                 // though it is counted with the binary files rather than searched.
-                searched.python += 1;
+                self.python += 1;
             } else if !binary {
-                searched.not_applicable += 1;
+                self.not_applicable += 1;
             }
-            if python && !binary {
-                // The text Ruff parses is the text CPython would run, decoded as CPython decodes
-                // it, whatever else declares the file's encoding for the textual tier.
-                match python::Source::decode(&bytes) {
-                    Ok(source) => searched.python(&shown, &source.text, &structural, &shapes),
-                    // A Python file CPython refuses to read does not parse, whatever it holds, and
-                    // one in an encoding quaff does not read cannot be parsed by quaff: either
-                    // way a count without it could not be trusted.
-                    Err(refusal) => searched.unparsed.push((shown.clone(), refusal.to_string())),
+        }
+        // The file as the replaces so far have left it, once one has changed it.
+        let mut edited: Option<Vec<u8>> = None;
+        // The replaces that changed it so far, by their pattern's index.
+        let mut by: Vec<usize> = Vec::new();
+        let mut parsed = None;
+        for batch in &plan.batches {
+            let text: &[u8] = edited.as_deref().unwrap_or(&bytes);
+            match batch {
+                Batch::Search {
+                    textual,
+                    structural,
+                } => {
+                    if !structural.is_empty() && python && !binary {
+                        // On disk, if an edit has changed it, to tell a file that never parsed
+                        // from one an edit broke.
+                        let earlier = Earlier {
+                            on_disk: edited.is_some().then_some(&bytes[..]),
+                            by: &by,
+                        };
+                        self.structural_batch(
+                            &shown,
+                            text,
+                            &earlier,
+                            structural,
+                            plan,
+                            &mut parsed,
+                        );
+                    }
+                    match &resolution {
+                        Resolution::Known { encoding, body, .. } => {
+                            self.known(&shown, &text[*body..], *encoding, textual);
+                        }
+                        Resolution::Unknown(reason) => {
+                            self.unknown(&shown, text, reason, textual);
+                        }
+                        Resolution::Binary | Resolution::Refused(_) => {}
+                    }
+                }
+                Batch::Replace {
+                    index,
+                    pattern,
+                    with,
+                } => {
+                    if let Some(whole) =
+                        self.replace_in(&shown, text, &resolution, *index, pattern, with)
+                    {
+                        edited = Some(whole);
+                        by.push(*index);
+                    }
                 }
             }
         }
-        match resolution {
-            Resolution::Binary => searched.binary += 1,
-            Resolution::Refused(refusal) => searched.refused.push((shown, refusal)),
-            Resolution::Known { encoding, body, .. } => {
-                searched.known(&shown, &bytes[body..], encoding, &textual);
-            }
-            Resolution::Unknown(reason) => {
-                if reason == Unknown::NotUtf8
-                    && locale.is_some_and(|(_, encoding)| encoding.reads_cleanly(&bytes))
-                {
-                    searched.hinted.push(shown.clone());
-                }
-                searched.unknown(&shown, &bytes, &reason, &textual);
-            }
+        self.tally(&shown, resolution, &bytes, locale);
+        if let Some(edited) = edited.filter(|edited| edited[..] != bytes[..]) {
+            self.changed.push(Changed {
+                path: file.to_path_buf(),
+                shown,
+                python,
+                original: bytes,
+                edited,
+                by,
+            });
         }
+        Ok(())
     }
-    Ok(searched)
-}
 
-impl Searched {
     /// Searches a file in a known encoding, `text` its body after any byte-order mark, for each
     /// textual pattern, by its index among all the run's patterns.
     fn known(
@@ -844,24 +1246,18 @@ impl Searched {
 
     /// Searches a Python file's decoded `text` for each structural pattern, `shapes` in the
     /// order of `structural`, which pairs each pattern's index among all the run's patterns with
-    /// its compiled one.  A file that does not parse is recorded, and searched for nothing.
+    /// its compiled one.  A file that does not parse is searched for nothing, and where and why
+    /// is returned.
     fn python(
         &mut self,
         shown: &Path,
         text: &str,
         structural: &[(usize, usize)],
         shapes: &[&Pattern],
-    ) {
+    ) -> Result<(), String> {
         match structural::search(text, shapes) {
-            Err(unparsed) => self.unparsed.push((
-                shown.to_owned(),
-                format!(
-                    "line {}, column {}: {}",
-                    unparsed.at.line, unparsed.at.column, unparsed.message
-                ),
-            )),
+            Err(unparsed) => Err(unparsed_at(&unparsed)),
             Ok(found) => {
-                self.structural += 1;
                 for (&(i, _), in_file) in structural.iter().zip(found) {
                     if !in_file.is_empty() {
                         self.matches[i].push((
@@ -876,6 +1272,138 @@ impl Searched {
                         ));
                     }
                 }
+                Ok(())
+            }
+        }
+    }
+
+    /// Searches a Python file's current bytes, `text`, for a batch's structural patterns.
+    /// `parsed` says whether an earlier batch parsed the file, so that it is counted as searched,
+    /// or as unparseable, once however many batches search it.  `on_disk` is the file as it is on
+    /// disk when an earlier replace has changed it: if that parses and `text` does not, the edit
+    /// broke it, which refuses the run as an edit rather than as a file that cannot be parsed.
+    fn structural_batch(
+        &mut self,
+        shown: &Path,
+        text: &[u8],
+        earlier: &Earlier,
+        structural: &[(usize, usize)],
+        plan: &Plan,
+        parsed: &mut Option<bool>,
+    ) {
+        let shapes: Vec<&Pattern> = structural.iter().map(|&(_, c)| &plan.compiled[c]).collect();
+        // The text Ruff parses is the text CPython would run, decoded as CPython decodes it,
+        // whatever else declares the file's encoding for the textual tier.
+        let outcome = match python::Source::decode(text) {
+            Ok(source) => self.python(shown, &source.text, structural, &shapes),
+            // A Python file CPython refuses to read does not parse, whatever it holds, and one in
+            // an encoding quaff does not read cannot be parsed by quaff: either way a count
+            // without it could not be trusted.
+            Err(refusal) => Err(refusal.to_string()),
+        };
+        match (*parsed, outcome) {
+            (None, Ok(())) => {
+                self.structural += 1;
+                *parsed = Some(true);
+            }
+            (_, Err(why)) if earlier.on_disk.is_some_and(|bytes| parses(bytes).is_ok()) => {
+                for &(i, _) in structural {
+                    self.broken[i].push((shown.to_owned(), why.clone(), earlier.by.to_vec()));
+                }
+            }
+            (None | Some(true), Err(why)) => {
+                self.unparsed.push((shown.to_owned(), why));
+                *parsed = Some(false);
+            }
+            _ => {}
+        }
+    }
+
+    /// Counts a file once by what it is: binary, refused by `CPython`, or of unknown encoding that
+    /// reads cleanly in the locale's, for the hint.
+    fn tally(
+        &mut self,
+        shown: &Path,
+        resolution: Resolution,
+        bytes: &[u8],
+        locale: Option<&(String, Encoding)>,
+    ) {
+        match resolution {
+            Resolution::Binary => self.binary += 1,
+            Resolution::Refused(refusal) => self.refused.push((shown.to_owned(), refusal)),
+            Resolution::Unknown(reason) => {
+                if reason == Unknown::NotUtf8
+                    && locale.is_some_and(|(_, encoding)| encoding.reads_cleanly(bytes))
+                {
+                    self.hinted.push(shown.to_owned());
+                }
+            }
+            Resolution::Known { .. } => {}
+        }
+    }
+
+    /// Replaces the pattern at `index` with `with` in a file's current bytes, `text`, decided as
+    /// `resolution` says, and returns its new bytes if that changed it.  A file of unknown
+    /// encoding is never edited: its matches are only possible, and reported as in a search.
+    fn replace_in(
+        &mut self,
+        shown: &Path,
+        text: &[u8],
+        resolution: &Resolution,
+        index: usize,
+        pattern: &TextPattern,
+        with: &TextPattern,
+    ) -> Option<Vec<u8>> {
+        match resolution {
+            Resolution::Known { encoding, body, .. } => {
+                let replaced = search::replace(&text[*body..], *encoding, pattern, with);
+                let edited = self.replaced(shown, index, *encoding, replaced)?;
+                let mut whole = text[..*body].to_vec();
+                whole.extend_from_slice(&edited);
+                Some(whole)
+            }
+            Resolution::Unknown(reason) => {
+                self.unknown(shown, text, reason, &[(index, pattern)]);
+                None
+            }
+            Resolution::Binary | Resolution::Refused(_) => None,
+        }
+    }
+
+    /// Records what replacing the pattern at `index` in a file in `encoding` found, and returns
+    /// the file's new text if the replace changed it.
+    fn replaced(
+        &mut self,
+        shown: &Path,
+        index: usize,
+        encoding: Encoding,
+        replaced: search::Replaced,
+    ) -> Option<Vec<u8>> {
+        let hits = |matches: Vec<Match>| -> Vec<Hit> {
+            matches
+                .into_iter()
+                .map(|at| Hit { at, text: None })
+                .collect()
+        };
+        match replaced {
+            search::Replaced::NotSearched => {
+                self.unspelled[index].push((shown.to_owned(), Unspelled::Ambiguous(encoding)));
+                None
+            }
+            search::Replaced::Edited { matches, text } => {
+                if !matches.is_empty() {
+                    self.matches[index].push((shown.to_owned(), hits(matches)));
+                }
+                text
+            }
+            search::Replaced::Unwritable {
+                matches,
+                text,
+                ambiguous,
+            } => {
+                self.matches[index].push((shown.to_owned(), hits(matches)));
+                self.unwritable[index].push((shown.to_owned(), encoding, text, ambiguous));
+                None
             }
         }
     }
@@ -913,6 +1441,14 @@ impl Searched {
     }
 }
 
+/// Where and why a Python file does not parse, as a message gives it.
+fn unparsed_at(unparsed: &structural::Unparsed) -> String {
+    format!(
+        "line {}, column {}: {}",
+        unparsed.at.line, unparsed.at.column, unparsed.message
+    )
+}
+
 /// Walking the steps in order over what the search found.
 struct Evaluation<'s> {
     searched: &'s Searched,
@@ -922,9 +1458,27 @@ struct Evaluation<'s> {
     next: usize,
     /// Notes and failed assertions, for standard error once the results are out.
     notes: Vec<String>,
+    /// How many matches the replaces replaced, and in which files.
+    replaced: usize,
+    replaced_in: std::collections::BTreeSet<&'s Path>,
+    /// For each pattern, where its replace was written, if it is a replace's.
+    locations: Vec<Option<String>>,
 }
 
-impl Evaluation<'_> {
+impl<'s> Evaluation<'s> {
+    /// An evaluation of what `searched` found, printing as it goes or not.
+    fn new(searched: &'s Searched, printing: bool, locations: Vec<Option<String>>) -> Self {
+        Evaluation {
+            searched,
+            printing,
+            next: 0,
+            notes: Vec::new(),
+            replaced: 0,
+            replaced_in: std::collections::BTreeSet::new(),
+            locations,
+        }
+    }
+
     fn steps(
         &mut self,
         steps: &[Step],
@@ -936,6 +1490,7 @@ impl Evaluation<'_> {
         for step in steps {
             match step {
                 Step::Find(pattern) => {
+                    self.refuse_broken_for(1)?;
                     let found = self.print_matches(*pattern, out)?;
                     if found == 0 {
                         self.notes.push(match self.nothing_applicable(*pattern) {
@@ -949,6 +1504,7 @@ impl Evaluation<'_> {
                 }
                 Step::Assert(block) => {
                     asserted = true;
+                    self.refuse_broken_for(block.len())?;
                     let mut failed = Vec::new();
                     // An assertion is decided by hits alone.  Possible matches, and files not
                     // searched for its pattern, are noted but never decide it, so that a file
@@ -973,12 +1529,57 @@ impl Evaluation<'_> {
                         }
                     }
                     if !failed.is_empty() {
+                        if self.replaced > 0 {
+                            failed.push(
+                                "nothing was written: the edits before the failed assertion are \
+                                 made only if every assertion holds"
+                                    .to_owned(),
+                            );
+                        }
                         // Before the other notes: they are about what was looked at, these
                         // are the answer.
                         failed.append(&mut self.notes);
                         self.notes = failed;
                         return Ok(Outcome::AssertionFailed);
                     }
+                }
+                Step::Replace(replacing) => {
+                    asserted = true;
+                    let index = self.next;
+                    let pattern = Wanted::Text(replacing.pattern);
+                    let found = self.print_matches(pattern, out)?;
+                    if !replacing.count.holds(found) {
+                        let location = built.locate(replacing.span, replacing.span.start);
+                        let mut failed = vec![format!(
+                            "{location}: expected {} of {} to replace, found {found}; nothing \
+                             was written",
+                            expected(replacing.count),
+                            quoted(pattern)
+                        )];
+                        failed.append(&mut self.notes);
+                        self.notes = failed;
+                        return Ok(Outcome::AssertionFailed);
+                    }
+                    let unwritable = &self.searched.unwritable[index];
+                    if !unwritable.is_empty() {
+                        return Err(Failure::Unwritable {
+                            files: unwritable
+                                .iter()
+                                .map(|(path, encoding, text, ambiguous)| Unwritable {
+                                    path: path.clone(),
+                                    encoding: name_of(*encoding),
+                                    text: text.clone(),
+                                    ambiguous: *ambiguous,
+                                })
+                                .collect(),
+                        });
+                    }
+                    self.replaced += usize::try_from(found).unwrap_or(usize::MAX);
+                    self.replaced_in.extend(
+                        self.searched.matches[index]
+                            .iter()
+                            .map(|(path, _)| path.as_path()),
+                    );
                 }
             }
         }
@@ -987,6 +1588,29 @@ impl Evaluation<'_> {
         } else {
             Outcome::NothingFound
         })
+    }
+
+    /// Refuses the run if the next `patterns` patterns need a Python file an earlier replace
+    /// left unparseable: the edit broke it, so they cannot be searched for in it.
+    fn refuse_broken_for(&self, patterns: usize) -> Result<(), Failure> {
+        let mut files: Vec<Broken> = Vec::new();
+        for broken in &self.searched.broken[self.next..self.next + patterns] {
+            for (path, why, by) in broken {
+                let file = Broken {
+                    path: path.clone(),
+                    why: why.clone(),
+                    by: located(by, &self.locations),
+                };
+                if !files.contains(&file) {
+                    files.push(file);
+                }
+            }
+        }
+        if files.is_empty() {
+            Ok(())
+        } else {
+            Err(Failure::BrokenByEdit { files })
+        }
     }
 
     /// Prints the next pattern's matches, `pattern`, and returns how many there were.
@@ -1327,6 +1951,7 @@ mod tests {
             run(
                 sources,
                 None,
+                false,
                 &dir,
                 &mut io::empty(),
                 &mut Closed,
@@ -1456,6 +2081,7 @@ mod tests {
                 source: cli::Source::Positional,
             })],
             None,
+            false,
             &dir,
             &mut io::empty(),
             &mut Vec::new(),
@@ -1516,6 +2142,7 @@ mod tests {
                 source: cli::Source::Positional,
             })],
             None,
+            false,
             &project,
             &mut io::empty(),
             &mut Vec::new(),
@@ -1552,6 +2179,7 @@ mod tests {
         let outcome = run(
             vec![SourceArg::File(script.clone().into_os_string())],
             None,
+            false,
             &dir,
             &mut io::empty(),
             &mut out,
@@ -1586,6 +2214,7 @@ mod tests {
             &[with, without],
             &dir,
             &[Wanted::Text(&pattern)],
+            &[None],
             &[],
             &mut declarations,
             None,
@@ -1594,6 +2223,188 @@ mod tests {
         let searched = searched.expect("searching");
         let listed: Vec<&PathBuf> = searched.matches[0].iter().map(|(path, _)| path).collect();
         assert_eq!(listed, [&PathBuf::from("with.txt")]);
+    }
+
+    #[test]
+    fn a_replace_this_build_cannot_run_is_named_where_it_was_written() {
+        let span = |start| Span {
+            source: 0,
+            start,
+            end: start + 1,
+        };
+        let text = |t: &str| Spanned::new(Operand::Text(TextPattern::literal(t)), span(0));
+        let count = vec![Spanned::new(Count::Any, span(9))];
+        let replace = |query: Query, expect: Vec<Spanned<Count>>| {
+            Action::new(ActionKind::Replace(text("b")), query, expect)
+        };
+        let scoped = Query::with(text("a"), vec![Spanned::new("x".into(), span(3))], None);
+        assert_eq!(
+            replacing(&replace(scoped, count.clone()), span(1)).err(),
+            Some(("an `in` clause", span(3)))
+        );
+        let filter = Spanned::new(
+            quaffed_representation::program::Filter::And(Vec::new()),
+            span(5),
+        );
+        let filtered = Query::with(text("a"), Vec::new(), Some(filter));
+        assert_eq!(
+            replacing(&replace(filtered, count.clone()), span(1)).err(),
+            Some(("a `where` clause", span(5)))
+        );
+        // The checker refuses an edit with no `expect` first; the planner still names it.
+        assert_eq!(
+            replacing(&replace(Query::new(text("a")), Vec::new()), span(1)).err(),
+            Some(("a replace with no `expect`", span(1)))
+        );
+        let delete = Action::new(ActionKind::Delete, Query::new(text("a")), count.clone());
+        assert_eq!(replacing(&delete, span(1)).err(), Some(("delete", span(1))));
+        let pattern = Spanned::new(Operand::Pattern("f()".into()), span(0));
+        let structural = Action::new(
+            ActionKind::Replace(pattern.clone()),
+            Query::new(pattern),
+            count,
+        );
+        assert_eq!(
+            replacing(&structural, span(1)).err(),
+            Some(("a structural replace", span(1)))
+        );
+    }
+
+    #[test]
+    fn the_refusals_of_an_edit_are_worded_for_one_file_and_for_many() {
+        let unwritable = |path: &str, ambiguous| Unwritable {
+            path: path.into(),
+            encoding: "mac_arabic",
+            text: "a b".into(),
+            ambiguous,
+        };
+        let one = Failure::Unwritable {
+            files: vec![unwritable("a.txt", true)],
+        }
+        .to_string();
+        assert!(
+            one.contains("\"a.txt\": mac_arabic spells \"a b\" more than one way"),
+            "{one}"
+        );
+        assert!(one.ends_with("Use a replacement its encoding can hold, or give a narrower scope on the command line to leave it out"), "{one}");
+        let many = Failure::Unwritable {
+            files: vec![unwritable("a.txt", false), unwritable("b.txt", false)],
+        }
+        .to_string();
+        assert!(many.contains("the encoding of 2 files"), "{many}");
+        assert!(
+            many.contains("a replacement their encodings can hold"),
+            "{many}"
+        );
+        assert!(many.ends_with("to leave them out"), "{many}");
+        let broken = Failure::BrokenByEdit {
+            files: vec![
+                Broken {
+                    path: "a.py".into(),
+                    why: "line 1, column 1: x".into(),
+                    by: vec![
+                        "-e expression 1, at character 1".into(),
+                        "-e expression 2, at character 1".into(),
+                    ],
+                },
+                Broken {
+                    path: "b.py".into(),
+                    why: "line 2, column 1: y".into(),
+                    by: Vec::new(),
+                },
+            ],
+        };
+        let message = broken.to_string();
+        assert_eq!(broken.exit_code(), 9);
+        assert!(
+            message.contains("2 Python files that parse unparseable"),
+            "{message}"
+        );
+        assert!(
+            message.contains("x; changed by the replace at -e expression 1, at character 1 and at -e expression 2, at character 1"),
+            "{message}"
+        );
+        assert!(
+            message.contains("\"b.py\": line 2, column 1: y\n"),
+            "{message}"
+        );
+        assert!(message.ends_with("so that the files still parse, or give a narrower scope on the command line to leave them out"), "{message}");
+        for failure in [
+            &broken,
+            &Failure::Unwritable {
+                files: vec![unwritable("a.txt", true), unwritable("b.txt", false)],
+            },
+        ] {
+            refuses_every_write(failure);
+        }
+    }
+
+    /// A destination refusing one write, the `refused`th from 0, and accepting every other, so
+    /// that a message dropping the refusal goes on to succeed.
+    struct Refusing {
+        writes: usize,
+        refused: Option<usize>,
+    }
+
+    impl fmt::Write for Refusing {
+        fn write_str(&mut self, _: &str) -> fmt::Result {
+            self.writes += 1;
+            if Some(self.writes - 1) == self.refused {
+                return Err(fmt::Error);
+            }
+            Ok(())
+        }
+    }
+
+    /// Displays `failure` into destinations that refuse its first write, then its second, and so
+    /// on to its last, and requires each refusal to end the message as an error, not be dropped.
+    fn refuses_every_write(failure: &dyn fmt::Display) {
+        let display = |refused| {
+            let mut destination = Refusing { writes: 0, refused };
+            fmt::Write::write_fmt(&mut destination, format_args!("{failure}"))
+                .map(|()| destination.writes)
+        };
+        let writes = display(None).unwrap();
+        assert!(writes > 1, "{failure} was written in {writes} writes");
+        for refused in 0..writes {
+            assert!(
+                display(Some(refused)).is_err(),
+                "a refusal of write {} of {writes} was dropped: {failure}",
+                refused + 1
+            );
+        }
+    }
+
+    #[test]
+    fn a_write_failure_exits_7_with_the_systems_error_on_the_chain() {
+        use std::error::Error as _;
+        let failure = Failure::Write(write::Failure::Open {
+            path: "a.txt".into(),
+            cause: io::Error::from(io::ErrorKind::PermissionDenied),
+        });
+        assert_eq!(failure.exit_code(), 7);
+        let cause = failure
+            .source()
+            .and_then(|err| err.source())
+            .map(ToString::to_string);
+        assert_eq!(
+            cause,
+            Some(io::Error::from(io::ErrorKind::PermissionDenied).to_string())
+        );
+        refuses_every_write(&Failure::Write(write::Failure::Write {
+            path: "a.txt".into(),
+            cause: io::Error::from(io::ErrorKind::StorageFull),
+            unrestored: vec![
+                (
+                    "a.txt".into(),
+                    io::Error::from(io::ErrorKind::PermissionDenied),
+                ),
+                (
+                    "b.txt".into(),
+                    io::Error::from(io::ErrorKind::PermissionDenied),
+                ),
+            ],
+        }));
     }
 
     #[test]

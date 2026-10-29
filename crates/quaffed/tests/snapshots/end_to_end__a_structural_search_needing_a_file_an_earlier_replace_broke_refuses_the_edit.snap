@@ -1,0 +1,16 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "replace string \"(x)\" with \"(x\" expect 1\nfind `f($a)`"
+---
+success: false
+exit_code: 9
+----- stdout -----
+
+----- stderr -----
+quaff: refused: the edit would leave 1 Python file that parses unparseable, so nothing was written:
+  "fine.py": line 2, column 5: Expected an expression; changed by the replace at -e expression 1, at character 1
+Change the replacement so that the file still parses, or give a narrower scope on the command line to leave it out

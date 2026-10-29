@@ -277,11 +277,11 @@ jobs:
         run: |
           worse="$(scripts/break-budgets "$RUNNER_TEMP/worse")"
           check() {
-            how="$1" expected="$2"
+            how="$1" expected="$2" scenario="${3:-search}"
             # These failures are expected: neither annotated as errors nor added to the job
             # summary, which report the real budgets.
             if env -u GITHUB_STEP_SUMMARY GITHUB_ACTIONS=false \
-                scripts/budgets "$worse" --scenario search --env "QUAFFED_WORSEN=$how" \
+                scripts/budgets "$worse" --scenario "$scenario" --env "QUAFFED_WORSEN=$how" \
                 --out "$RUNNER_TEMP/worse-out" >/dev/null 2>"$RUNNER_TEMP/err"; then
               echo "::error::scripts/budgets passed a build worsened as $how"
               exit 1
@@ -294,8 +294,9 @@ jobs:
           }
           check instructions "search instructions: limit"
           check memory "search peak_memory_kib: limit"
-          check "read-twice:{project}/modules/statements.py" "'modules/statements.py' in the project was opened 2 times"
+          check "read-twice:{project}/modules/statements.py" "'modules/statements.py' in the project was opened to read 2 times"
           check outside "'/etc/passwd', outside the project, was opened"
+          check "write-again:{project}/modules/statements.py" "'modules/statements.py' in the project was opened to write 3 times" edit
 
       # Saved whether or not the budgets held: the traces are what a reviewer reads to judge
       # whether a moved budget is still correct behaviour.

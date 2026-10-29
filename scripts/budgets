@@ -6,19 +6,22 @@ fast the machine is:
 
 - under Valgrind's callgrind, for the instructions it executes;
 - natively under GNU time, for its peak resident memory;
-- under strace, for the files it opens and the bytes it reads from them.
+- under strace, for the files it opens and the bytes it reads from them, and the files it opens
+  to write.
 
 Instructions and memory are held to a limit with a margin, since they move slightly with the
 operating system image and the Valgrind version.  The files are held exactly: how many paths in
-the project are opened and how many bytes are read from them must equal budgets.toml, no path
-in the project may be opened twice, and nothing outside the project may be opened but what
-budgets.toml allows.  architecture/performance.md has the reasoning and how to change a limit.
+the project are opened to read, how many bytes are read from them and how many paths are opened
+to write must equal budgets.toml, no path in the project may be opened to read twice or to
+write twice, and nothing outside the project may be opened but what budgets.toml allows.
+architecture/performance.md has the reasoning and how to change a limit.
 
     scripts/budgets BINARY [--repeat N] [--out DIR] [--env NAME=VALUE ...] [--scenario NAME ...]
                     [--json FILE]
 
 The scenarios run on a scratch copy of corpus/synthetic, made a project root with an empty
-`.git`, so nothing else in the checkout can move a budget.  Every trace is kept under DIR
+`.git`, so nothing else in the checkout can move a budget.  A scenario that edits gets a fresh
+copy, at the same path, before every run of quaff.  Every trace is kept under DIR
 (default target/budgets), each run's under names carrying its index: the callgrind profile and
 its annotated report, the strace log, and a list of every path opened with the bytes read from
 it, which is what a reviewer reads to judge whether a moved budget is still correct behaviour.
@@ -61,11 +64,19 @@ ROOT = Path(__file__).resolve().parent.parent
 # Each scenario: what it runs in, quaff's arguments, and the exit status a correct run gives.
 # startup searches a project with nothing in it, so what it costs is quaff starting up; search
 # is a search of the whole synthetic corpus; scope names a directory in it, so the walk is
-# narrowed to a scope as it goes down.
+# narrowed to a scope as it goes down; edit replaces text across the corpus, so its Python files
+# are also parsed before and after, and every file changed is written.  A scenario that edits
+# runs on a fresh copy each time, since each run changes it.
 SCENARIOS = {
     "startup": {"project": "empty", "args": ["TODO"], "exit": 1},
     "search": {"project": "corpus", "args": ["def"], "exit": 0},
     "scope": {"project": "corpus", "args": ["def", "modules"], "exit": 0},
+    "edit": {
+        "project": "edited",
+        "args": ["-e", 'replace string "def " with "def  " expect any'],
+        "exit": 0,
+        "fresh": True,
+    },
 }
 
 # The margin each limit with one carries over the worst measured run: repeated runs differ by a
@@ -128,6 +139,7 @@ def run_all(args):
     # The random part of the name is always the same length, and its characters do not matter.
     with tempfile.TemporaryDirectory(prefix="quaffed-budgets-", dir="/tmp") as scratch:
         projects = make_projects(Path(scratch))
+        corpus = ROOT / "corpus" / "synthetic"
         for name in names:
             scenario = SCENARIOS[name]
             project = projects[scenario["project"]]
@@ -142,8 +154,20 @@ def run_all(args):
                 raise Unmeasured(f"budgets.toml has no [{name}] table")
             if args.repeat < 1:
                 raise Unmeasured(f"--repeat {args.repeat} measures nothing")
+            if scenario.get("fresh"):
+
+                def reset(project=project):
+                    shutil.rmtree(project)
+                    shutil.copytree(corpus, project)
+                    (project / ".git").mkdir()
+
+            else:
+
+                def reset():
+                    pass
+
             runs = [
-                measure(name, scenario, binary, project, env, args.out, index)
+                measure(name, scenario, binary, project, env, args.out, index, reset)
                 for index in range(1, args.repeat + 1)
             ]
             measured = worst(name, runs)
@@ -181,6 +205,7 @@ def write_json(path, rows):
                 "peak_memory_kib",
                 "paths_opened",
                 "bytes_read",
+                "paths_written",
             )
         }
         for name, measured, _ in rows
@@ -207,21 +232,29 @@ def make_projects(scratch):
     corpus = ROOT / "corpus" / "synthetic"
     if not any(corpus.rglob("*")):
         raise Unmeasured(f"the synthetic corpus at {str(corpus)!r} is empty")
-    projects = {"empty": scratch / "empty", "corpus": scratch / "corpus"}
+    # "edited" is as long as "corpus", so the two scenarios' paths are the same length too.
+    projects = {
+        "empty": scratch / "empty",
+        "corpus": scratch / "corpus",
+        "edited": scratch / "edited",
+    }
     projects["empty"].mkdir()
     shutil.copytree(corpus, projects["corpus"])
+    shutil.copytree(corpus, projects["edited"])
     for project in projects.values():
         (project / ".git").mkdir()
     return projects
 
 
-def measure(name, scenario, binary, project, env, out, index):
+def measure(name, scenario, binary, project, env, out, index, reset):
     """Instructions, peak memory and file access for one run of a scenario, keeping every trace
-    under names that carry the run's index, so no run's overwrites another's."""
+    under names that carry the run's index, so no run's overwrites another's.  `reset` is called
+    before each run of quaff, to give a scenario that edits its project a fresh copy."""
     command = [str(binary), *scenario["args"]]
     expected = scenario["exit"]
     stem = f"{name}.{index}"
 
+    reset()
     profile = out / f"{stem}.callgrind"
     run(
         ["valgrind", "--tool=callgrind", f"--callgrind-out-file={profile}", *command],
@@ -234,8 +267,10 @@ def measure(name, scenario, binary, project, env, out, index):
     report = run(["callgrind_annotate", str(profile)], project, BASE_ENV, 0, "callgrind_annotate")
     (out / f"{stem}.callgrind.txt").write_text(report, encoding="utf-8")
 
+    reset()
     memory = peak_memory(command, project, env, expected, out, stem)
 
+    reset()
     log = out / f"{stem}.strace"
     run(
         [
@@ -257,9 +292,13 @@ def measure(name, scenario, binary, project, env, out, index):
         f"{name} under strace",
     )
     access = file_access(log)
-    lines = [f"{opens}\t{read}\t{path}" for path, (opens, read) in sorted(access.items())]
+    lines = [
+        f"{opens}\t{read}\t{writes}\t{path}"
+        for path, (opens, read, writes) in sorted(access.items())
+    ]
     (out / f"{stem}.files.txt").write_text(
-        "opens\tbytes read\tpath\n" + "\n".join(lines) + "\n", encoding="utf-8"
+        "opens to read\tbytes read\topens to write\tpath\n" + "\n".join(lines) + "\n",
+        encoding="utf-8",
     )
     inside = {
         path: counts
@@ -270,8 +309,9 @@ def measure(name, scenario, binary, project, env, out, index):
         "run": index,
         "instructions": instructions,
         "peak_memory_kib": memory,
-        "paths_opened": len(inside),
-        "bytes_read": sum(read for _, read in inside.values()),
+        "paths_opened": sum(1 for opens, _, _ in inside.values() if opens),
+        "bytes_read": sum(read for _, read, _ in inside.values()),
+        "paths_written": sum(1 for _, _, writes in inside.values() if writes),
         "inside": inside,
         "outside": sorted(set(access) - set(inside)),
     }
@@ -338,8 +378,10 @@ def peak_memory(command, cwd, env, expected, out, name):
         raise Unmeasured(f"reading the peak memory from {str(record)!r}: {err}") from err
 
 
-# A successful open, with strace -y's annotation of the descriptor: `= 3</path>`.
-OPENED = re.compile(r"^\d+\s+(?:open|openat|openat2)\(.*\) = \d+<(.*)>$")
+# A successful open, with strace -y's annotation of the descriptor: `= 3</path>`.  Its flags,
+# among the arguments, say whether it opens to write.
+OPENED = re.compile(r"^\d+\s+(?:open|openat|openat2)\((.*)\) = \d+<(.*)>$")
+WRITING = re.compile(r"\bO_(?:WRONLY|RDWR)\b")
 # A read from a descriptor strace -y annotated: `read(3</path>, ...) = 12`.
 READ = re.compile(r"^\d+\s+(?:read|pread64|readv|preadv|preadv2)\(\d+<(.*?)>, .*\) = (\d+)$")
 # A call split across two lines by another thread: `<unfinished ...>`, then `<... resumed>`.
@@ -348,12 +390,13 @@ RESUMED = re.compile(r"^(\d+)\s+<\.\.\. \w+ resumed>(.*)$")
 
 
 def file_access(log):
-    """Each path opened, with how many times and how many bytes were read from it."""
+    """Each path opened, with how many times it was opened to read, how many bytes were read from
+    it, and how many times it was opened to write."""
     try:
         text = log.read_text(encoding="utf-8", errors="replace")
     except OSError as err:
         raise Unmeasured(f"reading {str(log)!r}: {err}") from err
-    access = defaultdict(lambda: [0, 0])
+    access = defaultdict(lambda: [0, 0, 0])
     pending = {}
     for line in text.splitlines():
         if m := UNFINISHED.match(line):
@@ -362,7 +405,7 @@ def file_access(log):
         if m := RESUMED.match(line):
             line = f"{m.group(1)} {pending.pop(m.group(1), '')}{m.group(2)}"
         if m := OPENED.match(line):
-            access[normalise(m.group(1))][0] += 1
+            access[normalise(m.group(2))][2 if WRITING.search(m.group(1)) else 0] += 1
         elif m := READ.match(line):
             access[normalise(m.group(1))][1] += int(m.group(2))
     if not access:
@@ -387,15 +430,23 @@ def judge(name, measured, limits, outside, project):
             failures.append(
                 f"{name} {budget}: limit {limit:,}, measured {measured[budget]:,}{over}"
             )
-    for path, (opens, _) in sorted(measured["inside"].items()):
+    for path, (opens, _, writes) in sorted(measured["inside"].items()):
+        shown = Path(path).relative_to(project)
         if opens > 1:
-            shown = Path(path).relative_to(project)
-            failures.append(f"{name}: {str(shown)!r} in the project was opened {opens} times")
+            failures.append(
+                f"{name}: {str(shown)!r} in the project was opened to read {opens} times"
+            )
+        # An edit opens a file to write twice: to check it can be written before any file is, then
+        # to write it.  A third open is a second write, or a restore that should not have happened.
+        if writes > 2:
+            failures.append(
+                f"{name}: {str(shown)!r} in the project was opened to write {writes} times"
+            )
     allowed = set(outside.get("allowed", []))
     for path in measured["outside"]:
         if not any(fnmatch.fnmatchcase(path, pattern) for pattern in allowed):
             failures.append(f"{name}: {path!r}, outside the project, was opened")
-    for budget in ("paths_opened", "bytes_read"):
+    for budget in ("paths_opened", "bytes_read", "paths_written"):
         value = measured[budget]
         limit = limits.get(budget)
         if limit is None:
@@ -415,11 +466,17 @@ def render(rows, failures, out):
         "| --- | --- | --- | --- | --- | --- | --- |",
     ]
     for name, measured, limits in rows:
-        for budget in ("instructions", "peak_memory_kib", "paths_opened", "bytes_read"):
+        for budget in (
+            "instructions",
+            "peak_memory_kib",
+            "paths_opened",
+            "bytes_read",
+            "paths_written",
+        ):
             value = measured[budget]
             low, high = measured.get(f"{budget}_spread", (value, value))
             spread = f"{low:,} - {high:,} ({(high - low) / low:.2%})" if low else "exact"
-            if budget in ("paths_opened", "bytes_read"):
+            if budget in ("paths_opened", "bytes_read", "paths_written"):
                 spread = "exact"
             margin = MARGINS.get(budget)
             # Rounded up to a hundred, so a limit is easy to read and never below the margin.

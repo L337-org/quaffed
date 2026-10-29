@@ -1,0 +1,19 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "replace string \";\" with \"\" $^ \"\" expect 5"
+---
+success: true
+exit_code: 0
+----- stdout -----
+crlf.txt:1:2-1:2: ;
+lf.txt:1:2-1:2: ;
+mixed.txt:1:2-1:2: ;
+mixed.txt:2:2-2:2: ;
+none.txt:1:2-1:2: ;
+
+----- stderr -----
+quaff: replaced 5 matches in 4 files

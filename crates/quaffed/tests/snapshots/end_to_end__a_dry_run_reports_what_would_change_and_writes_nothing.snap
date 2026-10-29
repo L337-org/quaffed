@@ -1,0 +1,18 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "--dry-run"
+    - "-e"
+    - "replace string \"TODO\" with \"DONE\" expect 3"
+---
+success: true
+exit_code: 0
+----- stdout -----
+a.txt:1:1-1:4: TODO
+a.txt:2:1-2:4: TODO
+b.txt:1:1-1:4: TODO
+
+----- stderr -----
+quaff: dry run: 3 matches in 2 files would be replaced; nothing was written

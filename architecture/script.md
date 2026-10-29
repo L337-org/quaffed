@@ -91,11 +91,12 @@ character.
 ## Running a script
 
 The command line (`crates/quaffed/src/run.rs`) parses every source into one `Program`, runs the
-checker, then refuses anything this build cannot yet run - an `in` or `where` clause, and
-`replace` and `delete` - each exit 5 at where it was written.  It compiles every backticked
-pattern, so one that is not a pattern is exit 3 there too.  Only then does it look at a file.
-Every file is read once, for every query in the program, and the statements are evaluated in
-order over the results.  Output, notes, assertion failures and exit codes are in `search.md`.
+checker, then refuses anything this build cannot yet run - an `in` or `where` clause, a
+structural `replace`, and `delete` - each exit 5 at where it was written.  It compiles every
+backticked pattern, so one that is not a pattern is exit 3 there too.  Only then does it look at
+a file.  Every file is read once, and taken through the statements in order, so a statement sees
+the edits before it; the statements are then evaluated in order over the results.  Editing,
+output, notes, assertion failures and exit codes are in `search.md`.
 
 ## Properties
 
