@@ -331,9 +331,11 @@ fn commit_with<T: Target>(
         })?);
     }
     for (written, edit) in edits.iter().enumerate() {
-        if let Err(cause) = write(&mut open, flush, edit.path, edit.edited) {
-            // The one that failed may be half-written, so it is put back too.
-            let (unrestored, unflushed) = put_back_all(&edits[..=written], &mut open, flush);
+        if let Err((cause, opened)) = write(&mut open, flush, edit.path, edit.edited) {
+            // One that failed once opened may be half-written, so it is put back too; one that
+            // could not be opened is untouched, and is not reported as possibly changed.
+            let failed = if opened { written + 1 } else { written };
+            let (unrestored, unflushed) = put_back_all(&edits[..failed], &mut open, flush);
             return Err(Failure::Write {
                 path: edit.shown.to_path_buf(),
                 cause,
@@ -354,16 +356,19 @@ fn commit_with<T: Target>(
     Ok(())
 }
 
-/// Opens `path`, makes its contents `bytes`, and runs the per-file flush hook on it.
+/// Opens `path`, makes its contents `bytes`, and runs the per-file flush hook on it.  A failure
+/// says whether the file had been opened, and so may have been changed.
 fn write<T: Target>(
     open: &mut impl FnMut(&Path) -> io::Result<T>,
     flush: &impl Flush<T>,
     path: &Path,
     bytes: &[u8],
-) -> io::Result<()> {
-    let mut target = open(path)?;
-    target.overwrite(bytes)?;
-    flush.file(&mut target)
+) -> Result<(), (io::Error, bool)> {
+    let mut target = open(path).map_err(|cause| (cause, false))?;
+    target
+        .overwrite(bytes)
+        .and_then(|()| flush.file(&mut target))
+        .map_err(|cause| (cause, true))
 }
 
 /// Writes each of `edits` back from its original bytes, flushing each and then all of them, so
@@ -685,9 +690,24 @@ mod tests {
         let failure = commit_to(&disk, &edits, &[]).unwrap_err();
         assert_eq!(contents(&disk, "a"), "old a");
         assert_eq!(contents(&disk, "b"), "old b");
+        // b was never written, so only a is put back, and b is not reported as possibly changed.
+        assert_eq!(
+            log(&disk),
+            [
+                "write a \"new a\"",
+                "flush a",
+                "write a \"old a\"",
+                "flush a",
+                "commit a",
+            ]
+        );
         let message = failure.to_string();
         assert!(
             message.starts_with("writing the edits to \"b\": "),
+            "{message}"
+        );
+        assert!(
+            message.ends_with("; every file written was put back as it was, so nothing is changed"),
             "{message}"
         );
     }
