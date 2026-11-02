@@ -66,6 +66,12 @@ impl Scratch {
     }
 
     fn judge(&self, names: &[&str]) -> Output {
+        let paths: Vec<String> = names.iter().map(|name| self.path(name)).collect();
+        self.judge_paths(&paths)
+    }
+
+    /// Runs the oracle on `paths` exactly as written.
+    fn judge_paths(&self, paths: &[String]) -> Output {
         let script = workspace_root().join("scripts/oracle-python");
         let manifest = self.path("manifest.toml");
         let mut args = vec![
@@ -73,7 +79,7 @@ impl Scratch {
             "--manifest".to_owned(),
             manifest,
         ];
-        args.extend(names.iter().map(|name| self.path(name)));
+        args.extend(paths.iter().cloned());
         python(&args.iter().map(String::as_str).collect::<Vec<_>>())
     }
 }
@@ -137,4 +143,26 @@ fn another_python_than_the_oracle_is_refused() {
         "{}",
         stderr(&out)
     );
+}
+
+#[test]
+fn a_refused_path_is_printed_exactly_as_given() {
+    let scratch = Scratch::new(&python_version(), &[("bad.py", "def f(:\n")]);
+    // A path library would tidy these into one plain path, which the harness was not given.
+    let given = [
+        format!("{}//bad.py", scratch.0.display()),
+        format!("{}/./bad.py", scratch.0.display()),
+    ];
+    let out = scratch.judge_paths(&given);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let printed: Vec<String> = stdout(&out)
+        .lines()
+        .map(|line| {
+            line.split_once('\t')
+                .expect("a path and a reason")
+                .0
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(printed, given);
 }

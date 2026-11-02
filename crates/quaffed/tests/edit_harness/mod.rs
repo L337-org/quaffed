@@ -319,32 +319,22 @@ impl fmt::Display for Failure {
     }
 }
 
-/// Runs every case over every language it names, in `corpus`, and returns every failure.
-///
-/// It fails rather than passes when there is nothing to check: no case, a language with no
-/// files, a case naming a language the table lacks, a structural language whose oracle cannot
-/// run, a case matching or editing nothing, or a declaration of encoding in the corpus that the
-/// harness does not read.
-pub fn check(
-    cases: &[Case],
-    languages: &[Language],
-    corpus: &Files,
-    quaff: &dyn Quaff,
-) -> Vec<Failure> {
-    let guard = |what: String| Failure {
+/// A failure of the harness itself rather than of an edit: what it could not check.
+fn guard(what: String) -> Failure {
+    Failure {
         case: "-".into(),
         language: "-".into(),
         invariant: Invariant::Harness,
         reapplying: false,
         file: None,
         what,
-    };
-    let mut failures = Vec::new();
-    if cases.is_empty() {
-        failures.push(guard(
-            "no operation is registered, so nothing was checked".into(),
-        ));
     }
+}
+
+/// The failures the corpus's files give before any edit: a declaration of encodings the harness
+/// does not read, and a file claimed by no language or by more than one.
+fn corpus_guards(languages: &[Language], corpus: &Files) -> Vec<Failure> {
+    let mut failures = Vec::new();
     // quaff reads an encoding from these, and the harness places matches without them, so a
     // corpus holding one is reported rather than mis-judged.
     for path in corpus.keys() {
@@ -357,6 +347,46 @@ pub fn check(
             )));
         }
     }
+    // Each file is one language's, so none goes unchecked and none is judged by two sets of rules.
+    for path in corpus.keys() {
+        let claimed: Vec<&str> = languages
+            .iter()
+            .filter(|language| (language.claims)(path))
+            .map(|language| language.name)
+            .collect();
+        if claimed.is_empty() {
+            failures.push(guard(format!(
+                "{path:?} is claimed by no language, so no edit of it is checked"
+            )));
+        } else if claimed.len() > 1 {
+            failures.push(guard(format!(
+                "{path:?} is claimed by more than one language, {claimed:?}, so it would be judged \
+                 by each one's rules; a file must be one language's"
+            )));
+        }
+    }
+    failures
+}
+
+/// Runs every case over every language it names, in `corpus`, and returns every failure.
+///
+/// It fails rather than passes when there is nothing to check: no case, a language with no
+/// files, a file claimed by no language or by more than one, a case naming a language the table
+/// lacks, a structural language whose oracle cannot run, a case matching or editing nothing, or a
+/// declaration of encoding in the corpus that the harness does not read.
+pub fn check(
+    cases: &[Case],
+    languages: &[Language],
+    corpus: &Files,
+    quaff: &dyn Quaff,
+) -> Vec<Failure> {
+    let mut failures = Vec::new();
+    if cases.is_empty() {
+        failures.push(guard(
+            "no operation is registered, so nothing was checked".into(),
+        ));
+    }
+    failures.extend(corpus_guards(languages, corpus));
     for language in languages {
         if !corpus.keys().any(|path| (language.claims)(path)) {
             failures.push(Failure {

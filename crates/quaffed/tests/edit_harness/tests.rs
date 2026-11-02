@@ -328,8 +328,7 @@ fn a_failure_names_the_operation_the_language_the_invariant_and_the_file() {
 }
 
 /// The running `python3` as the oracle: `scripts/oracle-python` with a manifest naming its own
-/// version, so the script's version check passes, as `check_synthetic.rs` does.  The ordinary
-/// test run has `python3` but not the oracle's exact release.
+/// version, so the script's version check passes, as `check_synthetic.rs` does.
 struct Python {
     dir: PathBuf,
 }
@@ -781,6 +780,36 @@ fn a_declaration_of_encodings_in_the_corpus_is_reported_not_misread() {
             .iter()
             .any(|f| f.invariant == Invariant::Harness
                 && f.what.starts_with("\"sub/.editorconfig\"")),
+        "{failures:#?}"
+    );
+}
+
+#[test]
+fn a_file_no_language_claims_is_reported() {
+    let python = Python::new();
+    let only_python: Vec<Language> = languages(&python)
+        .into_iter()
+        .filter(|language| language.name == "Python")
+        .collect();
+    let failures = check(&[WORD], &only_python, &project(), &Binary);
+    assert!(
+        failures.iter().any(|f| f.invariant == Invariant::Harness
+            && f.what
+                .ends_with("is claimed by no language, so no edit of it is checked")),
+        "{failures:#?}"
+    );
+}
+
+#[test]
+fn a_file_two_languages_claim_is_reported() {
+    let python = Python::new();
+    let mut overlapping = languages(&python);
+    overlapping[1].claims = |_| true;
+    let failures = check(&[WORD], &overlapping, &project(), &Binary);
+    assert!(
+        failures.iter().any(|f| f.invariant == Invariant::Harness
+            && f.what
+                .contains("is claimed by more than one language, [\"Python\", \"text\"]")),
         "{failures:#?}"
     );
 }

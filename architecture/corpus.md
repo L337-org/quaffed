@@ -61,9 +61,9 @@ manifest entry and the script are unchanged.  `refused.txt` is generated, never 
 ### In CI
 
 The **Real-world corpus** job in `premerge.yaml` runs `scripts/check-synthetic` and
-`scripts/fetch-corpus`, then the round trip, `scripts/count-structural` and the structural counts.
-`crates/quaffed/tests/fetch_corpus.rs` and `check_synthetic.rs` test the scripts themselves in the
-ordinary run.
+`scripts/fetch-corpus`, then the round trip, the edit invariants, `scripts/count-structural` and
+the structural counts.  `crates/quaffed/tests/fetch_corpus.rs`, `check_synthetic.rs` and
+`oracle_python.rs` test the scripts themselves in the ordinary run.
 
 ### Checklist: moving the pin to a new CPython release
 
@@ -75,6 +75,8 @@ ordinary run.
 5. Run the round trip, `cargo test -p quaffed-python --test round_trip -- --ignored`.  Syntax the
    new oracle accepts and the pinned Ruff refuses means upgrading Ruff first, by the checklist in
    `python.md`.
+6. Run the edit invariants' corpus run, below, with the new Python: `scripts/oracle-python` reads
+   the same pin, so the harness's oracle moves with it.
 
 ## The round trip
 
@@ -144,9 +146,10 @@ case, over each language it names, `find` gives the count `N`, and then:
 and logs how long it took, so that a new language or case adds its own time rather than
 lengthening the others', and the slowest is named in the log.
 
-**It fails rather than passes** when nothing is registered, a language has no files, a case
-matches or edits nothing, a structural language's oracle cannot run, or the corpus holds a
-`.gitattributes` or `.editorconfig`, whose encodings the harness does not read.
+**It fails rather than passes** when nothing is registered, a language has no files, a file is
+claimed by no language or by more than one, a case matches or edits nothing, a structural language's
+oracle cannot run, or the corpus holds a `.gitattributes` or `.editorconfig`, whose encodings the
+harness does not read.
 
 **The harness is tested before it is trusted**: `tests/edit_harness/tests.rs` checks its parts on
 small inputs, and runs each check against a `quaff` broken on purpose in one way, in the ordinary
@@ -174,7 +177,8 @@ the path as given, a tab, and its reason.  It exits 0 only once it has judged ev
 ### Checklist: adding a language
 
 1. Add a `Language` to `languages()`: its name, which files it claims, matching how quaff decides
-   the language, and its oracle; take the files out of text's claim.
+   the language, and its oracle.  Take the files out of text's claim: the harness fails on a file
+   claimed by two languages, or by none.
 2. Write its oracle to the contract above, as `scripts/oracle-<language>`, with a test like
    `oracle_python.rs`, and install what it runs in the **Real-world corpus** job.
 3. Add the language's files to the synthetic corpus, and to the real-world corpus if it has some.

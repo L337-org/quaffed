@@ -40,6 +40,24 @@ pub struct Edit<'a> {
     pub edited: &'a [u8],
 }
 
+/// A flush that failed after files were put back, leaving them as they were but perhaps not on
+/// disk.
+#[derive(Debug)]
+pub enum Unflushed {
+    /// One file's flush, after its original bytes were written back.
+    File {
+        /// The file, as a message shows it.
+        path: PathBuf,
+        /// The system's error, verbatim.
+        cause: io::Error,
+    },
+    /// The flush of every file put back.
+    All {
+        /// The system's error, verbatim.
+        cause: io::Error,
+    },
+}
+
 /// Why the edits were not all written.  Every case exits 7, and says what state it left.
 #[derive(Debug)]
 pub enum Failure {
@@ -58,8 +76,8 @@ pub enum Failure {
         cause: io::Error,
         /// Files that could not be written back, left changed or half-written, with why.
         unrestored: Vec<(PathBuf, io::Error)>,
-        /// Why the files written back could not be flushed to disk, if they could not.
-        unconfirmed: Option<io::Error>,
+        /// Flushes of the files written back that failed.
+        unflushed: Vec<Unflushed>,
     },
     /// Every file was written, but flushing them all to disk failed, so they were written back.
     Flush {
@@ -67,8 +85,8 @@ pub enum Failure {
         cause: io::Error,
         /// Files that could not be written back, left changed or half-written, with why.
         unrestored: Vec<(PathBuf, io::Error)>,
-        /// Why the files written back could not be flushed to disk, if they could not.
-        unconfirmed: Option<io::Error>,
+        /// Flushes of the files written back that failed.
+        unflushed: Vec<Unflushed>,
     },
 }
 
@@ -83,53 +101,63 @@ impl fmt::Display for Failure {
                 path,
                 cause,
                 unrestored,
-                unconfirmed,
+                unflushed,
             } => {
                 write!(f, "writing the edits to {path:?}: {cause}")?;
-                put_back(f, unrestored, unconfirmed.as_ref())
+                put_back(f, unrestored, unflushed)
             }
             Failure::Flush {
                 cause,
                 unrestored,
-                unconfirmed,
+                unflushed,
             } => {
                 write!(f, "flushing the edits to disk: {cause}")?;
-                put_back(f, unrestored, unconfirmed.as_ref())
+                put_back(f, unrestored, unflushed)
             }
         }
     }
 }
 
-/// Says what putting the written files back left: every one as it was, or which could not be.
+/// What a message says when every file written was put back.
+const ALL_PUT_BACK: &str = "; every file written was put back as it was, so nothing is changed";
+
+/// What a message says before listing the flushes of files put back that failed.
+const UNFLUSHED: &str =
+    "\nThe files put back could not all be flushed to disk, so a power loss could still lose them:";
+
+/// Says what putting the written files back left: every one as it was, or which could not be,
+/// and which flushes of them failed.
 fn put_back(
     f: &mut fmt::Formatter<'_>,
     unrestored: &[(PathBuf, io::Error)],
-    unconfirmed: Option<&io::Error>,
+    unflushed: &[Unflushed],
 ) -> fmt::Result {
     if unrestored.is_empty() {
-        write!(
-            f,
-            "; every file written was put back as it was, so nothing is changed"
-        )?;
+        f.write_str(ALL_PUT_BACK)?;
     } else {
+        let (it, was, is) = if unrestored.len() == 1 {
+            ("it", "was", "is")
+        } else {
+            ("they", "were", "are")
+        };
+        let n = count(unrestored.len());
         write!(
             f,
-            "; {} could not be put back as {} {}, and {} left changed or half-written:",
-            count(unrestored.len()),
-            if unrestored.len() == 1 { "it" } else { "they" },
-            if unrestored.len() == 1 { "was" } else { "were" },
-            if unrestored.len() == 1 { "is" } else { "are" },
+            "; {n} could not be put back as {it} {was}, and {is} left changed or"
         )?;
+        f.write_str(" half-written:")?;
         for (path, why) in unrestored {
             write!(f, "\n  {path:?}: {why}")?;
         }
     }
-    if let Some(why) = unconfirmed {
-        write!(
-            f,
-            "\nThe files put back could not be flushed to disk, so a power loss could still lose \
-             them: {why}"
-        )?;
+    if !unflushed.is_empty() {
+        f.write_str(UNFLUSHED)?;
+    }
+    for failed in unflushed {
+        match failed {
+            Unflushed::File { path, cause } => write!(f, "\n  {path:?}: {cause}")?,
+            Unflushed::All { cause } => write!(f, "\n  flushing them all: {cause}")?,
+        }
     }
     Ok(())
 }
@@ -305,22 +333,22 @@ fn commit_with<T: Target>(
     for (written, edit) in edits.iter().enumerate() {
         if let Err(cause) = write(&mut open, flush, edit.path, edit.edited) {
             // The one that failed may be half-written, so it is put back too.
-            let (unrestored, unconfirmed) = put_back_all(&edits[..=written], &mut open, flush);
+            let (unrestored, unflushed) = put_back_all(&edits[..=written], &mut open, flush);
             return Err(Failure::Write {
                 path: edit.shown.to_path_buf(),
                 cause,
                 unrestored,
-                unconfirmed,
+                unflushed,
             });
         }
     }
     let paths: Vec<&Path> = edits.iter().map(|edit| edit.path).collect();
     if let Err(cause) = flush.commit(&paths) {
-        let (unrestored, unconfirmed) = put_back_all(edits, &mut open, flush);
+        let (unrestored, unflushed) = put_back_all(edits, &mut open, flush);
         return Err(Failure::Flush {
             cause,
             unrestored,
-            unconfirmed,
+            unflushed,
         });
     }
     Ok(())
@@ -338,28 +366,40 @@ fn write<T: Target>(
     flush.file(&mut target)
 }
 
-/// Writes each of `edits` back from its original bytes, then flushes the ones that were, so that
-/// recovery is as durable as the edit would have been.  Returns the files that could not be put
-/// back, and why those that were could not be flushed, if they could not.
+/// Writes each of `edits` back from its original bytes, flushing each and then all of them, so
+/// that recovery is as durable as the edit would have been.  Returns the files that could not be
+/// put back, and the flushes that failed.  A file whose bytes were written back but not flushed
+/// counts as put back, since it holds its original bytes, and is flushed with the rest.
 fn put_back_all<T: Target>(
     edits: &[Edit],
     open: &mut impl FnMut(&Path) -> io::Result<T>,
     flush: &impl Flush<T>,
-) -> (Vec<(PathBuf, io::Error)>, Option<io::Error>) {
+) -> (Vec<(PathBuf, io::Error)>, Vec<Unflushed>) {
     let mut unrestored = Vec::new();
+    let mut unflushed = Vec::new();
     let mut restored = Vec::new();
     for edit in edits {
-        match write(open, flush, edit.path, edit.original) {
-            Ok(()) => restored.push(edit.path),
+        let written = open(edit.path).and_then(|mut target| {
+            target.overwrite(edit.original)?;
+            Ok(target)
+        });
+        match written {
             Err(why) => unrestored.push((edit.shown.to_path_buf(), why)),
+            Ok(mut target) => {
+                restored.push(edit.path);
+                if let Err(cause) = flush.file(&mut target) {
+                    let path = edit.shown.to_path_buf();
+                    unflushed.push(Unflushed::File { path, cause });
+                }
+            }
         }
     }
-    let unconfirmed = if restored.is_empty() {
-        None
-    } else {
-        flush.commit(&restored).err()
-    };
-    (unrestored, unconfirmed)
+    if !restored.is_empty()
+        && let Err(cause) = flush.commit(&restored)
+    {
+        unflushed.push(Unflushed::All { cause });
+    }
+    (unrestored, unflushed)
 }
 
 #[cfg(test)]
@@ -591,11 +631,41 @@ mod tests {
         );
         assert!(
             message.ends_with(
-                "\nThe files put back could not be flushed to disk, so a power loss could still \
-                 lose them: the commit flush failed"
+                "\nThe files put back could not all be flushed to disk, so a power loss could \
+                 still lose them:\n  flushing them all: the commit flush failed"
             ),
             "{message}"
         );
+    }
+
+    #[test]
+    fn a_file_put_back_but_not_flushed_counts_as_put_back_and_is_flushed_with_the_rest() {
+        let disk = disk(&[("a", "old a"), ("b", "old b")]);
+        // b's flush fails after its new bytes and again after its original ones.
+        disk.borrow_mut()
+            .flush_failures
+            .insert(PathBuf::from("b"), 2);
+        let edits = [edit("a", "old a", "new a"), edit("b", "old b", "new b")];
+        let failure = commit_to(&disk, &edits, &[]).unwrap_err();
+        assert_eq!(contents(&disk, "a"), "old a");
+        assert_eq!(contents(&disk, "b"), "old b");
+        assert_eq!(log(&disk).last().unwrap(), "commit a b");
+        assert_eq!(
+            failure.to_string(),
+            "writing the edits to \"b\": the file flush failed; every file written was put back \
+             as it was, so nothing is changed\nThe files put back could not all be flushed to \
+             disk, so a power loss could still lose them:\n  \"b\": the file flush failed"
+        );
+    }
+
+    #[test]
+    fn nothing_is_flushed_after_a_failure_when_nothing_could_be_put_back() {
+        let disk = disk(&[("a", "old a")]);
+        disk.borrow_mut().failures.insert(PathBuf::from("a"), 2);
+        let edits = [edit("a", "old a", "new a")];
+        let failure = commit_to(&disk, &edits, &[]).unwrap_err();
+        assert!(log(&disk).is_empty(), "{:?}", log(&disk));
+        assert!(!failure.to_string().contains("flushed"), "{failure}");
     }
 
     #[test]
@@ -626,7 +696,7 @@ mod tests {
             path: "a".into(),
             cause: io::Error::from(io::ErrorKind::StorageFull),
             unrestored: Vec::new(),
-            unconfirmed: None,
+            unflushed: Vec::new(),
         };
         for (failure, kind) in [
             (open, io::ErrorKind::PermissionDenied),

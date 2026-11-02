@@ -29,7 +29,9 @@ def main(argv):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     repo = pathlib.Path(__file__).resolve().parent.parent
     parser.add_argument("--manifest", type=pathlib.Path, default=repo / "corpus/real-world.toml")
-    parser.add_argument("files", nargs="+", type=pathlib.Path)
+    # Kept as given, not as pathlib.Path, which drops "//", "/./" and a trailing slash: the
+    # contract is to print each path exactly as the caller passed it.
+    parser.add_argument("files", nargs="+")
     args = parser.parse_args(argv)
 
     try:
@@ -46,11 +48,11 @@ def main(argv):
 
     for path in args.files:
         try:
-            source = path.read_bytes()
+            source = pathlib.Path(path).read_bytes()
         except OSError as err:
-            return fail(f"reading {str(path)!r} to judge it: {err}")
+            return fail(f"reading {path!r} to judge it: {err}")
         try:
-            ast.parse(source, filename=str(path))
+            ast.parse(source, filename=path)
         except (SyntaxError, ValueError) as err:
             # One line per file, whatever the message holds, so the harness can read it back.
             reason = " ".join(f"{type(err).__name__}: {err}".split())
