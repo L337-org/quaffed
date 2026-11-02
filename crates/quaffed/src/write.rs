@@ -425,6 +425,8 @@ mod tests {
         commit_failures: usize,
         /// Every write and flush, in order.
         log: Vec<String>,
+        /// For each file, how many more times it opens before it refuses.
+        opens_left: HashMap<PathBuf, usize>,
     }
 
     struct InMemory {
@@ -525,6 +527,12 @@ mod tests {
                     return Err(io::Error::from(io::ErrorKind::PermissionDenied));
                 }
                 let mut state = disk.borrow_mut();
+                if let Some(left) = state.opens_left.get_mut(path) {
+                    if *left == 0 {
+                        return Err(io::Error::from(io::ErrorKind::PermissionDenied));
+                    }
+                    *left -= 1;
+                }
                 state.open += 1;
                 state.most_open = state.most_open.max(state.open);
                 Ok(InMemory {
@@ -664,8 +672,24 @@ mod tests {
         disk.borrow_mut().failures.insert(PathBuf::from("a"), 2);
         let edits = [edit("a", "old a", "new a")];
         let failure = commit_to(&disk, &edits, &[]).unwrap_err();
-        assert!(log(&disk).is_empty(), "{:?}", log(&disk));
+        assert_eq!(log(&disk), Vec::<String>::new());
         assert!(!failure.to_string().contains("flushed"), "{failure}");
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_opened_again_to_write_it_puts_back_every_file_written() {
+        let disk = disk(&[("a", "old a"), ("b", "old b")]);
+        // b opens when every file is checked, then refuses, as if its permissions had changed.
+        disk.borrow_mut().opens_left.insert(PathBuf::from("b"), 1);
+        let edits = [edit("a", "old a", "new a"), edit("b", "old b", "new b")];
+        let failure = commit_to(&disk, &edits, &[]).unwrap_err();
+        assert_eq!(contents(&disk, "a"), "old a");
+        assert_eq!(contents(&disk, "b"), "old b");
+        let message = failure.to_string();
+        assert!(
+            message.starts_with("writing the edits to \"b\": "),
+            "{message}"
+        );
     }
 
     #[test]
