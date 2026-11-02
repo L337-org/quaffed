@@ -1,33 +1,44 @@
 #!/usr/bin/env python3
-"""Compare a pull request's coverage with main's, failing if a gated metric fell with more uncovered.
+"""Hold a pull request's coverage to fixed floors, overall and on the lines it adds.
 
 Reads the summaries `scripts/coverage` writes - one from the pinned stable toolchain, one from the
-condition-coverage nightly - for main and for the pull request, and writes a Markdown section
-for the pull request's job summary.  architecture/testing.md has the reasoning.
+condition-coverage nightly - for main and for the pull request, the pull request's line coverage
+as lcov, and its diff against main, and writes a Markdown section for the pull request's job
+summary.  architecture/testing.md has the reasoning.
 
-    scripts/coverage-ratchet --base-stable F --head-stable F [--head-stable-repeat F]
-                             [--base-condition F] [--head-condition F] [--summary F]
+    scripts/coverage-ratchet --head-stable F --head-lcov F --diff F [--head-stable-repeat F]
+                             [--base-stable F] [--base-condition F] [--head-condition F]
+                             [--summary F]
 
-A metric is a covered/total pair.  A gated metric fails the run when its share covered on the
-pull request is below main's and more of it is uncovered than on main; the others are reported
-and never fail it.  A share that falls with no more uncovered - covered code removed or shrunk -
-is reported and passes, since the only remedy would be tests for unrelated code.  A metric with no
-figure on one side - its summary missing, unreadable, or counting nothing - is reported as
-such, and fails the run if it is gated, because a ratchet that cannot compare has not passed.
+Two gates, each a fixed figure set below, so every pull request is held to the same bar whatever
+state main is in:
+
+- **Overall**: each metric in FLOORS fails the run when the pull request's share covered is below
+  its floor.  The others are reported and never fail it.
+- **New code**: the coverable lines the pull request adds fail the run when their share covered is
+  below NEW_CODE_FLOOR *and* more than NEW_CODE_ALLOWANCE of them are uncovered, so a change of a
+  line or two is not held to a percentage it cannot meet.  A pull request that adds no coverable
+  line passes, and the summary says so.
+
+Main's figures are compared and reported, never gated: they show what a pull request changed, but
+a bar that moved with main would differ from one pull request to the next.
+
+A gate that cannot be evaluated - a summary, the lcov or the diff missing or unreadable, or a diff
+naming a path it cannot read - fails the run, because a gate that cannot judge has not passed.
 
 A second stable measurement of the pull request, given with --head-stable-repeat, must match the
 first file for file and metric for metric.  If it does not, coverage depends on something other
-than the code - test order, timing, a random input - and the comparison with main means nothing,
-so the run fails naming the files that differed.  Without it, the summary says determinism was
-not checked.
+than the code - test order, timing, a random input - and the figures mean nothing, so the run
+fails naming the files that differed.  Without it, the summary says determinism was not checked.
 
-Exit status: 0 when no gated metric fell with more uncovered, 1 when one did, 2 when a gated
-metric could not be compared or the measurement was not deterministic.  The summary is written in every case, so the
-job page says which.
+Exit status: 0 when every gate holds, 1 when one does not, 2 when one could not be evaluated or
+the measurement was not deterministic.  The summary is written in every case, so the job page says
+which.
 """
 
 import argparse
 import json
+import re
 import sys
 from fractions import Fraction
 
@@ -41,16 +52,26 @@ METRICS = {
     "conditions": ("condition", "branches"),
 }
 
-# The metrics that fail the run when they fall.  Condition coverage joins this list when its
-# compiler flag reaches stable, and the nightly is then dropped.
-GATED = ("lines", "regions")
+# The overall floor of each gated metric: the share of the workspace that must be covered.  Set a
+# little below where coverage stands, so one pull request's unreachable error branches do not
+# fail it but a slide does; raise one deliberately, in its own change.  Condition coverage joins
+# these when its compiler flag reaches stable, and the nightly is then dropped.
+FLOORS = {
+    "lines": Fraction(98, 100),
+    "regions": Fraction(975, 1000),
+}
 
-# How many files to name under a metric that fell.
+# The share of the coverable lines a pull request adds that must be covered, and how many of them
+# may be uncovered whatever that share: below the floor fails only with more uncovered than this.
+NEW_CODE_FLOOR = Fraction(90, 100)
+NEW_CODE_ALLOWANCE = 2
+
+# How many files to name in a list.
 MAX_FILES = 15
 
 
 class NoFigure(Exception):
-    """A summary that cannot be read or counts nothing, with the reason."""
+    """A summary, lcov or diff that cannot be read or counts nothing, with the reason."""
 
 
 def load(path):
@@ -122,54 +143,174 @@ def files_that_fell(base, head, field):
     return rows
 
 
-def compare(sides):
-    """Compare every metric.
+def load_lcov(path):
+    """Read the pull request's line coverage, as `scripts/coverage` writes it in lcov.
 
     Returns:
-        tuple: (rows, fell, unevaluated, details, removed) for the summary, where `removed` holds
-        the gated metrics whose share fell with no more uncovered than on main.
+        dict: `{path: {line: hits}}` for every instrumented line, paths relative to the tree.
+
+    Raises:
+        NoFigure: The file is absent or unreadable, or records no file.
     """
-    rows, fell, unevaluated, details, removed = [], [], [], [], []
+    if path is None:
+        raise NoFigure("no lcov was given")
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except FileNotFoundError:
+        raise NoFigure(f"no lcov at {path!r}") from None
+    except (OSError, ValueError) as exc:
+        raise NoFigure(f"{path!r} could not be read: {exc}") from exc
+    files, current = {}, None
+    for number, line in enumerate(text.splitlines(), 1):
+        if line.startswith("SF:"):
+            current = files.setdefault(line[3:], {})
+        elif line.startswith("DA:"):
+            if current is None:
+                raise NoFigure(f"{path!r} line {number} records a line before naming its file")
+            try:
+                at, hits = line[3:].split(",")[:2]
+                at, hits = int(at), int(hits)
+            except ValueError:
+                raise NoFigure(f"{path!r} line {number} is not a DA record: {line!r}") from None
+            current[at] = current.get(at, 0) + hits
+        elif line == "end_of_record":
+            current = None
+    if not files:
+        raise NoFigure(f"{path!r} records no file, so the tests produced no coverage data")
+    return files
+
+
+HUNK = re.compile(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+
+
+def load_diff(path):
+    """Read the lines a pull request adds, from `git diff` of main against the merge.
+
+    Returns:
+        dict: `{path: set of line numbers}` in the pull request's version of each file.
+
+    Raises:
+        NoFigure: The file is absent or unreadable, or names a path this cannot read.
+    """
+    if path is None:
+        raise NoFigure("no diff was given")
+    try:
+        # A diff carries the changed files' own bytes, in whatever encoding they are; only each
+        # line's first character matters here, so undecodable bytes are kept, not refused.
+        with open(path, encoding="utf-8", errors="surrogateescape") as f:
+            text = f.read()
+    except FileNotFoundError:
+        raise NoFigure(f"no diff at {path!r}") from None
+    except (OSError, ValueError) as exc:
+        raise NoFigure(f"{path!r} could not be read: {exc}") from exc
+    added, current, at = {}, None, None
+    for number, line in enumerate(text.splitlines(), 1):
+        if line.startswith("diff --git "):
+            # A new file's header: until its first hunk, a "+++ " line names it.  Inside a hunk
+            # one is an added line whose text begins "++ ", so it is read as an addition.
+            current, at = None, None
+        elif line.startswith("+++ ") and at is None:
+            name = line[4:]
+            # git ends the name with a tab when it holds a space, to mark where it ends.
+            if name.endswith("\t"):
+                name = name[:-1]
+            if name == "/dev/null":
+                current = None
+            elif name.startswith("b/"):
+                current = added.setdefault(name[2:], set())
+            else:
+                # git quotes a path with unusual characters; reading it wrongly would judge the
+                # wrong lines, so it is refused rather than skipped.
+                raise NoFigure(f"{path!r} line {number} names a path this cannot read: {name!r}")
+            at = None
+        elif line.startswith("@@"):
+            match = HUNK.match(line)
+            if not match:
+                raise NoFigure(f"{path!r} line {number} is not a hunk header: {line!r}")
+            at = int(match.group(1))
+        elif at is not None and current is not None and line.startswith("+"):
+            current.add(at)
+            at += 1
+        elif at is not None and line.startswith(" "):
+            at += 1
+    return added
+
+
+def spans(lines):
+    """Line numbers as ranges, `3-5, 9`."""
+    out, ordered = [], sorted(lines)
+    start = previous = None
+    for line in ordered:
+        if previous is not None and line == previous + 1:
+            previous = line
+            continue
+        if start is not None:
+            out.append(f"{start}-{previous}" if previous != start else f"{start}")
+        start = previous = line
+    if start is not None:
+        out.append(f"{start}-{previous}" if previous != start else f"{start}")
+    return ", ".join(out)
+
+
+def new_code(coverage, added):
+    """The coverable lines the pull request adds, and which of them no test ran.
+
+    Returns:
+        tuple: (covered, count, uncovered) where `uncovered` is `[(path, lines)]` by path.
+    """
+    covered = count = 0
+    uncovered = []
+    for name in sorted(added):
+        lines = coverage.get(name, {})
+        coverable = [line for line in added[name] if line in lines]
+        missed = [line for line in coverable if lines[line] == 0]
+        count += len(coverable)
+        covered += len(coverable) - len(missed)
+        if missed:
+            uncovered.append((name, missed))
+    return covered, count, uncovered
+
+
+def compare(sides):
+    """Compare every metric with its floor, and with main.
+
+    Returns:
+        tuple: (rows, below, unevaluated, details) for the summary, where `below` holds the gated
+        metrics under their floor.
+    """
+    rows, below, unevaluated, details = [], [], [], []
     for metric, (source, field) in METRICS.items():
-        gated = metric in GATED
+        floor = FLOORS.get(metric)
+        role = f"floor {float(floor) * 100:g}%" if floor is not None else "report only"
         base, head = sides[("base", source)], sides[("head", source)]
         try:
             if isinstance(head, NoFigure):
                 raise head
             head_covered, head_count = figure(head, field)
         except NoFigure as exc:
-            rows.append((metric, gated, "-", f"no data: {exc}", "-"))
-            if gated:
+            rows.append((metric, role, "-", f"no data: {exc}", "-"))
+            if floor is not None:
                 unevaluated.append(f"{metric}: the pull request has no figure ({exc})")
             continue
+        head_share = Fraction(head_covered, head_count)
+        head_text = f"{percent(head_covered, head_count)} ({head_covered}/{head_count})"
+        if floor is not None and head_share < floor:
+            below.append(metric)
         try:
             if isinstance(base, NoFigure):
                 raise base
             base_covered, base_count = figure(base, field)
         except NoFigure as exc:
-            rows.append((metric, gated, f"no baseline: {exc}",
-                         f"{percent(head_covered, head_count)} ({head_covered}/{head_count})", "-"))
-            if gated:
-                unevaluated.append(f"{metric}: main has no figure to compare with ({exc})")
+            rows.append((metric, role, f"no figure: {exc}", head_text, "-"))
             continue
-        base_share = Fraction(base_covered, base_count)
-        head_share = Fraction(head_covered, head_count)
-        change = float(head_share - base_share) * 100
-        rows.append((metric, gated,
-                     f"{percent(base_covered, base_count)} ({base_covered}/{base_count})",
-                     f"{percent(head_covered, head_count)} ({head_covered}/{head_count})",
-                     f"{change:+.2f}"))
-        if head_share < base_share:
-            more_uncovered = head_count - head_covered > base_count - base_covered
-            if gated and not more_uncovered:
-                removed.append(metric)
-                continue
-            if gated:
-                fell.append(metric)
-            worst = files_that_fell(base, head, field)
-            if worst:
-                details.append((metric, gated, worst))
-    return rows, fell, unevaluated, details, removed
+        change = float(head_share - Fraction(base_covered, base_count)) * 100
+        rows.append((metric, role, f"{percent(base_covered, base_count)} ({base_covered}/{base_count})",
+                     head_text, f"{change:+.2f}"))
+        worst = files_that_fell(base, head, field)
+        if worst:
+            details.append((metric, worst))
+    return rows, below, unevaluated, details
 
 
 def undeterministic(first, repeat):
@@ -194,18 +335,24 @@ def describe(figures, fields):
                      if field in fields)
 
 
-def render(rows, fell, unevaluated, details, removed, determinism):
+def render(rows, below, new, unevaluated, details, determinism):
+    """The Markdown section: the verdict, then the figures behind it."""
     out = ["## Coverage", ""]
+    failing = list(below) + (["new code"] if new.get("fails") else [])
     if unevaluated:
-        out.append("**Not evaluated, so the ratchet fails:**")
+        out.append("**Not evaluated, so the check fails:**")
         out += [f"- {line}" for line in unevaluated]
-    elif fell:
-        out.append(f"**Coverage fell against main: {', '.join(fell)}.**")
+    elif failing:
+        out.append(f"**Below its floor: {', '.join(failing)}.**")
     else:
-        out.append("No gated metric fell with more uncovered than on main.")
-    for metric in removed:
-        out.append(f"The share of {metric} covered fell, but no more of it is uncovered than on main: "
-                   "covered code was removed or shrunk, so this does not fail the ratchet.")
+        out.append("Every gated metric is at or above its floor, overall and on the new code.")
+
+    out += ["", "**New code:** " + new["text"]]
+    for name, lines in new.get("uncovered", [])[:MAX_FILES]:
+        out.append(f"- `{name}`: line{'s' if len(lines) > 1 else ''} {spans(lines)}")
+    if len(new.get("uncovered", [])) > MAX_FILES:
+        out.append(f"- and {len(new['uncovered']) - MAX_FILES} more files")
+
     status, differ = determinism
     out += ["", f"**Determinism:** {status}"]
     for name, a, b in differ[:MAX_FILES]:
@@ -217,17 +364,40 @@ def render(rows, fell, unevaluated, details, removed, determinism):
         out.append(f"- and {len(differ) - MAX_FILES} more")
     out += ["", "| Metric | main | this pull request | change (points) | |",
             "| --- | --- | --- | --- | --- |"]
-    for metric, gated, base, head, change in rows:
-        role = "gated" if gated else "report only"
+    for metric, role, base, head, change in rows:
         out.append(f"| {metric} | {base} | {head} | {change} | {role} |")
-    for metric, gated, worst in details:
-        label = "Where it fell" if gated else "Where it fell (report only)"
-        out += ["", f"**{label}: {metric}**, files with more uncovered than on main:", ""]
+    for metric, worst in details:
+        out += ["", f"**{metric}**, files with more uncovered than on main (reported, not gated):", ""]
         for grew, name, covered, count in worst[:MAX_FILES]:
             out.append(f"- `{name}`: {grew} more uncovered, now {covered}/{count}")
         if len(worst) > MAX_FILES:
             out.append(f"- and {len(worst) - MAX_FILES} more")
     return "\n".join(out) + "\n"
+
+
+def judge_new_code(lcov_path, diff_path, unevaluated):
+    """The new-code gate's verdict and the summary's words for it."""
+    try:
+        added = load_diff(diff_path)
+        coverage = load_lcov(lcov_path)
+    except NoFigure as exc:
+        unevaluated.append(f"new code: {exc}")
+        return {"text": f"not evaluated ({exc})."}
+    covered, count, uncovered = new_code(coverage, added)
+    if count == 0:
+        return {"text": "this pull request adds no coverable line, so there is nothing to judge."}
+    missed = count - covered
+    share = Fraction(covered, count)
+    fails = share < NEW_CODE_FLOOR and missed > NEW_CODE_ALLOWANCE
+    floor = f"{float(NEW_CODE_FLOOR) * 100:g}%"
+    text = (f"{percent(covered, count)} ({covered}/{count}) of the coverable lines this pull request adds "
+            f"are covered; the floor is {floor}, with up to {NEW_CODE_ALLOWANCE} uncovered lines allowed "
+            "whatever the share.")
+    if fails:
+        text += f"  **{missed} are uncovered, so it fails.**"
+    if uncovered:
+        text += "  Uncovered:"
+    return {"text": text, "fails": fails, "uncovered": uncovered}
 
 
 def main(argv):
@@ -237,6 +407,10 @@ def main(argv):
             parser.add_argument(f"--{side}-{source}", metavar="FILE")
     parser.add_argument("--head-stable-repeat", metavar="FILE",
                         help="a second stable measurement of the pull request, to check it matches the first")
+    parser.add_argument("--head-lcov", metavar="FILE",
+                        help="the pull request's line coverage in lcov, from its stable measurement")
+    parser.add_argument("--diff", metavar="FILE",
+                        help="git diff of main against the pull request, with no context lines")
     parser.add_argument("--summary", metavar="FILE",
                         help="append the Markdown section here (the job summary); default stdout only")
     args = parser.parse_args(argv)
@@ -249,7 +423,8 @@ def main(argv):
             except NoFigure as exc:
                 sides[(side, source)] = exc
 
-    rows, fell, unevaluated, details, removed = compare(sides)
+    rows, below, unevaluated, details = compare(sides)
+    new = judge_new_code(args.head_lcov, args.diff, unevaluated)
 
     differ = []
     if args.head_stable_repeat is None:
@@ -268,11 +443,11 @@ def main(argv):
                 differ = undeterministic(first, repeat)
                 if differ:
                     determinism = (f"**two measurements of the same code differ in {len(differ)} file(s)**, so "
-                                   "coverage depends on more than the code and the comparison means nothing:")
+                                   "coverage depends on more than the code and the figures mean nothing:")
                     unevaluated.append(f"determinism: two measurements of the same code differ in {len(differ)} file(s)")
                 else:
                     determinism = "two measurements of the pull request matched in every file."
-    text = render(rows, fell, unevaluated, details, removed, (determinism, differ))
+    text = render(rows, below, new, unevaluated, details, (determinism, differ))
     sys.stdout.write(text)
     if args.summary:
         with open(args.summary, "a", encoding="utf-8") as f:
@@ -281,8 +456,9 @@ def main(argv):
         for line in unevaluated:
             print(f"coverage-ratchet: not evaluated - {line}", file=sys.stderr)
         return 2
-    if fell:
-        print(f"coverage-ratchet: coverage fell against main: {', '.join(fell)}", file=sys.stderr)
+    failing = list(below) + (["new code"] if new.get("fails") else [])
+    if failing:
+        print(f"coverage-ratchet: below its floor: {', '.join(failing)}", file=sys.stderr)
         return 1
     return 0
 

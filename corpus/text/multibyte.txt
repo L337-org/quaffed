@@ -1,0 +1,6 @@
+# café 日本 the theme.
+étheé.
+# the first line names the theme.
+then the second line ends here.
+no match on this one
+# and the last line.

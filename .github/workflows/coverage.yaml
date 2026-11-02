@@ -2,13 +2,13 @@ name: 'Coverage'
 permissions:
   contents: read
 
-# A pull request that lowers line or region coverage against main, with more of it uncovered than
-# on main, fails the Coverage ratchet;
+# A pull request whose line or region coverage is below a fixed floor, or whose new lines are
+# covered below a fixed share with more than a few uncovered, fails the Coverage ratchet;
 # condition coverage is measured alongside and reported, never failing it.  Main is measured in
-# the same run as the pull request, at the tip the pull request would merge into, so the two
-# sides share a runner image, toolchain and tool versions and no figure is stored between runs.
+# the same run, at the tip the pull request would merge into, so the change against it can be
+# reported with both sides on the same runner image, toolchain and tool versions.
 # architecture/testing.md has the reasoning; scripts/coverage measures and
-# scripts/coverage-ratchet compares.
+# scripts/coverage-ratchet judges.
 on:
   pull_request:
 
@@ -80,18 +80,21 @@ jobs:
         with:
           tools: nightly-coverage
 
+      # The pull request's stable run also writes each line's hits, for the gate on the lines it
+      # adds; main's lines are not needed, since nothing is compared line by line with main.
       - name: Measure coverage
         env:
           KIND: ${{ matrix.kind }}
           SIDE: ${{ matrix.side }}
           TREE: ${{ steps.tree.outputs.dir }}
+          LCOV: ${{ matrix.side == 'head' && matrix.kind == 'stable' && 'coverage-head-stable.lcov' || '' }}
         run: scripts/coverage "$KIND" "coverage-$SIDE-$KIND.json" "$TREE"
 
       - name: Keep the summary for the ratchet
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-${{ matrix.side }}-${{ matrix.kind }}
-          path: coverage-${{ matrix.side }}-${{ matrix.kind }}.json
+          path: coverage-${{ matrix.side }}-${{ matrix.kind }}.*
           if-no-files-found: error
 
   ratchet:
@@ -107,7 +110,19 @@ jobs:
       - name: Check out source repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # The merge and its parents, to diff main against what would land.
+          fetch-depth: 2
           persist-credentials: false
+
+      # The same merge the measurements ran on, against its first parent, main: exactly the lines
+      # the pull request adds, whatever has reached main since it branched.  No context lines, so
+      # every line after a hunk header is an addition or a removal; renames are followed, so a
+      # moved file counts only its changed lines.  Paths are not quoted unless git must, and the
+      # ratchet refuses a quoted one rather than misread it.
+      - name: List the lines this pull request adds
+        run: >-
+          git -c core.quotePath=false diff --no-color --no-ext-diff --unified=0 --find-renames
+          HEAD^1 HEAD > "$RUNNER_TEMP/changes.diff"
 
       # Allowed to fail, when no measurement produced a summary: the next step then finds no file
       # and fails, saying which, rather than this step failing with nothing about coverage.
@@ -119,7 +134,7 @@ jobs:
           path: summaries
           merge-multiple: true
 
-      - name: No gated metric fell with more uncovered than on main
+      - name: Coverage is at its floors, overall and on the new code
         run: |
           scripts/coverage-ratchet \
             --base-stable summaries/coverage-base-stable.json \
@@ -127,4 +142,6 @@ jobs:
             --head-stable-repeat summaries/coverage-head-repeat-stable.json \
             --base-condition summaries/coverage-base-condition.json \
             --head-condition summaries/coverage-head-condition.json \
+            --head-lcov summaries/coverage-head-stable.lcov \
+            --diff "$RUNNER_TEMP/changes.diff" \
             --summary "$GITHUB_STEP_SUMMARY"

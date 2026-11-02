@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+"""Say which of the given files the oracle refuses as Python modules.
+
+The edit-invariant harness's oracle for Python: CPython's own `ast.parse`, at the exact version
+corpus/real-world.toml names, judges each file as fetch-corpus judges the real-world corpus.  It
+prints one line per refused file, the path as given, a tab and the oracle's reason, and nothing
+for a file it accepts.  Every language's oracle keeps this contract, so the harness reads them
+all the same way; architecture/corpus.md describes it.
+
+Usage: scripts/oracle-python [--manifest FILE] FILE...
+
+Run it with the oracle's Python, or it stops, naming the version it needs.  It exits 0 once it
+has judged every file, and 1, saying why, if it could not: a file it cannot read is not a file
+the oracle refused.
+"""
+
+import argparse
+import ast
+import pathlib
+import sys
+
+if sys.version_info < (3, 11):
+    sys.exit(f"oracle-python: needs Python 3.11 or later; this is {sys.version}")
+
+import tomllib  # noqa: E402 - after the version check, so an old Python is told why
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    repo = pathlib.Path(__file__).resolve().parent.parent
+    parser.add_argument("--manifest", type=pathlib.Path, default=repo / "corpus/real-world.toml")
+    # Kept as given, not as pathlib.Path, which drops "//", "/./" and a trailing slash: the
+    # contract is to print each path exactly as the caller passed it.
+    parser.add_argument("files", nargs="+")
+    args = parser.parse_args(argv)
+
+    try:
+        with open(args.manifest, "rb") as handle:
+            oracle = tomllib.load(handle)["cpython"]["oracle"]
+    except (OSError, tomllib.TOMLDecodeError, KeyError) as err:
+        return fail(f"reading the oracle's version from {str(args.manifest)!r}: {err!r}")
+    running = ".".join(str(part) for part in sys.version_info[:3])
+    if sys.implementation.name != "cpython" or running != oracle:
+        return fail(
+            f"the oracle is CPython {oracle}, but this is {sys.implementation.name} {running} at "
+            f"{sys.executable!r}; run this script with that Python"
+        )
+
+    for path in args.files:
+        try:
+            source = pathlib.Path(path).read_bytes()
+        except OSError as err:
+            return fail(f"reading {path!r} to judge it: {err}")
+        try:
+            ast.parse(source, filename=path)
+        except (SyntaxError, ValueError) as err:
+            # One line per file, whatever the message holds, so the harness can read it back.
+            reason = " ".join(f"{type(err).__name__}: {err}".split())
+            print(f"{path}\t{reason}")
+    return 0
+
+
+def fail(message):
+    print(f"oracle-python: {message}", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

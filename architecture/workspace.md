@@ -87,8 +87,8 @@ minor version, because no older one is tested.
    If it builds, move condition coverage into the gate (`testing.md`, the coverage ratchet):
    1. in `scripts/coverage`, build the `stable` run with that flag and report it with `--branch`,
       and remove the `condition` mode;
-   2. in `scripts/coverage-ratchet`, read `conditions` from the stable summary and add it to
-      `GATED`;
+   2. in `scripts/coverage-ratchet`, read `conditions` from the stable summary and give it a
+      floor in `FLOORS`, a little below where it stands;
    3. in `.github/workflows/coverage.yaml`, remove `condition` from the matrix and its install
       step;
    4. remove `nightly-coverage` from `tools.toml`;

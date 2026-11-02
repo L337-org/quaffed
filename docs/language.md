@@ -334,8 +334,10 @@ Without `--dry-run`, the files are written, and the note is `replaced 5 matches 
   its hard links, owner and permissions are kept, and every file is checked for writing before any
   is written: one that cannot be written stops the run with nothing changed, exit 7.  If a write
   fails partway, every file already written is put back as it was, and the message names any that
-  could not be.  **One gap remains:** if quaff is killed, or the machine loses power, while it is
-  writing, a file can be left half-written.
+  could not be.  **Two gaps remain.**  If quaff is killed, or the machine loses power, while it
+  is writing, a file can be left half-written.  And quaff does not yet flush what it writes to
+  disk, so a power loss soon after a run that succeeded can lose its edits, all of them or only
+  some files.
 - **A later statement sees an earlier edit**: after `replace string "subtotal" with "net" expect
   3`, a `find "net"` counts the three new matches.
 - **Every byte outside the matches is kept**, line endings included, mixed ones too.  The text is
