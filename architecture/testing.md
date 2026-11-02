@@ -38,28 +38,45 @@ separately because `cargo insta test` cannot take `--locked`.
 
 ## The coverage ratchet
 
-A pull request that lowers line or region coverage against main, with more of it uncovered than
-on main, fails the **Coverage ratchet** (`.github/workflows/coverage.yaml`).  It is a floor, not a
-target.
+The **Coverage ratchet** (`.github/workflows/coverage.yaml`) holds every pull request to the same
+fixed bar, whatever state main is in, so that what a pull request must cover does not depend on
+when it lands.  It keeps the name it had when it compared against main.
 
-- **Both sides are measured in the same run**: the pull request merged into main, and main as that
-  merge's first parent, from a second worktree with the pull request's own `scripts/coverage`.  No
-  figure is stored, so none can drift.
-- **`scripts/coverage-ratchet` compares exact fractions**, for the metrics in its `GATED` list.  A
-  share that falls with no more uncovered, as when well-tested code is deleted, passes.
+- **An overall floor per metric**: a pull request whose line or region coverage is below its floor
+  in `FLOORS` (`scripts/coverage-ratchet`) fails.  The floors sit a little below where coverage
+  stands, so one pull request's unreachable error branches do not fail it, but a slide does.
+- **A floor for new code**: the coverable lines a pull request adds, from `git diff` of main against
+  the merge being measured and the pull request's line coverage in lcov, fail when their share
+  covered is below `NEW_CODE_FLOOR` *and* more than `NEW_CODE_ALLOWANCE` of them are uncovered.
+  The allowance is what lets a change of a line or two through, which a percentage alone would
+  hold to 0% or 100%; the overall floor catches what allowances add up to.  It counts lines, not
+  regions, because every `?` is a region of its own, and an error branch no test can reach would
+  otherwise fail a small change.  A pull request adding no coverable line passes, and says so.
+- **Main is measured and reported, never gated**: the change in each metric, and the files with
+  more uncovered than on main, appear in the job summary.  Both sides are measured in the same
+  run, the pull request merged into main and main as that merge's first parent, from a second
+  worktree with the pull request's own `scripts/coverage`.
 - **Condition coverage is reported only**, because it needs an unstable flag and so runs on the
-  pinned nightly.  It joins `GATED` when the flag is stable, which the toolchain-upgrade checklist
-  in `workspace.md` checks.
+  pinned nightly.  It joins `FLOORS` when the flag is stable, which the toolchain-upgrade
+  checklist in `workspace.md` checks.
 - **The measurement is deterministic**: `scripts/coverage` fixes proptest's seed, and the pull
   request is measured twice on separate runners, failing if the two differ.  A difference means
   a non-deterministic test, in the file named.
-- **No figure fails rather than passes**: a missing summary or a metric counting nothing fails.
+- **A gate that cannot judge fails rather than passes**: a missing summary, lcov or diff, a metric
+  counting nothing, or a diff naming a path the script cannot read fails.
+
+Raising a floor is a change of its own: set the figure in `FLOORS` or `NEW_CODE_FLOOR`, below
+where coverage stands on main, and update the tests in `crates/quaffed/tests/coverage_ratchet.rs`
+whose figures sit either side of it.
 
 ```bash
 scripts/install-tools cargo-llvm-cov nightly-coverage   # once
-scripts/coverage stable target/coverage-stable.json
+LCOV=target/coverage.lcov scripts/coverage stable target/coverage-stable.json
 scripts/coverage condition target/coverage-condition.json
+git diff --unified=0 --find-renames main > target/changes.diff
+scripts/coverage-ratchet --head-stable target/coverage-stable.json \
+  --head-lcov target/coverage.lcov --diff target/changes.diff
 ```
 
 To compare with another checkout, measure it the same way, giving its path as the third argument,
-and pass both to `scripts/coverage-ratchet`.
+and pass it as `--base-stable`.

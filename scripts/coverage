@@ -4,9 +4,12 @@
 #   scripts/coverage stable OUTPUT [TREE]       lines and regions, on the pinned toolchain
 #   scripts/coverage condition OUTPUT [TREE]    condition coverage, on the nightly tools.toml pins
 #
+# With LCOV set in the environment, a `stable` run also writes each line's hit count there, in
+# lcov, for the ratchet's gate on the lines a pull request adds.
+#
 # TREE is the checkout to measure, by default this one.  The ratchet measures main from a second
 # worktree with the pull request's copy of this script, so both sides are measured the same way.
-# File names in the summary are made relative to TREE, so the two sides can be compared file by
+# File names in the summary, and in the lcov, are made relative to TREE, so the two sides can be compared file by
 # file.  scripts/coverage-ratchet compares them; architecture/testing.md has the reasoning.
 #
 # Needs cargo-llvm-cov from tools.toml (scripts/install-tools cargo-llvm-cov) and, for
@@ -36,7 +39,14 @@ case "$output" in
     *) output="$PWD/$output" ;;
 esac
 raw="$(mktemp)"
-trap 'rm -f "$raw"' EXIT
+lcov_raw="$(mktemp)"
+trap 'rm -f "$raw" "$lcov_raw"' EXIT
+lcov="${LCOV:-}"
+case "$lcov" in
+    ""|/*) ;;
+    *) lcov="$PWD/$lcov" ;;
+esac
+[[ -z "$lcov" || "$mode" == stable ]] || die "LCOV is only written by a stable run"
 
 # The property tests draw random inputs, so with proptest's default random seed two runs of the
 # same code cover slightly different paths, and the ratchet would compare noise.  A fixed seed
@@ -50,8 +60,14 @@ case "$mode" in
         rustup component add llvm-tools >&2 \
             || die "adding the llvm-tools component to the pinned toolchain failed; rustup's output is above"
         cargo llvm-cov clean --workspace
-        cargo llvm-cov --workspace --locked --json --summary-only --output-path "$raw" \
+        cargo llvm-cov --workspace --locked --no-report \
             || die "the tests failed under stable coverage, so there is no summary; cargo's output is above"
+        cargo llvm-cov report --json --summary-only --output-path "$raw" \
+            || die "reporting stable coverage failed; cargo's output is above"
+        if [[ -n "$lcov" ]]; then
+            cargo llvm-cov report --lcov --output-path "$lcov_raw" \
+                || die "reporting stable coverage as lcov failed; cargo's output is above"
+        fi
         ;;
     condition)
         nightly="$("$root/scripts/install-tools" --list | awk '$1 == "toolchain" && $2 == "nightly-coverage" { print $3 }')"
@@ -70,9 +86,9 @@ case "$mode" in
         ;;
 esac
 
-python3 - "$raw" "$output" "$tree" <<'EOF' || die "rewriting the summary's file names relative to $tree failed"
+python3 - "$raw" "$output" "$tree" "$lcov_raw" "$lcov" <<'EOF' || die "rewriting the file names relative to $tree failed"
 import json, sys
-raw, output, tree = sys.argv[1:]
+raw, output, tree, lcov_raw, lcov = sys.argv[1:]
 with open(raw, encoding="utf-8") as f:
     document = json.load(f)
 prefix = tree.rstrip("/") + "/"
@@ -82,5 +98,14 @@ for export in document["data"]:
             entry["filename"] = entry["filename"][len(prefix):]
 with open(output, "w", encoding="utf-8") as f:
     json.dump(document, f)
+if lcov:
+    with open(lcov_raw, encoding="utf-8") as f:
+        lines = f.read().splitlines()
+    with open(lcov, "w", encoding="utf-8") as f:
+        for line in lines:
+            if line.startswith("SF:" + prefix):
+                line = "SF:" + line[len("SF:" + prefix):]
+            f.write(line + "\n")
 EOF
 printf 'coverage: wrote the %s summary of %s to %s\n' "$mode" "$tree" "$output" >&2
+[[ -z "$lcov" ]] || printf 'coverage: wrote its line coverage to %s\n' "$lcov" >&2
