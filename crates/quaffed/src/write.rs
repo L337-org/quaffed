@@ -118,13 +118,6 @@ impl fmt::Display for Failure {
     }
 }
 
-/// What a message says when every file written was put back.
-const ALL_PUT_BACK: &str = "; every file written was put back as it was, so nothing is changed";
-
-/// What a message says before listing the flushes of files put back that failed.
-const UNFLUSHED: &str =
-    "\nThe files put back could not all be flushed to disk, so a power loss could still lose them:";
-
 /// Says what putting the written files back left: every one as it was, or which could not be,
 /// and which flushes of them failed.
 fn put_back(
@@ -133,7 +126,7 @@ fn put_back(
     unflushed: &[Unflushed],
 ) -> fmt::Result {
     if unrestored.is_empty() {
-        f.write_str(ALL_PUT_BACK)?;
+        f.write_str("; every file written was put back as it was, so nothing is changed")?;
     } else {
         let (it, was, is) = if unrestored.len() == 1 {
             ("it", "was", "is")
@@ -143,15 +136,17 @@ fn put_back(
         let n = count(unrestored.len());
         write!(
             f,
-            "; {n} could not be put back as {it} {was}, and {is} left changed or"
+            "; {n} could not be put back as {it} {was}, and {is} left changed or half-written:"
         )?;
-        f.write_str(" half-written:")?;
         for (path, why) in unrestored {
             write!(f, "\n  {path:?}: {why}")?;
         }
     }
     if !unflushed.is_empty() {
-        f.write_str(UNFLUSHED)?;
+        f.write_str(
+            "\nThe files put back could not all be flushed to disk, so a power loss could still \
+             lose them:",
+        )?;
     }
     for failed in unflushed {
         match failed {
