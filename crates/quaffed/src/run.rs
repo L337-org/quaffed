@@ -2404,6 +2404,7 @@ mod tests {
                     io::Error::from(io::ErrorKind::PermissionDenied),
                 ),
             ],
+            unconfirmed: None,
         }));
     }
 

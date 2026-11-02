@@ -176,7 +176,10 @@ the path or argument it concerns, and says what to do where there is something t
   closed, before any is written, then opened again only while it is written, so no limit on open
   files is reached; a failed write puts back every file already written from its original bytes.
   **Accepted limitation:** a process killed, or a machine losing power, during the writes can
-  leave a file half-written.  `src/write.rs` is the only file besides `src/contents.rs` that
+  leave a file half-written.  **Nothing is flushed to disk yet**, deliberately, while how to make
+  writes durable is undecided, so a power loss soon after an edit can lose it too; `write.rs` has
+  a hook for each system after each file is written and after them all, each a no-op, where a
+  flush goes once decided.  `src/write.rs` is the only file besides `src/contents.rs` that
   opens a project's files, and only to write; `contents_containment.rs` holds both.
 - **A file an earlier replace broke is refused as an edit** when a later structural statement
   needs it, naming the replaces that changed it, not as a file that cannot be parsed, since on

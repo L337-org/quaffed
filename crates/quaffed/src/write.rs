@@ -15,6 +15,13 @@
 //! written, and the one that failed, is written back from its original bytes, which the run still
 //! holds.  What this cannot cover is the process being killed, or the machine losing power, while
 //! a file is being written: that file can be left half-written.
+//!
+//! **Nothing is flushed to disk yet, on any system**, so an edit that succeeded can still be lost
+//! if the machine loses power soon after.  How to make writes durable is undecided, and flushing
+//! each file as it is written makes an edit of many files far slower, most of all on macOS.
+//! [`Flush`] is where it goes once decided: one hook after each file is written and one after
+//! them all, chosen per system in [`platform`], each a no-op for now.  A file put back after a
+//! failure runs the same hooks.
 
 use std::fmt;
 use std::fs::{File, OpenOptions};
@@ -51,6 +58,17 @@ pub enum Failure {
         cause: io::Error,
         /// Files that could not be written back, left changed or half-written, with why.
         unrestored: Vec<(PathBuf, io::Error)>,
+        /// Why the files written back could not be flushed to disk, if they could not.
+        unconfirmed: Option<io::Error>,
+    },
+    /// Every file was written, but flushing them all to disk failed, so they were written back.
+    Flush {
+        /// The system's error, verbatim.
+        cause: io::Error,
+        /// Files that could not be written back, left changed or half-written, with why.
+        unrestored: Vec<(PathBuf, io::Error)>,
+        /// Why the files written back could not be flushed to disk, if they could not.
+        unconfirmed: Option<io::Error>,
     },
 }
 
@@ -65,35 +83,63 @@ impl fmt::Display for Failure {
                 path,
                 cause,
                 unrestored,
+                unconfirmed,
             } => {
                 write!(f, "writing the edits to {path:?}: {cause}")?;
-                if unrestored.is_empty() {
-                    return write!(
-                        f,
-                        "; every file written was put back as it was, so nothing is changed"
-                    );
-                }
-                write!(
-                    f,
-                    "; {} could not be put back as {} {}, and {} left changed or half-written:",
-                    count(unrestored.len()),
-                    if unrestored.len() == 1 { "it" } else { "they" },
-                    if unrestored.len() == 1 { "was" } else { "were" },
-                    if unrestored.len() == 1 { "is" } else { "are" },
-                )?;
-                for (path, why) in unrestored {
-                    write!(f, "\n  {path:?}: {why}")?;
-                }
-                Ok(())
+                put_back(f, unrestored, unconfirmed.as_ref())
+            }
+            Failure::Flush {
+                cause,
+                unrestored,
+                unconfirmed,
+            } => {
+                write!(f, "flushing the edits to disk: {cause}")?;
+                put_back(f, unrestored, unconfirmed.as_ref())
             }
         }
     }
 }
 
+/// Says what putting the written files back left: every one as it was, or which could not be.
+fn put_back(
+    f: &mut fmt::Formatter<'_>,
+    unrestored: &[(PathBuf, io::Error)],
+    unconfirmed: Option<&io::Error>,
+) -> fmt::Result {
+    if unrestored.is_empty() {
+        write!(
+            f,
+            "; every file written was put back as it was, so nothing is changed"
+        )?;
+    } else {
+        write!(
+            f,
+            "; {} could not be put back as {} {}, and {} left changed or half-written:",
+            count(unrestored.len()),
+            if unrestored.len() == 1 { "it" } else { "they" },
+            if unrestored.len() == 1 { "was" } else { "were" },
+            if unrestored.len() == 1 { "is" } else { "are" },
+        )?;
+        for (path, why) in unrestored {
+            write!(f, "\n  {path:?}: {why}")?;
+        }
+    }
+    if let Some(why) = unconfirmed {
+        write!(
+            f,
+            "\nThe files put back could not be flushed to disk, so a power loss could still lose \
+             them: {why}"
+        )?;
+    }
+    Ok(())
+}
+
 impl std::error::Error for Failure {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Failure::Open { cause, .. } | Failure::Write { cause, .. } => Some(cause),
+            Failure::Open { cause, .. }
+            | Failure::Write { cause, .. }
+            | Failure::Flush { cause, .. } => Some(cause),
         }
     }
 }
@@ -104,7 +150,7 @@ fn count(n: usize) -> String {
 
 /// A file that can be written over with new bytes.
 trait Target {
-    /// Makes the file's whole contents `bytes`, and flushes them to disk.
+    /// Makes the file's whole contents `bytes`, without flushing them to disk.
     fn overwrite(&mut self, bytes: &[u8]) -> io::Result<()>;
 }
 
@@ -114,8 +160,116 @@ impl Target for File {
         self.write_all(bytes)?;
         // After the write, so that a file never holds less than its new bytes while they are
         // being written: shortening first would lose the end of the original if the write failed.
-        self.set_len(bytes.len() as u64)?;
-        self.sync_all()
+        self.set_len(bytes.len() as u64)
+    }
+}
+
+/// What makes written files reach the disk: run after each file is written, and once after them
+/// all.  An error from either is a failed write, and every file written is put back.
+trait Flush<T> {
+    /// Run on each file once it is written, still open.
+    fn file(&self, target: &mut T) -> io::Result<()>;
+    /// Run once every file is written, given them all.
+    fn commit(&self, paths: &[&Path]) -> io::Result<()>;
+}
+
+/// The hooks for the system quaff was built for, from [`platform`].
+struct Platform;
+
+impl Flush<File> for Platform {
+    fn file(&self, target: &mut File) -> io::Result<()> {
+        platform::file(target)
+    }
+
+    fn commit(&self, paths: &[&Path]) -> io::Result<()> {
+        platform::commit(paths)
+    }
+}
+
+/// The flush hooks for each system, every one a no-op until how to make writes durable is
+/// decided.  Each system has its own so that one can change without the others: what is cheap
+/// and sufficient differs, with `syncfs` on Linux, `F_FULLFSYNC` on macOS and `FlushFileBuffers`
+/// on Windows.
+#[cfg(target_os = "linux")]
+mod platform {
+    #![expect(
+        clippy::unnecessary_wraps,
+        reason = "a no-op until a flush is decided, and a flush can fail"
+    )]
+
+    use std::fs::File;
+    use std::io;
+    use std::path::Path;
+
+    pub fn file(_: &mut File) -> io::Result<()> {
+        Ok(())
+    }
+
+    pub fn commit(_: &[&Path]) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// See the Linux hooks.
+#[cfg(target_os = "macos")]
+mod platform {
+    #![expect(
+        clippy::unnecessary_wraps,
+        reason = "a no-op until a flush is decided, and a flush can fail"
+    )]
+
+    use std::fs::File;
+    use std::io;
+    use std::path::Path;
+
+    pub fn file(_: &mut File) -> io::Result<()> {
+        Ok(())
+    }
+
+    pub fn commit(_: &[&Path]) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// See the Linux hooks.
+#[cfg(target_os = "windows")]
+mod platform {
+    #![expect(
+        clippy::unnecessary_wraps,
+        reason = "a no-op until a flush is decided, and a flush can fail"
+    )]
+
+    use std::fs::File;
+    use std::io;
+    use std::path::Path;
+
+    pub fn file(_: &mut File) -> io::Result<()> {
+        Ok(())
+    }
+
+    pub fn commit(_: &[&Path]) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Every other system.  See the Linux hooks.
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+mod platform {
+    #![expect(
+        clippy::unnecessary_wraps,
+        reason = "a no-op until a flush is decided, and a flush can fail"
+    )]
+
+    use std::fs::File;
+    use std::io;
+    use std::path::Path;
+
+    pub fn file(_: &mut File) -> io::Result<()> {
+        Ok(())
+    }
+
+    pub fn commit(_: &[&Path]) -> io::Result<()> {
+        Ok(())
     }
 }
 
@@ -124,16 +278,21 @@ impl Target for File {
 /// # Errors
 ///
 /// Returns a [`Failure`] saying what could not be written and what state that left: nothing
-/// changed when a file could not be opened, every file put back when a write failed, or which
-/// files could not be put back.
+/// changed when a file could not be opened, every file put back when a write or a flush failed,
+/// or which files could not be put back.
 pub fn commit(edits: &[Edit]) -> Result<(), Failure> {
-    commit_with(edits, |path| OpenOptions::new().write(true).open(path))
+    commit_with(
+        edits,
+        |path| OpenOptions::new().write(true).open(path),
+        &Platform,
+    )
 }
 
-/// [`commit`], opening each file with `open`.
+/// [`commit`], opening each file with `open` and flushing with `flush`.
 fn commit_with<T: Target>(
     edits: &[Edit],
     mut open: impl FnMut(&Path) -> io::Result<T>,
+    flush: &impl Flush<T>,
 ) -> Result<(), Failure> {
     // Every file opened, and closed again, before any is written, so one that cannot be written
     // changes nothing.
@@ -144,26 +303,63 @@ fn commit_with<T: Target>(
         })?);
     }
     for (written, edit) in edits.iter().enumerate() {
-        let wrote = open(edit.path).and_then(|mut target| target.overwrite(edit.edited));
-        if let Err(cause) = wrote {
+        if let Err(cause) = write(&mut open, flush, edit.path, edit.edited) {
             // The one that failed may be half-written, so it is put back too.
-            let unrestored = edits[..=written]
-                .iter()
-                .filter_map(|edit| {
-                    open(edit.path)
-                        .and_then(|mut target| target.overwrite(edit.original))
-                        .err()
-                        .map(|why| (edit.shown.to_path_buf(), why))
-                })
-                .collect();
+            let (unrestored, unconfirmed) = put_back_all(&edits[..=written], &mut open, flush);
             return Err(Failure::Write {
                 path: edit.shown.to_path_buf(),
                 cause,
                 unrestored,
+                unconfirmed,
             });
         }
     }
+    let paths: Vec<&Path> = edits.iter().map(|edit| edit.path).collect();
+    if let Err(cause) = flush.commit(&paths) {
+        let (unrestored, unconfirmed) = put_back_all(edits, &mut open, flush);
+        return Err(Failure::Flush {
+            cause,
+            unrestored,
+            unconfirmed,
+        });
+    }
     Ok(())
+}
+
+/// Opens `path`, makes its contents `bytes`, and runs the per-file flush hook on it.
+fn write<T: Target>(
+    open: &mut impl FnMut(&Path) -> io::Result<T>,
+    flush: &impl Flush<T>,
+    path: &Path,
+    bytes: &[u8],
+) -> io::Result<()> {
+    let mut target = open(path)?;
+    target.overwrite(bytes)?;
+    flush.file(&mut target)
+}
+
+/// Writes each of `edits` back from its original bytes, then flushes the ones that were, so that
+/// recovery is as durable as the edit would have been.  Returns the files that could not be put
+/// back, and why those that were could not be flushed, if they could not.
+fn put_back_all<T: Target>(
+    edits: &[Edit],
+    open: &mut impl FnMut(&Path) -> io::Result<T>,
+    flush: &impl Flush<T>,
+) -> (Vec<(PathBuf, io::Error)>, Option<io::Error>) {
+    let mut unrestored = Vec::new();
+    let mut restored = Vec::new();
+    for edit in edits {
+        match write(open, flush, edit.path, edit.original) {
+            Ok(()) => restored.push(edit.path),
+            Err(why) => unrestored.push((edit.shown.to_path_buf(), why)),
+        }
+    }
+    let unconfirmed = if restored.is_empty() {
+        None
+    } else {
+        flush.commit(&restored).err()
+    };
+    (unrestored, unconfirmed)
 }
 
 #[cfg(test)]
@@ -183,6 +379,12 @@ mod tests {
         /// How many files are open now, and the most ever open at once.
         open: usize,
         most_open: usize,
+        /// For each file, how many more of its per-file flushes fail.
+        flush_failures: HashMap<PathBuf, usize>,
+        /// How many more end-of-commit flushes fail.
+        commit_failures: usize,
+        /// Every write and flush, in order.
+        log: Vec<String>,
     }
 
     struct InMemory {
@@ -199,9 +401,46 @@ mod tests {
                 disk.files.get_mut(&self.path).unwrap()[0] = b'#';
                 return Err(io::Error::from(io::ErrorKind::StorageFull));
             }
+            disk.log.push(format!(
+                "write {} {:?}",
+                self.path.display(),
+                String::from_utf8_lossy(bytes)
+            ));
             disk.files.insert(self.path.clone(), bytes.to_vec());
             Ok(())
         }
+    }
+
+    /// Flush hooks that log each call to the disk, failing those they are told to.
+    struct Recorder(Rc<RefCell<Disk>>);
+
+    impl Flush<InMemory> for Recorder {
+        fn file(&self, target: &mut InMemory) -> io::Result<()> {
+            let mut disk = self.0.borrow_mut();
+            disk.log.push(format!("flush {}", target.path.display()));
+            match disk.flush_failures.get_mut(&target.path) {
+                Some(left) if *left > 0 => {
+                    *left -= 1;
+                    Err(io::Error::other("the file flush failed"))
+                }
+                _ => Ok(()),
+            }
+        }
+
+        fn commit(&self, paths: &[&Path]) -> io::Result<()> {
+            let mut disk = self.0.borrow_mut();
+            let names: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
+            disk.log.push(format!("commit {}", names.join(" ")));
+            if disk.commit_failures > 0 {
+                disk.commit_failures -= 1;
+                return Err(io::Error::other("the commit flush failed"));
+            }
+            Ok(())
+        }
+    }
+
+    fn log(disk: &Rc<RefCell<Disk>>) -> Vec<String> {
+        disk.borrow().log.clone()
     }
 
     impl Drop for InMemory {
@@ -239,18 +478,124 @@ mod tests {
         edits: &[Edit],
         unopenable: &[&str],
     ) -> Result<(), Failure> {
-        commit_with(edits, |path: &Path| {
-            if unopenable.iter().any(|p| Path::new(p) == path) {
-                return Err(io::Error::from(io::ErrorKind::PermissionDenied));
-            }
-            let mut state = disk.borrow_mut();
-            state.open += 1;
-            state.most_open = state.most_open.max(state.open);
-            Ok(InMemory {
-                path: path.to_path_buf(),
-                disk: Rc::clone(disk),
-            })
-        })
+        commit_with(
+            edits,
+            |path: &Path| {
+                if unopenable.iter().any(|p| Path::new(p) == path) {
+                    return Err(io::Error::from(io::ErrorKind::PermissionDenied));
+                }
+                let mut state = disk.borrow_mut();
+                state.open += 1;
+                state.most_open = state.most_open.max(state.open);
+                Ok(InMemory {
+                    path: path.to_path_buf(),
+                    disk: Rc::clone(disk),
+                })
+            },
+            &Recorder(Rc::clone(disk)),
+        )
+    }
+
+    #[test]
+    fn each_file_is_flushed_once_written_and_all_of_them_at_the_end() {
+        let disk = disk(&[("a", "old a"), ("b", "old b")]);
+        let edits = [edit("a", "old a", "new a"), edit("b", "old b", "new b")];
+        commit_to(&disk, &edits, &[]).unwrap();
+        assert_eq!(
+            log(&disk),
+            [
+                "write a \"new a\"",
+                "flush a",
+                "write b \"new b\"",
+                "flush b",
+                "commit a b",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_flush_that_fails_puts_every_file_back_and_flushes_them() {
+        let disk = disk(&[("a", "old a"), ("b", "old b"), ("c", "old c")]);
+        disk.borrow_mut()
+            .flush_failures
+            .insert(PathBuf::from("b"), 1);
+        let edits = [
+            edit("a", "old a", "new a"),
+            edit("b", "old b", "new b"),
+            edit("c", "old c", "new c"),
+        ];
+        let failure = commit_to(&disk, &edits, &[]).unwrap_err();
+        assert_eq!(
+            log(&disk),
+            [
+                "write a \"new a\"",
+                "flush a",
+                "write b \"new b\"",
+                "flush b",
+                "write a \"old a\"",
+                "flush a",
+                "write b \"old b\"",
+                "flush b",
+                "commit a b",
+            ]
+        );
+        let message = failure.to_string();
+        assert!(
+            message.starts_with("writing the edits to \"b\": the file flush failed"),
+            "{message}"
+        );
+        assert!(
+            message.ends_with("; every file written was put back as it was, so nothing is changed"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_commit_flush_that_fails_puts_every_file_back() {
+        let disk = disk(&[("a", "old a"), ("b", "old b")]);
+        disk.borrow_mut().commit_failures = 1;
+        let edits = [edit("a", "old a", "new a"), edit("b", "old b", "new b")];
+        let failure = commit_to(&disk, &edits, &[]).unwrap_err();
+        assert_eq!(contents(&disk, "a"), "old a");
+        assert_eq!(contents(&disk, "b"), "old b");
+        assert_eq!(log(&disk).last().unwrap(), "commit a b");
+        assert_eq!(
+            failure.to_string(),
+            "flushing the edits to disk: the commit flush failed; every file written was put \
+             back as it was, so nothing is changed"
+        );
+        assert_eq!(
+            std::error::Error::source(&failure).map(ToString::to_string),
+            Some("the commit flush failed".to_owned())
+        );
+    }
+
+    #[test]
+    fn files_put_back_that_cannot_be_flushed_are_said_to_be_at_risk() {
+        let disk = disk(&[("a", "old a"), ("b", "old b")]);
+        // b's write fails and so does putting it back, so only a is flushed after the failure,
+        // and that flush fails.
+        disk.borrow_mut().failures.insert(PathBuf::from("b"), 2);
+        disk.borrow_mut().commit_failures = 1;
+        let edits = [edit("a", "old a", "new a"), edit("b", "old b", "new b")];
+        let failure = commit_to(&disk, &edits, &[]).unwrap_err();
+        assert_eq!(log(&disk).last().unwrap(), "commit a");
+        let message = failure.to_string();
+        assert!(
+            message.starts_with("writing the edits to \"b\": "),
+            "{message}"
+        );
+        assert!(
+            message.contains("1 file could not be put back"),
+            "{message}"
+        );
+        assert!(
+            message.ends_with(
+                "\nThe files put back could not be flushed to disk, so a power loss could still \
+                 lose them: the commit flush failed"
+            ),
+            "{message}"
+        );
     }
 
     #[test]
@@ -281,6 +626,7 @@ mod tests {
             path: "a".into(),
             cause: io::Error::from(io::ErrorKind::StorageFull),
             unrestored: Vec::new(),
+            unconfirmed: None,
         };
         for (failure, kind) in [
             (open, io::ErrorKind::PermissionDenied),
