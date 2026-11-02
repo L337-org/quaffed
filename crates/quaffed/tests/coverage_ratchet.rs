@@ -682,3 +682,43 @@ fn a_diff_holding_bytes_that_are_not_utf8_is_read() {
     let text = exits(&run(&with(unchanged(&scratch), "diff", path)), 0);
     assert!(text.contains("100.00% (2/2)"), "{text}");
 }
+
+#[test]
+fn a_path_holding_a_space_is_matched() {
+    let scratch = Scratch::new();
+    // git ends such a name with a tab in the "+++" line.
+    let diff = "diff --git a/src/my file.rs b/src/my file.rs\n--- a/src/my file.rs\t\n\
+                +++ b/src/my file.rs\t\n@@ -9,0 +10,3 @@\n+a();\n+b();\n+c();\n";
+    let sides = with(
+        unchanged(&scratch),
+        "head-lcov",
+        scratch.lcov(
+            "head.lcov",
+            &[("src/my file.rs", &[(10, 0), (11, 0), (12, 0)])],
+        ),
+    );
+    let text = exits(
+        &run(&with(sides, "diff", scratch.diff("changes.diff", diff))),
+        1,
+    );
+    assert!(text.contains("0.00% (0/3)"), "{text}");
+    assert!(text.contains("- `src/my file.rs`: lines 10-12"), "{text}");
+}
+
+#[test]
+fn an_added_line_beginning_with_plus_signs_is_an_addition_not_a_header() {
+    let scratch = Scratch::new();
+    // Line 11's text is "++ x", so the diff shows "+++ x"; line 12's would pass for a header.
+    let diff = "diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n\
+                @@ -9,0 +10,3 @@\n+one();\n+++ x\n+++ b/src/other.rs\n";
+    let sides = with(
+        unchanged(&scratch),
+        "head-lcov",
+        scratch.lcov("head.lcov", &[("src/a.rs", &[(10, 1), (11, 1), (12, 1)])]),
+    );
+    let text = exits(
+        &run(&with(sides, "diff", scratch.diff("changes.diff", diff))),
+        0,
+    );
+    assert!(text.contains("100.00% (3/3)"), "{text}");
+}

@@ -206,8 +206,15 @@ def load_diff(path):
         raise NoFigure(f"{path!r} could not be read: {exc}") from exc
     added, current, at = {}, None, None
     for number, line in enumerate(text.splitlines(), 1):
-        if line.startswith("+++ "):
+        if line.startswith("diff --git "):
+            # A new file's header: until its first hunk, a "+++ " line names it.  Inside a hunk
+            # one is an added line whose text begins "++ ", so it is read as an addition.
+            current, at = None, None
+        elif line.startswith("+++ ") and at is None:
             name = line[4:]
+            # git ends the name with a tab when it holds a space, to mark where it ends.
+            if name.endswith("\t"):
+                name = name[:-1]
             if name == "/dev/null":
                 current = None
             elif name.startswith("b/"):
