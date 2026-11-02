@@ -1,7 +1,8 @@
 # The corpora
 
-The Python the front end is checked against - a synthetic corpus written for it, and CPython's
-own tests, fetched - and the checks run over them.
+The files quaff is checked against - a synthetic corpus of Python written for the front end,
+`corpus/text/` of line endings and encodings written for edits, and CPython's own tests, fetched -
+and the checks run over them.
 
 ## The synthetic corpus
 
@@ -119,6 +120,67 @@ line, `quaff -p` over the tree with the refused files in a `.ignore` against the
    real_world_matches -- --ignored`.
 3. If the counts differ, list both sides' matches and decide which is wrong.  A predicate changed
    to agree with quaff checks nothing.
+
+## The edit invariants
+
+`crates/quaffed/tests/edit_invariants.rs` holds **every editing operation to the guarantees an
+edit exists to give**, over the synthetic corpus, `corpus/text/` and the real-world corpus.  It
+runs the real `quaff` on a copy of one language's files, never on one an earlier run may have
+changed but should not have.  For each registered
+case, over each language it names, `find` gives the count `N`, and then:
+
+- **Atomicity**: the edit expecting `N + 1` exits 2, every file byte-identical.
+- **Minimal diff**: the edit expecting `N` keeps every byte outside the matches `find` reported,
+  in order, and, as a check that needs no column arithmetic, every line outside the matched
+  lines.  What replaced a match is not judged here; the end-to-end tests do that.
+- **Determinism**: two runs give the same exit, output and files.
+- **Still parses**: the language's oracle accepts after the edit every file it accepted before; a
+  case marked `Refused` must exit 9 and write nothing.
+- **Idempotency**: the edit is applied again to its own output and judged by the same rules,
+  against a `find` on that output.  It may change things again; it must change only the new
+  matches.
+
+**Each case over each language is judged on its own**, as many at once as the machine has cores,
+and logs how long it took, so that a new language or case adds its own time rather than
+lengthening the others', and the slowest is named in the log.
+
+**It fails rather than passes** when nothing is registered, a language has no files, a case
+matches or edits nothing, a structural language's oracle cannot run, or the corpus holds a
+`.gitattributes` or `.editorconfig`, whose encodings the harness does not read.
+
+**The harness is tested before it is trusted**: `tests/edit_harness/tests.rs` checks its parts on
+small inputs, and runs each check against a `quaff` broken on purpose in one way, in the ordinary
+run.  The corpus run is ignored there; the **Real-world corpus** job runs the harness's own tests,
+then the corpus run, optimised, since every edit of a Python file parses it.
+
+```bash
+python3.X scripts/fetch-corpus      # 3.X: the oracle in corpus/real-world.toml
+QUAFFED_PYTHON_ORACLE=$(which python3.X) \
+  cargo test --release -p quaffed --test edit_invariants -- --ignored
+```
+
+**An oracle is any command that is given files and prints the ones it refuses**, one line each:
+the path as given, a tab, and its reason.  It exits 0 only once it has judged every file.
+`scripts/oracle-python` is Python's, run with the oracle's Python.
+
+### Checklist: registering an operation
+
+1. Add one or more `Case`s to `CASES` in `edit_invariants.rs`: a `find` and the edit whose matches
+   it counts, neither with `expect`, and the languages to run over.
+2. Cover what could go wrong on the operation's own output, such as a replacement that holds its
+   own match, and an edit quaff must refuse, marked `Outcome::Refused`.
+3. Run the corpus run.  A failure names the case, the language, the invariant and the file.
+
+### Checklist: adding a language
+
+1. Add a `Language` to `languages()`: its name, which files it claims, matching how quaff decides
+   the language, and its oracle; take the files out of text's claim.
+2. Write its oracle to the contract above, as `scripts/oracle-<language>`, with a test like
+   `oracle_python.rs`, and install what it runs in the **Real-world corpus** job.
+3. Add the language's files to the synthetic corpus, and to the real-world corpus if it has some.
+4. If quaff decides the language's encoding differently, teach `encoding_of` in
+   `tests/edit_harness/mod.rs`, and extend its tests.
+5. Name the language in the cases that should run over it.
 
 ## docker-mcp is never in either corpus
 

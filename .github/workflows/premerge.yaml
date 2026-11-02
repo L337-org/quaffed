@@ -378,6 +378,26 @@ jobs:
             exit 1
           fi
 
+      - name: The edit-invariant harness's own checks hold
+        # Run before the harness is trusted with the corpus, so that a fault in a check fails
+        # here, named, rather than as wrong judgements of hundreds of files.
+        run: cargo test --locked --release -p quaffed --test edit_invariants
+
+      - name: Every registered edit keeps the invariants over the corpus
+        # Optimised, because an edit parses every Python file it changes, before and after, and
+        # the harness runs each edit several times over the real-world corpus.  As for the round
+        # trip, the step requires that exactly one test ran.
+        env:
+          QUAFFED_PYTHON_ORACLE: ${{ steps.python.outputs.python-path }}
+        run: |
+          set -o pipefail
+          cargo test --locked --release -p quaffed --test edit_invariants -- --ignored --nocapture 2>&1 \
+            | tee "$RUNNER_TEMP/edit-invariants.log"
+          if ! grep -q '^test result: ok\. 1 passed;' "$RUNNER_TEMP/edit-invariants.log"; then
+            echo "::error::the edit-invariant harness did not run exactly one test" >&2
+            exit 1
+          fi
+
       - name: CPython counts the structural matches
         env:
           PYTHON: ${{ steps.python.outputs.python-path }}
