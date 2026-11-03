@@ -922,28 +922,38 @@ fn filters(
             let Some(written) = &searching.query.filter else {
                 return Ok(None);
             };
-            let compiled_filter = filter::Filter::new(written, roots).map_err(|err| match err {
-                filter::Error::NotBuilt(filter::NotBuilt(span)) => Failure::Unknown {
-                    location: built.locate(span, span.start),
-                    message: "this `where` test is not built yet".into(),
-                },
-                filter::Error::Pattern(err, span) => Failure::Script {
-                    location: built.locate(
-                        span,
-                        err.offset()
-                            .map_or(span.start, |at| built.content_start(span) + at),
-                    ),
-                    message: err.to_string(),
-                },
-                filter::Error::Glob(scope::Error::TooLarge(err), span) => {
-                    script(span, err.to_string())
-                }
-                filter::Error::Glob(scope::Error::Io { path, cause }, _) => Failure::Io {
-                    doing: "looking for",
-                    path,
-                    cause,
-                },
-            })?;
+            let outer: Vec<&str> = match searching.pattern {
+                Wanted::Structural {
+                    compiled: index, ..
+                } => compiled[index]
+                    .holes()
+                    .filter_map(|(_, hole)| hole.name.as_deref())
+                    .collect(),
+                Wanted::Text(_) => Vec::new(),
+            };
+            let compiled_filter =
+                filter::Filter::new(written, roots, &outer).map_err(|err| match err {
+                    filter::Error::NotBuilt(filter::NotBuilt(span)) => Failure::Unknown {
+                        location: built.locate(span, span.start),
+                        message: "this `where` test is not built yet".into(),
+                    },
+                    filter::Error::Pattern(err, span) => Failure::Script {
+                        location: built.locate(
+                            span,
+                            err.offset()
+                                .map_or(span.start, |at| built.content_start(span) + at),
+                        ),
+                        message: err.to_string(),
+                    },
+                    filter::Error::Glob(scope::Error::TooLarge(err), span) => {
+                        script(span, err.to_string())
+                    }
+                    filter::Error::Glob(scope::Error::Io { path, cause }, _) => Failure::Io {
+                        doing: "looking for",
+                        path,
+                        cause,
+                    },
+                })?;
             let Some(compiled_filter) = compiled_filter else {
                 return Ok(None);
             };
@@ -1004,26 +1014,23 @@ fn check_filter(
             ));
         }
     }
-    // A name a `where`'s pattern shares with the statement's could mean the same code or
-    // be its own, and either could be wanted, so neither is assumed yet.
+    // A name the `where`'s pattern shares with the statement's is bound there to what the
+    // statement's match bound it to, one node, so it must be one node in both.
     for (shape, at) in &compiled_filter.shapes {
-        let outer: Vec<&str> = pattern
-            .holes()
-            .filter_map(|(_, hole)| hole.name.as_deref())
-            .collect();
         if let Some(shared) = shape
             .holes()
+            .filter(|(_, hole)| hole.sequence)
             .filter_map(|(_, hole)| hole.name.as_deref())
-            .find(|name| outer.contains(name))
+            .find(|name| compiled_filter.names.iter().any(|tested| tested == name))
         {
-            return Err(Failure::Unknown {
-                location: built.locate(*at, at.start),
-                message: format!(
-                    "`${shared}` is in this statement's pattern and in its `where`'s, \
-                     and a name they share is not built yet: name it differently in the \
-                     `where`'s pattern"
+            return Err(script(
+                *at,
+                format!(
+                    "`${shared}...` is a sequence in the `where`'s pattern and one node in the \
+                     statement's, and a name shared between them is one or the other: name it \
+                     differently in one of them"
                 ),
-            });
+            ));
         }
     }
     let names: Vec<&str> = compiled_filter.names.iter().map(String::as_str).collect();
@@ -1886,7 +1893,7 @@ impl Searched {
             .iter()
             .map(|&(i, _)| {
                 plan.filters[i].as_ref().map(|filter| {
-                    let found = filter.found();
+                    let found = filter::Found::default();
                     structural::Where {
                         names: filter.names.iter().map(String::as_str).collect(),
                         holds: Box::new(move |arena, nodes| {

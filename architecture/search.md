@@ -93,7 +93,10 @@ rules a user sees are `docs/language.md`'s _Paths and globs_.
   `quaffed-syntax` offers every way a match binds the tested names, and the match is kept if any
   way passes the whole `where`.  A quoted glob compares a string literal's content or other
   code's text; a backticked pattern is compiled before any file is read, searched for once per
-  file, and matches the bound node when it has the node's range, or is inside it for `contains`.  Each tested name counts as one more use of it, read once the
+  file, and matches the bound node when it has the node's range, or is inside it for `contains`.
+  A pattern that shares a name with the statement's is instead matched at the bound node with
+  that name bound in advance (`quaffed_syntax::matches_at`), once per binding, remembered, and
+  the shared name is tested too, so the cost check counts it.  Each tested name counts as one more use of it, read once the
   match is complete, so `Pattern::costly_with` bounds the search as it bounds a name used twice,
   and a pattern that with its `where` would be too costly is refused before any file is read.
 - **The command-line scope narrows every statement**: it is the base of each, so a statement's
@@ -185,9 +188,8 @@ and binary files never decide it, so that a file quaff cannot read never blocks 
 those it can, and a `find` and an edit with the same `expect` count the same matches.
 
 **The whole program is read, parsed and checked before any file is looked at**, so a script with
-an error anywhere does not run.  The constructs that parse but are not built - a name a
-statement's pattern and its `where`'s share, a structural `replace`, and `delete` - exit 5,
-named, where they were written.
+an error anywhere does not run.  The constructs that parse but are not built - a structural
+`replace`, and `delete` - exit 5, named, where they were written.
 
 **A run that cannot give an answer - exit 3, 5, 7 or 9 - prints nothing on standard output**, so
 a partial answer never passes for a whole one.  Every message says what was being done, quotes

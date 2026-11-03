@@ -628,7 +628,8 @@ const BOUND: &[(&str, &str)] = &[
     ("tests/test_client.py", "fetch(\"https://test\")\n"),
     (
         "src/log.py",
-        "log(format(user))\nlog(user)\nlog(wrap(format(user)))\n",
+        "log(format(user))\nlog(user)\nlog(wrap(format(user)))\n\
+         pair(format(a), a)\npair(format(a), b)\n",
     ),
 ];
 
@@ -687,6 +688,22 @@ fn a_bound_node_is_compared_with_a_pattern_by_its_shape() {
     );
     // A pattern that is not one is refused where it was written, before any file is read.
     assert_quaff_snapshot!(project.quaff(&["-e", "find `log($m)` where $m matches `format(`"]));
+    // A name the `where`'s pattern shares with the statement's is the same code in both.
+    assert_quaff_snapshot!(
+        project.quaff(&["-e", "find `pair($m, $u)` where $m matches `format($u)`"])
+    );
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "find `pair($m, $u)` where not $m contains `format($u)`"
+    ]));
+    // It is one node in both, never a sequence in either.
+    assert_quaff_snapshot!(
+        project.quaff(&["-e", "find `pair($m, $u)` where $m matches `format($u...)`"])
+    );
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "find `pair($m, $us...)` where $m matches `format($us)`"
+    ]));
     project.assert_unchanged();
 }
 
@@ -1080,7 +1097,6 @@ fn each_construct_outside_the_mvp_exits_5_naming_it() {
 fn each_construct_not_built_yet_exits_5_naming_it() {
     let project = Project::new(SCRIPTED);
     assert_quaff_snapshot!(project.quaff(&["-e", "replace `f($a)` with `g($a)` expect 1"]));
-    assert_quaff_snapshot!(project.quaff(&["-e", "find `f($a)` where $a matches `g($a)`"]));
     assert_quaff_snapshot!(project.quaff(&["-e", "find \"a\"; delete `a` expect 1"]));
     project.assert_unchanged();
 }

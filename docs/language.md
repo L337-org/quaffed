@@ -312,8 +312,10 @@ A statement's clauses follow its operand in the order `in`, `where`, `expect`, e
   src/app.py:12:5-12:46: return response.ok(render(user, response))
   ```
 
-  The `where`'s pattern has holes of its own.  A name it shares with the statement's pattern is
-  [not built yet](#not-built-yet): name it differently.
+  A name the `where`'s pattern shares with the statement's is the same code in both, as a name
+  used twice in one pattern is: `find `pair($m, $u)` where $m matches `format($u)`` keeps
+  `pair(format(a), a)` but not `pair(format(a), b)`.  A shared name must be one node in both,
+  never a sequence in either (exit 3).
 - **A match is kept if any way it binds its names passes the whole `where`.**  In
   `connect($before..., $x, $after...)`, `$x` can be any argument but the first and last, so
   `where $x contains "password"` keeps a call with a password anywhere among them - and
@@ -833,13 +835,11 @@ file is looked at, so a script with an error anywhere does not run at all.
 These parse, and are refused with exit 5 at the place they were written, rather than being
 ignored or treated as unknown:
 
-- a structural `replace`, and `delete`;
-- a name shared by a statement's pattern and its `where`'s, which could mean the same code or
-  a name of its own.
+- a structural `replace`, and `delete`.
 
 ```
-$ quaff -e 'find `f($a)` where $a matches `g($a)`'
-quaff: -e expression 1, at character 31: `$a` is in this statement's pattern and in its `where`'s, and a name they share is not built yet: name it differently in the `where`'s pattern
+$ quaff -e 'replace `f($a)` with `g($a)` expect 1'
+quaff: -e expression 1, at character 1: a structural replace is not built yet
 [exit 5]
 ```
 

@@ -53,6 +53,44 @@ pub fn find(pattern: &Pattern, target: &Arena<'_>) -> Vec<Match> {
     find_with(pattern, target, true, &[], None)
 }
 
+/// Whether `pattern` matches the node `node` of `target` itself, or with `anywhere` that node or
+/// anything inside it, with each name in `bound` already bound to its node: a `where` comparing
+/// what a match bound with a pattern that shares names with the match's, which must then be the
+/// same code.
+///
+/// # Panics
+///
+/// As [`find`] does, and if a name in `bound` is not one the pattern binds to one node, a defect
+/// in the caller.
+#[must_use]
+pub fn matches_at(
+    pattern: &Pattern,
+    target: &Arena<'_>,
+    node: NodeId,
+    anywhere: bool,
+    bound: &[(&str, NodeId)],
+) -> bool {
+    assert!(
+        pattern.unbounded_sequence().is_none() && pattern.costly().is_none(),
+        "a pattern compiler let through a pattern it refuses"
+    );
+    for (name, _) in bound {
+        assert!(
+            pattern
+                .holes()
+                .any(|(_, hole)| hole.name.as_deref() == Some(*name) && !hole.sequence),
+            "a name bound in advance, ${name}, is not one the pattern binds to one node"
+        );
+    }
+    let range = target.range(node);
+    let found = find_in(pattern, target, true, &[], None, Some(&range), bound);
+    if anywhere {
+        !found.is_empty()
+    } else {
+        found.iter().any(|m| m.range == range)
+    }
+}
+
 /// What a `where` over what a match binds asks of each way: given the node bound to each name it
 /// tests, whether the match passes.
 pub type Accept<'a> = dyn FnMut(&[NodeId]) -> bool + 'a;
@@ -102,7 +140,22 @@ fn find_with(
     target: &Arena<'_>,
     remember: bool,
     tested: &[&str],
+    accept: Option<&mut Accept<'_>>,
+) -> Vec<Match> {
+    find_in(pattern, target, remember, tested, accept, None, &[])
+}
+
+/// [`find_with`] among the nodes inside `within`, a byte range of the target, or everywhere, with
+/// the names in `bound` already bound to those nodes, so that a match must give each the same
+/// code.
+fn find_in(
+    pattern: &Pattern,
+    target: &Arena<'_>,
+    remember: bool,
+    tested: &[&str],
     mut accept: Option<&mut Accept<'_>>,
+    within: Option<&Range<usize>>,
+    bound: &[(&str, NodeId)],
 ) -> Vec<Match> {
     let shape = pattern.arena();
     assert_eq!(
@@ -110,16 +163,28 @@ fn find_with(
         target.language(),
         "a pattern was matched against another language's arena"
     );
-    let matcher = Matcher::new(pattern, target, remember, tested);
+    let bound_names: Vec<&str> = bound.iter().map(|(name, _)| *name).collect();
+    let named: Vec<&str> = tested.iter().chain(&bound_names).copied().collect();
+    let matcher = Matcher::new(pattern, target, remember, &named);
     let tested_slots: Vec<usize> = tested.iter().map(|name| matcher.slots[name]).collect();
+    let mut initial = matcher.unbound();
+    for (name, node) in bound {
+        initial[matcher.slots[name]] = Some(Bound::Node(*node));
+    }
+    let inside = |node: NodeId| {
+        within.is_none_or(|within| {
+            let range = target.range(node);
+            within.start <= range.start && range.end <= within.end
+        })
+    };
     // A pattern compiler refuses a pattern with no code, or with nothing but holes, so a pattern
     // of one node is one with a shape.
     let content: Vec<NodeId> = shape.children(shape.root()).collect();
     let mut found = Vec::new();
     if let [only] = content.as_slice() {
-        for node in target.nodes() {
+        for node in target.nodes().filter(|&node| inside(node)) {
             matcher.start();
-            let mut bindings = matcher.unbound();
+            let mut bindings = initial.clone();
             if matcher.node(*only, node, &mut bindings)
                 && accept.as_deref_mut().is_none_or(|accept| {
                     matcher.node_accepted(*only, node, &bindings, &tested_slots, accept)
@@ -131,7 +196,7 @@ fn find_with(
             }
         }
     } else {
-        for node in target.nodes() {
+        for node in target.nodes().filter(|&node| inside(node)) {
             let available = parts(target, node);
             let in_a_list =
                 |part: &Part<'_>| matches!(part, Part::Child(c) if target.list(*c).is_some());
@@ -149,7 +214,7 @@ fn find_with(
                 // Matched from this start as far as the pattern goes: one try per start, whatever
                 // the run's length.
                 matcher.start();
-                let mut bindings = matcher.unbound();
+                let mut bindings = initial.clone();
                 let at = Place {
                     owner: node,
                     from: start,
@@ -1957,6 +2022,43 @@ mod tests {
             (kept, offered),
             (vec!["f(q,b)".to_owned()], vec![vec!["q".to_owned()]])
         );
+    }
+
+    #[test]
+    fn a_name_bound_in_advance_must_match_the_same_code() {
+        let (target, _) = call("f(a,b,a)");
+        let call_node = target.root();
+        let args: Vec<NodeId> = target.children(call_node).skip(1).collect();
+        let (a, b) = (args[0], args[1]);
+        let pattern = pattern("f($y,b,$z)");
+        // `$y` bound to an `a` must find an `a` there; bound to `b`, it cannot.
+        assert!(matches_at(&pattern, &target, call_node, false, &[("y", a)]));
+        assert!(!matches_at(
+            &pattern,
+            &target,
+            call_node,
+            false,
+            &[("y", b)]
+        ));
+        // Equal code, not the same node: the last `a` equals the first.
+        assert!(matches_at(
+            &pattern,
+            &target,
+            call_node,
+            false,
+            &[("y", args[2])]
+        ));
+        assert!(matches_at(
+            &pattern,
+            &target,
+            call_node,
+            false,
+            &[("z", a), ("y", a)]
+        ));
+        // `matches` is the node itself; inside an argument there is no call to match.
+        assert!(!matches_at(&pattern, &target, a, false, &[]));
+        assert!(!matches_at(&pattern, &target, a, true, &[]));
+        assert!(matches_at(&pattern, &target, call_node, true, &[]));
     }
 
     #[test]

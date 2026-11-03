@@ -1,0 +1,14 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "find `pair($m, $u)` where $m matches `format($u)`"
+---
+success: true
+exit_code: 0
+----- stdout -----
+src/log.py:4:1-4:18: pair(format(a), a)
+
+----- stderr -----
