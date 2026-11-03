@@ -78,7 +78,8 @@ rules a user sees are `docs/language.md`'s _Paths and globs_.
   the part of its `where` a path alone can decide.  A file no pattern looks at is not read.
 - **A path is matched as printed**, relative to the current directory with `/` between its
   segments, relative to the root for a glob that begins `:/`, and as the absolute path for one
-  that is absolute.  `contains` reads none of those prefixes: it is text anywhere in the path as
+  that is absolute, its leading directory written as it is on disk, since discovery walks the
+  real directory.  `contains` reads none of those prefixes: it is text anywhere in the path as
   printed.  A glob is compiled to a regular expression (`src/glob.rs`), with `regex-automata`,
   so a match takes time linear in the path however the glob is written.  `*`, `?` and a
   class are kept within a segment - for a path a directory name, for a string a line - and `**`

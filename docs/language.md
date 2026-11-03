@@ -341,7 +341,8 @@ The scope on the command line, `in` and `FILE` follow one set of rules.
   or the current directory with no project: from `src/`, `in ":/docs"` is the root's `docs/`.
   Only a leading `:/` counts, and a directory really named `:` is written `./:`.  **An absolute
   path is where it says**, whatever the current directory: `in "/srv/app/"**".py"` is every
-  Python file under `/srv/app`.
+  Python file under `/srv/app`.  Its leading directory is taken as it is on disk, so where
+  `/var/www` links to `/srv/www`, `"/var/www/"**` finds the files of `/srv/www`.
 - **A path with no wildcard names a file or a directory**, and a directory stands for everything
   under it: `in "src"`, `where not FILE matches "src/app.py"`.
 - **A glob is quoted text and wildcards, and text inside quotes is always literal.**  Each
@@ -865,6 +866,8 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
 - **A quoted glob as the scope is not expanded.**  It is reported as not found, with a note that
   globs are not expanded; `in` takes globs.  A scope holding a double quote is refused, so that
   a pattern there can mean something later.
+- **An absolute glob follows a symbolic link in its leading directory**, as discovery does in
+  reaching it: `"/var/www/"**` finds the files of `/srv/www` where one links to the other.
 - **A star stays within one directory name**: `where not FILE matches *".txt"` leaves out only
   the `.txt` files at the top, and `**".txt"` every one.
 - **The default scope is the current directory, not the project**: from a subdirectory, `:/`
