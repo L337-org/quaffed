@@ -20,13 +20,6 @@ pub enum Kind {
     /// A path, with `/` between its segments.
     Path,
     /// A string, with its lines as segments.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "compared only by metavariable filters, which come next"
-        )
-    )]
     Value,
 }
 

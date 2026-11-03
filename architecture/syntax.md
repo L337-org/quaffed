@@ -91,7 +91,10 @@ its compiler:
 
 The matcher remembers outcomes rather than retrying every length (`List`), compares bound code
 with hashes and a longest-common-prefix table (`Codes`, `Common`), and gives every way a node can
-bind a name used after it (`Matcher::node_ways`).  **Plain backtracking is kept as the reference**:
+bind a name used after it (`Matcher::node_ways`).  **A `where` over what a match binds**
+(`find_where`) uses that: each name it tests is one more use, after the match, so the cost check
+counts it (`Pattern::costly_with`), and a match is kept if any way of binding the tested names
+satisfies it, never only the way found first.  **Plain backtracking is kept as the reference**:
 property tests (`remembered_against_backtracking` and `trees` in `src/matching.rs`) require both
 to find the same matches, and the tree property also holds both to an independent `Oracle`.
 Named tests beside them hold each case where a shortcut must not apply, and the work's growth,

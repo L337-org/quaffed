@@ -89,6 +89,11 @@ rules a user sees are `docs/language.md`'s _Paths and globs_.
   the unknowns are is not needed by that statement: it is never parsed for it, and so cannot
   refuse the run with exit 9.  This is the units rule, and it is why excluding by `FILE` and by
   `in` behave alike.
+- **A test of a metavariable is decided per match** (`src/filter.rs`): `find_where` in
+  `quaffed-syntax` offers every way a match binds the tested names, and the match is kept if any
+  way passes the whole `where`.  Each tested name counts as one more use of it, read once the
+  match is complete, so `Pattern::costly_with` bounds the search as it bounds a name used twice,
+  and a pattern that with its `where` would be too costly is refused before any file is read.
 - **The command-line scope narrows every statement**: it is the base of each, so a statement's
   `in` only keeps what is under it too, and a note says so.
 - **What names nothing is said**: an `in` whose path or leading directory is not there fails the
@@ -178,8 +183,9 @@ and binary files never decide it, so that a file quaff cannot read never blocks 
 those it can, and a `find` and an edit with the same `expect` count the same matches.
 
 **The whole program is read, parsed and checked before any file is looked at**, so a script with
-an error anywhere does not run.  The constructs that parse but are not built - a `where` test
-of a metavariable, a structural `replace`, and `delete` - exit 5, named, where they were written.
+an error anywhere does not run.  The constructs that parse but are not built - a `where`
+comparison with a backticked pattern, a structural `replace`, and `delete` - exit 5, named, where
+they were written.
 
 **A run that cannot give an answer - exit 3, 5, 7 or 9 - prints nothing on standard output**, so
 a partial answer never passes for a whole one.  Every message says what was being done, quotes

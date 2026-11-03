@@ -50,20 +50,68 @@ pub fn find(pattern: &Pattern, target: &Arena<'_>) -> Vec<Match> {
         pattern.costly().is_none(),
         "a pattern compiler let through a pattern too costly to search"
     );
-    find_with(pattern, target, true)
+    find_with(pattern, target, true, &[], None)
+}
+
+/// What a `where` over what a match binds asks of each way: given the node bound to each name it
+/// tests, whether the match passes.
+pub type Accept<'a> = dyn FnMut(&[NodeId]) -> bool + 'a;
+
+/// [`find`], keeping only the matches that some way of binding the names in `tested` satisfies
+/// `accept`, which is given the node bound to each of them, in that order: a `where` over what
+/// a match binds.  A match is kept if any binding satisfies it, so that a name a match could
+/// bind more than one way - inside a sequence, say - is judged by every way, never by the one
+/// the search happens to find first.  Each way is tried once, within the cost
+/// [`Pattern::costly_with`] bounds.
+///
+/// # Panics
+///
+/// As [`find`] does, and if the pattern with these names is too costly to search
+/// ([`Pattern::costly_with`]) or a name in `tested` is not one the pattern binds to one node,
+/// either of which is a defect in the caller.
+pub fn find_where(
+    pattern: &Pattern,
+    target: &Arena<'_>,
+    tested: &[&str],
+    accept: &mut Accept<'_>,
+) -> Vec<Match> {
+    assert!(
+        pattern.unbounded_sequence().is_none(),
+        "a pattern compiler let through a sequence hole at the edge of a run of statements"
+    );
+    assert!(
+        pattern.costly_with(tested).is_none(),
+        "a where was searched with that makes its pattern too costly to search"
+    );
+    for name in tested {
+        assert!(
+            pattern
+                .holes()
+                .any(|(_, hole)| hole.name.as_deref() == Some(*name) && !hole.sequence),
+            "a where tested ${name}, which its pattern does not bind to one node"
+        );
+    }
+    find_with(pattern, target, true, tested, Some(accept))
 }
 
 /// [`find`], remembering what each place in a list matched and skipping to where fixed code can
 /// stand where `remember`, and otherwise by backtracking alone: the slow way, which the fast one
-/// is held to.
-fn find_with(pattern: &Pattern, target: &Arena<'_>, remember: bool) -> Vec<Match> {
+/// is held to.  With `accept`, a match is kept only if some binding of `tested` satisfies it.
+fn find_with(
+    pattern: &Pattern,
+    target: &Arena<'_>,
+    remember: bool,
+    tested: &[&str],
+    mut accept: Option<&mut Accept<'_>>,
+) -> Vec<Match> {
     let shape = pattern.arena();
     assert_eq!(
         shape.language(),
         target.language(),
         "a pattern was matched against another language's arena"
     );
-    let matcher = Matcher::new(pattern, target, remember);
+    let matcher = Matcher::new(pattern, target, remember, tested);
+    let tested_slots: Vec<usize> = tested.iter().map(|name| matcher.slots[name]).collect();
     // A pattern compiler refuses a pattern with no code, or with nothing but holes, so a pattern
     // of one node is one with a shape.
     let content: Vec<NodeId> = shape.children(shape.root()).collect();
@@ -72,7 +120,11 @@ fn find_with(pattern: &Pattern, target: &Arena<'_>, remember: bool) -> Vec<Match
         for node in target.nodes() {
             matcher.start();
             let mut bindings = matcher.unbound();
-            if matcher.node(*only, node, &mut bindings) {
+            if matcher.node(*only, node, &mut bindings)
+                && accept.as_deref_mut().is_none_or(|accept| {
+                    matcher.node_accepted(*only, node, &bindings, &tested_slots, accept)
+                })
+            {
                 found.push(Match {
                     range: target.range(node),
                 });
@@ -103,7 +155,21 @@ fn find_with(pattern: &Pattern, target: &Arena<'_>, remember: bool) -> Vec<Match
                     from: start,
                     limit: ends[start],
                 };
-                if let Some(end) = matcher.list(Within::Run, at, &available, 0, &mut bindings) {
+                let Some(end) = matcher.list(Within::Run, at, &available, 0, &mut bindings) else {
+                    continue;
+                };
+                let end = match accept.as_deref_mut() {
+                    None => Some(end),
+                    Some(accept) => {
+                        let first = bound_nodes(&bindings, &tested_slots);
+                        if accept(&first) {
+                            Some(end)
+                        } else {
+                            matcher.run_accepted(at, &available, &tested_slots, &first, accept)
+                        }
+                    }
+                };
+                if let Some(end) = end {
                     found.push(Match {
                         range: target.range(*first).start
                             ..target.range(statement(&available, end - 1)).end,
@@ -131,6 +197,18 @@ fn find_counting(pattern: &Pattern, target: &Arena<'_>) -> (Vec<Match>, usize) {
 thread_local! {
     /// The work the last search on this thread took, by `Matcher::work`.
     static WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The node bound in each of `slots`, in order: each a name a `where` tests, which the pattern
+/// binds to one node, so a match has bound it to one.
+fn bound_nodes(bindings: &Bindings, slots: &[usize]) -> Vec<NodeId> {
+    slots
+        .iter()
+        .map(|&slot| match &bindings[slot] {
+            Some(Bound::Node(node)) => *node,
+            other => unreachable!("a tested name is bound to one node by a match, not {other:?}"),
+        })
+        .collect()
 }
 
 /// The statement at `at` among a node's parts, where a run of statements ends.
@@ -244,6 +322,15 @@ impl Pattern {
     /// divide between them.
     #[must_use]
     pub fn costly(&self) -> Option<Costly> {
+        self.costly_with(&[])
+    }
+
+    /// [`Pattern::costly`], with the names in `tested` also read once a match is complete, as a
+    /// `where` that tests them reads them: each is then one more later use of its name, and may
+    /// make a choice where the pattern alone makes none.  [`find_where`] panics on a pattern and
+    /// names this names, as a defect in its caller.
+    #[must_use]
+    pub fn costly_with(&self, tested: &[&str]) -> Option<Costly> {
         let shape = self.arena();
         let root = shape.root();
         let mut lists = Vec::new();
@@ -252,19 +339,19 @@ impl Pattern {
             if let Some(second) = together(self, &run) {
                 return Some(Costly::Together(second));
             }
-            lists.push(list_choices(self, &run));
+            lists.push(list_choices(self, &run, tested));
         }
         for node in shape.nodes().filter(|node| *node != root) {
             let wanted = parts(shape, node);
             let varying = |part: &Part<'_>| match part {
-                Part::Child(child) => !exported(self, *child).is_empty(),
+                Part::Child(child) => !exported(self, *child, tested).is_empty(),
                 Part::Token(_) => false,
             };
             if wanted
                 .iter()
                 .any(|part| is_sequence(self, part) || varying(part))
             {
-                lists.push(list_choices(self, &wanted));
+                lists.push(list_choices(self, &wanted, tested));
             }
         }
         // Every choice with the list it is in, in the pattern's order.
@@ -324,8 +411,9 @@ struct Choices<'p> {
 /// it, each with the hole that first binds it: names first bound within the node and used by a
 /// hole after it, if the node holds a sequence, without which every name in it binds one way.
 /// A match of such a node is not final: where what follows fails on one of these names, the
-/// node is asked for its next way of binding them ([`Matcher::node_ways`]).
-fn exported(pattern: &Pattern, node: NodeId) -> Vec<(&str, NodeId)> {
+/// node is asked for its next way of binding them ([`Matcher::node_ways`]).  A name in `tested`
+/// is used after every node, since a `where` reads it once the match is complete.
+fn exported<'p>(pattern: &'p Pattern, node: NodeId, tested: &[&str]) -> Vec<(&'p str, NodeId)> {
     let shape = pattern.arena();
     let outer = shape.range(node);
     // A descendant comes after its node in pre-order and lies within it; a hole that wraps the
@@ -352,9 +440,11 @@ fn exported(pattern: &Pattern, node: NodeId) -> Vec<(&str, NodeId)> {
         .into_iter()
         .filter(|&(name, hole)| {
             inside(hole)
-                && pattern.holes().any(|(later, spelled)| {
-                    spelled.name.as_deref() == Some(name) && shape.range(later).start >= outer.end
-                })
+                && (tested.contains(&name)
+                    || pattern.holes().any(|(later, spelled)| {
+                        spelled.name.as_deref() == Some(name)
+                            && shape.range(later).start >= outer.end
+                    }))
         })
         .collect()
 }
@@ -370,8 +460,9 @@ fn exported(pattern: &Pattern, node: NodeId) -> Vec<(&str, NodeId)> {
 /// the list, or when the sequence after it is named elsewhere in the list, since that sequence
 /// then holds different code from a later place.  And a node in any segment makes one for each
 /// name it can bind in more than one way that is used after it ([`exported`]), since each way is
-/// tried in turn.
-fn list_choices<'p>(pattern: &'p Pattern, wanted: &[Part<'_>]) -> Choices<'p> {
+/// tried in turn.  A name in `tested` is used after the list, as a `where` reads it once the
+/// match is complete.
+fn list_choices<'p>(pattern: &'p Pattern, wanted: &[Part<'_>], tested: &[&str]) -> Choices<'p> {
     let shape = pattern.arena();
     let mut segments: Vec<Vec<NodeId>> = vec![Vec::new()];
     let mut holes = Vec::new();
@@ -408,6 +499,13 @@ fn list_choices<'p>(pattern: &'p Pattern, wanted: &[Part<'_>]) -> Choices<'p> {
             uses.entry(name).or_insert((at, at, node)).1 = at;
         }
     }
+    // Past every part of the list: what a `where` reads, it reads after the match.
+    let after = 2 * segments.len();
+    for (name, use_) in &mut uses {
+        if tested.contains(name) {
+            use_.1 = after;
+        }
+    }
     let mut choices: Vec<Choice<'p>> = (1..segments.len())
         .filter_map(|i| {
             let next = holes.get(i).copied().filter(|next| {
@@ -433,7 +531,7 @@ fn list_choices<'p>(pattern: &'p Pattern, wanted: &[Part<'_>]) -> Choices<'p> {
         .collect();
     for (i, segment) in segments.iter().enumerate() {
         for &child in segment {
-            let names = exported(pattern, child);
+            let names = exported(pattern, child, tested);
             for &(_, hole) in &names {
                 if choices.iter().any(|choice| choice.hole == hole) {
                     continue;
@@ -559,8 +657,10 @@ struct Matcher<'p, 't> {
     pattern: &'p Pattern,
     target: &'t Arena<'t>,
     remember: bool,
-    /// Each name used more than once, numbered.
+    /// Each name used more than once, or that a `where` tests, numbered.
     slots: BTreeMap<&'p str, usize>,
+    /// The names a `where` tests, which it reads once a match is complete.
+    tested: Vec<&'p str>,
     /// Each list of the pattern's, by node, the run of statements last.
     lists: RefCell<Vec<Option<Rc<List<'p>>>>>,
     parts: RefCell<HashMap<NodeId, Rc<[Part<'t>]>>>,
@@ -588,6 +688,8 @@ type Stands = (Within, usize, NodeId);
 struct Ways<'e> {
     exports: &'e [usize],
     gathered: Vec<Vec<Option<Bound>>>,
+    /// Where each way gathered ended among the list's code, in the same order.
+    ends: Vec<usize>,
     seen: HashMap<(usize, usize, Vec<Option<Key>>), bool>,
 }
 
@@ -602,16 +704,26 @@ struct Remembered {
 type Outcome = Option<(usize, Vec<(usize, Bound)>)>;
 
 impl<'p, 't> Matcher<'p, 't> {
-    fn new(pattern: &'p Pattern, target: &'t Arena<'_>, remember: bool) -> Matcher<'p, 't> {
+    fn new(
+        pattern: &'p Pattern,
+        target: &'t Arena<'_>,
+        remember: bool,
+        tested: &[&str],
+    ) -> Matcher<'p, 't> {
         let mut counts: BTreeMap<&'p str, usize> = BTreeMap::new();
         for (_, hole) in pattern.holes() {
             if let Some(name) = &hole.name {
                 *counts.entry(name).or_default() += 1;
             }
         }
+        let tested: Vec<&'p str> = counts
+            .keys()
+            .copied()
+            .filter(|name| tested.contains(name))
+            .collect();
         let slots = counts
             .into_iter()
-            .filter(|(_, count)| *count > 1)
+            .filter(|(name, count)| *count > 1 || tested.contains(name))
             .enumerate()
             .map(|(slot, (name, _))| (name, slot))
             .collect();
@@ -621,6 +733,7 @@ impl<'p, 't> Matcher<'p, 't> {
             target,
             remember,
             slots,
+            tested,
             lists: RefCell::new(vec![None; pattern.arena().nodes().count() + 1]),
             parts: RefCell::default(),
             ends: RefCell::default(),
@@ -631,6 +744,65 @@ impl<'p, 't> Matcher<'p, 't> {
             #[cfg(test)]
             work: std::cell::Cell::new(0),
         }
+    }
+
+    /// Whether some way `wanted` matches `node` binds the tested names, in `slots`, as `accept`
+    /// accepts: the way `first` bound them, which the search found first, and then each other.
+    fn node_accepted(
+        &self,
+        wanted: NodeId,
+        node: NodeId,
+        first: &Bindings,
+        slots: &[usize],
+        accept: &mut Accept<'_>,
+    ) -> bool {
+        let first = bound_nodes(first, slots);
+        if accept(&first) {
+            return true;
+        }
+        // The first way is among the ways too, and it has been answered.
+        self.node_ways(wanted, node, &self.unbound(), slots)
+            .into_iter()
+            .any(|way| {
+                let mut bindings = self.unbound();
+                for (slot, bound) in way {
+                    bindings[slot] = Some(bound);
+                }
+                let nodes = bound_nodes(&bindings, slots);
+                nodes != first && accept(&nodes)
+            })
+    }
+
+    /// Where the first way the run of statements matches from `at` ends that binds the tested
+    /// names, in `slots`, as `accept` accepts, if one does.
+    fn run_accepted(
+        &self,
+        at: Place,
+        available: &[Part<'t>],
+        slots: &[usize],
+        first: &[NodeId],
+        accept: &mut Accept<'_>,
+    ) -> Option<usize> {
+        let mut found = Ways {
+            exports: slots,
+            gathered: Vec::new(),
+            ends: Vec::new(),
+            seen: HashMap::new(),
+        };
+        self.ways(Within::Run, at, available, 0, self.unbound(), &mut found);
+        found
+            .gathered
+            .into_iter()
+            .zip(found.ends)
+            .find_map(|(way, end)| {
+                let mut bindings = self.unbound();
+                for (&slot, bound) in slots.iter().zip(way) {
+                    bindings[slot] = bound;
+                }
+                // The first way has been answered already.
+                let nodes = bound_nodes(&bindings, slots);
+                (nodes != first && accept(&nodes)).then_some(end)
+            })
     }
 
     /// Forgets what depended on the bindings of the last start, before another.
@@ -761,7 +933,7 @@ impl<'p, 't> Matcher<'p, 't> {
         let exports = wanted
             .iter()
             .map(|part| match part {
-                Part::Child(child) => exported(self.pattern, *child)
+                Part::Child(child) => exported(self.pattern, *child, &self.tested)
                     .into_iter()
                     .filter_map(|(name, _)| self.slots.get(name).copied())
                     .collect(),
@@ -832,6 +1004,7 @@ impl<'p, 't> Matcher<'p, 't> {
         let mut found = Ways {
             exports,
             gathered: Vec::new(),
+            ends: Vec::new(),
             seen: HashMap::new(),
         };
         self.ways(
@@ -922,6 +1095,7 @@ impl<'p, 't> Matcher<'p, 't> {
                     .eq(key.iter().cloned())
             }) {
                 found.gathered.push(way);
+                found.ends.push(place.from);
             }
             return true;
         };
@@ -1739,6 +1913,80 @@ mod tests {
             .collect()
     }
 
+    /// The matches of `pattern_text` that some binding of `tested` lets `accept` keep, and
+    /// every binding `accept` was offered, as the text each tested name was bound to.
+    fn found_where(
+        pattern_text: &str,
+        target_text: &str,
+        tested: &[&str],
+        mut accept: impl FnMut(&[&str]) -> bool,
+    ) -> (Vec<String>, Vec<Vec<String>>) {
+        let (target, _) = call(target_text);
+        let mut offered = Vec::new();
+        let kept = find_where(&pattern(pattern_text), &target, tested, &mut |nodes| {
+            let texts: Vec<&str> = nodes.iter().map(|&node| target.source(node)).collect();
+            offered.push(texts.iter().map(|t| (*t).to_owned()).collect());
+            accept(&texts)
+        });
+        let kept = kept
+            .into_iter()
+            .map(|m| target_text[m.range].to_owned())
+            .collect();
+        (kept, offered)
+    }
+
+    #[test]
+    fn a_where_keeps_a_match_any_binding_of_its_names_satisfies() {
+        // `$x` can be b or c: the first way found binds it to b.
+        let (kept, offered) =
+            found_where("f($a...,$x,$b...)", "f(a,b,c,d)", &["x"], |x| x == ["c"]);
+        assert_eq!(kept, ["f(a,b,c,d)"]);
+        assert!(offered.contains(&vec!["b".to_owned()]), "{offered:?}");
+        assert!(offered.contains(&vec!["c".to_owned()]), "{offered:?}");
+        // No way binds it to a.
+        let (kept, offered) =
+            found_where("f($a...,$x,$b...)", "f(a,b,c,d)", &["x"], |x| x == ["a"]);
+        assert_eq!(kept, Vec::<String>::new());
+        let mut every: Vec<Vec<String>> = offered;
+        every.sort();
+        every.dedup();
+        assert_eq!(every, [vec!["b".to_owned()], vec!["c".to_owned()]]);
+        // A name bound one way only is offered that way, once a match is found.
+        let (kept, offered) = found_where("f($x,b)", "f(q,b)", &["x"], |_| true);
+        assert_eq!(
+            (kept, offered),
+            (vec!["f(q,b)".to_owned()], vec![vec!["q".to_owned()]])
+        );
+    }
+
+    #[test]
+    fn a_where_that_accepts_everything_finds_what_find_finds() {
+        for (pattern_text, target_text) in [
+            ("f($a...,$x,$b...)", "f(a,b,c,d)"),
+            ("f($x,$x)", "f(q,q)"),
+            ("f($x,$y...)", "f(p,q,r)"),
+            ("f($x)", "g(a)"),
+        ] {
+            let (target, _) = call(target_text);
+            let pattern = pattern(pattern_text);
+            let everything = find_where(&pattern, &target, &["x"], &mut |_| true);
+            assert_eq!(everything, find(&pattern, &target), "{pattern_text}");
+        }
+    }
+
+    #[test]
+    fn a_tested_name_is_one_more_use_of_it_to_the_cost_of_a_search() {
+        // Alone, neither name is used again, so no sequence's stop decides anything later.
+        let two = pattern("f($a...,$x,$b...,$y,$c...)");
+        assert_eq!(two.costly(), None);
+        // Testing one makes one choice, which is allowed; testing both makes two in one list.
+        assert_eq!(two.costly_with(&["x"]), None);
+        assert!(matches!(
+            two.costly_with(&["x", "y"]),
+            Some(Costly::SecondChoice(_))
+        ));
+    }
+
     #[test]
     fn a_shape_matches_with_its_holes_and_not_otherwise() {
         assert_eq!(found("f(a,b)", "f(a,b)"), ["f(a,b)"]);
@@ -2005,8 +2253,8 @@ mod remembered_against_backtracking {
         let statements = [0, 2, 0, 1, 0, 1, 2];
         let target = target(&statements, statements.len());
         assert_eq!(
-            find_with(&pattern, &target, true),
-            find_with(&pattern, &target, false)
+            find_with(&pattern, &target, true, &[], None),
+            find_with(&pattern, &target, false, &[], None)
         );
     }
 
@@ -2078,9 +2326,9 @@ mod remembered_against_backtracking {
         let pattern = pattern(&items);
         let statements = [0, 2, 1, 1, 1, 2, 1, 0];
         let target = target(&statements, statements.len());
-        let backtracked = find_with(&pattern, &target, false);
+        let backtracked = find_with(&pattern, &target, false, &[], None);
         assert_eq!(backtracked.len(), 1);
-        assert_eq!(find_with(&pattern, &target, true), backtracked);
+        assert_eq!(find_with(&pattern, &target, true, &[], None), backtracked);
     }
 
     /// A segment that binds a name used further on changes what the rest is matched with, so a
@@ -2099,9 +2347,9 @@ mod remembered_against_backtracking {
         let pattern = pattern(&items);
         let statements = [0, 0, 1, 0, 0, 0, 2];
         let target = target(&statements, statements.len());
-        let backtracked = find_with(&pattern, &target, false);
+        let backtracked = find_with(&pattern, &target, false, &[], None);
         assert_eq!(backtracked.len(), 2);
-        assert_eq!(find_with(&pattern, &target, true), backtracked);
+        assert_eq!(find_with(&pattern, &target, true, &[], None), backtracked);
     }
 
     /// Words as statements of a `Def` node a module holds, split into two lists at `split`, like a
@@ -2222,9 +2470,9 @@ mod remembered_against_backtracking {
         let pattern = nested_pattern(&[Sequence(None), Fixed(0), Sequence(None)], false);
         let statements = [0, 0, 1, 0, 0, 1, 0];
         let target = nested_target(&statements, 5, false);
-        let backtracked = find_with(&pattern, &target, false);
+        let backtracked = find_with(&pattern, &target, false, &[], None);
         assert_eq!(backtracked.len(), 1);
-        assert_eq!(find_with(&pattern, &target, true), backtracked);
+        assert_eq!(find_with(&pattern, &target, true, &[], None), backtracked);
     }
 
     /// A sequence takes children, and stops at one: where the code after it stands just past a
@@ -2235,11 +2483,11 @@ mod remembered_against_backtracking {
         use Item::{Fixed, Sequence};
         let pattern = nested_pattern(&[Sequence(None), Fixed(1)], false);
         let target = nested_target(&[0, 1], 2, true);
-        assert_eq!(find_with(&pattern, &target, false), []);
-        assert_eq!(find_with(&pattern, &target, true), []);
+        assert_eq!(find_with(&pattern, &target, false, &[], None), []);
+        assert_eq!(find_with(&pattern, &target, true, &[], None), []);
         // Written with the token, it matches.
         let separated = nested_pattern(&[Sequence(None), Fixed(1)], true);
-        assert_eq!(find_with(&separated, &target, true).len(), 1);
+        assert_eq!(find_with(&separated, &target, true, &[], None).len(), 1);
     }
 
     /// Three unnamed sequences between fixed statements inside a node, which backtracking alone
@@ -2289,8 +2537,8 @@ mod remembered_against_backtracking {
             prop_assert_eq!(pattern.unbounded_sequence(), None);
             let target = target(&statements, split.min(statements.len()));
             prop_assert_eq!(
-                find_with(&pattern, &target, true),
-                find_with(&pattern, &target, false),
+                find_with(&pattern, &target, true, &[], None),
+                find_with(&pattern, &target, false, &[], None),
                 "{:?} over {:?}",
                 items,
                 statements
@@ -2308,8 +2556,8 @@ mod remembered_against_backtracking {
             let pattern = nested_pattern(&items, separated);
             let target = nested_target(&statements, split.min(statements.len()), separated);
             prop_assert_eq!(
-                find_with(&pattern, &target, true),
-                find_with(&pattern, &target, false),
+                find_with(&pattern, &target, true, &[], None),
+                find_with(&pattern, &target, false, &[], None),
                 "{:?} over {:?}, split at {}, separated: {}",
                 items,
                 statements,
@@ -2482,8 +2730,8 @@ mod trees {
                 .collect()
         };
         (
-            shown(find_with(&pattern, &target, true)),
-            shown(find_with(&pattern, &target, false)),
+            shown(find_with(&pattern, &target, true, &[], None)),
+            shown(find_with(&pattern, &target, false, &[], None)),
         )
     }
 

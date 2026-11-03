@@ -616,6 +616,66 @@ fn a_scoped_assertion_counts_only_what_its_scope_takes() {
     project.assert_unchanged();
 }
 
+/// Calls whose arguments a `where` tests.
+const BOUND: &[(&str, &str)] = &[
+    (".git/HEAD", ""),
+    (
+        "src/client.py",
+        "connect(host, port, \"password123\", timeout)\nconnect(host, port, timeout)\n\
+         fetch(\"https://x\")\nfetch(r\"http://y\")\nfetch(url)\n\
+         fetch(\"\"\"line one\nline two\"\"\")\n",
+    ),
+    ("tests/test_client.py", "fetch(\"https://test\")\n"),
+];
+
+#[test]
+fn where_tests_what_a_match_binds_by_any_binding() {
+    let project = Project::new(BOUND);
+    // `$x` can bind any middle argument, so a call is kept if any of them passes.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        r#"find `connect($b..., $x, $a...)` where $x contains "password""#
+    ]));
+    // So `not` keeps a call one of whose middle arguments has no password, as both have.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        r#"find `connect($b..., $x, $a...)` where not $x contains "password""#
+    ]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_bound_string_is_compared_by_its_content_and_other_code_by_its_text() {
+    let project = Project::new(BOUND);
+    // The quotes and the prefix take no part.
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find `fetch($s)` where $s matches "http"*"#]));
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find `fetch($s)` where $s matches "url""#]));
+    // One star stays within a line of the value; two cross lines.
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find `fetch($s)` where $s matches "line"*"#]));
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find `fetch($s)` where $s matches "line"**"#]));
+    // A FILE test and a value test together.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        r#"find `fetch($s)` where $s matches "https"* and not FILE matches "tests""#
+    ]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_where_on_what_its_pattern_cannot_bind_is_refused() {
+    let project = Project::new(BOUND);
+    for script in [
+        r#"find "fetch" where $x matches "a""#,
+        r#"find `fetch($s)` where $t matches "a""#,
+        r#"find `fetch($_)` where $_ matches "a""#,
+        r#"find `connect($xs...)` where $xs matches "a""#,
+        r#"find `connect($a..., $x, $b..., $y, $c...)` where $x matches "a" and $y matches "b""#,
+    ] {
+        assert_quaff_snapshot!(project.quaff(&["-e", script]));
+    }
+    project.assert_unchanged();
+}
+
 #[test]
 fn anchors_and_other_punctuation_are_literal() {
     let project = Project::new(&[(".git/HEAD", ""), ("a.txt", "^x$ and x\n[a-z]* and abc\n")]);
@@ -991,7 +1051,7 @@ fn each_construct_outside_the_mvp_exits_5_naming_it() {
 fn each_construct_not_built_yet_exits_5_naming_it() {
     let project = Project::new(SCRIPTED);
     assert_quaff_snapshot!(project.quaff(&["-e", "replace `f($a)` with `g($a)` expect 1"]));
-    assert_quaff_snapshot!(project.quaff(&["-e", "find `f($a)` where $a matches \"x\""]));
+    assert_quaff_snapshot!(project.quaff(&["-e", "find `f($a)` where $a matches `x`"]));
     assert_quaff_snapshot!(project.quaff(&["-e", "find \"a\"; delete `a` expect 1"]));
     project.assert_unchanged();
 }

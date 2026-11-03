@@ -12,6 +12,7 @@ mod cli;
 mod contents;
 mod discover;
 mod editorconfig;
+mod filter;
 mod glob;
 mod output;
 mod resolve;

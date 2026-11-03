@@ -1,0 +1,14 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "find `connect($a..., $x, $b..., $y, $c...)` where $x matches \"a\" and $y matches \"b\""
+---
+success: false
+exit_code: 3
+----- stdout -----
+
+----- stderr -----
+quaff: -e expression 1, at character 51: testing `$x` and `$y` in `where` makes a second place where what a sequence takes decides what later code must match, and each such place multiplies the work of a search by the length of the block or list it stands in, so a pattern and its `where` may have one between them: test fewer of its names, or give the pattern more fixed code

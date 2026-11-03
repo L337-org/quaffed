@@ -1,0 +1,14 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "find `connect($xs...)` where $xs matches \"a\""
+---
+success: false
+exit_code: 3
+----- stdout -----
+
+----- stderr -----
+quaff: -e expression 1, at character 30: `$xs` binds a sequence, and `where` tests what one node holds

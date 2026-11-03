@@ -4,11 +4,11 @@ info:
   program: quaff
   args:
     - "-e"
-    - "find `f($a)` where $a matches \"x\""
+    - "find `f($a)` where $a matches `x`"
 ---
 success: false
 exit_code: 5
 ----- stdout -----
 
 ----- stderr -----
-quaff: -e expression 1, at character 20: a `where` test of a metavariable is not built yet
+quaff: -e expression 1, at character 31: a `where` comparison with a backticked pattern is not built yet

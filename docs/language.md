@@ -276,8 +276,9 @@ A statement's clauses follow its operand in the order `in`, `where`, `expect`, e
   [exit 0]
   ```
 
-- **`where` keeps what passes its tests**: `FILE matches` and `FILE contains`, joined with `and`
-  and turned round with `not`.  There is no `or`: write a statement for each alternative.
+- **`where` keeps what passes its tests**: `matches` and `contains`, of `FILE` or of a
+  metavariable the pattern binds, joined with `and` and turned round with `not`.  There is no
+  `or`: write a statement for each alternative.
 
   ```
   $ quaff -e 'find "TODO" where not FILE matches **".md"'
@@ -285,8 +286,31 @@ A statement's clauses follow its operand in the order `in`, `where`, `expect`, e
   [exit 0]
   ```
 
-  A test of a metavariable, such as `where $x matches "test_"*`, is
-  [not built yet](#not-built-yet).
+- **A metavariable is compared by what its match bound**: a string literal by its content, as
+  written between its quotes, with the quotes and any prefix taking no part, and any other code
+  by its text.  A glob over a value takes the same markers as a path's, with a line in place of
+  a directory name, so `*` stays within a line and `**` crosses lines:
+
+  ```
+  $ quaff -e 'find `log.info($s, $x)` where $s matches "user "*'
+  src/app.py:11:5-11:34: log.info("user %s", user.name)
+
+  $ quaff -e 'find `return $x` where not $x contains "("'
+  src/totals.py:4:5-4:25: return subtotal + tax
+  src/totals.py:8:5-8:31: return price - price * rate
+  ```
+
+- **A match is kept if any way it binds its names passes the whole `where`.**  In
+  `connect($before..., $x, $after...)`, `$x` can be any argument but the first and last, so
+  `where $x contains "password"` keeps a call with a password anywhere among them - and
+  `where not $x contains "password"` keeps a call any of whose middle arguments has none, which
+  is not the same as having no password at all.
+- **A test of a metavariable must test one the pattern binds to one node**: a textual search binds
+  none, `$_` binds nothing, and a sequence binds many, so each is refused (exit 3).  A test is
+  also one more use of its name: where a pattern and its `where` together would make the search
+  grow faster than the square of a list's length, as two names used twice can
+  ([Runs of statements](#runs-of-statements)), the statement is refused the same way.  A
+  comparison with a backticked pattern is [not built yet](#not-built-yet).
 - **A file a statement leaves out by its path is never parsed for it**, so a Python file quaff
   cannot parse there cannot [refuse the run](#which-files): leave it out with `in`, or with
   `where not FILE matches`.
@@ -797,11 +821,11 @@ These parse, and are refused with exit 5 at the place they were written, rather 
 ignored or treated as unknown:
 
 - a structural `replace`, and `delete`;
-- a `where` test of a metavariable.
+- a `where` comparison with a backticked pattern.
 
 ```
-$ quaff -e 'find `f($a)` where $a matches "x"'
-quaff: -e expression 1, at character 20: a `where` test of a metavariable is not built yet
+$ quaff -e 'find `$f($s)` where $s matches `x`'
+quaff: -e expression 1, at character 32: a `where` comparison with a backticked pattern is not built yet
 [exit 5]
 ```
 

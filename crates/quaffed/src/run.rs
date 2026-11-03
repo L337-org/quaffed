@@ -27,6 +27,7 @@ use crate::cli::{self, SourceArg, UsageError};
 use crate::contents::Contents;
 use crate::discover;
 use crate::editorconfig::EditorConfig;
+use crate::filter;
 use crate::output;
 use crate::resolve::{self, Declarations, Resolution, Unknown};
 use crate::scope;
@@ -421,12 +422,14 @@ pub fn run(
     let (files, found) = discover_bases(&scoping.bases, &mut projects, &cwd)?;
     let to_search = to_search(files, &scoped, roots);
     let locale = locale();
+    let filters = filters(&searching, &compiled, roots, &built)?;
     let searched = search_files(
         &to_search,
-        &cwd,
+        roots,
         &patterns,
         &replacements,
         &compiled,
+        &filters,
         &mut projects,
         locale.as_ref(),
     )?;
@@ -853,9 +856,6 @@ fn replacing(action: &Action, span: Span) -> Result<Replacing<'_>, (&'static str
     else {
         return Err(("a structural replace", span));
     };
-    if let Some(span) = action.query.filter.as_ref().and_then(metavariable_test) {
-        return Err(("a `where` test of a metavariable", span));
-    }
     // The checker has refused an edit with no `expect`, and the parser takes at most one.
     let Some(count) = action.expect.first() else {
         return Err(("a replace with no `expect`", span));
@@ -890,9 +890,6 @@ fn buildable<'p>(
     query: &'p Query,
     structural: &mut Vec<(&'p str, Span)>,
 ) -> Result<Wanted<'p>, (&'static str, Span)> {
-    if let Some(span) = query.filter.as_ref().and_then(metavariable_test) {
-        return Err(("a `where` test of a metavariable", span));
-    }
     match &query.operand.node {
         Operand::Text(pattern) => Ok(Wanted::Text(pattern)),
         Operand::Pattern(written) => {
@@ -904,6 +901,106 @@ fn buildable<'p>(
         }
         _ => Err(("this kind of operand", query.operand.span)),
     }
+}
+
+/// Each of the run's patterns' `where`, compiled, where it tests a metavariable: checked first
+/// against the pattern, which must be structural, must bind each name it tests to one node, and
+/// with the names it tests must not be too costly to search.
+fn filters(
+    searching: &[Searching],
+    compiled: &[Pattern],
+    roots: scope::Roots,
+    built: &Built,
+) -> Result<Vec<Option<filter::Filter>>, Failure> {
+    let script = |span: Span, message: String| Failure::Script {
+        location: built.locate(span, span.start),
+        message,
+    };
+    searching
+        .iter()
+        .map(|searching| {
+            let Some(written) = &searching.query.filter else {
+                return Ok(None);
+            };
+            let compiled_filter = filter::Filter::new(written, roots).map_err(|err| match err {
+                filter::Error::NotBuilt(filter::NotBuilt(span)) => Failure::Unknown {
+                    location: built.locate(span, span.start),
+                    message: "a `where` comparison with a backticked pattern is not built yet"
+                        .into(),
+                },
+                filter::Error::Glob(scope::Error::TooLarge(err), span) => {
+                    script(span, err.to_string())
+                }
+                filter::Error::Glob(scope::Error::Io { path, cause }, _) => Failure::Io {
+                    doing: "looking for",
+                    path,
+                    cause,
+                },
+            })?;
+            let Some(compiled_filter) = compiled_filter else {
+                return Ok(None);
+            };
+            let span = metavariable_test(written).unwrap_or(written.span);
+            let Wanted::Structural {
+                compiled: index, ..
+            } = searching.pattern
+            else {
+                return Err(script(
+                    span,
+                    "a textual search binds no metavariables, so there is nothing for `where` to \
+                     test here: test FILE, or search for a backticked pattern"
+                        .into(),
+                ));
+            };
+            let pattern = &compiled[index];
+            for name in &compiled_filter.names {
+                let holes: Vec<bool> = pattern
+                    .holes()
+                    .filter(|(_, hole)| hole.name.as_deref() == Some(name.as_str()))
+                    .map(|(_, hole)| hole.sequence)
+                    .collect();
+                if name == "_" {
+                    return Err(script(
+                        span,
+                        "`$_` binds nothing, so `where` cannot test it".into(),
+                    ));
+                }
+                if holes.is_empty() {
+                    return Err(script(
+                        span,
+                        format!("`${name}` is not bound by this statement's pattern"),
+                    ));
+                }
+                if holes.contains(&true) {
+                    return Err(script(
+                        span,
+                        format!(
+                            "`${name}` binds a sequence, and `where` tests what one node holds"
+                        ),
+                    ));
+                }
+            }
+            let names: Vec<&str> = compiled_filter.names.iter().map(String::as_str).collect();
+            if pattern.costly_with(&names).is_some() {
+                return Err(script(
+                    span,
+                    format!(
+                        "testing {} in `where` makes a second place where what a sequence takes \
+                         decides what later code must match, and each such place multiplies the \
+                         work of a search by the length of the block or list it stands in, so a \
+                         pattern and its `where` may have one between them: test fewer of its \
+                         names, or give the pattern more fixed code",
+                        names
+                            .iter()
+                            .map(|name| format!("`${name}`"))
+                            .collect::<Vec<_>>()
+                            .join(" and ")
+                    ),
+                ));
+            }
+            Ok(Some(compiled_filter))
+        })
+        .collect()
 }
 
 /// Where the first test of a metavariable in `filter` was written, if it has one.
@@ -1457,20 +1554,30 @@ struct Plan<'p> {
     compiled: &'p [Pattern],
     /// The structural patterns, by their index among all the run's patterns.
     structural: Vec<usize>,
+    /// For each pattern, its `where` if that tests a metavariable.
+    filters: &'p [Option<filter::Filter>],
+    /// Where a file's path, as a `FILE` test sees it, is worked out from.
+    roots: scope::Roots<'p>,
 }
 
 /// Searches each of `files` for each of `patterns`, in order, replacing as `replacements` says,
 /// reading each file once and deciding its encoding from what declares it.  A pattern after a
 /// replace is searched for in the file as the replace left it; the edits are held, not written.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "what a search is of, each part from a different stage of the run"
+)]
 fn search_files(
     files: &[ToSearch],
-    cwd: &Path,
+    roots: scope::Roots,
     patterns: &[Wanted],
     replacements: &[Option<&TextPattern>],
     compiled: &[Pattern],
+    filters: &[Option<filter::Filter>],
     projects: &mut Projects,
     locale: Option<&(String, Encoding)>,
 ) -> Result<Searched, Failure> {
+    let cwd = roots.cwd;
     let batches = batches(patterns, replacements);
     let structural = patterns
         .iter()
@@ -1505,6 +1612,8 @@ fn search_files(
         batches,
         compiled,
         structural,
+        filters,
+        roots,
     };
     for file in files {
         let declarations = &mut projects.list[file.project].declarations;
@@ -1565,16 +1674,8 @@ impl Searched {
                     textual,
                     structural,
                 } => {
-                    let textual: Vec<(usize, &TextPattern)> = textual
-                        .iter()
-                        .copied()
-                        .filter(|&(i, _)| applies[i])
-                        .collect();
-                    let structural: Vec<(usize, usize)> = structural
-                        .iter()
-                        .copied()
-                        .filter(|&(i, _)| applies[i])
-                        .collect();
+                    let textual = applying(textual, applies);
+                    let structural = applying(structural, applies);
                     if !structural.is_empty() && python && !binary {
                         // On disk, if an edit has changed it, to tell a file that never parsed
                         // from one an edit broke.
@@ -1582,12 +1683,14 @@ impl Searched {
                             on_disk: edited.is_some().then_some(&bytes[..]),
                             by: &by,
                         };
+                        let place = scope::Place::of(file, plan.roots.cwd, plan.roots.root);
                         self.structural_batch(
                             &shown,
                             text,
                             &earlier,
                             &structural,
                             plan,
+                            &place,
                             &mut parsed,
                         );
                     }
@@ -1691,7 +1794,7 @@ impl Searched {
         shown: &Path,
         text: &str,
         structural: &[(usize, usize)],
-        shapes: &[&Pattern],
+        shapes: &[(&Pattern, Option<&structural::Where>)],
     ) -> Result<(), String> {
         match structural::search(text, shapes) {
             Err(unparsed) => Err(unparsed_at(&unparsed)),
@@ -1720,6 +1823,10 @@ impl Searched {
     /// or as unparseable, once however many batches search it.  `on_disk` is the file as it is on
     /// disk when an earlier replace has changed it: if that parses and `text` does not, the edit
     /// broke it, which refuses the run as an edit rather than as a file that cannot be parsed.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the file, its batch and what earlier batches found, as a search has them"
+    )]
     fn structural_batch(
         &mut self,
         shown: &Path,
@@ -1727,9 +1834,24 @@ impl Searched {
         earlier: &Earlier,
         structural: &[(usize, usize)],
         plan: &Plan,
+        place: &scope::Place,
         parsed: &mut Option<bool>,
     ) {
-        let shapes: Vec<&Pattern> = structural.iter().map(|&(_, c)| &plan.compiled[c]).collect();
+        // Each pattern's `where`, decided for this file's path and for what a match binds.
+        let filters: Vec<Option<structural::Where>> = structural
+            .iter()
+            .map(|&(i, _)| {
+                plan.filters[i].as_ref().map(|filter| structural::Where {
+                    names: filter.names.iter().map(String::as_str).collect(),
+                    holds: Box::new(move |values: &[&str]| filter.holds(place, values)),
+                })
+            })
+            .collect();
+        let shapes: Vec<(&Pattern, Option<&structural::Where>)> = structural
+            .iter()
+            .zip(&filters)
+            .map(|(&(_, c), filter)| (&plan.compiled[c], filter.as_ref()))
+            .collect();
         // The text Ruff parses is the text CPython would run, decoded as CPython decodes it,
         // whatever else declares the file's encoding for the textual tier.
         let outcome = match python::Source::decode(text) {
@@ -1881,6 +2003,12 @@ impl Searched {
             }
         }
     }
+}
+
+/// The patterns in `batch`, each by its index among all the run's patterns, that look at a file,
+/// as `applies` says by that index.
+fn applying<T: Copy>(batch: &[(usize, T)], applies: &[bool]) -> Vec<(usize, T)> {
+    batch.iter().copied().filter(|&(i, _)| applies[i]).collect()
 }
 
 /// Where and why a Python file does not parse, as a message gives it.
@@ -2661,10 +2789,14 @@ mod tests {
         };
         let searched = search_files(
             &[file(with), file(without)],
-            &dir,
+            scope::Roots {
+                cwd: &dir,
+                root: &dir,
+            },
             &[Wanted::Text(&pattern)],
             &[None],
             &[],
+            &[None],
             &mut projects,
             None,
         );
@@ -2702,10 +2834,9 @@ mod tests {
         );
         let filter = Spanned::new(Filter::Not(Box::new(of_x)), span(4));
         let filtered = Query::with(text("a"), Vec::new(), Some(filter));
-        assert_eq!(
-            replacing(&replace(filtered, count.clone()), span(1)).err(),
-            Some(("a `where` test of a metavariable", span(5)))
-        );
+        // A test of a metavariable is planned like any other: the run checks it against the
+        // pattern once that is compiled.
+        assert!(replacing(&replace(filtered, count.clone()), span(1)).is_ok());
         // The checker refuses an edit with no `expect` first; the planner still names it.
         assert_eq!(
             replacing(&replace(Query::new(text("a")), Vec::new()), span(1)).err(),
