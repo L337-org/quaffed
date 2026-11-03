@@ -122,6 +122,11 @@ impl PathGlob {
         } else {
             from(glob)
         };
+        let glob = if from == From::Absolute {
+            canonical_leading_directory(&glob)
+        } else {
+            glob
+        };
         let test = match glob.as_literal() {
             Some(path) if !anywhere => Test::Named(named(path, from, roots)?),
             _ => Test::Pattern(Matcher::new(&glob, Kind::Path, anywhere).map_err(Error::TooLarge)?),
@@ -166,6 +171,32 @@ pub enum Names<'a> {
     NotThere,
     /// A glob, which names files only as they are found.
     Glob,
+}
+
+/// `glob`, an absolute one, with its leading directory written as it is on disk, through any
+/// symbolic link in it, since that is how discovery finds the files it is matched against: so
+/// `"/var/www/"**` finds the files of `/srv/www` where `/var/www` links to it.  A directory that
+/// is not there is left as written.
+fn canonical_leading_directory(glob: &Glob) -> Glob {
+    let Some(GlobPart::Literal(text)) = glob.parts().first() else {
+        return glob.clone();
+    };
+    let Some(slash) = text.rfind('/') else {
+        return glob.clone();
+    };
+    let Ok(canonical) = fs::canonicalize(&text[..=slash]) else {
+        return glob.clone();
+    };
+    let mut rewritten = Glob::default();
+    let mut directory = absolute(&canonical);
+    if !directory.ends_with('/') {
+        directory.push('/');
+    }
+    rewritten.push_literal(directory + &text[slash + 1..]);
+    for part in &glob.parts()[1..] {
+        rewritten.push(part.clone());
+    }
+    rewritten
 }
 
 /// An absolute path as a glob sees it, with `/` between its segments.

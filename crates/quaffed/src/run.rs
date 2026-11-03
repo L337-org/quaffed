@@ -1423,7 +1423,7 @@ fn not_there(glob: &Spanned<Glob>, built: &Built) -> Failure {
 /// Each of `files`, with which of the run's patterns, scoped as `scoped`, look at it.
 fn to_search(files: Discovered, scoped: &[Scoped], roots: scope::Roots) -> Vec<ToSearch> {
     // A file's path as a glob sees it is worked out only where some `in` or `where` reads it: a
-    // run with neither, the commonest, pays nothing for scoping beyond the base each file is in.
+    // run with neither pays nothing for scoping beyond the base each file is in.
     let reads_paths = scoped
         .iter()
         .any(|scoped| scoped.within.is_some() || scoped.test.is_some());
@@ -1485,6 +1485,8 @@ fn discover_bases(
     let mut files: std::collections::BTreeMap<PathBuf, (usize, Vec<bool>)> =
         std::collections::BTreeMap::new();
     let mut all = discover::Found::default();
+    let mut links = std::collections::BTreeSet::new();
+    let mut specials = std::collections::BTreeSet::new();
     for (index, base) in bases.iter().enumerate() {
         let project = projects.of(base, cwd);
         let found = discover_base(base, project, projects, cwd)?;
@@ -1495,22 +1497,16 @@ fn discover_bases(
                 .1[index] = true;
         }
         // Bases overlap when one statement's lies under another's, so each is kept once.
-        for link in found.links_not_followed {
-            if !all.links_not_followed.contains(&link) {
-                all.links_not_followed.push(link);
-            }
-        }
-        for special in found.special_files {
-            if !all.special_files.contains(&special) {
-                all.special_files.push(special);
-            }
-        }
+        links.extend(found.links_not_followed);
+        specials.extend(found.special_files);
         for rule in found.skipped_rules {
             if !all.skipped_rules.contains(&rule) {
                 all.skipped_rules.push(rule);
             }
         }
     }
+    all.links_not_followed = links.into_iter().collect();
+    all.special_files = specials.into_iter().collect();
     let files = files
         .into_iter()
         .map(|(path, (_, found_by))| {

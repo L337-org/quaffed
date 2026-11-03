@@ -610,6 +610,25 @@ fn an_absolute_glob_is_matched_where_it_says() {
 }
 
 #[test]
+fn an_absolute_glob_through_a_symbolic_link_finds_what_the_link_leads_to() {
+    let mut project = Project::new(SCOPED);
+    std::os::unix::fs::symlink("src", project.dir.join("alias")).expect("linking");
+    project.before = snapshot_files(&project.dir);
+    let root = std::fs::canonicalize(&project.dir).expect("the project");
+    let glob = format!(r#"find "TODO" in "{}/alias/"**".py""#, root.display());
+    let output = project
+        .quaff(&["-e", &glob])
+        .output()
+        .expect("running quaff");
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "src/app.py:1:10-1:13: TODO\nsrc/sub/deep.py:1:10-1:13: TODO\n"
+    );
+    project.assert_unchanged();
+}
+
+#[test]
 fn an_in_under_a_command_line_scope_is_resolved_as_without_one() {
     let mut project = Project::new(SCOPED);
     project.add_bytes(".gitignore", b"build/\n");
