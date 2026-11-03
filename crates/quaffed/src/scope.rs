@@ -287,6 +287,17 @@ pub fn base(glob: &Glob, roots: Roots) -> Result<Option<PathBuf>, Error> {
     named(prefix, from, roots)
 }
 
+/// The directory a glob's files must lie under, as written: its leading literal text up to its
+/// last `/`.
+#[must_use]
+pub fn leading_directory(glob: &Glob) -> String {
+    match glob.parts().first() {
+        Some(GlobPart::Literal(text)) => text.rfind('/').map_or("", |slash| &text[..=slash]),
+        _ => "",
+    }
+    .to_owned()
+}
+
 /// A literal path that reads as a glob - holding `*`, `?`, `[` or `{` - spelled with markers,
 /// as a note suggests it: `"**/test_*.py"` becomes `**"/test_"*".py"`.  `None` when it holds
 /// none of them.

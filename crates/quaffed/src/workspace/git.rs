@@ -64,6 +64,17 @@ pub(super) fn find(start: &Path, contents: &Contents) -> Option<Box<dyn Workspac
         .map(|root| Box::new(Git::new(root, contents)) as Box<dyn Workspace>)
 }
 
+/// git's ignore files, for a walk with no repository above it: they apply only inside the
+/// repositories it walks into, as a nested repository's do inside a project.
+pub(super) fn ignore_files(contents: &Contents) -> Box<dyn IgnoreFiles> {
+    contents.keep_named(".gitignore");
+    contents.keep_named(MARKER);
+    contents.keep_named("commondir");
+    Box::new(GitIgnores {
+        contents: contents.clone(),
+    })
+}
+
 /// Whether `dir` holds `.git`.
 fn is_root(dir: &Path) -> bool {
     // symlink_metadata, so a dangling symbolic link named .git still counts as present.

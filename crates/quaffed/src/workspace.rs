@@ -120,6 +120,15 @@ type Find = fn(&Path, &Contents) -> Option<Box<dyn Workspace>>;
 /// Each version control system quaff knows.
 const SYSTEMS: &[Find] = &[git::find];
 
+/// Where the known systems keep their ignore files, for a walk that is in no project: they
+/// apply only inside the repositories the walk enters, as a nested repository's do inside a
+/// project.  With git the one system known, these are git's; a second system would need its
+/// own combined with them.
+#[must_use]
+pub fn ignore_files_outside(contents: &Contents) -> Box<dyn IgnoreFiles> {
+    git::ignore_files(contents)
+}
+
 /// The workspace `start` is in: the nearest project root any known system finds at or above
 /// it, or none.
 ///

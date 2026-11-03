@@ -320,15 +320,19 @@ The scope on the command line, `in` and `FILE` follow one set of rules.
   member goes first and a `-` first or last, and nothing else is special.
 - **A glob matches the whole path**, and `..` is an ordinary directory name to it.
   `FILE contains "x"` is `x` anywhere in the path, the same as `FILE matches **"x"**`.
-- **A glob written inside the quotes is literal**, so `"**/test_*.py"` names a file of that name.
-  Where none is there, a note gives the marker spelling:
+- **An `in` that names nothing there fails the run** (exit 7), as a missing scope does: a path
+  that is not there, or a glob whose leading directory is not.  A glob written inside the quotes
+  is literal, so `"**/*.md"` names a file of that name, and the message gives the marker
+  spelling:
 
   ```
   $ quaff -e 'find "TODO" in "**/*.md"'
-  quaff: no matches for "TODO"
-  quaff: -e expression 1, at character 16: `in` names "**/*.md", which is not there, so this statement looks at nothing; text in quotes is literal, so to match a pattern write **"/"*".md"
-  [exit 1]
+  quaff: -e expression 1, at character 16: `in` names "**/*.md", which is not there; text in quotes is literal, so to match a pattern write **"/"*".md"
+  [exit 7]
   ```
+
+- **A `FILE matches` path that names nothing there is only noted**, since it may be there to
+  guard against a file that does not exist yet.
 
 ## Assertions
 
@@ -707,7 +711,9 @@ alone.
 
 - **Files ignored by `.gitignore`, `.ignore` or `.git/info/exclude` are skipped.**  `.ignore`
   outranks `.gitignore`, which outranks `info/exclude`, and within each kind the nearest
-  directory with a matching rule decides.  With no project, only `.ignore` applies.
+  directory with a matching rule decides.  A `.gitignore` and `info/exclude` apply only inside
+  a repository, so with no project only `.ignore` applies - until the search enters a
+  repository, a submodule or one in a directory that is in no project, which keeps its own.
 - **No ignore file above the project root is read**, and no git configuration, so a global
   excludes file does not apply.
 - **Naming an ignored file or directory as the scope searches it anyway**, but every ignore rule
@@ -778,7 +784,7 @@ src/app.py:16:5-17:32: return lookup(request.args["id"], default=None,)
 | 2 | an assertion failed |
 | 3 | a usage error, a malformed script or pattern, an empty program, or a scope holding a double quote |
 | 5 | a statement or construct this build does not have |
-| 7 | an I/O error, naming the path and quoting the system's error, or edits that could not be written, saying what was left as it was |
+| 7 | an I/O error, naming the path and quoting the system's error; an `in` that names nothing there; or edits that could not be written, saying what was left as it was |
 | 9 | a structural search needs a Python file quaff cannot parse, an edit would break a Python file that parses, or a file's encoding cannot write a replacement: the script or the file must change first |
 
 **A run that cannot give an answer - exit 3, 5, 7 or 9 - prints nothing on standard output**, so

@@ -355,9 +355,11 @@ impl Rules {
     /// Whether `path`, in the directory whose chain of rules is `dirs`, is ignored, decided as
     /// the `ignore` crate's walker decides: in each kind of ignore file, the nearest directory
     /// with a rule that matches decides that kind, and the kinds then rank `.ignore` above the
-    /// system's own files above its exclude file.  The system's files stop at the nearest
-    /// repository root, so a nested repository's own rules alone apply in it; `.ignore` files
-    /// apply up to the boundary.  None above the boundary is ever read.
+    /// system's own files above its exclude file.  The system's files apply only inside a
+    /// repository, from the nearest repository root down, so a nested repository's own rules
+    /// alone apply in it, with or without a project above it, and a `.gitignore` in no
+    /// repository applies to nothing, as git has it; `.ignore` files apply up to the boundary.
+    /// None above the boundary is ever read.
     ///
     /// The walk fetches a directory's chain once, for everything the directory holds.
     fn ignored_in(dirs: &[Arc<DirRules>], path: &Path, is_dir: bool) -> bool {
@@ -371,12 +373,17 @@ impl Rules {
             }
         };
         let (mut dot_ignore, mut system, mut exclude) = (None, None, None);
-        let mut past_repository = false;
-        for rules in dirs {
+        // The directories inside the repository the path is in, nearest first: none when it is
+        // in no repository.
+        let in_repository = dirs
+            .iter()
+            .position(|rules| rules.repository_root)
+            .map_or(0, |root| root + 1);
+        for (i, rules) in dirs.iter().enumerate() {
             if dot_ignore.is_none() {
                 dot_ignore = decide(rules.dot_ignore.matched(path, is_dir));
             }
-            if !past_repository {
+            if i < in_repository {
                 if system.is_none() {
                     system = decide(rules.system.matched(path, is_dir));
                 }
@@ -384,7 +391,6 @@ impl Rules {
                     exclude = decide(rules.exclude.matched(path, is_dir));
                 }
             }
-            past_repository = past_repository || rules.repository_root;
         }
         dot_ignore.or(system).or(exclude).unwrap_or(false)
     }

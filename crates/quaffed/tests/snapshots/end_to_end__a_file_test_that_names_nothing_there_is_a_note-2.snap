@@ -17,4 +17,4 @@ tests/test_app.py:1:3-1:6: TODO
 tests/test_x/helper.py:1:3-1:6: TODO
 
 ----- stderr -----
-quaff: -e expression 1, at character 36: no file has the name "**/test_*.py"; text in quotes is literal, so to match a pattern write **"/test_"*".py"
+quaff: -e expression 1, at character 36: FILE matches "**/test_*.py", which names nothing that is there; text in quotes is literal, so to match a pattern write **"/test_"*".py"

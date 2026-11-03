@@ -539,14 +539,44 @@ fn a_command_line_scope_narrows_a_statements_in_and_says_so() {
 }
 
 #[test]
-fn a_glob_written_inside_the_quotes_is_literal_and_a_note_says_how_to_write_it() {
+fn an_in_that_names_nothing_there_fails_saying_how_to_write_a_glob() {
     let project = Project::new(SCOPED);
+    // A glob written inside the quotes is literal, so it names nothing, and the run fails, as a
+    // missing scope does, giving the marker spelling.
     assert_quaff_snapshot!(project.quaff(&["-e", r#"find "TODO" in "**/test_*.py""#]));
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find "TODO" in "docs""#]));
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find "TODO" in "docs/"**".md""#]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_file_test_that_names_nothing_there_is_a_note() {
+    let project = Project::new(SCOPED);
+    // A safeguard against a file that is not there yet does no harm, so it is only noted.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        r#"find "TODO" in "src" where not FILE matches "src/generated.py""#
+    ]));
     assert_quaff_snapshot!(
         project.quaff(&["-e", r#"find "TODO" where not FILE matches "**/test_*.py""#])
     );
-    // A path that is simply not there says so too.
-    assert_quaff_snapshot!(project.quaff(&["-e", r#"find "TODO" in "docs""#]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_repository_walked_into_from_outside_any_project_keeps_its_own_rules() {
+    let project = Project::new(&[
+        ("repo/.git/HEAD", ""),
+        ("repo/.gitignore", "target/\n"),
+        ("repo/kept.txt", "TODO\n"),
+        ("repo/target/ignored.txt", "TODO\n"),
+        // In no repository, a .gitignore applies to nothing, as git has it.
+        (".gitignore", "loose.txt\n"),
+        ("loose.txt", "TODO\n"),
+    ]);
+    // Run where there is no project, and named from inside the repository, alike.
+    assert_quaff_snapshot!(project.quaff(&["TODO"]));
+    assert_quaff_snapshot!(project.quaff_in("repo", &["TODO", ".."]));
     project.assert_unchanged();
 }
 

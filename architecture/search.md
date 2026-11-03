@@ -47,7 +47,10 @@ What a user sees is in `docs/language.md`, _What is searched_.  How it is built:
      costs nothing; a walker that filters what it has listed reads every name first.  A test
      counts the directories listed.
 4. **Ignore files rank as the `ignore` crate's walker ranks them**, and a repository's own stop at
-   its root.  Which files are listed is held to git's own answer by a test replaying what
+   its root and apply only within a repository, as git's do.  So with no project the walk is
+   still given git's ignore files (`workspace::ignore_files_outside`), and a repository it enters
+   keeps its own rules, as a submodule does inside a project; a file in one takes its declared
+   encoding from it too (`Projects::of_file`).  Which files are listed is held to git's own answer by a test replaying what
    `scripts/generate-ignore-cases` recorded; to pin a behaviour, add a case there and run it
    again.
 5. **The walk starts at the boundary and narrows to the base as it goes down**, so the ignore
@@ -88,9 +91,9 @@ rules a user sees are `docs/language.md`'s _Paths and globs_.
   `in` behave alike.
 - **The command-line scope narrows every statement**: it is the base of each, so a statement's
   `in` only keeps what is under it too, and a note says so.
-- **What names nothing is said**: an `in` whose path or leading directory is not there, and a
-  literal path in `in` or `FILE matches` that reads as a glob, with its marker spelling
-  (`scope::as_markers`).
+- **What names nothing is said**: an `in` whose path or leading directory is not there fails the
+  run, exit 7, as a missing scope does, and a `FILE matches` path that is not there is noted.
+  Either gives the marker spelling of a path that reads as a glob (`scope::as_markers`).
 
 ## Matching, in the file's own encoding
 
@@ -164,7 +167,7 @@ The format is in `docs/language.md`, _Output_.  The rules behind it:
 | 2 | an assertion failed |
 | 3 | a usage error, a malformed script, a program with no statements, an edit with no `expect`, or a command-line scope holding a double quote |
 | 5 | a statement or construct this build does not have: outside the MVP, or in it and not built |
-| 7 | an I/O error, naming the path and quoting the system's error; for edits that could not be written, saying what was left |
+| 7 | an I/O error, naming the path and quoting the system's error; an `in` that names nothing there; for edits that could not be written, saying what was left |
 | 9 | the script or a file must change first: a structural search needs a Python file quaff cannot parse, naming each and how to leave it out; an edit would break a Python file that parsed; or a file's encoding cannot write a replacement |
 
 **An assertion block** - consecutive `find ... expect` statements - is evaluated to the end, and

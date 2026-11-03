@@ -7,9 +7,8 @@ info:
     - "find \"TODO\" in \"docs\""
 ---
 success: false
-exit_code: 1
+exit_code: 7
 ----- stdout -----
 
 ----- stderr -----
-quaff: no matches for "TODO"
-quaff: -e expression 1, at character 16: `in` names "docs", which is not there, so this statement looks at nothing
+quaff: -e expression 1, at character 16: `in` names "docs", which is not there

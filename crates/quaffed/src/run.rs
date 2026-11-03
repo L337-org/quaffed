@@ -70,6 +70,14 @@ pub enum Failure {
         /// The scope as given.
         scope: OsString,
     },
+    /// An `in` names a path that is not there: asking for what is not there is a mistake, and
+    /// whatever ran instead would not be what was meant.  Exit 7, as for a missing scope.
+    NotThere {
+        /// Where the `in` was written, as `location::describe` names it.
+        location: String,
+        /// What it names, and how to write it if it reads as a glob.
+        message: String,
+    },
     /// Something could not be read.  Exit 7.
     Io {
         /// What was being done, in the user's terms.
@@ -137,7 +145,10 @@ impl Failure {
             | Failure::Empty { .. }
             | Failure::QuotedScope { .. } => 3,
             Failure::Unknown { .. } => 5,
-            Failure::Io { .. } | Failure::Discovery(_) | Failure::Write(_) => 7,
+            Failure::NotThere { .. }
+            | Failure::Io { .. }
+            | Failure::Discovery(_)
+            | Failure::Write(_) => 7,
             Failure::Unparseable { .. }
             | Failure::Unwritable { .. }
             | Failure::BrokenByEdit { .. } => 9,
@@ -149,9 +160,9 @@ impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Failure::Usage(err) => err.fmt(f),
-            Failure::Script { location, message } | Failure::Unknown { location, message } => {
-                write!(f, "{location}: {message}")
-            }
+            Failure::Script { location, message }
+            | Failure::Unknown { location, message }
+            | Failure::NotThere { location, message } => write!(f, "{location}: {message}"),
             Failure::Empty { sources } => write!(
                 f,
                 "nothing to run: {} {} no statements, only blank lines and comments",
@@ -289,6 +300,7 @@ impl std::error::Error for Failure {
             | Failure::Empty { .. }
             | Failure::Unknown { .. }
             | Failure::QuotedScope { .. }
+            | Failure::NotThere { .. }
             | Failure::Unparseable { .. }
             | Failure::Unwritable { .. }
             | Failure::BrokenByEdit { .. } => None,
@@ -937,6 +949,9 @@ fn narrowing(scope: Option<&Path>, roots: scope::Roots) -> Result<Option<PathBuf
 struct Projects {
     list: Vec<Project>,
     contents: Contents,
+    /// The project each directory a file was found in belongs to, where finding it meant walking
+    /// up from the directory.
+    by_dir: std::collections::HashMap<PathBuf, usize>,
 }
 
 /// A project, or the directory that stands in for one where there is none.
@@ -952,6 +967,7 @@ impl Projects {
         let mut projects = Projects {
             list: Vec::new(),
             contents: contents.clone(),
+            by_dir: std::collections::HashMap::new(),
         };
         projects.add(workspace::find(cwd, contents), cwd, cwd);
         projects
@@ -994,6 +1010,37 @@ impl Projects {
         }
         self.add(workspace, dir, cwd);
         self.list.len() - 1
+    }
+}
+
+impl Projects {
+    /// The project a file found from `base`'s project is in: that one, unless it is no project
+    /// and the file is in a repository below it, which then decides the file's encoding as a
+    /// nested repository does inside a project.
+    fn of_file(&mut self, file: &Path, base: usize, cwd: &Path) -> usize {
+        if self.list[base].declarations.workspace.is_some() {
+            return base;
+        }
+        let Some(dir) = file.parent() else {
+            return base;
+        };
+        if let Some(&known) = self.by_dir.get(dir) {
+            return known;
+        }
+        let owner = match workspace::find(dir, &self.contents) {
+            Some(found) => {
+                let root = found.root().to_path_buf();
+                if let Some(known) = self.list.iter().position(|p| p.boundary == root) {
+                    known
+                } else {
+                    self.add(Some(found), &root, cwd);
+                    self.list.len() - 1
+                }
+            }
+            None => base,
+        };
+        self.by_dir.insert(dir.to_path_buf(), owner);
+        owner
     }
 }
 
@@ -1080,7 +1127,7 @@ impl<'a> Scoping<'a> {
             None => None,
         };
         if let Some(filter) = &query.filter {
-            self.note_glob_looking_files(filter, roots, built);
+            self.note_missing_files(filter, roots, built);
         }
         let base = match (self.narrow, &within) {
             (Some(narrow), Some((_, glob))) => {
@@ -1100,7 +1147,7 @@ impl<'a> Scoping<'a> {
                         .map_err(|err| compile_error(err, glob.span))?,
                 };
                 if base.is_none() {
-                    self.note_nothing_there(glob, built);
+                    return Err(not_there(glob, built));
                 }
                 base
             }
@@ -1123,60 +1170,61 @@ impl<'a> Scoping<'a> {
         self.bases.len() - 1
     }
 
-    /// Notes that an `in` names nothing that is there, so its statement looks at nothing, with
-    /// how to write it as a glob if that is what it reads as.
-    fn note_nothing_there(&mut self, glob: &Spanned<Glob>, built: &Built) {
-        let written = glob.node.as_literal().map_or_else(
-            || "the directory its glob starts in".to_owned(),
-            |path| format!("{path:?}"),
-        );
-        let mut text = format!(
-            "{}: `in` names {written}, which is not there, so this statement looks at nothing",
-            built.locate(glob.span, glob.span.start)
-        );
-        if let Some(markers) = glob.node.as_literal().and_then(scope::as_markers) {
-            text.push_str("; text in quotes is literal, so to match a pattern write ");
-            text.push_str(&markers);
-        }
-        self.notes.push(text);
-    }
-
-    /// Notes each `FILE matches` of a path with no wildcard that reads as a glob and names
-    /// nothing that is there: almost certainly a glob written inside the quotes.
-    fn note_glob_looking_files(
-        &mut self,
-        filter: &Spanned<Filter>,
-        roots: scope::Roots,
-        built: &Built,
-    ) {
+    /// Notes each `FILE matches` of a path with no wildcard that names nothing that is there,
+    /// with how to write it as a glob if that is what it reads as.  A note, not a failure: such a
+    /// test may guard against a file that does not exist yet.
+    fn note_missing_files(&mut self, filter: &Spanned<Filter>, roots: scope::Roots, built: &Built) {
         match &filter.node {
             Filter::And(parts) => {
                 for part in parts {
-                    self.note_glob_looking_files(part, roots, built);
+                    self.note_missing_files(part, roots, built);
                 }
             }
-            Filter::Not(part) => self.note_glob_looking_files(part, roots, built),
+            Filter::Not(part) => self.note_missing_files(part, roots, built),
             Filter::Matches(Subject::File, operand) => {
                 let Operand::Glob(glob) = &operand.node else {
                     return;
                 };
-                let Some(markers) = glob.as_literal().and_then(scope::as_markers) else {
+                let Some(path) = glob.as_literal() else {
                     return;
                 };
                 // A glob that cannot be compiled is refused where its test is built instead.
                 let there = scope::PathGlob::new(glob, false, roots)
                     .is_ok_and(|compiled| matches!(compiled.names(), scope::Names::There(_)));
                 if !there {
-                    self.notes.push(format!(
-                        "{}: no file has the name {:?}; text in quotes is literal, so to match a \
-                         pattern write {markers}",
+                    let mut text = format!(
+                        "{}: FILE matches {path:?}, which names nothing that is there",
                         built.locate(operand.span, operand.span.start),
-                        glob.as_literal().unwrap_or_default()
-                    ));
+                    );
+                    if let Some(markers) = scope::as_markers(path) {
+                        text.push_str("; text in quotes is literal, so to match a pattern write ");
+                        text.push_str(&markers);
+                    }
+                    self.notes.push(text);
                 }
             }
             _ => {}
         }
+    }
+}
+
+/// The failure for an `in` that names nothing there: its path, or the directory its glob's
+/// leading text names, with how to write it as a glob if that is what it reads as.
+fn not_there(glob: &Spanned<Glob>, built: &Built) -> Failure {
+    let mut message = match glob.node.as_literal() {
+        Some(path) => format!("`in` names {path:?}, which is not there"),
+        None => format!(
+            "`in` looks for files under {:?}, which is not there",
+            scope::leading_directory(&glob.node)
+        ),
+    };
+    if let Some(markers) = glob.node.as_literal().and_then(scope::as_markers) {
+        message.push_str("; text in quotes is literal, so to match a pattern write ");
+        message.push_str(&markers);
+    }
+    Failure::NotThere {
+        location: built.locate(glob.span, glob.span.start),
+        message,
     }
 }
 
@@ -1229,23 +1277,25 @@ fn discover_bases(
         let project = projects.of(base, cwd);
         let found = {
             let project = &projects.list[project];
+            // With no project, a repository the walk enters still has its own rules.
+            let system = match &project.declarations.workspace {
+                Some(workspace) => workspace.ignore_files(),
+                None => workspace::ignore_files_outside(&projects.contents),
+            };
             discover::files(
                 base,
                 &project.boundary,
-                project
-                    .declarations
-                    .workspace
-                    .as_ref()
-                    .map(|w| w.ignore_files()),
+                Some(system),
                 cwd,
                 &projects.contents,
             )
             .map_err(Failure::Discovery)?
         };
         for path in found.files {
+            let owner = projects.of_file(&path, project, cwd);
             files
                 .entry(path)
-                .or_insert_with(|| (project, vec![false; bases.len()]))
+                .or_insert_with(|| (owner, vec![false; bases.len()]))
                 .1[index] = true;
         }
         all.links_not_followed += found.links_not_followed;

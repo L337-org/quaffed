@@ -1,0 +1,14 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "find \"TODO\" in \"docs/\"**\".md\""
+---
+success: false
+exit_code: 7
+----- stdout -----
+
+----- stderr -----
+quaff: -e expression 1, at character 16: `in` looks for files under "docs/", which is not there
