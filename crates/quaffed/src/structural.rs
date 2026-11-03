@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 
 use quaffed_python::{ParseError, parse_module};
-use quaffed_syntax::{Pattern, find, find_where};
+use quaffed_syntax::{Arena, NodeId, Pattern, find, find_where};
 
 use crate::search::{Match, Position};
 
@@ -33,11 +33,12 @@ pub struct Unparsed {
     pub message: String,
 }
 
-/// Whether a match that binds a `where`'s names to the values given, in order, passes.
-pub type Holds<'a> = dyn Fn(&[&str]) -> bool + 'a;
+/// Whether a match in the file parsed into the arena given, binding a `where`'s names to the
+/// nodes given, in order, passes.
+pub type Holds<'a> = dyn Fn(&Arena<'_>, &[NodeId]) -> bool + 'a;
 
 /// A `where` over what a pattern binds: the names it tests, and whether a match that binds them
-/// to the values given, in that order, passes.
+/// to the nodes given, in that order, passes.
 pub struct Where<'a> {
     /// The names, without `$`.
     pub names: Vec<&'a str>,
@@ -46,8 +47,7 @@ pub struct Where<'a> {
 }
 
 /// Every match of each of `patterns` in `text`, a Python file's decoded text, in source order,
-/// kept by its `where` where it has one.  A bound string literal is offered by its raw content,
-/// as written between its delimiters, and any other node by its source text.
+/// kept by its `where` where it has one.
 ///
 /// # Errors
 ///
@@ -64,11 +64,7 @@ pub fn search(
             let found = match filter {
                 None => find(pattern, &arena),
                 Some(filter) => find_where(pattern, &arena, &filter.names, &mut |nodes| {
-                    let values: Vec<&str> = nodes
-                        .iter()
-                        .map(|&node| arena.value(node).unwrap_or_else(|| arena.source(node)))
-                        .collect();
-                    (filter.holds)(&values)
+                    (filter.holds)(&arena, nodes)
                 }),
             };
             found.into_iter().map(|m| m.range).collect()
@@ -175,17 +171,22 @@ mod tests {
     }
 
     #[test]
-    fn a_where_offers_a_string_by_its_content_and_other_code_by_its_text() {
+    fn a_where_is_offered_the_nodes_a_match_binds_and_keeps_what_it_passes() {
         let pattern = compile_pattern("connect($a, $b)").unwrap();
         let text = "connect('https://x', port)\nconnect(r\"http://y\", 80)\n";
         let offered = std::cell::RefCell::new(Vec::new());
         let filter = Where {
             names: vec!["a", "b"],
-            holds: Box::new(|values: &[&str]| {
-                offered
-                    .borrow_mut()
-                    .push(values.iter().map(|v| (*v).to_owned()).collect::<Vec<_>>());
-                values[0].starts_with("https")
+            holds: Box::new(|arena: &Arena<'_>, nodes: &[NodeId]| {
+                offered.borrow_mut().push(
+                    nodes
+                        .iter()
+                        .map(|&node| arena.source(node).to_owned())
+                        .collect::<Vec<_>>(),
+                );
+                arena
+                    .value(nodes[0])
+                    .is_some_and(|v| v.starts_with("https"))
             }),
         };
         let found = search(text, &[(&pattern, Some(&filter))]).unwrap();
@@ -193,7 +194,7 @@ mod tests {
         assert_eq!(found[0][0].text, "connect('https://x', port)");
         assert_eq!(
             *offered.borrow(),
-            [vec!["https://x", "port"], vec!["http://y", "80"]]
+            [vec!["'https://x'", "port"], vec!["r\"http://y\"", "80"]]
         );
     }
 

@@ -623,9 +623,13 @@ const BOUND: &[(&str, &str)] = &[
         "src/client.py",
         "connect(host, port, \"password123\", timeout)\nconnect(host, port, timeout)\n\
          fetch(\"https://x\")\nfetch(r\"http://y\")\nfetch(url)\n\
-         fetch(\"\"\"line one\nline two\"\"\")\n",
+         fetch(\"\"\"line one\nline two\"\"\")\nfetch(\"con\" 'cat')\n",
     ),
     ("tests/test_client.py", "fetch(\"https://test\")\n"),
+    (
+        "src/log.py",
+        "log(format(user))\nlog(user)\nlog(wrap(format(user)))\n",
+    ),
 ];
 
 #[test]
@@ -658,6 +662,31 @@ fn a_bound_string_is_compared_by_its_content_and_other_code_by_its_text() {
         "-e",
         r#"find `fetch($s)` where $s matches "https"* and not FILE matches "tests""#
     ]));
+    // Anchors and `$^` are the value's, not a line's: only one value starts with "line".
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find `fetch($s)` where $s contains ^"line""#]));
+    assert_quaff_snapshot!(
+        project.quaff(&["-e", r#"find `fetch($s)` where $s contains ^"line two""#])
+    );
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        r#"find `fetch($s)` where $s matches "line one" $^ "line two""#
+    ]));
+    // Implicitly concatenated literals are one value, joined.
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find `fetch($s)` where $s matches "concat""#]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_bound_node_is_compared_with_a_pattern_by_its_shape() {
+    let project = Project::new(BOUND);
+    // `matches` is the bound node itself; `contains` it or anything inside it.
+    assert_quaff_snapshot!(project.quaff(&["-e", "find `log($m)` where $m matches `format($x)`"]));
+    assert_quaff_snapshot!(project.quaff(&["-e", "find `log($m)` where $m contains `format($x)`"]));
+    assert_quaff_snapshot!(
+        project.quaff(&["-e", "find `log($m)` where not $m contains `format($x)`"])
+    );
+    // A pattern that is not one is refused where it was written, before any file is read.
+    assert_quaff_snapshot!(project.quaff(&["-e", "find `log($m)` where $m matches `format(`"]));
     project.assert_unchanged();
 }
 
@@ -1051,7 +1080,7 @@ fn each_construct_outside_the_mvp_exits_5_naming_it() {
 fn each_construct_not_built_yet_exits_5_naming_it() {
     let project = Project::new(SCRIPTED);
     assert_quaff_snapshot!(project.quaff(&["-e", "replace `f($a)` with `g($a)` expect 1"]));
-    assert_quaff_snapshot!(project.quaff(&["-e", "find `f($a)` where $a matches `x`"]));
+    assert_quaff_snapshot!(project.quaff(&["-e", "find `f($a)` where $a matches `g($a)`"]));
     assert_quaff_snapshot!(project.quaff(&["-e", "find \"a\"; delete `a` expect 1"]));
     project.assert_unchanged();
 }

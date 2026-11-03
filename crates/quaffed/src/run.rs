@@ -925,8 +925,15 @@ fn filters(
             let compiled_filter = filter::Filter::new(written, roots).map_err(|err| match err {
                 filter::Error::NotBuilt(filter::NotBuilt(span)) => Failure::Unknown {
                     location: built.locate(span, span.start),
-                    message: "a `where` comparison with a backticked pattern is not built yet"
-                        .into(),
+                    message: "this `where` test is not built yet".into(),
+                },
+                filter::Error::Pattern(err, span) => Failure::Script {
+                    location: built.locate(
+                        span,
+                        err.offset()
+                            .map_or(span.start, |at| built.content_start(span) + at),
+                    ),
+                    message: err.to_string(),
                 },
                 filter::Error::Glob(scope::Error::TooLarge(err), span) => {
                     script(span, err.to_string())
@@ -952,55 +959,92 @@ fn filters(
                         .into(),
                 ));
             };
-            let pattern = &compiled[index];
-            for name in &compiled_filter.names {
-                let holes: Vec<bool> = pattern
-                    .holes()
-                    .filter(|(_, hole)| hole.name.as_deref() == Some(name.as_str()))
-                    .map(|(_, hole)| hole.sequence)
-                    .collect();
-                if name == "_" {
-                    return Err(script(
-                        span,
-                        "`$_` binds nothing, so `where` cannot test it".into(),
-                    ));
-                }
-                if holes.is_empty() {
-                    return Err(script(
-                        span,
-                        format!("`${name}` is not bound by this statement's pattern"),
-                    ));
-                }
-                if holes.contains(&true) {
-                    return Err(script(
-                        span,
-                        format!(
-                            "`${name}` binds a sequence, and `where` tests what one node holds"
-                        ),
-                    ));
-                }
-            }
-            let names: Vec<&str> = compiled_filter.names.iter().map(String::as_str).collect();
-            if pattern.costly_with(&names).is_some() {
-                return Err(script(
-                    span,
-                    format!(
-                        "testing {} in `where` makes a second place where what a sequence takes \
-                         decides what later code must match, and each such place multiplies the \
-                         work of a search by the length of the block or list it stands in, so a \
-                         pattern and its `where` may have one between them: test fewer of its \
-                         names, or give the pattern more fixed code",
-                        names
-                            .iter()
-                            .map(|name| format!("`${name}`"))
-                            .collect::<Vec<_>>()
-                            .join(" and ")
-                    ),
-                ));
-            }
+            check_filter(&compiled_filter, &compiled[index], span, built)?;
             Ok(Some(compiled_filter))
         })
         .collect()
+}
+
+/// Checks a compiled `where` against `pattern`, the statement's: each name it tests must be one
+/// the pattern binds to one node, its own patterns must share no name with it, and together
+/// they must not be too costly to search.  `span` is where its first test of a metavariable
+/// was written.
+fn check_filter(
+    compiled_filter: &filter::Filter,
+    pattern: &Pattern,
+    span: Span,
+    built: &Built,
+) -> Result<(), Failure> {
+    let script = |span: Span, message: String| Failure::Script {
+        location: built.locate(span, span.start),
+        message,
+    };
+    for name in &compiled_filter.names {
+        let holes: Vec<bool> = pattern
+            .holes()
+            .filter(|(_, hole)| hole.name.as_deref() == Some(name.as_str()))
+            .map(|(_, hole)| hole.sequence)
+            .collect();
+        if name == "_" {
+            return Err(script(
+                span,
+                "`$_` binds nothing, so `where` cannot test it".into(),
+            ));
+        }
+        if holes.is_empty() {
+            return Err(script(
+                span,
+                format!("`${name}` is not bound by this statement's pattern"),
+            ));
+        }
+        if holes.contains(&true) {
+            return Err(script(
+                span,
+                format!("`${name}` binds a sequence, and `where` tests what one node holds"),
+            ));
+        }
+    }
+    // A name a `where`'s pattern shares with the statement's could mean the same code or
+    // be its own, and either could be wanted, so neither is assumed yet.
+    for (shape, at) in &compiled_filter.shapes {
+        let outer: Vec<&str> = pattern
+            .holes()
+            .filter_map(|(_, hole)| hole.name.as_deref())
+            .collect();
+        if let Some(shared) = shape
+            .holes()
+            .filter_map(|(_, hole)| hole.name.as_deref())
+            .find(|name| outer.contains(name))
+        {
+            return Err(Failure::Unknown {
+                location: built.locate(*at, at.start),
+                message: format!(
+                    "`${shared}` is in this statement's pattern and in its `where`'s, \
+                     and a name they share is not built yet: name it differently in the \
+                     `where`'s pattern"
+                ),
+            });
+        }
+    }
+    let names: Vec<&str> = compiled_filter.names.iter().map(String::as_str).collect();
+    if pattern.costly_with(&names).is_some() {
+        return Err(script(
+            span,
+            format!(
+                "testing {} in `where` makes a second place where what a sequence takes \
+                 decides what later code must match, and each such place multiplies the \
+                 work of a search by the length of the block or list it stands in, so a \
+                 pattern and its `where` may have one between them: test fewer of its \
+                 names, or give the pattern more fixed code",
+                names
+                    .iter()
+                    .map(|name| format!("`${name}`"))
+                    .collect::<Vec<_>>()
+                    .join(" and ")
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// Where the first test of a metavariable in `filter` was written, if it has one.
@@ -1841,9 +1885,14 @@ impl Searched {
         let filters: Vec<Option<structural::Where>> = structural
             .iter()
             .map(|&(i, _)| {
-                plan.filters[i].as_ref().map(|filter| structural::Where {
-                    names: filter.names.iter().map(String::as_str).collect(),
-                    holds: Box::new(move |values: &[&str]| filter.holds(place, values)),
+                plan.filters[i].as_ref().map(|filter| {
+                    let found = filter.found();
+                    structural::Where {
+                        names: filter.names.iter().map(String::as_str).collect(),
+                        holds: Box::new(move |arena, nodes| {
+                            filter.holds(place, arena, nodes, &found)
+                        }),
+                    }
                 })
             })
             .collect();

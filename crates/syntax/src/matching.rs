@@ -2545,6 +2545,37 @@ mod remembered_against_backtracking {
             );
         }
 
+        /// A `where` keeps the same matches whether the search remembers or backtracks, so
+        /// every way of binding the tested name was offered both ways; and one that keeps
+        /// everything keeps what `find` finds.
+        #[test]
+        fn a_where_keeps_what_some_binding_passes_however_it_is_searched(
+            statements in prop::collection::vec(0usize..3, 0..12),
+            split in 0usize..12,
+            before in prop::collection::vec(item(), 0..3),
+            after in prop::collection::vec(item(), 0..3),
+            separated: bool,
+            tested in 0usize..2,
+            wanted in 0usize..3,
+        ) {
+            // The tested name is bound by a single hole, among whatever else the pattern holds.
+            let name = format!("n{tested}");
+            let items: Vec<Item> = before
+                .into_iter()
+                .chain(std::iter::once(Item::Single(Some(tested))))
+                .chain(after)
+                .collect();
+            let pattern = nested_pattern(&items, separated);
+            prop_assume!(pattern.costly_with(&[name.as_str()]).is_none());
+            let target = nested_target(&statements, split.min(statements.len()), separated);
+            let mut passes = |nodes: &[NodeId]| target.source(nodes[0]) == STATEMENTS[wanted];
+            let remembered = find_with(&pattern, &target, true, &[&name], Some(&mut passes));
+            let backtracked = find_with(&pattern, &target, false, &[&name], Some(&mut passes));
+            prop_assert_eq!(&remembered, &backtracked, "{:?} over {:?}", items, statements);
+            let everything = find_with(&pattern, &target, true, &[&name], Some(&mut |_| true));
+            prop_assert_eq!(everything, find(&pattern, &target));
+        }
+
         #[test]
         fn remembering_finds_what_backtracking_finds_inside_a_node(
             statements in prop::collection::vec(0usize..3, 0..14),

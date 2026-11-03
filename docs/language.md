@@ -300,6 +300,20 @@ A statement's clauses follow its operand in the order `in`, `where`, `expect`, e
   src/totals.py:8:5-8:31: return price - price * rate
   ```
 
+- **With a backticked pattern, `matches` is the pattern matching the bound node itself, and
+  `contains` it matching the node or anything inside it:**
+
+  ```
+  $ quaff -e 'find `return $x` where $x matches `response.$m($a)`'
+  src/app.py:10:9-10:34: return response.error(404)
+  src/app.py:12:5-12:46: return response.ok(render(user, response))
+
+  $ quaff -e 'find `return $x` where $x contains `render($a, $b)`'
+  src/app.py:12:5-12:46: return response.ok(render(user, response))
+  ```
+
+  The `where`'s pattern has holes of its own.  A name it shares with the statement's pattern is
+  [not built yet](#not-built-yet): name it differently.
 - **A match is kept if any way it binds its names passes the whole `where`.**  In
   `connect($before..., $x, $after...)`, `$x` can be any argument but the first and last, so
   `where $x contains "password"` keeps a call with a password anywhere among them - and
@@ -309,8 +323,7 @@ A statement's clauses follow its operand in the order `in`, `where`, `expect`, e
   none, `$_` binds nothing, and a sequence binds many, so each is refused (exit 3).  A test is
   also one more use of its name: where a pattern and its `where` together would make the search
   grow faster than the square of a list's length, as two names used twice can
-  ([Runs of statements](#runs-of-statements)), the statement is refused the same way.  A
-  comparison with a backticked pattern is [not built yet](#not-built-yet).
+  ([Runs of statements](#runs-of-statements)), the statement is refused the same way.
 - **A file a statement leaves out by its path is never parsed for it**, so a Python file quaff
   cannot parse there cannot [refuse the run](#which-files): leave it out with `in`, or with
   `where not FILE matches`.
@@ -821,11 +834,12 @@ These parse, and are refused with exit 5 at the place they were written, rather 
 ignored or treated as unknown:
 
 - a structural `replace`, and `delete`;
-- a `where` comparison with a backticked pattern.
+- a name shared by a statement's pattern and its `where`'s, which could mean the same code or
+  a name of its own.
 
 ```
-$ quaff -e 'find `$f($s)` where $s matches `x`'
-quaff: -e expression 1, at character 32: a `where` comparison with a backticked pattern is not built yet
+$ quaff -e 'find `f($a)` where $a matches `g($a)`'
+quaff: -e expression 1, at character 31: `$a` is in this statement's pattern and in its `where`'s, and a name they share is not built yet: name it differently in the `where`'s pattern
 [exit 5]
 ```
 

@@ -1,0 +1,14 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "find `fetch($s)` where $s matches \"concat\""
+---
+success: true
+exit_code: 0
+----- stdout -----
+src/client.py:8:1-8:18: fetch("con" 'cat')
+
+----- stderr -----

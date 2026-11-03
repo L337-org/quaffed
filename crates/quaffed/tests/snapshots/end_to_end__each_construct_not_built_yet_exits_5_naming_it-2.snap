@@ -4,11 +4,11 @@ info:
   program: quaff
   args:
     - "-e"
-    - "find `f($a)` where $a matches `x`"
+    - "find `f($a)` where $a matches `g($a)`"
 ---
 success: false
 exit_code: 5
 ----- stdout -----
 
 ----- stderr -----
-quaff: -e expression 1, at character 31: a `where` comparison with a backticked pattern is not built yet
+quaff: -e expression 1, at character 31: `$a` is in this statement's pattern and in its `where`'s, and a name they share is not built yet: name it differently in the `where`'s pattern
