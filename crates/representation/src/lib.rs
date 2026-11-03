@@ -10,5 +10,6 @@
 //! sets in this crate.  `architecture/representation.md` describes it.
 
 pub mod check;
+pub mod glob;
 pub mod program;
 pub mod span;

@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
 use crate::contents::Contents;
-use crate::workspace::{IgnoreFiles, Workspace};
+use crate::workspace::IgnoreFiles;
 
 /// Directory and file names that hold version-control metadata, never searched.
 ///
@@ -124,14 +124,15 @@ impl std::error::Error for Error {
     }
 }
 
-/// Finds every file under `scope`, which may be a directory or a single file.
+/// Finds every file under `scope`, which may be a directory or a single file, and lies at or
+/// under `boundary`: the root of the project it is in, whose system's ignore files `system`
+/// says where to find, or with no project the directory that stands in for one.
 ///
 /// A scope that names a file, or an ignored directory, is searched even so: naming it is
 /// asking for it.  Naming an ignored directory crosses only that one boundary: every ignore
 /// rule from the boundary down still applies to what is beneath it, so a file or directory
-/// inside that another rule ignores is not searched.  No ignore file above the boundary - the
-/// project root, or `cwd` with no project - is read, so that nothing outside the project changes
-/// which files are searched.
+/// inside that another rule ignores is not searched.  No ignore file above the boundary is
+/// read, so that nothing outside a project changes which of its files are searched.
 ///
 /// # Errors
 ///
@@ -139,18 +140,18 @@ impl std::error::Error for Error {
 /// than searching the rest and reporting a short answer as complete.
 pub fn files(
     scope: &Path,
+    boundary: &Path,
+    system: Option<Box<dyn IgnoreFiles>>,
     cwd: &Path,
-    workspace: Option<&dyn Workspace>,
     contents: &Contents,
 ) -> Result<Found, Error> {
-    let boundary = workspace.map_or(cwd, |w| w.root());
     let mut found = Found::default();
     // The rules are read and matched here, as each directory is met, ranked as the ignore
     // crate's walker ranks its own, and none above the boundary is read.  The walk is quaff's
     // own too: a directory is listed only once it is to be entered, so an ignored one - or one
     // beside the way to the scope - is never opened, where a walker that filters what it has
     // already listed would read every name in it.
-    let rules = Rules::new(boundary, workspace.map(Workspace::ignore_files), contents);
+    let rules = Rules::new(boundary, system, contents);
     if scope.is_dir() {
         walk(boundary, scope, &rules, cwd, &mut found)?;
     } else {
@@ -477,7 +478,14 @@ mod tests {
     fn files_in(scope: &Path, cwd: &Path) -> Result<Found, Error> {
         let contents = Contents::default();
         let workspace = crate::workspace::find(cwd, &contents);
-        files(scope, cwd, workspace.as_deref(), &contents)
+        let boundary = workspace.as_ref().map_or(cwd, |w| w.root()).to_path_buf();
+        files(
+            scope,
+            &boundary,
+            workspace.as_ref().map(|w| w.ignore_files()),
+            cwd,
+            &contents,
+        )
     }
 
     struct Tree(PathBuf);

@@ -1,0 +1,15 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "find \"TODO\" in \"docs\""
+---
+success: false
+exit_code: 1
+----- stdout -----
+
+----- stderr -----
+quaff: no matches for "TODO"
+quaff: -e expression 1, at character 16: `in` names "docs", which is not there, so this statement looks at nothing

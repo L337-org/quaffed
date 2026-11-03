@@ -9,6 +9,7 @@
 
 use std::path::PathBuf;
 
+use crate::glob::Glob;
 #[cfg(test)]
 use crate::span::Span;
 use crate::span::{Source, Spanned};
@@ -48,8 +49,9 @@ pub enum Statement {
 pub struct Query {
     /// What to match.  Its kind is the matching mode, never a separate flag.
     pub operand: Spanned<Operand>,
-    /// `in` globs, resolved against the project root; empty for the whole project.
-    pub scope: Vec<Spanned<String>>,
+    /// `in` globs, each a path glob relative to the current directory or, beginning `:/`, to
+    /// the project root; empty for the scope the command line gives.
+    pub scope: Vec<Spanned<Glob>>,
     /// The `where` filter, if any.
     pub filter: Option<Spanned<Filter>>,
 }
@@ -69,7 +71,7 @@ impl Query {
     #[must_use]
     pub fn with(
         operand: Spanned<Operand>,
-        scope: Vec<Spanned<String>>,
+        scope: Vec<Spanned<Glob>>,
         filter: Option<Spanned<Filter>>,
     ) -> Self {
         Query {
@@ -93,6 +95,8 @@ pub enum Operand {
     Pattern(String),
     /// A node already bound by an earlier statement.  Outside the MVP: nothing in it can bind.
     Bound(String),
+    /// A quoted glob a `where` compares a value against: literal pieces and wildcard markers.
+    Glob(Glob),
 }
 
 /// A textual operand: literal text and line breaks, optionally anchored at either end.
@@ -178,7 +182,8 @@ pub enum Filter {
 pub enum Subject {
     /// A metavariable bound by the query's pattern, by name, without its `$`.
     Metavariable(String),
-    /// `FILE`: the path of the file a match is in, relative to the project root.
+    /// `FILE`: the path of the file a match is in, relative to the current directory as it is
+    /// printed, and compared by path rules.
     File,
 }
 

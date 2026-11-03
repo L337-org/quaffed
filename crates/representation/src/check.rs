@@ -141,7 +141,7 @@ fn query_outside_mvp(query: &Query) -> Option<(&'static str, Span)> {
 fn operand_outside_mvp(operand: &Spanned<Operand>) -> Option<(&'static str, Span)> {
     match &operand.node {
         Operand::Bound(_) => Some(("a bound node, needing `as` or `for`,", operand.span)),
-        Operand::Text(_) | Operand::Pattern(_) => None,
+        Operand::Text(_) | Operand::Pattern(_) | Operand::Glob(_) => None,
     }
 }
 

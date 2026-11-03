@@ -9,8 +9,13 @@
 //! with three or more, content at least two characters long that both starts and ends with a
 //! space loses one from each end.
 //! Only `"` and `` ` `` are delimiters.
+//!
+//! Outside operands, the wildcards a glob is written with are tokens of their own: `*`, `**`,
+//! `?`, a class from `[` to the next `]`, and `{`, `,` and `}` around alternatives.
 
 use std::fmt;
+
+use quaffed_representation::glob::ClassItem;
 
 /// One token, with the byte range it occupies.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,9 +54,26 @@ pub enum TokenKind {
     EndAnchor,
     /// A newline or `;`: the end of a statement.
     Separator,
-    /// `[`, which only `where ... in [...]`, outside the MVP, would use.
-    OpenBracket,
-    /// `]`, the end of such a list.
+    /// `*`: any run within one segment.
+    Star,
+    /// `**`: any run across segments.
+    DoubleStar,
+    /// `?`: one character.
+    Question,
+    /// `[...]`: one character in a set, or with a leading `!` one not in it.
+    Class {
+        /// Whether a leading `!` negates it.
+        negated: bool,
+        /// The members, in the order written.
+        items: Vec<ClassItem>,
+    },
+    /// `{`, which opens alternatives.
+    OpenBrace,
+    /// `,`, between alternatives.
+    Comma,
+    /// `}`, which closes them.
+    CloseBrace,
+    /// A `]` with no class to close.
     CloseBracket,
 }
 
@@ -69,7 +91,13 @@ impl fmt::Display for TokenKind {
             TokenKind::StartAnchor => f.write_str("`^`"),
             TokenKind::EndAnchor => f.write_str("`$`"),
             TokenKind::Separator => f.write_str("the end of the statement"),
-            TokenKind::OpenBracket => f.write_str("`[`"),
+            TokenKind::Star => f.write_str("`*`"),
+            TokenKind::DoubleStar => f.write_str("`**`"),
+            TokenKind::Question => f.write_str("`?`"),
+            TokenKind::Class { .. } => f.write_str("a class `[...]`"),
+            TokenKind::OpenBrace => f.write_str("`{`"),
+            TokenKind::Comma => f.write_str("`,`"),
+            TokenKind::CloseBrace => f.write_str("`}`"),
             TokenKind::CloseBracket => f.write_str("`]`"),
         }
     }
@@ -130,9 +158,10 @@ pub fn tokens(text: &str) -> Result<Vec<Token>, LexError> {
                 i += 1;
                 TokenKind::StartAnchor
             }
-            b'[' => {
-                i += 1;
-                TokenKind::OpenBracket
+            b'*' | b'?' | b'{' | b',' | b'}' | b'[' => {
+                let (kind, end) = marker(text, i)?;
+                i = end;
+                kind
             }
             b']' => {
                 i += 1;
@@ -222,6 +251,88 @@ fn dollar(bytes: &[u8], at: usize) -> (TokenKind, usize) {
         return (TokenKind::Metavariable { name, sequence }, i);
     }
     (TokenKind::EndAnchor, at + 1)
+}
+
+/// The wildcard marker at `at`, which is one of `*?{,}[`, and the byte after it.
+fn marker(text: &str, at: usize) -> Result<(TokenKind, usize), LexError> {
+    let bytes = text.as_bytes();
+    let kind = match bytes[at] {
+        b'*' => {
+            let length = run(bytes, at, b'*');
+            return match length {
+                1 => Ok((TokenKind::Star, at + 1)),
+                2 => Ok((TokenKind::DoubleStar, at + 2)),
+                _ => Err(LexError {
+                    message: format!(
+                        "{} is not a wildcard: * is any run within one segment, and ** any run \
+                         across segments",
+                        "*".repeat(length)
+                    ),
+                    start: at,
+                    end: at + length,
+                }),
+            };
+        }
+        b'[' => return class(text, at),
+        b'?' => TokenKind::Question,
+        b'{' => TokenKind::OpenBrace,
+        b',' => TokenKind::Comma,
+        _ => TokenKind::CloseBrace,
+    };
+    Ok((kind, at + 1))
+}
+
+/// The class whose `[` is at `at`, and the byte after its `]`.
+///
+/// Its members are characters as written, nothing in them escaped: a leading `!` negates it,
+/// a `]` first is a member rather than the end, `a-z` is a range, and a `-` first or last is a
+/// member.
+fn class(text: &str, at: usize) -> Result<(TokenKind, usize), LexError> {
+    let never_closed = |end| LexError {
+        message: "this class is never closed: it runs from [ to the next ], and a ] that is a \
+                  member goes first, as []x]"
+            .into(),
+        start: at,
+        end,
+    };
+    let mut chars = text[at + 1..].char_indices().peekable();
+    let negated = chars.next_if(|&(_, c)| c == '!').is_some();
+    let mut members: Vec<char> = Vec::new();
+    let mut first = true;
+    let close = loop {
+        let Some((offset, c)) = chars.next() else {
+            return Err(never_closed(text.len()));
+        };
+        if c == ']' && !first {
+            break at + 1 + offset;
+        }
+        members.push(c);
+        first = false;
+    };
+    let mut items = Vec::new();
+    let mut i = 0;
+    while i < members.len() {
+        let c = members[i];
+        if members.get(i + 1) == Some(&'-') && i + 2 < members.len() {
+            let last = members[i + 2];
+            if last < c {
+                return Err(LexError {
+                    message: format!(
+                        "the range {c}-{last} in this class runs backwards: write the lower \
+                         character first, as {last}-{c}"
+                    ),
+                    start: at,
+                    end: close + 1,
+                });
+            }
+            items.push(ClassItem::Range(c, last));
+            i += 3;
+        } else {
+            items.push(ClassItem::One(c));
+            i += 1;
+        }
+    }
+    Ok((TokenKind::Class { negated, items }, close + 1))
 }
 
 /// The length of the run of `delimiter` starting at `at`.
@@ -463,7 +574,16 @@ mod tests {
             TokenKind::StartAnchor,
             TokenKind::EndAnchor,
             TokenKind::Separator,
-            TokenKind::OpenBracket,
+            TokenKind::Star,
+            TokenKind::DoubleStar,
+            TokenKind::Question,
+            TokenKind::Class {
+                negated: false,
+                items: Vec::new(),
+            },
+            TokenKind::OpenBrace,
+            TokenKind::Comma,
+            TokenKind::CloseBrace,
             TokenKind::CloseBracket,
         ]
         .iter()
@@ -481,9 +601,95 @@ mod tests {
                 "`^`",
                 "`$`",
                 "the end of the statement",
-                "`[`",
+                "`*`",
+                "`**`",
+                "`?`",
+                "a class `[...]`",
+                "`{`",
+                "`,`",
+                "`}`",
                 "`]`"
             ]
+        );
+    }
+
+    #[test]
+    fn wildcards_are_tokens_outside_operands_and_content_inside_them() {
+        assert_eq!(
+            kinds(r#"**"/test_"*".py" ? {"a","b"}"#),
+            [
+                TokenKind::DoubleStar,
+                TokenKind::Quoted("/test_".into()),
+                TokenKind::Star,
+                TokenKind::Quoted(".py".into()),
+                TokenKind::Question,
+                TokenKind::OpenBrace,
+                TokenKind::Quoted("a".into()),
+                TokenKind::Comma,
+                TokenKind::Quoted("b".into()),
+                TokenKind::CloseBrace,
+            ]
+        );
+        assert_eq!(one_operand(r#""*?[{""#), "*?[{");
+        let err = tokens("***").unwrap_err();
+        assert_eq!((err.start, err.end), (0, 3));
+        assert!(
+            err.message.starts_with("*** is not a wildcard"),
+            "{}",
+            err.message
+        );
+    }
+
+    fn class_of(text: &str) -> (bool, Vec<ClassItem>) {
+        match kinds(text).as_slice() {
+            [TokenKind::Class { negated, items }] => (*negated, items.clone()),
+            other => panic!("{text} gave {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_class_reads_its_members_as_written() {
+        use ClassItem::{One, Range};
+        assert_eq!(
+            class_of("[abc]"),
+            (false, vec![One('a'), One('b'), One('c')])
+        );
+        assert_eq!(
+            class_of("[a-z0-9]"),
+            (false, vec![Range('a', 'z'), Range('0', '9')])
+        );
+        assert_eq!(class_of("[!a]"), (true, vec![One('a')]));
+        // A `]` first is a member, and so is a `-` first or last.
+        assert_eq!(class_of("[]a]"), (false, vec![One(']'), One('a')]));
+        assert_eq!(class_of("[!]]"), (true, vec![One(']')]));
+        assert_eq!(
+            class_of("[-a-]"),
+            (false, vec![One('-'), One('a'), One('-')])
+        );
+        // A `!` anywhere but first is a member; nothing in a class is escaped.
+        assert_eq!(class_of("[a!]"), (false, vec![One('a'), One('!')]));
+        assert_eq!(
+            class_of(r#"["$\]"#),
+            (false, vec![One('"'), One('$'), One('\\')])
+        );
+        assert_eq!(
+            class_of("[\u{e9}-\u{ea}]"),
+            (false, vec![Range('\u{e9}', '\u{ea}')])
+        );
+    }
+
+    #[test]
+    fn a_class_that_never_closes_or_runs_backwards_is_refused() {
+        for text in ["[abc", "[]", "[!]"] {
+            let err = tokens(text).unwrap_err();
+            assert_eq!((err.start, err.end), (0, text.len()), "{text}");
+            assert!(err.message.contains("never closed"), "{}", err.message);
+        }
+        let err = tokens("x [z-a] y").unwrap_err();
+        assert_eq!((err.start, err.end), (2, 7));
+        assert_eq!(
+            err.message,
+            "the range z-a in this class runs backwards: write the lower character first, as a-z"
         );
     }
 

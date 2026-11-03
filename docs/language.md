@@ -93,6 +93,7 @@ with the exit status after it.  Structural examples over the whole project also 
 - [Running quaff](#running-quaff)
 - [Textual search](#textual-search)
 - [Scripts](#scripts)
+- [Paths and globs](#paths-and-globs)
 - [Assertions](#assertions)
 - [Replacing text](#replacing-text)
 - [Structural search](#structural-search)
@@ -137,14 +138,22 @@ next argument or after `=`.  A short option never takes `=`: `-s=x` is an unknow
 
 - **The project** is the nearest directory at or above the current one that holds `.git`.  With
   no project, the current directory stands in for it.
-- **A search covers the whole project by default**, wherever you run it from.
-- **`PATH` narrows it** to one file or directory.  It must exist (exit 7 otherwise) and lie inside
-  the project (exit 3 otherwise).  It is a path, not a glob: a quoted glob is reported as not
-  found, with a note that globs are not expanded.
+- **A search covers the current directory by default**, and `:/` names the whole project.
+- **`PATH` narrows it** to one file or directory, by the [path rules](#paths-and-globs) `in` and
+  `FILE` follow: relative to the current directory, or from the project root after `:/`.  It must
+  exist (exit 7 otherwise).  It is a plain path, never a glob: a quoted glob is reported as not
+  found, and one holding a double quote is refused (exit 3), pointing to `in`, which takes globs.
+- **A path outside the project is searched**, since you named it, by that project's own ignore
+  files and declarations; with no project there, the directory named stands in for one, as it
+  would if quaff were run from inside it.
 - **Paths in the output are relative to the current directory**, so from `src/`:
 
   ```
   $ quaff TODO
+  app.py:7:7-7:10: TODO
+  [exit 0]
+
+  $ quaff TODO :/
   ../docs/notes.md:3:1-3:4: TODO
   app.py:7:7-7:10: TODO
   [exit 0]
@@ -253,6 +262,73 @@ A textual operand can be built from pieces:
   A CRLF is one line ending, so neither anchor holds between its CR and its LF.
 
 - **None of these apply to a backticked pattern**, which is anchored by its shape.
+
+### Scope and filters: `in` and `where`
+
+A statement's clauses follow its operand in the order `in`, `where`, `expect`, each at most once.
+
+- **`in` says which files a statement looks at**: a path or a glob, by the
+  [path rules](#paths-and-globs).
+
+  ```
+  $ quaff -e 'find "TODO" in "src"'
+  src/app.py:7:7-7:10: TODO
+  [exit 0]
+  ```
+
+- **`where` keeps what passes its tests**: `FILE matches` and `FILE contains`, joined with `and`
+  and turned round with `not`.  There is no `or`: write a statement for each alternative.
+
+  ```
+  $ quaff -e 'find "TODO" where not FILE matches **".md"'
+  src/app.py:7:7-7:10: TODO
+  [exit 0]
+  ```
+
+  A test of a metavariable, such as `where $x matches "test_"*`, is
+  [not built yet](#not-built-yet).
+- **A file a statement leaves out by its path is never parsed for it**, so a Python file quaff
+  cannot parse there cannot [refuse the run](#which-files): leave it out with `in`, or with
+  `where not FILE matches`.
+- **The scope on the command line narrows every statement and never widens one**: a statement
+  with an `in` looks only at what is in both, and a note says the command line narrowed it.
+
+## Paths and globs
+
+The scope on the command line, `in` and `FILE` follow one set of rules.
+
+- **A path is relative to the current directory**, as the output prints it, so from `src/` a
+  file in `docs/` is `../docs/notes.md`.  **One that begins `:/` starts at the project root**,
+  or the current directory with no project: from `src/`, `in ":/docs"` is the root's `docs/`.
+  Only a leading `:/` counts, and a directory really named `:` is written `./:`.
+- **A path with no wildcard names a file or a directory**, and a directory stands for everything
+  under it: `in "src"`, `where not FILE matches "src/app.py"`.
+- **A glob is quoted text and wildcards, and text inside quotes is always literal.**  Each
+  wildcard is a marker outside the quotes, joined to the text beside it, so nothing is ever
+  escaped:
+
+  | marker | matches |
+  | --- | --- |
+  | `*` | any run of characters within one directory name |
+  | `**` | any run of characters, across directory names |
+  | `?` | one character, never `/` |
+  | `[abc]`, `[a-z]`, `[!a]` | one character in the set, or with `!` first one not in it, never `/` |
+  | `{"src","tests"}` | any one of the alternatives, each quoted text and wildcards in turn |
+
+  So `in "src/"**".py"` is every `.py` file under `src`, and `where not FILE matches
+  **"/test_"*".py"` leaves out test files below the top directory.  In a class, a `]` that is a
+  member goes first and a `-` first or last, and nothing else is special.
+- **A glob matches the whole path**, and `..` is an ordinary directory name to it.
+  `FILE contains "x"` is `x` anywhere in the path, the same as `FILE matches **"x"**`.
+- **A glob written inside the quotes is literal**, so `"**/test_*.py"` names a file of that name.
+  Where none is there, a note gives the marker spelling:
+
+  ```
+  $ quaff -e 'find "TODO" in "**/*.md"'
+  quaff: no matches for "TODO"
+  quaff: -e expression 1, at character 16: `in` names "**/*.md", which is not there, so this statement looks at nothing; text in quotes is literal, so to match a pattern write **"/"*".md"
+  [exit 1]
+  ```
 
 ## Assertions
 
@@ -611,7 +687,7 @@ alone.
   $ quaff -p 'wrap($x)' broken
   quaff: refused: 1 Python file in scope cannot be parsed, so a structural search cannot count matches in it:
     "broken/bad.py": line 1, column 12: Expected a parameter or the end of the parameter list
-  To search without it, list it in .ignore, or give a narrower scope on the command line
+  To search without it, leave it out of the statement: with `in`, with `where not FILE matches`, such as where not FILE matches "broken/bad.py", or project-wide by listing it in .ignore
   [exit 9]
   ```
 
@@ -700,7 +776,7 @@ src/app.py:16:5-17:32: return lookup(request.args["id"], default=None,)
 | 0 | every assertion held; or, with no assertion, something was found |
 | 1 | nothing was found, and there was no assertion; not an error |
 | 2 | an assertion failed |
-| 3 | a usage error, a malformed script or pattern, an empty program, or a scope outside the project |
+| 3 | a usage error, a malformed script or pattern, an empty program, or a scope holding a double quote |
 | 5 | a statement or construct this build does not have |
 | 7 | an I/O error, naming the path and quoting the system's error, or edits that could not be written, saying what was left as it was |
 | 9 | a structural search needs a Python file quaff cannot parse, an edit would break a Python file that parses, or a file's encoding cannot write a replacement: the script or the file must change first |
@@ -715,11 +791,11 @@ These parse, and are refused with exit 5 at the place they were written, rather 
 ignored or treated as unknown:
 
 - a structural `replace`, and `delete`;
-- an `in` clause, and a `where` clause.
+- a `where` test of a metavariable.
 
 ```
-$ quaff -e 'find "x" in "src/**"'
-quaff: -e expression 1, at character 13: an `in` clause is not built yet
+$ quaff -e 'find `f($a)` where $a matches "x"'
+quaff: -e expression 1, at character 20: a `where` test of a metavariable is not built yet
 [exit 5]
 ```
 
@@ -740,7 +816,12 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
 - **An empty program is an error, not an empty answer.**  `-e "$CHECKS"` with the variable unset
   exits 3, naming the sources, rather than searching for nothing and exiting 1.
 - **A quoted glob as the scope is not expanded.**  It is reported as not found, with a note that
-  globs are not expanded.
+  globs are not expanded; `in` takes globs.  A scope holding a double quote is refused, so that
+  a pattern there can mean something later.
+- **A star stays within one directory name**: `where not FILE matches *".txt"` leaves out only
+  the `.txt` files at the top, and `**".txt"` every one.
+- **The default scope is the current directory, not the project**: from a subdirectory, `:/`
+  searches the whole project.
 - **A script is UTF-8.**  Anything else is refused at its first byte that is not.  A leading
   byte-order mark is skipped, so locations count from the first visible character.
 - **A possible match never decides an assertion**, so that a file quaff cannot read never blocks

@@ -1,0 +1,16 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "replace string \"TODO\" with \"DONE\" in \"src\" where not FILE matches **\".txt\" expect 2"
+---
+success: true
+exit_code: 0
+----- stdout -----
+src/app.py:1:10-1:13: TODO
+src/sub/deep.py:1:10-1:13: TODO
+
+----- stderr -----
+quaff: replaced 2 matches in 2 files
