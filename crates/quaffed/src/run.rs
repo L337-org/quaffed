@@ -4,6 +4,7 @@
 //! Carrying out a run: the program its sources make, the scope, the files in it, the matches,
 //! the assertions, and what was not looked at.
 
+use std::borrow::Cow;
 use std::ffi::OsString;
 use std::fmt;
 use std::fs;
@@ -335,9 +336,9 @@ impl Outcome {
 /// assertions to `notes`.  `stdin` is read for `-f -`.
 ///
 /// Every source is read and parsed, and the whole program checked, before any file is looked
-/// at, so a script that cannot run in full does not run at all.  The search covers the
-/// project - found by walking up from `cwd` - or `cwd` when there is no project, narrowed to
-/// `scope` when one is given.  Every file is read once, whatever the number of statements; the
+/// at, so a script that cannot run in full does not run at all.  The search covers `cwd`, or
+/// `scope` when one is given, relative to `cwd` or after `:/` to the project root found by
+/// walking up from it, and each statement's `in` within that.  Every file is read once, whatever the number of statements; the
 /// matches print statement by statement, in program order.  An assertion block is evaluated
 /// to the end, and if any of its assertions does not hold, each one that failed is reported
 /// and the run stops there.
@@ -345,8 +346,8 @@ impl Outcome {
 /// # Errors
 ///
 /// Returns a [`Failure`] when the run cannot be answered in full: a script that is malformed
-/// or uses what this build does not have, a scope outside the project, or something that
-/// cannot be read.  Nothing is printed for a run that fails, so a partial answer never passes
+/// or uses what this build does not have, a scope holding a double quote, an `in` that names
+/// nothing there, or something that cannot be read.  Nothing is printed for a run that fails, so a partial answer never passes
 /// for a whole one.
 pub fn run(
     sources: Vec<SourceArg>,
@@ -414,6 +415,9 @@ pub fn run(
     let patterns: Vec<Wanted> = searching.iter().map(|s| s.pattern).collect();
     let replacements: Vec<Option<&TextPattern>> =
         steps.iter().flat_map(Step::replacements).collect();
+    // Every `where` is compiled and checked, as every pattern is, before discovery looks at a
+    // file, so that a script error is reported as one however large or unreadable the tree.
+    let filters = filters(&searching, &compiled, roots, &built)?;
     let mut scoping = Scoping::new(narrow.as_deref(), &cwd);
     let scoped: Vec<Scoped> = searching
         .iter()
@@ -422,7 +426,6 @@ pub fn run(
     let (files, found) = discover_bases(&scoping.bases, &mut projects, &cwd)?;
     let to_search = to_search(files, &scoped, roots);
     let locale = locale();
-    let filters = filters(&searching, &compiled, roots, &built)?;
     let searched = search_files(
         &to_search,
         roots,
@@ -1008,10 +1011,26 @@ fn check_filter(
             ));
         }
         if holes.contains(&true) {
-            return Err(script(
-                span,
-                format!("`${name}` binds a sequence, and `where` tests what one node holds"),
-            ));
+            // A name the `where`'s pattern shares is tested because it is shared, so say that.
+            let sharing = compiled_filter.shapes.iter().find(|(shape, _)| {
+                shape
+                    .holes()
+                    .any(|(_, hole)| hole.name.as_deref() == Some(name.as_str()))
+            });
+            return Err(match sharing {
+                Some((_, at)) => script(
+                    *at,
+                    format!(
+                        "`${name}...` is a sequence in the statement's pattern and one node in \
+                         the `where`'s, and a name shared between them is one or the other: \
+                         name it differently in one of them"
+                    ),
+                ),
+                None => script(
+                    span,
+                    format!("`${name}` binds a sequence, and `where` tests what one node holds"),
+                ),
+            });
         }
     }
     // A name the `where`'s pattern shares with the statement's is bound there to what the
@@ -1162,6 +1181,17 @@ impl Projects {
 }
 
 impl Projects {
+    /// The deepest of the projects so far whose boundary holds `path`.  The current directory's
+    /// holds every file a run finds under it, and each base's project holds that base's.
+    fn deepest(&self, path: &Path) -> usize {
+        self.list
+            .iter()
+            .enumerate()
+            .filter(|(_, project)| path.starts_with(&project.boundary))
+            .max_by_key(|(_, project)| project.boundary.components().count())
+            .map_or(0, |(index, _)| index)
+    }
+
     /// The project a file found from `base`'s project is in: that one, unless it is no project
     /// and the file is in a repository below it, which then decides the file's encoding as a
     /// nested repository does inside a project.
@@ -1206,7 +1236,8 @@ struct Scoping<'a> {
 
 /// Which files one of the run's patterns looks at.
 struct Scoped {
-    /// The base its files are discovered from, or none when its scope names nothing there.
+    /// The base its files are discovered from, or none when its `in` and the command-line scope
+    /// have nothing in common.
     base: Option<usize>,
     /// Its `in`, which its files must match.
     within: Option<scope::PathGlob>,
@@ -1277,28 +1308,41 @@ impl<'a> Scoping<'a> {
         if let Some(filter) = &query.filter {
             self.note_missing_files(filter, roots, built);
         }
-        let base = match (self.narrow, &within) {
-            (Some(narrow), Some((_, glob))) => {
-                self.notes.push(format!(
-                    "{}: the scope {:?} given on the command line narrows this statement's `in`",
-                    built.locate(glob.span, glob.span.start),
-                    output::relative(narrow, self.cwd)
-                ));
-                Some(narrow.to_path_buf())
-            }
-            (Some(narrow), None) => Some(narrow.to_path_buf()),
-            (None, Some((compiled, glob))) => {
+        // An `in` names its own base, and fails the run if that is not there, whether or not
+        // the command line narrows it.
+        let named = match &within {
+            Some((compiled, glob)) => {
                 let base = match compiled.names() {
                     scope::Names::There(path) => Some(path.to_path_buf()),
                     scope::Names::NotThere => None,
                     scope::Names::Glob => scope::base(&glob.node, roots)
                         .map_err(|err| compile_error(err, glob.span))?,
                 };
-                if base.is_none() {
-                    return Err(not_there(glob, built));
-                }
-                base
+                Some(base.ok_or_else(|| not_there(glob, built))?)
             }
+            None => None,
+        };
+        let base = match (self.narrow, named) {
+            // The deeper of the two is where both look; with neither inside the other, the
+            // statement looks at nothing.  So the same `in` finds the same files whether or not
+            // a scope that contains it is given, which crosses no boundary the `in` would not.
+            (Some(narrow), Some(named)) => {
+                let glob = &within.as_ref().expect("an `in` named it").1;
+                self.notes.push(format!(
+                    "{}: the scope {:?} given on the command line narrows this statement's `in`",
+                    built.locate(glob.span, glob.span.start),
+                    output::relative(narrow, self.cwd)
+                ));
+                if named.starts_with(narrow) {
+                    Some(named)
+                } else if narrow.starts_with(&named) {
+                    Some(narrow.to_path_buf())
+                } else {
+                    None
+                }
+            }
+            (Some(narrow), None) => Some(narrow.to_path_buf()),
+            (None, Some(named)) => Some(named),
             (None, None) => Some(self.cwd.to_path_buf()),
         };
         let base = base.map(|base| self.base(base));
@@ -1377,19 +1421,27 @@ fn not_there(glob: &Spanned<Glob>, built: &Built) -> Failure {
 }
 
 /// Each of `files`, with which of the run's patterns, scoped as `scoped`, look at it.
-fn to_search(
-    files: std::collections::BTreeMap<PathBuf, (usize, Vec<bool>)>,
-    scoped: &[Scoped],
-    roots: scope::Roots,
-) -> Vec<ToSearch> {
+fn to_search(files: Discovered, scoped: &[Scoped], roots: scope::Roots) -> Vec<ToSearch> {
+    // A file's path as a glob sees it is worked out only where some `in` or `where` reads it: a
+    // run with neither, the commonest, pays nothing for scoping beyond the base each file is in.
+    let reads_paths = scoped
+        .iter()
+        .any(|scoped| scoped.within.is_some() || scoped.test.is_some());
     files
         .into_iter()
-        .map(|(path, (project, bases))| {
-            let place = scope::Place::of(&path, roots.cwd, roots.root);
-            let applies = scoped
-                .iter()
-                .map(|scoped| scoped.applies(&bases, &place))
-                .collect();
+        .map(|(path, project, bases)| {
+            let applies = if reads_paths {
+                let place = scope::Place::of(&path, roots.cwd, roots.root);
+                scoped
+                    .iter()
+                    .map(|scoped| scoped.applies(&bases, &place))
+                    .collect()
+            } else {
+                scoped
+                    .iter()
+                    .map(|scoped| scoped.base.is_some_and(|base| bases[base]))
+                    .collect()
+            };
             ToSearch {
                 path,
                 project,
@@ -1406,55 +1458,93 @@ struct ToSearch {
     applies: Vec<bool>,
 }
 
+/// Every file found under a run's bases, in path order, with the project it is in and which
+/// bases found it.
+type Discovered = Vec<(PathBuf, usize, Vec<bool>)>;
+
 /// Every file under each of `bases`, each discovered by the rules of the project it is in, with
 /// the project of each file and which bases found it, and what discovery passed over.
-type Discovered = (
-    std::collections::BTreeMap<PathBuf, (usize, Vec<bool>)>,
-    discover::Found,
-);
-
 fn discover_bases(
     bases: &[PathBuf],
     projects: &mut Projects,
     cwd: &Path,
-) -> Result<Discovered, Failure> {
+) -> Result<(Discovered, discover::Found), Failure> {
+    // With one base, discovery's own order is the run's, so nothing need be merged.
+    if let [base] = bases {
+        let project = projects.of(base, cwd);
+        let mut found = discover_base(base, project, projects, cwd)?;
+        let files = std::mem::take(&mut found.files)
+            .into_iter()
+            .map(|path| {
+                let owner = projects.of_file(&path, project, cwd);
+                (path, owner, vec![true])
+            })
+            .collect();
+        return Ok((files, found));
+    }
     let mut files: std::collections::BTreeMap<PathBuf, (usize, Vec<bool>)> =
         std::collections::BTreeMap::new();
     let mut all = discover::Found::default();
     for (index, base) in bases.iter().enumerate() {
         let project = projects.of(base, cwd);
-        let found = {
-            let project = &projects.list[project];
-            // With no project, a repository the walk enters still has its own rules.
-            let system = match &project.declarations.workspace {
-                Some(workspace) => workspace.ignore_files(),
-                None => workspace::ignore_files_outside(&projects.contents),
-            };
-            discover::files(
-                base,
-                &project.boundary,
-                Some(system),
-                cwd,
-                &projects.contents,
-            )
-            .map_err(Failure::Discovery)?
-        };
+        let found = discover_base(base, project, projects, cwd)?;
         for path in found.files {
-            let owner = projects.of_file(&path, project, cwd);
             files
                 .entry(path)
-                .or_insert_with(|| (owner, vec![false; bases.len()]))
+                .or_insert_with(|| (project, vec![false; bases.len()]))
                 .1[index] = true;
         }
-        all.links_not_followed += found.links_not_followed;
-        all.special_files += found.special_files;
+        // Bases overlap when one statement's lies under another's, so each is kept once.
+        for link in found.links_not_followed {
+            if !all.links_not_followed.contains(&link) {
+                all.links_not_followed.push(link);
+            }
+        }
+        for special in found.special_files {
+            if !all.special_files.contains(&special) {
+                all.special_files.push(special);
+            }
+        }
         for rule in found.skipped_rules {
             if !all.skipped_rules.contains(&rule) {
                 all.skipped_rules.push(rule);
             }
         }
     }
+    let files = files
+        .into_iter()
+        .map(|(path, (_, found_by))| {
+            // The deepest project holding the file, whichever base found it first, so that its
+            // encoding never depends on the order the statements were written in.
+            let deepest = projects.deepest(&path);
+            let owner = projects.of_file(&path, deepest, cwd);
+            (path, owner, found_by)
+        })
+        .collect();
     Ok((files, all))
+}
+
+/// The files under `base`, discovered by the rules of `project`, the one it is in.
+fn discover_base(
+    base: &Path,
+    project: usize,
+    projects: &Projects,
+    cwd: &Path,
+) -> Result<discover::Found, Failure> {
+    let project = &projects.list[project];
+    // With no project, a repository the walk enters still has its own rules.
+    let system = match &project.declarations.workspace {
+        Some(workspace) => workspace.ignore_files(),
+        None => workspace::ignore_files_outside(&projects.contents),
+    };
+    discover::files(
+        base,
+        &project.boundary,
+        Some(system),
+        cwd,
+        &projects.contents,
+    )
+    .map_err(Failure::Discovery)
 }
 
 /// One match a search found, and for a structural one the code it covers, which is printed in
@@ -2062,9 +2152,13 @@ impl Searched {
 }
 
 /// The patterns in `batch`, each by its index among all the run's patterns, that look at a file,
-/// as `applies` says by that index.
-fn applying<T: Copy>(batch: &[(usize, T)], applies: &[bool]) -> Vec<(usize, T)> {
-    batch.iter().copied().filter(|&(i, _)| applies[i]).collect()
+/// as `applies` says by that index: the batch itself, uncopied, when they all do.
+fn applying<'b, T: Copy>(batch: &'b [(usize, T)], applies: &[bool]) -> Cow<'b, [(usize, T)]> {
+    if batch.iter().all(|&(i, _)| applies[i]) {
+        Cow::Borrowed(batch)
+    } else {
+        Cow::Owned(batch.iter().copied().filter(|&(i, _)| applies[i]).collect())
+    }
 }
 
 /// Where and why a Python file does not parse, as a message gives it.
@@ -2419,16 +2513,20 @@ fn skipped(
             "ignore file {rule}; that line is skipped and the rest of the file applies"
         ));
     }
-    if found.special_files > 0 {
+    if !found.special_files.is_empty() {
         notes.push(format!(
             "{} - FIFOs, sockets or devices - not searched",
-            count(found.special_files, "special file", "special files")
+            count(found.special_files.len(), "special file", "special files")
         ));
     }
-    if found.links_not_followed > 0 {
+    if !found.links_not_followed.is_empty() {
         notes.push(format!(
             "{} not followed",
-            count(found.links_not_followed, "symbolic link", "symbolic links")
+            count(
+                found.links_not_followed.len(),
+                "symbolic link",
+                "symbolic links"
+            )
         ));
     }
     notes

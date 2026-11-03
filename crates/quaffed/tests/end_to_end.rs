@@ -581,6 +581,57 @@ fn a_repository_walked_into_from_outside_any_project_keeps_its_own_rules() {
 }
 
 #[test]
+fn file_contains_is_text_anywhere_in_the_path_as_printed() {
+    let mut project = Project::new(SCOPED);
+    project.add_bytes("Makefile", b"TODO\n");
+    // Not "everything": `.` is a character in the path, and `./` reads as two of them.
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find "TODO" where not FILE contains ".""#]));
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find "TODO" where FILE contains "./""#]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn an_absolute_glob_is_matched_where_it_says() {
+    let project = Project::new(SCOPED);
+    let root = std::fs::canonicalize(&project.dir).expect("the project");
+    let glob = format!(r#"find "TODO" in "{}/src/"**".py""#, root.display());
+    // The absolute path is filtered out of the snapshot's record of the command by the paths
+    // it prints, which are relative to where quaff runs.
+    let output = project
+        .quaff_in("tests", &["-e", &glob])
+        .output()
+        .expect("running quaff");
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "../src/app.py:1:10-1:13: TODO\n../src/sub/deep.py:1:10-1:13: TODO\n"
+    );
+    project.assert_unchanged();
+}
+
+#[test]
+fn an_in_under_a_command_line_scope_is_resolved_as_without_one() {
+    let mut project = Project::new(SCOPED);
+    project.add_bytes(".gitignore", b"build/\n");
+    project.add_bytes("build/out.py", b"# TODO\n");
+    // An `in` that names nothing fails, scope or none.
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find "TODO" in "docs""#, "src"]));
+    // Naming an ignored directory finds the same with `.` given as without it.
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find "TODO" in "build""#]));
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find "TODO" in "build""#, "."]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_link_two_statements_walk_past_is_counted_once() {
+    let mut project = Project::new(SCOPED);
+    std::os::unix::fs::symlink("app.py", project.dir.join("src/link.py")).expect("linking");
+    project.before = snapshot_files(&project.dir);
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find "TODO""#, "-e", r#"find "x" in "src""#]));
+    project.assert_unchanged();
+}
+
+#[test]
 fn a_python_file_a_statement_leaves_out_cannot_refuse_it() {
     let mut project = Project::new(SCOPED);
     project.add_bytes("tests/broken.py", b"def (:\n");

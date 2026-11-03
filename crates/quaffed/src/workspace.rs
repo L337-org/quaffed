@@ -122,8 +122,7 @@ const SYSTEMS: &[Find] = &[git::find];
 
 /// Where the known systems keep their ignore files, for a walk that is in no project: they
 /// apply only inside the repositories the walk enters, as a nested repository's do inside a
-/// project.  With git the one system known, these are git's; a second system would need its
-/// own combined with them.
+/// project.  A system added to `SYSTEMS` has its ignore files combined with these here.
 #[must_use]
 pub fn ignore_files_outside(contents: &Contents) -> Box<dyn IgnoreFiles> {
     git::ignore_files(contents)

@@ -5,11 +5,11 @@
 //! `FILE` conditions of its `where`, which are known before a file is parsed.
 //!
 //! The command-line scope, `in` and `FILE` follow one set of path rules
-//! (`docs/language.md`, _Paths_):
+//! (`docs/language.md`, _Paths and globs_):
 //!
 //! - **A path is relative to the current directory**, as the output prints it, so `..` is an
 //!   ordinary segment to a glob.  A path that begins with `:/` starts at the project root
-//!   instead, or the current directory with no project.
+//!   instead, or the current directory with no project, and an absolute path is where it says.
 //! - **A path with no wildcard names a file or a directory**, and a directory everything under
 //!   it, by where it is on disk, so `in "src"` is the same as the scope `src` on the command line.
 //! - **A glob** is matched against the whole path, `*`, `?` and a class within one directory
@@ -65,6 +65,8 @@ pub enum From {
     Cwd,
     /// The project root, written `:/`.
     Root,
+    /// Nowhere but where it says: an absolute path.
+    Absolute,
 }
 
 /// A path glob, compiled: an `in`, or a `FILE` test.
@@ -113,7 +115,13 @@ impl PathGlob {
     /// Returns an [`Error`] for a glob too large to match, or a named path that could not be
     /// looked up for a reason other than not being there.
     pub fn new(glob: &Glob, anywhere: bool, roots: Roots) -> Result<PathGlob, Error> {
-        let (from, glob) = from(glob);
+        // `contains` is text anywhere in the path as printed, so nothing in it says where the
+        // path starts: `FILE contains "./x"` is those three characters, not `x`.
+        let (from, glob) = if anywhere {
+            (From::Cwd, glob.clone())
+        } else {
+            from(glob)
+        };
         let test = match glob.as_literal() {
             Some(path) if !anywhere => Test::Named(named(path, from, roots)?),
             _ => Test::Pattern(Matcher::new(&glob, Kind::Path, anywhere).map_err(Error::TooLarge)?),
@@ -133,6 +141,7 @@ impl PathGlob {
                     .from_root
                     .as_deref()
                     .is_some_and(|path| matcher.is_match(path)),
+                From::Absolute => matcher.is_match(&absolute(place.path)),
             },
         }
     }
@@ -159,13 +168,28 @@ pub enum Names<'a> {
     Glob,
 }
 
+/// An absolute path as a glob sees it, with `/` between its segments.
+fn absolute(path: &Path) -> String {
+    let written = path.to_string_lossy();
+    if cfg!(windows) {
+        written.replace('\\', "/")
+    } else {
+        written.into_owned()
+    }
+}
+
 /// Where `glob` starts, and the glob with what said so taken off: a leading `:/` for the
-/// project root, and any leading `./`, which a printed path never has.
+/// project root, and any leading `./`, which a printed path never has.  An absolute path is
+/// left as it is, to be matched against where a file is.
 fn from(glob: &Glob) -> (From, Glob) {
     let mut rest = Glob::default();
     let mut from = From::Cwd;
     for (i, part) in glob.parts().iter().enumerate() {
         match part {
+            GlobPart::Literal(text) if i == 0 && Path::new(text).is_absolute() => {
+                from = From::Absolute;
+                rest.push_literal(text.clone());
+            }
             GlobPart::Literal(text) if i == 0 => {
                 let mut text = text.as_str();
                 if let Some(after) = text.strip_prefix(":/") {
@@ -190,8 +214,9 @@ fn from(glob: &Glob) -> (From, Glob) {
 /// The file or directory `path`, with no wildcard, names from where it starts: canonical, or
 /// `None` when there is nothing there.
 fn named(path: &str, from: From, roots: Roots) -> Result<Option<PathBuf>, Error> {
+    // An absolute path joined to anything is itself.
     let start = match from {
-        From::Cwd => roots.cwd,
+        From::Cwd | From::Absolute => roots.cwd,
         From::Root => roots.root,
     };
     match fs::canonicalize(start.join(path)) {

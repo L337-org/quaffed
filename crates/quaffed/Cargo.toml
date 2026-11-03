@@ -36,5 +36,5 @@ quaffed-python = { path = "../python" }
 quaffed-representation = { path = "../representation" }
 quaffed-script = { path = "../script" }
 quaffed-syntax = { path = "../syntax" }
-# Already in the graph through `ignore`'s globset; used directly to match `in` and `where` globs.
+# Matches `in` and `where` globs.
 regex-automata = { version = "=0.4.18", default-features = false, features = ["std", "perf", "syntax", "meta"] }

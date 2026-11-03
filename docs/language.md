@@ -339,7 +339,9 @@ The scope on the command line, `in` and `FILE` follow one set of rules.
 - **A path is relative to the current directory**, as the output prints it, so from `src/` a
   file in `docs/` is `../docs/notes.md`.  **One that begins `:/` starts at the project root**,
   or the current directory with no project: from `src/`, `in ":/docs"` is the root's `docs/`.
-  Only a leading `:/` counts, and a directory really named `:` is written `./:`.
+  Only a leading `:/` counts, and a directory really named `:` is written `./:`.  **An absolute
+  path is where it says**, whatever the current directory: `in "/srv/app/"**".py"` is every
+  Python file under `/srv/app`.
 - **A path with no wildcard names a file or a directory**, and a directory stands for everything
   under it: `in "src"`, `where not FILE matches "src/app.py"`.
 - **A glob is quoted text and wildcards, and text inside quotes is always literal.**  Each
@@ -358,7 +360,8 @@ The scope on the command line, `in` and `FILE` follow one set of rules.
   **"/test_"*".py"` leaves out test files below the top directory.  In a class, a `]` that is a
   member goes first and a `-` first or last, and nothing else is special.
 - **A glob matches the whole path**, and `..` is an ordinary directory name to it.
-  `FILE contains "x"` is `x` anywhere in the path, the same as `FILE matches **"x"**`.
+  `FILE contains "x"` is `x` anywhere in the path as printed, the same as
+  `FILE matches **"x"**`, so `FILE contains "./"` is those two characters, not a start.
 - **An `in` that names nothing there fails the run** (exit 7), as a missing scope does: a path
   that is not there, or a glob whose leading directory is not.  A glob written inside the quotes
   is literal, so `"**/*.md"` names a file of that name, and the message gives the marker

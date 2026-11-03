@@ -36,11 +36,12 @@ pub const VCS_METADATA: &[&str] = &[
 pub struct Found {
     /// Every regular file, sorted by path, so that output is the same on every run.
     pub files: Vec<PathBuf>,
-    /// Symbolic links met and not followed, so the run can say it did not look through them.
-    pub links_not_followed: usize,
+    /// Symbolic links met and not followed, so the run can say it did not look through them;
+    /// kept by path, so that two walks meeting one link count it once.
+    pub links_not_followed: Vec<PathBuf>,
     /// FIFOs, sockets and device files met and not searched: reading a FIFO would wait for a
     /// writer that may never come, so they are counted rather than read.
-    pub special_files: usize,
+    pub special_files: Vec<PathBuf>,
     /// Each line of an ignore file that could not be parsed, described for the user.  The line
     /// is skipped and the rest of its file applies, as git applies the lines it understands.
     pub skipped_rules: Vec<String>,
@@ -51,11 +52,11 @@ impl Found {
     /// a special file, which are not read.
     fn count(&mut self, path: &Path, kind: fs::FileType) {
         if kind.is_symlink() {
-            self.links_not_followed += 1;
+            self.links_not_followed.push(path.to_path_buf());
         } else if kind.is_file() {
             self.files.push(path.to_path_buf());
         } else {
-            self.special_files += 1;
+            self.special_files.push(path.to_path_buf());
         }
     }
 }
@@ -1118,7 +1119,7 @@ mod tests {
         assert!(made.success(), "mkfifo {} failed", fifo.display());
         let found = files_in(&tree.0, &tree.0).unwrap();
         assert_eq!(found.files.len(), 1);
-        assert_eq!(found.special_files, 1);
+        assert_eq!(found.special_files.len(), 1);
     }
 
     #[test]
@@ -1193,7 +1194,7 @@ mod tests {
         std::os::unix::fs::symlink("a.py", tree.0.join("link.py")).unwrap();
         let found = files_in(&tree.0, &tree.0).unwrap();
         assert_eq!(found.files.len(), 1);
-        assert_eq!(found.links_not_followed, 1);
+        assert_eq!(found.links_not_followed.len(), 1);
     }
 
     #[test]

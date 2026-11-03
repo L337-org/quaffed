@@ -77,9 +77,10 @@ rules a user sees are `docs/language.md`'s _Paths and globs_.
 - **Every pattern of the run has its own scope**: the base its files come from, its `in`, and
   the part of its `where` a path alone can decide.  A file no pattern looks at is not read.
 - **A path is matched as printed**, relative to the current directory with `/` between its
-  segments, or relative to the root for a glob that begins `:/`.  A glob is compiled to a
-  regular expression (`src/glob.rs`), with `regex-automata`, already in the graph through
-  `ignore`, so a match takes time linear in the path however the glob is written.  `*`, `?` and a
+  segments, relative to the root for a glob that begins `:/`, and as the absolute path for one
+  that is absolute.  `contains` reads none of those prefixes: it is text anywhere in the path as
+  printed.  A glob is compiled to a regular expression (`src/glob.rs`), with `regex-automata`,
+  so a match takes time linear in the path however the glob is written.  `*`, `?` and a
   class are kept within a segment - for a path a directory name, for a string a line - and `**`
   crosses them.
 - **A path with no wildcard names what is on disk**: it is resolved and compared by where it is,
@@ -99,8 +100,12 @@ rules a user sees are `docs/language.md`'s _Paths and globs_.
   the shared name is tested too, so the cost check counts it.  Each tested name counts as one more use of it, read once the
   match is complete, so `Pattern::costly_with` bounds the search as it bounds a name used twice,
   and a pattern that with its `where` would be too costly is refused before any file is read.
-- **The command-line scope narrows every statement**: it is the base of each, so a statement's
-  `in` only keeps what is under it too, and a note says so.
+- **The command-line scope narrows every statement**: a statement's `in` still names its own
+  base, and fails the run if that is not there; the deeper of the two is walked, and a
+  statement whose `in` and scope share nothing looks at nothing.  So an `in` finds the same
+  files whether or not a scope holding it is given, and a note says the scope narrowed it.
+- **A path is only computed where something reads it**: a run with no `in` and no `where`
+  works out no file's path as a glob would see it.
 - **What names nothing is said**: an `in` whose path or leading directory is not there fails the
   run, exit 7, as a missing scope does, and a `FILE matches` path that is not there is noted.
   Either gives the marker spelling of a path that reads as a glob (`scope::as_markers`).

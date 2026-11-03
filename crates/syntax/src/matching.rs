@@ -3096,12 +3096,17 @@ mod trees {
 
         /// Every match, as [`find`] reports them.
         fn find(&self) -> Vec<Match> {
+            self.find_where(&mut |_| true)
+        }
+
+        /// The matches some way of which `accept` accepts, by what that way holds.
+        fn find_where(&self, accept: &mut dyn FnMut(&Held<'a>) -> bool) -> Vec<Match> {
             let shape = self.pattern.arena();
             let content: Vec<NodeId> = shape.children(shape.root()).collect();
             let mut found = Vec::new();
             if let [only] = content.as_slice() {
                 for node in self.target.nodes() {
-                    if self.node(*only, node, &Held::new(), &mut |_| true) {
+                    if self.node(*only, node, &Held::new(), &mut |held| accept(held)) {
                         found.push(Match {
                             range: self.target.range(node),
                         });
@@ -3125,9 +3130,12 @@ mod trees {
                             start,
                             ends[start],
                             &Held::new(),
-                            &mut |at, _| {
-                                end = Some(at);
-                                true
+                            &mut |at, held| {
+                                let kept = accept(held);
+                                if kept {
+                                    end = Some(at);
+                                }
+                                kept
                             },
                         );
                         if let Some(end) = end {
@@ -3250,6 +3258,48 @@ mod trees {
                 .map(|m| built.text()[m.range].to_owned())
                 .collect();
             prop_assert_eq!(fast, oracle, "{} over {} against the oracle", pattern, target);
+        }
+
+        /// A `where` keeps exactly the matches the oracle finds a way for whose code for the
+        /// tested name passes - here, has a given length - so no way of binding it is missed.
+        #[test]
+        fn a_where_keeps_what_the_oracle_finds_a_passing_way_for(
+            pattern in prop::collection::vec(pattern_item(2), 1..7),
+            target in prop::collection::vec(target_item(2), 1..12),
+            length in 1usize..5,
+        ) {
+            let pattern = format!("(D {})", trimmed(&pattern));
+            let target = format!("(D {})", trimmed(&target));
+            let compiled = super::trees::pattern(&pattern);
+            let single = |name: &str| {
+                compiled
+                    .holes()
+                    .any(|(_, hole)| hole.name.as_deref() == Some(name) && !hole.sequence)
+                    && !compiled
+                        .holes()
+                        .any(|(_, hole)| hole.name.as_deref() == Some(name) && hole.sequence)
+            };
+            let Some(name) = ["a", "b"].into_iter().find(|name| single(name)) else {
+                return Ok(());
+            };
+            prop_assume!(compiled.unbounded_sequence().is_none());
+            prop_assume!(compiled.costly_with(&[name]).is_none());
+            let (built, _) = build(&target);
+            let same = Same { arena: &built };
+            let kept: Vec<String> = find_where(&compiled, &built, &[name], &mut |nodes| {
+                let mut code = Vec::new();
+                same.code(&[Part::Child(nodes[0])], &mut code);
+                code.len() == length
+            })
+            .into_iter()
+            .map(|m| built.text()[m.range].to_owned())
+            .collect();
+            let oracle: Vec<String> = Oracle { pattern: &compiled, target: &built }
+                .find_where(&mut |held| held.get(name).is_some_and(|code| code.len() == length))
+                .into_iter()
+                .map(|m| built.text()[m.range].to_owned())
+                .collect();
+            prop_assert_eq!(kept, oracle, "{} over {} testing ${}", pattern, target, name);
         }
 
         #[test]

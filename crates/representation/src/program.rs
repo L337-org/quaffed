@@ -57,7 +57,7 @@ pub struct Query {
 }
 
 impl Query {
-    /// A query for `operand` over the whole project, unfiltered.
+    /// A query for `operand` over the scope the command line gives, unfiltered.
     #[must_use]
     pub fn new(operand: Spanned<Operand>) -> Self {
         Query {
