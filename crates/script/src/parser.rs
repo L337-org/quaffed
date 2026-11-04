@@ -645,7 +645,9 @@ impl<'t> Parser<'t> {
                         token,
                     ));
                 }
-                TokenKind::Comma | TokenKind::CloseBrace if nested => break,
+                // Inside braces, `,` and `}` end an alternative; outside them, anything that is
+                // not a part ends the glob.
+                TokenKind::Comma | TokenKind::CloseBrace => break,
                 _ if nested => {
                     return Err(Self::malformed(
                         format!(
@@ -711,7 +713,9 @@ impl<'t> Parser<'t> {
     fn class(token: &Token, negated: bool, items: &[ClassItem]) -> Result<GlobPart, ParseError> {
         let holds_break = items.iter().any(|item| match *item {
             ClassItem::One(c) => c == '\n' || c == '\r',
-            ClassItem::Range(low, high) => low <= '\r' && high >= '\n',
+            ClassItem::Range(low, high) => {
+                (low..=high).contains(&'\n') || (low..=high).contains(&'\r')
+            }
         });
         if holds_break {
             return Err(Self::malformed(
@@ -1428,6 +1432,53 @@ mod tests {
         }
         let capture = error(r#"find "x" where $s matches "a"$b"#);
         assert_eq!(capture.kind, ErrorKind::Unknown);
+        // Only between pieces is a metavariable or a wildcard read as one: first, it is not
+        // a glob or an operand at all.
+        for (text, wanted) in [
+            (
+                r#"find "x" where $s matches $t"#,
+                "expected a glob to compare with - quoted text and wildcards, as \"https\"* - but \
+                 found `$t`",
+            ),
+            (
+                r#"find *"x""#,
+                "expected an operand - quoted text or a backticked pattern - but found `*`",
+            ),
+        ] {
+            let err = error(text);
+            assert_eq!(err.kind, ErrorKind::Malformed, "{text}");
+            assert_eq!(err.message, wanted, "{text}");
+        }
+    }
+
+    #[test]
+    fn a_class_is_refused_only_if_it_holds_a_line_break() {
+        for (class, refused) in [
+            ("[\n]", true),
+            ("[\r]", true),
+            ("[\t-\n]", true),
+            ("[\r-\x0e]", true),
+            ("[\t-\t]", false),
+            // Between LF and CR, and holding neither.
+            ("[\x0b-\x0c]", false),
+            ("[\x0e-~]", false),
+        ] {
+            let text = format!(r#"find "x" where $s matches {class}"#);
+            assert_eq!(program(&text).is_err(), refused, "{class:?}");
+        }
+    }
+
+    #[test]
+    fn a_metavariable_is_compared_with_a_backticked_pattern_by_its_shape() {
+        let Statement::Find(query) = only("find `f($x)` where $x matches `g($y)`") else {
+            panic!("a find")
+        };
+        match query.filter.map(|f| f.node) {
+            Some(Filter::Matches(_, operand)) => {
+                assert_eq!(operand.node, Operand::Pattern("g($y)".into()));
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

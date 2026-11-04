@@ -1,0 +1,14 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "find \"fetch\" where FILE matches \"a\" and not $x matches \"a\""
+---
+success: false
+exit_code: 3
+----- stdout -----
+
+----- stderr -----
+quaff: -e expression 1, at character 45: a textual search binds no metavariables, so there is nothing for `where` to test here: test FILE, or search for a backticked pattern

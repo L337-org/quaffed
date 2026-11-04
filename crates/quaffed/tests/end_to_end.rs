@@ -426,6 +426,8 @@ fn a_scope_that_does_not_exist_is_an_io_error_naming_it() {
     let project = Project::new(PROJECT);
     assert_quaff_snapshot!(project.quaff(&["TODO", "missing"]));
     assert_quaff_snapshot!(project.quaff(&["TODO", "src/**/*.py"]));
+    // A path that cannot be looked up is not one that is not there: the system says why.
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find "TODO" in "app.py/x""#]));
     project.assert_unchanged();
 }
 
@@ -560,6 +562,11 @@ fn a_file_test_that_names_nothing_there_is_a_note() {
     assert_quaff_snapshot!(
         project.quaff(&["-e", r#"find "TODO" where not FILE matches "**/test_*.py""#])
     );
+    // Wherever in the filter the test is.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        r#"find "TODO" where FILE matches "src/"** and not FILE matches "src/generated.py""#
+    ]));
     project.assert_unchanged();
 }
 
@@ -577,6 +584,52 @@ fn a_repository_walked_into_from_outside_any_project_keeps_its_own_rules() {
     // Run where there is no project, and named from inside the repository, alike.
     assert_quaff_snapshot!(project.quaff(&["TODO"]));
     assert_quaff_snapshot!(project.quaff_in("repo", &["TODO", ".."]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_file_takes_its_encoding_from_the_repository_it_is_in() {
+    let mut project = Project::new(&[
+        ("app/.git/HEAD", ""),
+        ("other/.git/HEAD", ""),
+        (
+            "other/.gitattributes",
+            "*.txt working-tree-encoding=SHIFT-JIS\n",
+        ),
+        ("loose/repo/.git/HEAD", ""),
+        (
+            "loose/repo/.gitattributes",
+            "*.txt working-tree-encoding=SHIFT-JIS\n",
+        ),
+    ]);
+    project.add_bytes("other/b.txt", b"\x93\xfa\n");
+    project.add_bytes("loose/repo/c.txt", b"\x93\xfa\n");
+    // Another project's file is read by that project's declarations, not the current one's...
+    assert_quaff_snapshot!(project.quaff_in("app", &["\u{65e5}", "../other"]));
+    // ...whichever of a run's statements found it, and in whatever order they were written.
+    assert_quaff_snapshot!(project.quaff_in(
+        "app",
+        &[
+            "-e",
+            "find \"\u{65e5}\"",
+            "-e",
+            "find \"\u{65e5}\" in \"../other\""
+        ]
+    ));
+    // In no project, a repository the walk enters declares its own files' encodings.
+    assert_quaff_snapshot!(project.quaff_in("loose", &["\u{65e5}"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_scope_of_a_lone_colon_is_a_directory_of_that_name() {
+    let project = Project::new(&[
+        (".git/HEAD", ""),
+        (":/a.txt", "TODO\n"),
+        ("b.txt", "TODO\n"),
+    ]);
+    // Only `:/` starts at the project root; `:` alone is a name like any other.
+    assert_quaff_snapshot!(project.quaff(&["TODO", ":"]));
     project.assert_unchanged();
 }
 
@@ -625,6 +678,17 @@ fn an_absolute_glob_through_a_symbolic_link_finds_what_the_link_leads_to() {
         String::from_utf8_lossy(&output.stdout),
         "src/app.py:1:10-1:13: TODO\nsrc/sub/deep.py:1:10-1:13: TODO\n"
     );
+    // The directory stays one: a star after it is a name within it.
+    let glob = format!(r#"find "TODO" in "{}/alias/"*".py""#, root.display());
+    let output = project
+        .quaff(&["-e", &glob])
+        .output()
+        .expect("running quaff");
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "src/app.py:1:10-1:13: TODO\n"
+    );
     project.assert_unchanged();
 }
 
@@ -661,6 +725,19 @@ fn a_python_file_a_statement_leaves_out_cannot_refuse_it() {
     assert_quaff_snapshot!(project.quaff(&[
         "-e",
         r#"find `x = $v` where not FILE matches "tests/broken.py""#
+    ]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_text_tier_file_only_a_textual_statement_takes_is_not_counted_for_structure() {
+    let project = Project::new(SCOPED);
+    // src/notes.txt is outside the structural statement's scope, so nothing is said of it.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        r#"find "TODO""#,
+        "-e",
+        r#"find `x = $v` in "tests""#
     ]));
     project.assert_unchanged();
 }
@@ -774,6 +851,10 @@ fn a_bound_node_is_compared_with_a_pattern_by_its_shape() {
         "-e",
         "find `pair($m, $us...)` where $m matches `format($us)`"
     ]));
+    // A sequence the `where`'s pattern does not share is its own, as any name is.
+    assert_quaff_snapshot!(
+        project.quaff(&["-e", "find `log($m)` where $m matches `format($xs...)`"])
+    );
     project.assert_unchanged();
 }
 
@@ -786,6 +867,8 @@ fn a_where_on_what_its_pattern_cannot_bind_is_refused() {
         r#"find `fetch($_)` where $_ matches "a""#,
         r#"find `connect($xs...)` where $xs matches "a""#,
         r#"find `connect($a..., $x, $b..., $y, $c...)` where $x matches "a" and $y matches "b""#,
+        // Named where the name is tested, however deep in the filter that is.
+        r#"find "fetch" where FILE matches "a" and not $x matches "a""#,
     ] {
         assert_quaff_snapshot!(project.quaff(&["-e", script]));
     }
@@ -858,6 +941,13 @@ fn an_unparseable_ignore_line_is_skipped_and_the_rest_of_the_file_applies() {
         ("build/out.py", "TODO in an ignored directory\n"),
     ]);
     assert_quaff_snapshot!(project.quaff(&["TODO"]));
+    // Noted once, however many of a run's statements start from where the file applies.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "find \"TODO\"",
+        "-e",
+        "find \"TODO\" in \"a.py\""
+    ]));
     project.assert_unchanged();
 }
 

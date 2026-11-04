@@ -326,6 +326,7 @@ impl FileTest {
 
 /// The directory a glob's files must lie under, from its leading literal text up to its last
 /// `/`: discovery starts there rather than at the root.  `None` when there is no such directory.
+/// For a glob with a wildcard: a path with none names itself, as [`PathGlob::names`] says.
 ///
 /// # Errors
 ///
@@ -333,14 +334,7 @@ impl FileTest {
 /// not being there.
 pub fn base(glob: &Glob, roots: Roots) -> Result<Option<PathBuf>, Error> {
     let (from, glob) = from(glob);
-    let prefix = match glob.parts().first() {
-        Some(GlobPart::Literal(text)) if glob.as_literal().is_none() => {
-            text.rfind('/').map_or("", |slash| &text[..=slash])
-        }
-        Some(GlobPart::Literal(text)) => text.as_str(),
-        _ => "",
-    };
-    named(prefix, from, roots)
+    named(&leading_directory(&glob), from, roots)
 }
 
 /// The directory a glob's files must lie under, as written: its leading literal text up to its

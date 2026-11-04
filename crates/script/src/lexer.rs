@@ -676,6 +676,8 @@ mod tests {
             class_of("[\u{e9}-\u{ea}]"),
             (false, vec![Range('\u{e9}', '\u{ea}')])
         );
+        // A range of one character runs neither way.
+        assert_eq!(class_of("[a-a]"), (false, vec![Range('a', 'a')]));
     }
 
     #[test]

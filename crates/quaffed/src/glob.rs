@@ -269,6 +269,34 @@ mod tests {
         assert!(either.is_match("src/a"));
         assert!(either.is_match("library/a"));
         assert!(!either.is_match("doc/a"));
+        // No alternative is empty, so the alternatives cannot be left out.
+        assert!(!either.is_match("/a"));
+    }
+
+    #[test]
+    fn a_question_mark_matches_exactly_one_character() {
+        for kind in [Kind::Path, Kind::Value] {
+            assert!(matches("a?c", kind, "abc"));
+            assert!(matches("a?c", kind, "a\u{e9}c"));
+            assert!(!matches("a?c", kind, "ac"));
+            assert!(!matches("a?c", kind, "abbc"));
+        }
+    }
+
+    #[test]
+    fn a_glob_too_large_to_compile_says_so_and_keeps_its_cause() {
+        // Comfortably past the regular expression engine's default size limit, which 2^18
+        // characters already exceed.
+        const TOO_LARGE: usize = 1 << 19;
+        let glob = Glob::literal("\u{e9}".repeat(TOO_LARGE));
+        let err = Matcher::new(&glob, Kind::Value, false).expect_err("too large");
+        let message = err.to_string();
+        assert!(
+            message.starts_with("this glob is too large to match: "),
+            "{message}"
+        );
+        let cause = std::error::Error::source(&err).expect("the build error is kept");
+        assert!(message.ends_with(&cause.to_string()), "{message}");
     }
 
     proptest! {

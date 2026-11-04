@@ -1803,7 +1803,7 @@ impl Searched {
         let mut edited: Option<Vec<u8>> = None;
         // The replaces that changed it so far, by their pattern's index.
         let mut by: Vec<usize> = Vec::new();
-        let mut parsed = None;
+        let mut unparsed = false;
         for batch in &plan.batches {
             let text: &[u8] = edited.as_deref().unwrap_or(&bytes);
             match batch {
@@ -1828,7 +1828,7 @@ impl Searched {
                             &structural,
                             plan,
                             &place,
-                            &mut parsed,
+                            &mut unparsed,
                         );
                     }
                     match &resolution {
@@ -1956,8 +1956,8 @@ impl Searched {
     }
 
     /// Searches a Python file's current bytes, `text`, for a batch's structural patterns.
-    /// `parsed` says whether an earlier batch parsed the file, so that it is counted as searched,
-    /// or as unparseable, once however many batches search it.  `on_disk` is the file as it is on
+    /// `unparsed` says whether an earlier batch found the file unparseable, so that it is counted
+    /// as such once however many batches search it.  `on_disk` is the file as it is on
     /// disk when an earlier replace has changed it: if that parses and `text` does not, the edit
     /// broke it, which refuses the run as an edit rather than as a file that cannot be parsed.
     #[expect(
@@ -1972,7 +1972,7 @@ impl Searched {
         structural: &[(usize, usize)],
         plan: &Plan,
         place: &scope::Place,
-        parsed: &mut Option<bool>,
+        unparsed: &mut bool,
     ) {
         // Each pattern's `where`, decided for this file's path and for what a match binds.
         let filters: Vec<Option<structural::Where>> = structural
@@ -2008,20 +2008,16 @@ impl Searched {
                 self.structural_for[i] += 1;
             }
         }
-        match (*parsed, outcome) {
-            (None, Ok(())) => {
-                *parsed = Some(true);
+        let Err(why) = outcome else {
+            return;
+        };
+        if earlier.on_disk.is_some_and(|bytes| parses(bytes).is_ok()) {
+            for &(i, _) in structural {
+                self.broken[i].push((shown.to_owned(), why.clone(), earlier.by.to_vec()));
             }
-            (_, Err(why)) if earlier.on_disk.is_some_and(|bytes| parses(bytes).is_ok()) => {
-                for &(i, _) in structural {
-                    self.broken[i].push((shown.to_owned(), why.clone(), earlier.by.to_vec()));
-                }
-            }
-            (None | Some(true), Err(why)) => {
-                self.unparsed.push((shown.to_owned(), why));
-                *parsed = Some(false);
-            }
-            _ => {}
+        } else if !*unparsed {
+            self.unparsed.push((shown.to_owned(), why));
+            *unparsed = true;
         }
     }
 
