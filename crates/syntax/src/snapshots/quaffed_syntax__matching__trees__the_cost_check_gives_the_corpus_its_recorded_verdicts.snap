@@ -40,7 +40,7 @@ $b $q... $q... (g (g x)) y | alone: together at 3 $q... 176 1820 38 134 | b: tog
 $b $q... y y ; x | alone: ok 29 77 24 72 | b: ok 73 217 24 72
 $b (g $_ $q...) $q... x x | alone: ok 56 176 55 175 | b: ok 98 290 55 175
 $b (g $p... $p... x) $... x | alone: ok 50 170 50 170 | b: ok 95 335 91 331
-$b (g x $...) $q... (g x x $b $a) | alone: ok 55 127 39 111 | a: second at 5 $q... 86 206 39 111 | b: ok 86 206 39 111 | a b: second at 5 $q... 86 206 39 111
+$b (g x $...) $q... (g x x $b $a) | alone: ok 55 127 39 111 | a: third at 5 $q... 86 206 39 111 | b: ok 86 206 39 111 | a b: third at 5 $q... 86 206 39 111
 $b (g x (g $p... x) $q...) $p... $... $q... (g x $p... $p... $q...) | alone: together at 9 $... 308 1100 244 868 | b: together at 9 $... 433 1537 244 868
 $b (g y y $q...) $b (g $q...) $b | alone: ok 51 123 13 13 | b: ok 66 138 13 13
 $b (g y) | alone: ok 7 7 5 5 | b: ok 14 14 5 5
@@ -823,7 +823,7 @@ $b y | alone: ok 5 5 4 4 | b: ok 10 10 4 4
 (g $... $q... y) x x y | alone: ok 12 12 11 11
 (g $... $q...) $... x | alone: ok 30 102 30 102
 (g $... (g x $... y) x) y $q... $_ | alone: ok 23 47 20 44
-(g $... (g x y $p... y) x) $... ; $p... $b y | alone: ok 74 218 53 149 | b: second at 9 $... 164 500 53 149
+(g $... (g x y $p... y) x) $... ; $p... $b y | alone: ok 74 218 53 149 | b: third at 9 $... 164 500 53 149
 (g $... ; $a $a) y x ; (g $... x (g $... x $q...)) | alone: ok 41 89 41 89 | a: ok 71 167 71 167
 (g $... x y (g y $q...)) $... x | alone: ok 28 76 28 76
 (g $... y $a $q...) | alone: ok 12 36 1 1 | a: ok 52 172 1 1
@@ -1000,7 +1000,7 @@ x $... (g $_) $_ x | alone: ok 45 141 22 70
 x $... (g $a) (g y y) x y | alone: ok 73 241 23 71 | a: ok 125 389 23 71
 x $... (g $p...) | alone: ok 30 102 29 101
 x $... x y $p... (g x x) | alone: ok 49 145 38 134
-x $... y (g x) $p... (g x $p...) | alone: second at 6 $p... 86 302 68 236
+x $... y (g x) $p... (g x $p...) | alone: third at 6 $p... 86 302 68 236
 x $... y y | alone: ok 23 71 20 68
 x $a | alone: ok 5 5 3 3 | a: ok 10 10 3 3
 x $a $b | alone: ok 9 9 6 6 | a: ok 16 16 6 6 | b: ok 16 16 6 6 | a b: ok 16 16 6 6
@@ -1066,7 +1066,7 @@ x ; y $... x | alone: ok 25 73 24 72
 x ; y $b y | alone: ok 10 10 9 9 | b: ok 20 20 9 9
 x ; y x | alone: ok 8 8 6 6
 x x | alone: ok 5 5 3 3
-x x $... ; $q... (g y (g y x x) $b (g y y $q... $...)) | alone: second at 4 $q... 101 341 74 242 | b: second at 4 $q... 176 608 74 242
+x x $... ; $q... (g y (g y x x) $b (g y y $q... $...)) | alone: third at 4 $q... 101 341 74 242 | b: third at 4 $q... 176 608 74 242
 x x $... x | alone: ok 48 168 44 164
 x x $... x y | alone: ok 36 108 33 105
 x x $_ (g $...) | alone: ok 21 45 6 6

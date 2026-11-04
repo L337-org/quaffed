@@ -318,7 +318,7 @@ fn a_run_whose_search_would_grow_faster_than_quadratic_is_refused() {
     // Where the run starts and where `$a` and `$b` stop are three places that decide later
     // code, named at the last of them: the first `$b`.
     match compile_pattern("w()\n$a...\nx()\n$b...\ny()\n$a...\nx()\n$b...\nz()\n") {
-        Err(PatternError::SecondChoice { spelled, offset }) => {
+        Err(PatternError::ThirdPlace { spelled, offset }) => {
             assert_eq!((spelled.as_str(), offset), ("$b...", 14));
         }
         other => panic!("{other:?}"),
@@ -333,7 +333,7 @@ fn a_run_whose_search_would_grow_faster_than_quadratic_is_refused() {
     // makes the cube.
     assert!(compile_pattern("f(w, $a..., x, $b..., y, $a..., x, $b..., z)").is_ok());
     match compile_pattern("f(w, $a..., x, $b..., y, $c..., z, $a..., $b..., $c...)") {
-        Err(PatternError::SecondChoice { spelled, .. }) => assert_eq!(spelled, "$c..."),
+        Err(PatternError::ThirdPlace { spelled, .. }) => assert_eq!(spelled, "$c..."),
         other => panic!("{other:?}"),
     }
     assert!(
@@ -595,7 +595,7 @@ fn a_node_is_asked_again_when_a_name_it_bound_fails_later() {
     assert!(compile_pattern("f($a..., $b..., $c...) + g($a..., x, $b...)").is_ok());
     assert!(matches!(
         compile_pattern("f($a..., $b..., $c..., $d...) + g($a..., $b..., $c...)"),
-        Err(PatternError::SecondChoice { .. })
+        Err(PatternError::ThirdPlace { .. })
     ));
 }
 
@@ -617,7 +617,7 @@ fn a_stop_in_a_nodes_own_list_still_counts_when_its_name_is_used_outside() {
         assert!(
             matches!(
                 compile_pattern(pattern),
-                Err(PatternError::SecondChoice { .. })
+                Err(PatternError::ThirdPlace { .. })
             ),
             "{pattern}"
         );

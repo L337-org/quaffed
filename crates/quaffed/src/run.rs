@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use quaffed_encoding::{self as encoding, Encoding, Named, Refusal, python};
 use quaffed_python::compile_pattern;
 use quaffed_representation::check;
+use quaffed_representation::glob::Glob;
 use quaffed_representation::program::{
     Action, ActionKind, Count, Counted, Expectation, Filter, Operand, Program, Query, Statement,
     Subject, TextPart, TextPattern,
@@ -21,8 +22,6 @@ use quaffed_representation::program::{
 use quaffed_representation::span::{Source, Span, Spanned};
 use quaffed_script::{ErrorKind, lexer, location, parse_source};
 use quaffed_syntax::Pattern;
-
-use quaffed_representation::glob::Glob;
 
 use crate::cli::{self, SourceArg, UsageError};
 use crate::contents::Contents;
@@ -202,18 +201,11 @@ impl fmt::Display for Failure {
                     write!(f, "\n  {path:?}: {why}")?;
                 }
                 let them = if files.len() == 1 { "it" } else { "them" };
-                // A path as printed is one `FILE` names, so the clause can be copied as it is.
-                let example = files.first().map_or_else(String::new, |(path, _)| {
-                    format!(
-                        ", such as where not FILE matches {}",
-                        crate::scope::quote(&path.to_string_lossy())
-                    )
-                });
                 write!(
                     f,
-                    "\nTo search without {them}, leave {them} out of the statement: with `in`, \
-                     with `where not FILE matches`{example}, or project-wide by listing {them} \
-                     in .ignore"
+                    "\nTo search without {them}, leave {them} out of the statement: {}, or \
+                     project-wide by listing {them} in .ignore",
+                    leave_out(files.first().map(|(path, _)| path.as_path()))
                 )
             }
             Failure::Unwritable { files } => unwritable(f, files),
@@ -248,15 +240,29 @@ fn unwritable(f: &mut fmt::Formatter<'_>, files: &[Unwritable]) -> fmt::Result {
     }
     write!(
         f,
-        "\nUse a replacement {} can hold, or give a narrower scope on the command line \
-             to leave {} out",
+        "\nUse a replacement {} can hold, or leave {} out of the statement: {}, or with a \
+         narrower scope on the command line",
         if files.len() == 1 {
             "its encoding"
         } else {
             "their encodings"
         },
-        if files.len() == 1 { "it" } else { "them" }
+        if files.len() == 1 { "it" } else { "them" },
+        leave_out(files.first().map(|file| file.path.as_path()))
     )
+}
+
+/// The ways a statement can leave out files it refuses, as a refusal offers them: `in`, and
+/// `where not FILE matches` with the first of them, `first`, as the example.
+fn leave_out(first: Option<&Path>) -> String {
+    // A path as printed is one `FILE` names, so the clause can be copied as it is.
+    let example = first.map_or_else(String::new, |path| {
+        format!(
+            ", such as where not FILE matches {}",
+            crate::scope::quote(&path.to_string_lossy())
+        )
+    });
+    format!("with `in`, with `where not FILE matches`{example}")
 }
 
 /// The refusal of edits that would leave Python files unparseable.
@@ -279,15 +285,16 @@ fn broken(f: &mut fmt::Formatter<'_>, files: &[Broken]) -> fmt::Result {
     }
     write!(
         f,
-        "\nChange the replacement so that {} still {}, or give a narrower scope on the \
-             command line to leave {} out",
+        "\nChange the replacement so that {} still {}, or leave {} out of the statement: {}, \
+         or with a narrower scope on the command line",
         if files.len() == 1 {
             "the file"
         } else {
             "the files"
         },
         if files.len() == 1 { "parses" } else { "parse" },
-        if files.len() == 1 { "it" } else { "them" }
+        if files.len() == 1 { "it" } else { "them" },
+        leave_out(files.first().map(|file| file.path.as_path()))
     )
 }
 
@@ -335,20 +342,20 @@ impl Outcome {
 /// Runs `sources` in the order given, printing matches to `out` and notes and failed
 /// assertions to `notes`.  `stdin` is read for `-f -`.
 ///
-/// Every source is read and parsed, and the whole program checked, before any file is looked
-/// at, so a script that cannot run in full does not run at all.  The search covers `cwd`, or
-/// `scope` when one is given, relative to `cwd` or after `:/` to the project root found by
-/// walking up from it, and each statement's `in` within that.  Every file is read once, whatever the number of statements; the
-/// matches print statement by statement, in program order.  An assertion block is evaluated
-/// to the end, and if any of its assertions does not hold, each one that failed is reported
-/// and the run stops there.
+/// Every source is read and parsed, and the whole program checked, before any file is looked at, so
+/// a script that cannot run in full does not run at all.  The search covers `cwd`, or `scope` when
+/// one is given, relative to `cwd` or after `:/` to the project root found by walking up from it,
+/// and each statement's `in` within that.  Every file is read once, whatever the number of
+/// statements; the matches print statement by statement, in program order.  An assertion block is
+/// evaluated to the end, and if any of its assertions does not hold, each one that failed is
+/// reported and the run stops there.
 ///
 /// # Errors
 ///
-/// Returns a [`Failure`] when the run cannot be answered in full: a script that is malformed
-/// or uses what this build does not have, a scope holding a double quote, an `in` that names
-/// nothing there, or something that cannot be read.  Nothing is printed for a run that fails, so a partial answer never passes
-/// for a whole one.
+/// Returns a [`Failure`] when the run cannot be answered in full: a script that is malformed or
+/// uses what this build does not have, a scope holding a double quote, an `in` that names nothing
+/// there, or something that cannot be read.  Nothing is printed for a run that fails, so a partial
+/// answer never passes for a whole one.
 pub fn run(
     sources: Vec<SourceArg>,
     scope: Option<&OsString>,
@@ -1329,11 +1336,21 @@ impl<'a> Scoping<'a> {
             // a scope that contains it is given, which crosses no boundary the `in` would not.
             (Some(narrow), Some(named)) => {
                 let glob = &within.as_ref().expect("an `in` named it").1;
-                self.notes.push(format!(
-                    "{}: the scope {:?} given on the command line narrows this statement's `in`",
-                    built.locate(glob.span, glob.span.start),
-                    output::relative(narrow, self.cwd)
-                ));
+                // Said only where it changes what the statement looks at.
+                let said = if named.starts_with(narrow) {
+                    None
+                } else if narrow.starts_with(&named) {
+                    Some("narrows this statement's `in`")
+                } else {
+                    Some("shares nothing with this statement's `in`, so it looks at nothing")
+                };
+                if let Some(said) = said {
+                    self.notes.push(format!(
+                        "{}: the scope {:?} given on the command line {said}",
+                        built.locate(glob.span, glob.span.start),
+                        output::relative(narrow, self.cwd)
+                    ));
+                }
                 if named.starts_with(narrow) {
                     Some(named)
                 } else if narrow.starts_with(&named) {
@@ -1821,14 +1838,13 @@ impl Searched {
                             on_disk: edited.is_some().then_some(&bytes[..]),
                             by: &by,
                         };
-                        let place = scope::Place::of(file, plan.roots.cwd, plan.roots.root);
                         self.structural_batch(
                             &shown,
                             text,
                             &earlier,
                             &structural,
                             plan,
-                            &place,
+                            file,
                             &mut unparsed,
                         );
                     }
@@ -1972,14 +1988,22 @@ impl Searched {
         earlier: &Earlier,
         structural: &[(usize, usize)],
         plan: &Plan,
-        place: &scope::Place,
+        file: &Path,
         unparsed: &mut bool,
     ) {
+        // The file's path as a glob sees it, worked out only if some `where` may read it.
+        let place = structural
+            .iter()
+            .any(|&(i, _)| plan.filters[i].is_some())
+            .then(|| scope::Place::of(file, plan.roots.cwd, plan.roots.root));
         // Each pattern's `where`, decided for this file's path and for what a match binds.
         let filters: Vec<Option<structural::Where>> = structural
             .iter()
             .map(|&(i, _)| {
                 plan.filters[i].as_ref().map(|filter| {
+                    let place = place
+                        .as_ref()
+                        .expect("worked out for a pattern with a `where`");
                     let found = filter::Found::default();
                     structural::Where {
                         names: filter.names.iter().map(String::as_str).collect(),
@@ -3019,7 +3043,14 @@ mod tests {
             one.contains("\"a.txt\": mac_arabic spells \"a b\" more than one way"),
             "{one}"
         );
-        assert!(one.ends_with("Use a replacement its encoding can hold, or give a narrower scope on the command line to leave it out"), "{one}");
+        assert!(
+            one.ends_with(
+                "Use a replacement its encoding can hold, or leave it out of the statement: with \
+                 `in`, with `where not FILE matches`, such as where not FILE matches \"a.txt\", \
+                 or with a narrower scope on the command line"
+            ),
+            "{one}"
+        );
         let many = Failure::Unwritable {
             files: vec![unwritable("a.txt", false), unwritable("b.txt", false)],
         }
@@ -3029,7 +3060,10 @@ mod tests {
             many.contains("a replacement their encodings can hold"),
             "{many}"
         );
-        assert!(many.ends_with("to leave them out"), "{many}");
+        assert!(
+            many.contains("or leave them out of the statement"),
+            "{many}"
+        );
         let broken = Failure::BrokenByEdit {
             files: vec![
                 Broken {
@@ -3061,7 +3095,14 @@ mod tests {
             message.contains("\"b.py\": line 2, column 1: y\n"),
             "{message}"
         );
-        assert!(message.ends_with("so that the files still parse, or give a narrower scope on the command line to leave them out"), "{message}");
+        assert!(
+            message.ends_with(
+                "so that the files still parse, or leave them out of the statement: with `in`, \
+                 with `where not FILE matches`, such as where not FILE matches \"a.py\", or \
+                 with a narrower scope on the command line"
+            ),
+            "{message}"
+        );
         for failure in [
             &broken,
             &Failure::Unwritable {

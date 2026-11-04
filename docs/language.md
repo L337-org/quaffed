@@ -330,7 +330,8 @@ A statement's clauses follow its operand in the order `in`, `where`, `expect`, e
   cannot parse there cannot [refuse the run](#which-files): leave it out with `in`, or with
   `where not FILE matches`.
 - **The scope on the command line narrows every statement and never widens one**: a statement
-  with an `in` looks only at what is in both, and a note says the command line narrowed it.
+  with an `in` looks only at what is in both.  A note says so where the scope is deeper than the
+  `in`, or shares nothing with it, so that the statement looks at nothing.
 
 ## Paths and globs
 
@@ -341,8 +342,13 @@ The scope on the command line, `in` and `FILE` follow one set of rules.
   or the current directory with no project: from `src/`, `in ":/docs"` is the root's `docs/`.
   Only a leading `:/` counts, and a directory really named `:` is written `./:`.  **An absolute
   path is where it says**, whatever the current directory: `in "/srv/app/"**".py"` is every
-  Python file under `/srv/app`.  Its leading directory is taken as it is on disk, so where
-  `/var/www` links to `/srv/www`, `"/var/www/"**` finds the files of `/srv/www`.
+  Python file under `/srv/app`.
+- **A glob's leading directory is a directory on disk**, as a path with no wildcard is: its
+  text up to the last `/` before any wildcard.  So from `src/`, `"../"**` is every file under
+  the parent, `src/` included, as `in ".."` is, though the output prints those as `app.py`
+  rather than `../src/app.py`.  Through a symbolic link it is where the link leads: where
+  `alias` links to `src`, `in "alias/"**` finds the files of `src`, as `in "alias"` does.  A
+  glob with no leading directory, such as `**".py"`, is matched against the path as printed.
 - **A path with no wildcard names a file or a directory**, and a directory stands for everything
   under it: `in "src"`, `where not FILE matches "src/app.py"`.
 - **A glob is quoted text and wildcards, and text inside quotes is always literal.**  Each
@@ -360,8 +366,8 @@ The scope on the command line, `in` and `FILE` follow one set of rules.
   So `in "src/"**".py"` is every `.py` file under `src`, and `where not FILE matches
   **"/test_"*".py"` leaves out test files below the top directory.  In a class, a `]` that is a
   member goes first and a `-` first or last, and nothing else is special.
-- **A glob matches the whole path**, and `..` is an ordinary directory name to it.
-  `FILE contains "x"` is `x` anywhere in the path as printed, the same as
+- **A glob matches the whole path**.  After its leading directory, `..` is an ordinary
+  directory name to it.  `FILE contains "x"` is `x` anywhere in the path as printed, the same as
   `FILE matches **"x"**`, so `FILE contains "./"` is those two characters, not a start.
 - **An `in` that names nothing there fails the run** (exit 7), as a missing scope does: a path
   that is not there, or a glob whose leading directory is not.  A glob written inside the quotes
@@ -868,8 +874,10 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
 - **A quoted glob as the scope is not expanded.**  It is reported as not found, with a note that
   globs are not expanded; `in` takes globs.  A scope holding a double quote is refused, so that
   a pattern there can mean something later.
-- **An absolute glob follows a symbolic link in its leading directory**, as discovery does in
-  reaching it: `"/var/www/"**` finds the files of `/srv/www` where one links to the other.
+- **A glob's leading directory is where it is on disk, not text in the path as printed**: from
+  `src/`, `"../"**` takes in `src/app.py`, printed `app.py`, and `"alias/"**` finds the files of
+  `src` where `alias` links to it, printed under `src/`.  `FILE contains` is text anywhere in
+  the path as printed, so `FILE contains "alias"` finds none of the files of `src`.
 - **A star stays within one directory name**: `where not FILE matches *".txt"` leaves out only
   the `.txt` files at the top, and `**".txt"` every one.
 - **The default scope is the current directory, not the project**: from a subdirectory, `:/`

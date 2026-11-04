@@ -171,18 +171,20 @@ fn find_in(
     for (name, node) in bound {
         initial[matcher.slots[name]] = Some(Bound::Node(*node));
     }
-    let inside = |node: NodeId| {
-        within.is_none_or(|within| {
-            let range = target.range(node);
-            within.start <= range.start && range.end <= within.end
-        })
+    // Only the nodes inside `within`, found without a walk of the whole arena, so a search at
+    // one node costs what that node holds rather than what the file does.
+    let candidates = || -> Box<dyn Iterator<Item = NodeId> + '_> {
+        match within {
+            Some(within) => Box::new(target.nodes_within(within.clone())),
+            None => Box::new(target.nodes()),
+        }
     };
     // A pattern compiler refuses a pattern with no code, or with nothing but holes, so a pattern
     // of one node is one with a shape.
     let content: Vec<NodeId> = shape.children(shape.root()).collect();
     let mut found = Vec::new();
     if let [only] = content.as_slice() {
-        for node in target.nodes().filter(|&node| inside(node)) {
+        for node in candidates() {
             matcher.next_node();
             matcher.start();
             let mut bindings = initial.clone();
@@ -197,7 +199,7 @@ fn find_in(
             }
         }
     } else {
-        for node in target.nodes().filter(|&node| inside(node)) {
+        for node in candidates() {
             matcher.next_node();
             let available = parts(target, node);
             let in_a_list =
@@ -360,7 +362,7 @@ pub enum Costly {
     /// A state of the search that depends on more than two places where it can go more than one
     /// way, each multiplying its work by the code's length ([`Pattern::costly`]): the last
     /// sequence whose stop it depends on.
-    SecondChoice(NodeId),
+    ThirdPlace(NodeId),
 }
 
 impl Pattern {
@@ -439,7 +441,7 @@ impl Pattern {
             plain: true,
         });
         if let Some(found) = plain.found {
-            return Some(Costly::SecondChoice(found));
+            return Some(Costly::ThirdPlace(found));
         }
         if !tested.is_empty() {
             let mut gathering = Cost::new(self, tested, run);
@@ -453,7 +455,7 @@ impl Pattern {
                 plain: false,
             });
             if let Some(found) = gathering.found {
-                return Some(Costly::SecondChoice(found));
+                return Some(Costly::ThirdPlace(found));
             }
         }
         None
@@ -1011,9 +1013,10 @@ struct Place {
 /// pattern of one node is tried at, each start of a run - since another start binds them to
 /// other code; those that depend on no binding are kept for the whole search.
 ///
-/// **What it costs.**  Without a choice ([`Pattern::costly`]), each pair is worked out once, so
-/// a list costs about its length times the pattern's; each choice multiplies that by the list's
-/// length, and a compiler refuses a second.
+/// **What it costs.**  Each state is worked out once, so a list costs about the number of
+/// states: its length times the pattern's, times the list's length again for each place the
+/// state depends on where the search can go more than one way ([`Pattern::costly`]).  A
+/// compiler refuses a pattern with a state that depends on a third.
 struct List<'p> {
     wanted: Vec<Part<'p>>,
     /// Whether a match must take every part, as in a node's parts, rather than stop where the
@@ -2576,7 +2579,7 @@ mod tests {
         assert_eq!(two.costly_with(&["x", "y"]), None);
         assert!(matches!(
             pattern("f($a...,$x,$b...,$y,$c...,$z,$d...)").costly_with(&["x", "y", "z"]),
-            Some(Costly::SecondChoice(_))
+            Some(Costly::ThirdPlace(_))
         ));
     }
 
@@ -2761,7 +2764,7 @@ mod remembered_against_backtracking {
     }
 
     #[test]
-    fn one_choice_that_matters_is_allowed_and_a_second_is_costly() {
+    fn two_places_that_matter_are_allowed_and_a_third_is_costly() {
         use Item::{Fixed, Sequence, Single};
         // A sequence named twice: one step decides what the second must match.
         let once = pattern(&[
@@ -2795,7 +2798,7 @@ mod remembered_against_backtracking {
             Sequence(Some(1)),
             Fixed(0),
         ]);
-        assert_eq!(twice.costly(), Some(Costly::SecondChoice(nth(&twice, 3))));
+        assert_eq!(twice.costly(), Some(Costly::ThirdPlace(nth(&twice, 3))));
         // One sequence named twice, but with a step before each use: where the run starts, and
         // where `$...` and the first `$a` stop, named at the last of them.
         let spread = pattern(&[
@@ -2807,7 +2810,7 @@ mod remembered_against_backtracking {
             Sequence(Some(0)),
             Fixed(0),
         ]);
-        assert_eq!(spread.costly(), Some(Costly::SecondChoice(nth(&spread, 3))));
+        assert_eq!(spread.costly(), Some(Costly::ThirdPlace(nth(&spread, 3))));
         // Unnamed sequences between fixed statements decide nothing.
         let free = pattern(&[Fixed(0), Sequence(None), Fixed(1), Sequence(None), Fixed(2)]);
         assert_eq!(free.costly(), None);
@@ -3064,7 +3067,7 @@ mod remembered_against_backtracking {
                 Fixed(0),
             ])
             .costly(),
-            Some(Costly::SecondChoice(_))
+            Some(Costly::ThirdPlace(_))
         ));
         // Sequences standing together inside a node decide nothing and cost nothing more.
         let together = nested_pattern(&[Sequence(None), Sequence(None), Single(None)], true);
@@ -3219,8 +3222,8 @@ mod trees {
     use crate::{Builder, Hole, Kind, Language, TokenText};
     use proptest::prelude::*;
 
-    /// A tree written as an s-expression: `(K a b)` a node of kind `K` over its children, a word
-    /// a leaf compared by its text, `;` a token, `$x`, `$_`, `$x...` and `$...` holes, and `[ ... ]`
+    /// A tree written as an s-expression: `(K a b)` a node of kind `K` over its children, a word a
+    /// leaf compared by its text, `;` a token, `$x`, `$_`, `$x...` and `$...` holes, and `[ ... ]`
     /// a marked list among the enclosing node's children.
     #[derive(Debug, Clone)]
     enum Tree {
@@ -3444,7 +3447,7 @@ mod trees {
         // binds them, here as many as the triples of its three stops.
         assert!(matches!(
             pattern("(f (g $a... $v $c... $w $e... $u $k...) (h $v $w $u))").costly(),
-            Some(Costly::SecondChoice(_))
+            Some(Costly::ThirdPlace(_))
         ));
         // Stops in one list multiply as ever: two in a node, which starts where it stands, are
         // the square, and three the cube.
@@ -3454,7 +3457,7 @@ mod trees {
         );
         assert!(matches!(
             pattern("(f w $a... x $b... y $c... z $a... $b... $c...)").costly(),
-            Some(Costly::SecondChoice(_))
+            Some(Costly::ThirdPlace(_))
         ));
     }
 
@@ -3711,6 +3714,25 @@ mod trees {
         assert!(!matches_at(&compiled, &built, g, true, &[]));
     }
 
+    /// A `where` whose pattern shares a name is matched at each bound node, once per binding,
+    /// so each answer must cost what that node holds rather than what the file does: over a
+    /// file four times as long, the same nodes are looked at.
+    #[test]
+    fn matching_at_a_node_looks_only_inside_it() {
+        let compiled = super::trees::pattern("(g $x)");
+        let examined = |n: usize| {
+            let (built, _) = build(&format!("[{}]", vec!["(g a)"; n].join(" ")));
+            let first = built.children(built.root()).next().expect("a call");
+            let a = built.children(first).next().expect("its argument");
+            crate::EXAMINED.with(|examined| examined.set(0));
+            assert!(matches_at(&compiled, &built, first, false, &[("x", a)]));
+            crate::EXAMINED.with(std::cell::Cell::get)
+        };
+        let (small, large) = (examined(16), examined(64));
+        assert!(small > 0, "nothing was looked at");
+        assert_eq!(small, large);
+    }
+
     /// A nested node's match is not final: where a name it bound fails later, it is asked for
     /// its next way.  Here `f`'s `$a` must take `1, 2`, though `1` alone lets `f` itself match.
     #[test]
@@ -3908,15 +3930,15 @@ mod trees {
         assert!(large < 6 * small, "{small} then {large}");
     }
 
-    /// A sequence after another in a node's list is moved by both their stops, so it binds as
-    /// many ways as the square of the list's length, and using it again after the node is a
-    /// second choice: refused, as searching it costs the cube, eight times the work over twice
-    /// the code where no way matches.  With no sequence after it, it ends where the node does,
-    /// and only one stop moves it.
+    /// A sequence after another in a node's list is moved by both their stops, so it binds as many
+    /// ways as the square of the list's length, and using it again after the node makes a third
+    /// place the search depends on: refused, as searching it costs the cube, eight times the work
+    /// over twice the code where no way matches.  With no sequence after it, it ends where the node
+    /// does, and only one stop moves it.
     #[test]
     fn a_sequence_after_another_is_moved_by_both_their_stops() {
         let both = pattern("(D (g $... $q... $...) $... $q... x y)");
-        assert!(matches!(both.costly(), Some(Costly::SecondChoice(_))));
+        assert!(matches!(both.costly(), Some(Costly::ThirdPlace(_))));
         let work = |n: usize| {
             let target = format!(
                 "(D (g {}) {})",
@@ -4301,8 +4323,8 @@ mod trees {
                     Some(Costly::Together(hole)) => {
                         format!("together at {} {}", hole.0, compiled.arena().source(hole))
                     }
-                    Some(Costly::SecondChoice(hole)) => {
-                        format!("second at {} {}", hole.0, compiled.arena().source(hole))
+                    Some(Costly::ThirdPlace(hole)) => {
+                        format!("third at {} {}", hole.0, compiled.arena().source(hole))
                     }
                 };
                 let work = work_over(&compiled, &built, tested);

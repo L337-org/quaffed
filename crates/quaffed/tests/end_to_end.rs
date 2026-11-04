@@ -523,11 +523,24 @@ fn where_file_leaves_files_out_by_the_same_path_rules_as_in() {
         "-e",
         r#"find "TODO" in "src" where not FILE matches **".txt" and not FILE matches "src/sub""#
     ]));
-    // FILE is the path as printed: from a subdirectory, a file above is `../`.
+    // A glob's leading directory is a directory on disk: from a subdirectory, `../` is the
+    // parent, and the subdirectory is under it as `in ".."` has it.
     assert_quaff_snapshot!(project.quaff_in(
         "src",
         &["-e", r#"find "TODO" in ":/" where FILE matches "../"**"#]
     ));
+    let all = |script: &str| {
+        let output = project
+            .quaff_in("src", &["-e", script])
+            .output()
+            .expect("running quaff");
+        assert_eq!(output.status.code(), Some(0), "{script}: {output:?}");
+        output.stdout
+    };
+    assert_eq!(
+        all(r#"find "TODO" in "../"**"#),
+        all(r#"find "TODO" in "..""#)
+    );
     project.assert_unchanged();
 }
 
@@ -689,6 +702,57 @@ fn an_absolute_glob_through_a_symbolic_link_finds_what_the_link_leads_to() {
         String::from_utf8_lossy(&output.stdout),
         "src/app.py:1:10-1:13: TODO\n"
     );
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_glob_through_a_symbolic_link_finds_what_the_link_leads_to_however_it_starts() {
+    let mut project = Project::new(SCOPED);
+    std::os::unix::fs::symlink("src", project.dir.join("alias")).expect("linking");
+    project.before = snapshot_files(&project.dir);
+    let every = "src/app.py:1:10-1:13: TODO\nsrc/notes.txt:1:1-1:4: TODO\n\
+                 src/sub/deep.py:1:10-1:13: TODO\n";
+    // As a glob, from the current directory or the root, as `in "alias"` does without one.
+    for script in [
+        r#"find "TODO" in "alias""#,
+        r#"find "TODO" in "alias/"**"#,
+        r#"find "TODO" in ":/alias/"**"#,
+        r#"find "TODO" where FILE matches "alias/"**"#,
+    ] {
+        let output = project
+            .quaff(&["-e", script])
+            .output()
+            .expect("running quaff");
+        assert_eq!(output.status.code(), Some(0), "{script}: {output:?}");
+        assert_eq!(String::from_utf8_lossy(&output.stdout), every, "{script}");
+    }
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_dot_before_a_wildcard_is_part_of_a_name() {
+    let mut project = Project::new(SCOPED);
+    project.add_bytes(".hidden.py", b"# TODO\n");
+    project.add_bytes("top.py", b"# TODO\n");
+    let all = project
+        .quaff(&["TODO", "."])
+        .output()
+        .expect("running quaff");
+    let output = project
+        .quaff(&["-e", r#"find "TODO" where not FILE matches "."*"#])
+        .output()
+        .expect("running quaff");
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let kept = String::from_utf8_lossy(&output.stdout);
+    let every = String::from_utf8_lossy(&all.stdout);
+    // Only the file whose name starts with a dot is left out, not every file at the top.
+    assert!(every.contains(".hidden.py"), "{every}");
+    assert!(kept.contains("top.py"), "{kept}");
+    let others: Vec<&str> = every
+        .lines()
+        .filter(|line| !line.starts_with(".hidden.py"))
+        .collect();
+    assert_eq!(kept.lines().collect::<Vec<_>>(), others);
     project.assert_unchanged();
 }
 

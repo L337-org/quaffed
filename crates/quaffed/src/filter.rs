@@ -5,11 +5,12 @@
 //! file's path, and its tests of metavariables by what the match bound them to.
 //!
 //! With a quoted glob, a bound string literal is compared by its raw content - what lies between
-//! its delimiters, as written - and any other node by its source text.  With a backticked
-//! pattern, `matches` is the pattern matching the bound node itself, and `contains` the pattern
-//! matching it or anything inside it; a name the pattern shares with the statement's must match
-//! the same code the statement's match bound it to, as a name used twice in one pattern must.  The matcher offers every way a match binds the names
-//! tested, and the match is kept if any of them passes the whole `where`.
+//! its delimiters, as written - and any other node by its source text.  With a backticked pattern,
+//! `matches` is the pattern matching the bound node itself, and `contains` the pattern matching it
+//! or anything inside it; a name the pattern shares with the statement's must match the same code
+//! the statement's match bound it to, as a name used twice in one pattern must.  The matcher offers
+//! every way a match binds the names tested, and the match is kept if any of them passes the whole
+//! `where`.
 
 use std::cell::RefCell;
 use std::collections::HashMap;

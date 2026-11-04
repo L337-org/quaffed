@@ -7,13 +7,14 @@
 //! The command-line scope, `in` and `FILE` follow one set of path rules
 //! (`docs/language.md`, _Paths and globs_):
 //!
-//! - **A path is relative to the current directory**, as the output prints it, so `..` is an
-//!   ordinary segment to a glob.  A path that begins with `:/` starts at the project root
-//!   instead, or the current directory with no project, and an absolute path is where it says.
+//! - **A path is relative to the current directory**, as the output prints it.  A path that
+//!   begins with `:/` starts at the project root instead, or the current directory with no
+//!   project, and an absolute path is where it says.
 //! - **A path with no wildcard names a file or a directory**, and a directory everything under
 //!   it, by where it is on disk, so `in "src"` is the same as the scope `src` on the command line.
 //! - **A glob** is matched against the whole path, `*`, `?` and a class within one directory
-//!   name and `**` across them.
+//!   name and `**` across them.  Its leading directory names a directory on disk as a path with
+//!   no wildcard does, so `"../"**` from `src/` takes in `src/` as `in ".."` does.
 
 use std::fs;
 use std::io;
@@ -122,10 +123,10 @@ impl PathGlob {
         } else {
             from(glob)
         };
-        let glob = if from == From::Absolute {
-            canonical_leading_directory(&glob)
+        let (from, glob) = if anywhere || glob.as_literal().is_some() {
+            (from, glob)
         } else {
-            glob
+            on_disk(glob, from, roots)
         };
         let test = match glob.as_literal() {
             Some(path) if !anywhere => Test::Named(named(path, from, roots)?),
@@ -173,19 +174,24 @@ pub enum Names<'a> {
     Glob,
 }
 
-/// `glob`, an absolute one, with its leading directory written as it is on disk, through any
-/// symbolic link in it, since that is how discovery finds the files it is matched against: so
-/// `"/var/www/"**` finds the files of `/srv/www` where `/var/www` links to it.  A directory that
-/// is not there is left as written.
-fn canonical_leading_directory(glob: &Glob) -> Glob {
+/// `glob`, which starts from `from`, with its leading directory - its leading text up to its last
+/// `/` - written as where that directory is on disk, absolute, so that the glob is matched against
+/// where each file is.  So a glob names the same directory a path with no wildcard does: from
+/// `src/`, `"../"**` is every file under the parent, `src/` included, as `in ".."` is; and where
+/// `alias` links to `src`, `"alias/"**` is the files of `src`, which discovery reaches through the
+/// link.  A glob with no leading directory, or one that is not there, is left to be matched
+/// against the path as printed.
+fn on_disk(glob: Glob, from: From, roots: Roots) -> (From, Glob) {
     let Some(GlobPart::Literal(text)) = glob.parts().first() else {
-        return glob.clone();
+        return (from, glob);
     };
     let Some(slash) = text.rfind('/') else {
-        return glob.clone();
+        return (from, glob);
     };
-    let Ok(canonical) = fs::canonicalize(&text[..=slash]) else {
-        return glob.clone();
+    // One that cannot be looked up is left too: `in` reports it, through `base`, and a `FILE`
+    // test matches nothing through it either way.
+    let Ok(Some(canonical)) = named(&text[..=slash], from, roots) else {
+        return (from, glob);
     };
     let mut rewritten = Glob::default();
     let mut directory = absolute(&canonical);
@@ -196,7 +202,7 @@ fn canonical_leading_directory(glob: &Glob) -> Glob {
     for part in &glob.parts()[1..] {
         rewritten.push(part.clone());
     }
-    rewritten
+    (From::Absolute, rewritten)
 }
 
 /// An absolute path as a glob sees it, with `/` between its segments.
@@ -231,7 +237,9 @@ fn from(glob: &Glob) -> (From, Glob) {
                 while let Some(after) = text.strip_prefix("./") {
                     text = after.trim_start_matches('/');
                 }
-                if text == "." {
+                // `.` alone is the current directory, but before a wildcard it is a name's
+                // first character, as in `"."*`.
+                if text == "." && glob.parts().len() == 1 {
                     text = "";
                 }
                 rest.push_literal(text.to_owned());
@@ -436,6 +444,11 @@ mod tests {
         let (start, rest) = from(&Glob::literal("./:/x"));
         assert_eq!((start, rest), (From::Cwd, Glob::literal(":/x")));
         assert_eq!(from(&Glob::literal(".")).1, Glob::default());
+        // Before a wildcard, a dot is part of a name.
+        for wildcard in [GlobPart::Star, GlobPart::DoubleStar] {
+            let dotted = literal_then(".", wildcard);
+            assert_eq!(from(&dotted), (From::Cwd, dotted.clone()));
+        }
         // Only the first piece is looked at.
         let mut later = Glob::default();
         later.push(GlobPart::Star);

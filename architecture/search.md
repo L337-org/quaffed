@@ -47,14 +47,14 @@ What a user sees is in `docs/language.md`, _What is searched_.  How it is built:
      costs nothing; a walker that filters what it has listed reads every name first.  A test
      counts the directories listed.
 4. **Ignore files rank as the `ignore` crate's walker ranks them**, and a repository's own stop at
-   its root and apply only within a repository, as git's do.  So with no project the walk is
-   still given git's ignore files (`workspace::ignore_files_outside`), and a repository it enters
-   keeps its own rules, as a submodule does inside a project; a file in one takes its declared
-   encoding from it too (`Projects::of_file`).  Which files are listed is held to git's own answer by a test replaying what
-   `scripts/generate-ignore-cases` recorded; to pin a behaviour, add a case there and run it
-   again.
-5. **The walk starts at the boundary and narrows to the base as it goes down**, so the ignore
-   files between them still apply.  A scope naming an ignored file or directory is searched, crossing
+   its root and apply only within a repository, as git's do.  So with no project the walk is still
+   given git's ignore files (`workspace::ignore_files_outside`), and a repository it enters keeps
+   its own rules, as a submodule does inside a project; a file in one takes its declared encoding
+   from it too (`Projects::of_file`).  Which files are listed is held to git's own answer by a test
+   replaying what `scripts/generate-ignore-cases` recorded; to pin a behaviour, add a case there and
+   run it again.
+5. **The walk starts at the boundary and narrows to the base as it goes down**, so the ignore files
+   between them still apply.  A scope naming an ignored file or directory is searched, crossing
    only the boundaries on the way to it; every rule beneath it still applies.
 6. **Every file is read once, through `src/contents.rs`**, whatever reads it: an ignore file,
    `.gitattributes`, `.editorconfig` or a `-f` script may also be in the scope and searched.
@@ -78,8 +78,10 @@ rules a user sees are `docs/language.md`'s _Paths and globs_.
   the part of its `where` a path alone can decide.  A file no pattern looks at is not read.
 - **A path is matched as printed**, relative to the current directory with `/` between its
   segments, relative to the root for a glob that begins `:/`, and as the absolute path for one
-  that is absolute, its leading directory written as it is on disk, since discovery walks the
-  real directory.  `contains` reads none of those prefixes: it is text anywhere in the path as
+  that is absolute.  A glob's leading directory, where it is there, is the exception: it is
+  resolved on disk and the glob matched as an absolute one (`scope::on_disk`), so it names the
+  directory a path with no wildcard would - `"../"**` from `src/` takes in `src/` as `in ".."`
+  does - and follows a symbolic link as discovery does.  `contains` reads none of those prefixes: it is text anywhere in the path as
   printed.  A glob is compiled to a regular expression (`src/glob.rs`), with `regex-automata`,
   so a match takes time linear in the path however the glob is written.  `*`, `?` and a
   class are kept within a segment - for a path a directory name, for a string a line - and `**`
@@ -93,20 +95,23 @@ rules a user sees are `docs/language.md`'s _Paths and globs_.
   `in` behave alike.
 - **A test of a metavariable is decided per match** (`src/filter.rs`): `find_where` in
   `quaffed-syntax` offers every way a match binds the tested names, and the match is kept if any
-  way passes the whole `where`.  A quoted glob compares a string literal's content or other
-  code's text; a backticked pattern is compiled before any file is read, searched for once per
-  file, and matches the bound node when it has the node's range, or is inside it for `contains`.
-  A pattern that shares a name with the statement's is instead matched at the bound node with
-  that name bound in advance (`quaffed_syntax::matches_at`), once per binding, remembered, and
-  the shared name is tested too, so the cost check counts it.  Each tested name counts as one more use of it, read once the
-  match is complete, so `Pattern::costly_with` bounds the search as it bounds a name used twice,
+  way passes the whole `where`.  A quoted glob compares a string literal's content or other code's
+  text; a backticked pattern is compiled before any file is read, searched for once per file, and
+  matches the bound node when it has the node's range, or is inside it for `contains`.  A pattern
+  that shares a name with the statement's is instead matched at the bound node with that name bound
+  in advance (`quaffed_syntax::matches_at`), once per binding, remembered, and the shared name is
+  tested too, so the cost check counts it.  Each tested name counts as one more use of it, read once
+  the match is complete, so `Pattern::costly_with` bounds the search as it bounds a name used twice,
   and a pattern that with its `where` would be too costly is refused before any file is read.
 - **The command-line scope narrows every statement**: a statement's `in` still names its own
   base, and fails the run if that is not there; the deeper of the two is walked, and a
   statement whose `in` and scope share nothing looks at nothing.  So an `in` finds the same
-  files whether or not a scope holding it is given, and a note says the scope narrowed it.
+  files whether or not a scope holding it is given.  A note says so only where the scope
+  changes what the statement looks at: where it is deeper than the `in`, or shares nothing
+  with it.
 - **A path is only computed where something reads it**: a run with no `in` and no `where`
-  works out no file's path as a glob would see it.
+  works out no file's path as a glob would see it, and a structural search works it out for a
+  file only where one of its patterns has a `where`.
 - **What names nothing is said**: an `in` whose path or leading directory is not there fails the
   run, exit 7, as a missing scope does, and a `FILE matches` path that is not there is noted.
   Either gives the marker spelling of a path that reads as a glob (`scope::as_markers`).

@@ -13,4 +13,4 @@ exit_code: 1
 
 ----- stderr -----
 quaff: no matches for "TODO"
-quaff: -e expression 1, at character 16: the scope "tests" given on the command line narrows this statement's `in`
+quaff: -e expression 1, at character 16: the scope "tests" given on the command line shares nothing with this statement's `in`, so it looks at nothing
