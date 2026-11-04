@@ -1,0 +1,14 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc dc6dd8fc8d7111e5849f767e1f15f70b0f59bd25ce4522b10787045bb846d89e # shrinks to items = ["$p...", "$q...", "(g $... $p... (g (g $a)))"], run = false
+cc 311dfb02ca13ef9f1daa693fd4c28a437e1e2b74af36a03ed1149bd4732de2b3 # shrinks to items = ["x", "$p...", "(g $... $q...)", "(g $... $p... (g $q...))"], run = true
+cc 7357b2749183f0d20ccd377efcb091ed1b34005c647a76db4839ed92bb5b74af # shrinks to items = ["$a", "$p...", "x", "$q...", "x", "(g $p...)"], run = true
+cc 3940f989df1ac964c2cdea83990f7efc27b04abfa9786f6ac729ced8937d9536 # shrinks to pattern = ["(g $q... $...)", "$...", "$a", "(g (g $q... x))"], target = ["x"], length = 1
+cc 52ae96d98cdbe3d68ac3b93f8e24337bd6d173f73f23d2c49d2dc2b0c718d0db # shrinks to items = ["(g (g $p... $q... $...))", "$q..."], run = false
+cc ef1d0bafe300017eee00581759724133b122d43a2a094ca28975d7466a9288e1 # shrinks to items = ["$q...", "$p...", "$...", "(g $p... $a)"], run = false
+cc 66b6e73dcd54e5c3b81f18b27e7cc3aef142773b0fb7fbe94fe50fc174a30b94 # shrinks to items = ["$p...", "x", "$...", "$q...", "(g (g (g $p...)) $q...)"], run = false
+cc d9ed20a14d61922b33451fd7a55e7aa9601262bee922b06aea669b94e399f47c # shrinks to items = ["(g (g $... $b $q...))", "$p...", "$...", "x", "$b"], run = false

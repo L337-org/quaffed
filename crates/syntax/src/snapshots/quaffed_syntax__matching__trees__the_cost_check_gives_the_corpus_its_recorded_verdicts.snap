@@ -1,0 +1,1229 @@
+---
+source: crates/syntax/src/matching.rs
+expression: out
+---
+$_ $_ y $q... $b | alone: ok 38 110 35 107 | b: ok 127 835 35 107
+$_ $q... x (g $_ y y) | alone: ok 61 205 22 70
+$_ (g $p... $...) | alone: ok 22 70
+$_ (g (g $_ $_)) $p... $p... (g x (g $a) (g $b)) | alone: together at 7 $p... 70 214 45 141 | a: together at 7 $p... 116 332 45 141 | b: together at 7 $p... 116 332 45 141 | a b: together at 7 $p... 116 332 45 141
+$_ (g x x) | alone: ok 8 8 6 6
+$_ (g x) | alone: ok 7 7 5 5
+$_ (g y) x | alone: ok 10 10 9 9
+$_ x | alone: ok 5 5 4 4
+$_ x $a y x | alone: ok 17 17 15 15 | a: ok 28 28 15 15
+$_ x (g y x $... y) y $_ y | alone: ok 23 23 22 22
+$_ x x x y | alone: ok 17 17 16 16
+$_ x y x | alone: ok 12 12 10 10
+$_ y $a x x (g $q... y $a (g $q... x)) | alone: ok 50 122 50 122 | a: ok 63 135 50 122
+$_ y y | alone: ok 9 9 7 7
+$a $_ (g y (g y) x x) (g (g y) (g x x x x) y) (g (g $a x)) | alone: ok 44 44 41 41 | a: ok 80 80 41 41
+$a $b (g $... (g $q... y $a)) ; x x | alone: ok 28 28 27 27 | a: ok 40 40 27 27 | b: ok 40 40 27 27 | a b: ok 40 40 27 27
+$a $b x $p... ; $a | alone: ok 92 332 81 321 | a: ok 261 1773 198 1614 | b: ok 261 1773 198 1614 | a b: ok 261 1773 198 1614
+$a $q... y y | alone: ok 25 73 22 70 | a: ok 65 209 22 70
+$a (g (g y $b) $b) $q... $_ | alone: ok 33 81 24 72 | a: ok 86 254 24 72 | b: ok 86 254 24 72 | a b: ok 86 254 24 72
+$a x | alone: ok 5 5 4 4 | a: ok 10 10 4 4
+$a x $b x | alone: ok 14 14 12 12 | a: ok 23 23 12 12 | b: ok 23 23 12 12 | a b: ok 23 23 12 12
+$a x $q... $b y | alone: ok 37 109 34 106 | a: ok 100 340 34 106 | b: ok 100 340 34 106 | a b: ok 100 340 34 106
+$a x ; x y | alone: ok 12 12 11 11 | a: ok 22 22 11 11
+$a x x | alone: ok 9 9 7 7 | a: ok 16 16 7 7
+$a x y x x (g y x ; x) | alone: ok 24 24 22 22 | a: ok 42 42 22 22
+$a y | alone: ok 5 5 4 4 | a: ok 10 10 4 4
+$a y $a y x | alone: ok 20 20 18 18 | a: ok 33 33 18 18
+$a y $q... (g x) x (g x y $b (g y)) | alone: ok 49 97 27 75 | a: ok 90 186 27 75 | b: ok 90 186 27 75 | a b: ok 90 186 27 75
+$a y (g (g $... x) x x) | alone: ok 29 77 27 75 | a: ok 40 88 27 75
+$a y x | alone: ok 8 8 7 7 | a: ok 15 15 7 7
+$a y x (g $q... y y) y x | alone: ok 23 23 21 21 | a: ok 36 36 21 21
+$a y y x | alone: ok 12 12 11 11 | a: ok 21 21 11 11
+$b $a y (g $p... y) | alone: ok 16 16 13 13 | a: ok 25 25 13 13 | b: ok 25 25 13 13 | a b: ok 25 25 13 13
+$b $p... $q... y y | alone: together at 3 $q... 59 203 38 134 | b: together at 3 $q... 174 654 38 134
+$b $q... $q... (g (g x)) y | alone: together at 3 $q... 176 1820 38 134 | b: together at 3 $q... 312 3108 38 134
+$b $q... y y ; x | alone: ok 29 77 24 72 | b: ok 73 217 24 72
+$b (g $_ $q...) $q... x x | alone: ok 56 176 55 175 | b: ok 98 290 55 175
+$b (g $p... $p... x) $... x | alone: ok 50 170 50 170 | b: ok 95 335 91 331
+$b (g x $...) $q... (g x x $b $a) | alone: ok 55 127 39 111 | a: second at 5 $q... 86 206 39 111 | b: ok 86 206 39 111 | a b: second at 5 $q... 86 206 39 111
+$b (g x (g $p... x) $q...) $p... $... $q... (g x $p... $p... $q...) | alone: together at 9 $... 308 1100 244 868 | b: together at 9 $... 433 1537 244 868
+$b (g y y $q...) $b (g $q...) $b | alone: ok 51 123 13 13 | b: ok 66 138 13 13
+$b (g y) | alone: ok 7 7 5 5 | b: ok 14 14 5 5
+$b ; $q... y (g $_ y (g $p... $b)) | alone: ok 83 275 23 71 | b: ok 113 353 23 71
+$b ; y | alone: ok 6 6 5 5 | b: ok 12 12 5 5
+$b x | alone: ok 5 5 4 4 | b: ok 10 10 4 4
+$b x y (g y $...) x | alone: ok 25 49 23 47 | b: ok 36 60 23 47
+$b y | alone: ok 5 5 4 4 | b: ok 10 10 4 4
+(D $... $... $... $a y $...) | alone: ok 14 38 1 1 | a: ok 219 867 1 1
+(D $... $... $b (g $q...)) | alone: ok 14 38 | b: ok 83 299
+(D $... $... x x x x) | alone: ok 77 317 91 379
+(D $... $...) | alone: ok 17 65
+(D $... $_ $... x) | alone: ok 33 129 31 127
+(D $... $_ (g $b x x y) ; x) | alone: ok 16 16 1 1 | b: ok 49 97 1 1
+(D $... $_) | alone: ok 17 65
+(D $... $a x ; (g $_ ; y)) | alone: ok 14 14 1 1 | a: ok 53 125 1 1
+(D $... $b y y x) | alone: ok 6 6 1 1 | b: ok 39 87 1 1
+(D $... $p... $... $a) | alone: ok 47 191 | a: ok 207 855
+(D $... $p... $p... y y) | alone: ok 63 243 1 1
+(D $... $p...) | alone: ok 17 65
+(D $... $q... $...) | alone: ok 25 97
+(D $... $q... $a) | alone: ok 32 128 | a: ok 97 385
+(D $... $q... y (g x $p... $...) (g $_ y (g $b $... ; $q...)) (g y)) | alone: ok 241 2101 1 1 | b: ok 858 9078 1 1
+(D $... (g $... x $_) $p... (g (g x x) y (g $_ $... x $p...)) $p...) | alone: ok 169 577 84 300
+(D $... (g $a) ; y (g (g x)) $q...) | alone: ok 26 50 1 1 | a: ok 79 199 1 1
+(D $... (g $a)) | alone: ok 7 7 | a: ok 22 46
+(D $... (g $b ; (g y $... x) (g $... $...)) y ; $p...) | alone: ok 58 178 1 1 | b: ok 97 313 1 1
+(D $... (g $p... $a (g $... x $a) y) x x $... x) | alone: ok 83 299 81 297 | a: ok 160 544 104 368
+(D $... (g $p... ; $a x) $b ; $_) | alone: ok 11 11 2 2 | a: ok 43 91 14 38 | b: ok 31 55 2 2 | a b: ok 43 91 14 38
+(D $... (g $p...) y (g $_ (g x x) x y)) | alone: ok 30 54 1 1
+(D $... (g (g y) x $b) $_) | alone: ok 16 16 1 1 | b: ok 38 62 1 1
+(D $... (g x $... (g $_)) y y $q...) | alone: ok 21 45 1 1
+(D $... (g x y x $q...) (g x) y $q...) | alone: ok 42 114 1 1
+(D $... (g x) x $a) | alone: ok 9 9 1 1 | a: ok 30 54 1 1
+(D $... (g x) x) | alone: ok 8 8 1 1
+(D $... (g y $... $_) (g x)) | alone: ok 26 74 1 1
+(D $... (g y $p... (g $a $_) $...) y) | alone: ok 22 46 1 1 | a: ok 62 182 1 1
+(D $... (g y $p...) $...) | alone: ok 21 69 2 2
+(D $... (g y (g y x) (g $_) x) y ; $...) | alone: ok 33 57 1 1
+(D $... (g y) x (g $q... $b)) | alone: ok 26 74 1 1 | b: ok 51 123 1 1
+(D $... (g y) y) | alone: ok 8 8 1 1
+(D $... ; $q... (g x y x) x (g $p... $_ x $p...)) | alone: ok 48 144 61 217
+(D $... ; $q...) | alone: ok 11 35
+(D $... ; (g (g x y) $_) (g $q... y (g y ; x) $b) y) | alone: ok 31 31 1 1 | b: ok 67 115 1 1
+(D $... ; ; $...) | alone: ok 12 36
+(D $... ; x) | alone: ok 4 4 1 1
+(D $... x (g y $... (g x) $a)) | alone: ok 13 13 3 3 | a: ok 47 119 14 38
+(D $... x ; $...) | alone: ok 12 36 1 1
+(D $... x ; (g y (g x x $a x) $...)) | alone: ok 21 45 7 7 | a: ok 48 120 7 7
+(D $... x x x) | alone: ok 33 129 29 125
+(D $... x y x) | alone: ok 5 5 1 1
+(D $... x) | alone: ok 17 65 15 63
+(D $... y $... $a $a $...) | alone: ok 25 73 1 1 | a: ok 347 2891 1 1
+(D $... y $... ; $b) | alone: ok 6 6 1 1 | b: ok 48 144 1 1
+(D $... y (g $... x y) x) | alone: ok 9 9 1 1
+(D $... y (g $...) ; y) | alone: ok 15 39 1 1
+(D $... y (g x x $_) (g y y x $...) x) | alone: ok 26 50 1 1
+(D $... y (g y x $b x) $a (g x (g x $...) $q... $p...) $b) | alone: ok 50 122 9 9 | a: ok 82 178 9 9 | b: ok 82 178 9 9 | a b: ok 82 178 9 9
+(D $... y x $_) | alone: ok 5 5 1 1
+(D $... y x) | alone: ok 4 4 1 1
+(D $... y y $_ $p...) | alone: ok 13 37 1 1
+(D $... y y y (g $q... $q...)) | alone: ok 23 71 1 1
+(D $... y y) | alone: ok 4 4 1 1
+(D $... y) | alone: ok 3 3 1 1
+(D $...) | alone: ok 9 33
+(D $_ $... $...) | alone: ok 18 66
+(D $_ $_ (g (g $b $q... $_ x) x (g x $_)) y $q...) | alone: ok 65 185 47 119 | b: ok 118 310 47 119
+(D $_ $_ y $q... $b) | alone: ok 20 68 3 3 | b: ok 46 142 3 3
+(D $_ $_) | alone: ok 3 3
+(D $_ $p...) | alone: ok 10 34
+(D $_ $q... x (g $_ y y)) | alone: ok 13 13 2 2
+(D $_ $q...) | alone: ok 10 34
+(D $_ (g $p... $...)) | alone: ok 20 68
+(D $_ (g (g $_ $_)) $p... $p... (g x (g $a) (g $b))) | alone: ok 33 81 8 8 | a: ok 79 199 8 8 | b: ok 79 199 8 8 | a b: ok 79 199 8 8
+(D $_ (g (g x y x) y y) y ; $q...) | alone: ok 21 45 11 11
+(D $_ (g x x)) | alone: ok 6 6 4 4
+(D $_ (g x)) | alone: ok 5 5 3 3
+(D $_ (g y x x (g x $p... x $b)) y (g x y (g $... $q... $...) $...) $q...) | alone: ok 1493 23129 37 109 | b: ok 1787 27707 48 120
+(D $_ (g y) x) | alone: ok 6 6 5 5
+(D $_ x $a y x) | alone: ok 6 6 5 5 | a: ok 17 17 5 5
+(D $_ x $q...) | alone: ok 11 35 2 2
+(D $_ x (g y x $... y) y $_ y) | alone: ok 12 12 11 11
+(D $_ x x x y) | alone: ok 6 6 5 5
+(D $_ x y x) | alone: ok 5 5 4 4
+(D $_ x) | alone: ok 3 3 2 2
+(D $_ y $a x x (g $q... y $a (g $q... x))) | alone: ok 40 112 40 112 | a: ok 53 125 40 112
+(D $_ y y $q...) | alone: ok 12 36 3 3
+(D $_ y y) | alone: ok 4 4 3 3
+(D $_) | alone: ok 2 2
+(D $a $_ (g y (g y) x x) (g (g y) (g x x x x) y) (g (g $a x))) | alone: ok 31 31 28 28 | a: ok 67 67 28 28
+(D $a $b (g $... (g $q... y $a)) ; x x) | alone: ok 18 18 17 17 | a: ok 30 30 17 17 | b: ok 30 30 17 17 | a b: ok 30 30 17 17
+(D $a $b x $p... ; $a) | alone: ok 11 11 3 3 | a: ok 33 57 3 3 | b: ok 33 57 3 3 | a b: ok 33 57 3 3
+(D $a $b) | alone: ok 3 3 | a: ok 8 8 | b: ok 8 8 | a b: ok 8 8
+(D $a $q... ; x $...) | alone: ok 13 37 2 2 | a: ok 53 173 2 2
+(D $a $q... y y) | alone: ok 5 5 2 2 | a: ok 24 48 2 2
+(D $a (g (g y $b) $b) $q... $_) | alone: ok 27 75 4 4 | a: ok 59 155 4 4 | b: ok 59 155 4 4 | a b: ok 59 155 4 4
+(D $a (g y) x (g (g y $p...) $p...) $...) | alone: ok 46 142 8 8 | a: ok 66 186 8 8
+(D $a x $b x) | alone: ok 5 5 4 4 | a: ok 14 14 4 4 | b: ok 14 14 4 4 | a b: ok 14 14 4 4
+(D $a x $q... $b y) | alone: ok 6 6 3 3 | a: ok 34 82 3 3 | b: ok 34 82 3 3 | a b: ok 34 82 3 3
+(D $a x ; x y) | alone: ok 6 6 5 5 | a: ok 16 16 5 5
+(D $a x x) | alone: ok 4 4 3 3 | a: ok 11 11 3 3
+(D $a x y x x (g y x ; x)) | alone: ok 12 12 10 10 | a: ok 30 30 10 10
+(D $a x) | alone: ok 3 3 2 2 | a: ok 8 8 2 2
+(D $a y $a y x) | alone: ok 8 8 7 7 | a: ok 21 21 7 7
+(D $a y $p...) | alone: ok 11 35 2 2 | a: ok 25 73 2 2
+(D $a y $q... (g x) x (g x y $b (g y))) | alone: ok 25 25 3 3 | a: ok 59 83 3 3 | b: ok 59 83 3 3 | a b: ok 59 83 3 3
+(D $a y (g (g $... x) x x)) | alone: ok 25 73 23 71 | a: ok 36 84 23 71
+(D $a y x (g $q... y y) y x) | alone: ok 11 11 10 10 | a: ok 24 24 10 10
+(D $a y x) | alone: ok 4 4 3 3 | a: ok 11 11 3 3
+(D $a y y x) | alone: ok 5 5 4 4 | a: ok 14 14 4 4
+(D $a y) | alone: ok 3 3 2 2 | a: ok 8 8 2 2
+(D $a) | alone: ok 2 2 | a: ok 5 5
+(D $b $...) | alone: ok 10 34 | b: ok 22 70
+(D $b $_) | alone: ok 3 3 | b: ok 8 8
+(D $b $a y (g $p... y)) | alone: ok 8 8 5 5 | a: ok 17 17 5 5 | b: ok 17 17 5 5 | a b: ok 17 17 5 5
+(D $b $p... $q... y y) | alone: ok 6 6 2 2 | b: ok 63 207 2 2
+(D $b $q... $q... (g (g x)) y) | alone: ok 24 72 2 2 | b: ok 62 182 2 2
+(D $b $q... $q... x y $p...) | alone: ok 35 131 2 2 | b: ok 100 364 2 2
+(D $b $q... y y ; x) | alone: ok 7 7 2 2 | b: ok 30 54 2 2
+(D $b (g $_ $q...) $q... x x) | alone: ok 34 106 33 105 | b: ok 76 220 33 105
+(D $b (g $p... $...) x x $b $q...) | alone: ok 33 105 21 69 | b: ok 55 151 21 69
+(D $b (g $p... $p... x) $... x) | alone: ok 44 164 42 162 | b: ok 68 236 42 162
+(D $b (g x $...) $q... (g x x $b $a)) | alone: ok 29 53 13 37 | a: ok 53 101 13 37 | b: ok 53 101 13 37 | a b: ok 53 101 13 37
+(D $b (g x (g $p... x) $q...) $p... $... $q... (g x $p... $p... $q...)) | alone: ok 254 902 191 671 | b: ok 372 1308 191 671
+(D $b (g y y $q...) $b (g $q...) $b) | alone: ok 42 114 4 4 | b: ok 57 129 4 4
+(D $b (g y)) | alone: ok 5 5 3 3 | b: ok 12 12 3 3
+(D $b ; $p...) | alone: ok 11 35 | b: ok 24 72
+(D $b ; $q... y (g $_ y (g $p... $b))) | alone: ok 63 207 3 3 | b: ok 86 254 3 3
+(D $b ; y) | alone: ok 4 4 3 3 | b: ok 10 10 3 3
+(D $b x (g x $p... (g y) x) y $q...) | alone: ok 22 46 13 13 | b: ok 40 88 13 13
+(D $b x y (g y $...) x) | alone: ok 16 40 15 39 | b: ok 27 51 15 39
+(D $b x) | alone: ok 3 3 2 2 | b: ok 8 8 2 2
+(D $b y $_ $p...) | alone: ok 12 36 2 2 | b: ok 28 76 2 2
+(D $b y $a $a $q...) | alone: ok 15 39 2 2 | a: ok 35 83 2 2 | b: ok 35 83 2 2 | a b: ok 35 83 2 2
+(D $b y (g x y (g y ; x) $_) $q... $q...) | alone: ok 29 77 9 9 | b: ok 70 190 9 9
+(D $b y) | alone: ok 3 3 2 2 | b: ok 8 8 2 2
+(D $b) | alone: ok 2 2 | b: ok 5 5
+(D $p... $... $...) | alone: ok 25 97
+(D $p... $... x $_ y) | alone: ok 6 6 1 1
+(D $p... $... y y) | alone: ok 5 5 1 1
+(D $p... $...) | alone: ok 17 65
+(D $p... $_ $b $p... $q... x) | alone: ok 49 193 133 529 | b: ok 230 914 133 529
+(D $p... $_ (g $... y y) y) | alone: ok 9 9 1 1
+(D $p... $_ ; y) | alone: ok 5 5 1 1
+(D $p... $a $_ x x) | alone: ok 41 161 36 156 | a: ok 97 337 36 156
+(D $p... $a ; ; (g $q... y) y) | alone: ok 10 10 1 1 | a: ok 39 87 1 1
+(D $p... $a y (g x $q... (g y x x $_)) (g y) y) | alone: ok 25 25 1 1 | a: ok 64 112 1 1
+(D $p... $b x) | alone: ok 25 97 22 94 | b: ok 56 200 22 94
+(D $p... $b y $_) | alone: ok 5 5 1 1 | b: ok 33 81 1 1
+(D $p... $b) | alone: ok 17 65 | b: ok 37 133
+(D $p... $p... $... y) | alone: ok 5 5 1 1
+(D $p... $p...) | alone: ok 17 65
+(D $p... $q... $q... x) | alone: ok 83 335 366 4938
+(D $p... $q... (g y ; (g $... x $p...) x)) | alone: ok 120 408 1 1
+(D $p... $q... x (g y (g x) $a $p...) $b) | alone: ok 114 402 65 257 | a: ok 501 4989 65 257 | b: ok 498 4986 65 257 | a b: ok 501 4989 65 257
+(D $p... $q...) | alone: ok 17 65
+(D $p... (g $_)) | alone: ok 7 7
+(D $p... (g $p... y x)) | alone: ok 30 102 11 35
+(D $p... (g $q... (g x) $b y)) | alone: ok 12 12 2 2 | b: ok 37 85 17 41
+(D $p... (g (g x)) $...) | alone: ok 19 43 1 1
+(D $p... (g x x (g $...)) ; $p...) | alone: ok 25 73 1 1
+(D $p... (g x) y x (g y $_) $_) | alone: ok 17 17 1 1
+(D $p... (g x)) | alone: ok 7 7 1 1
+(D $p... (g y $...) y) | alone: ok 14 38 1 1
+(D $p... (g y (g $p...)) y $... $...) | alone: ok 48 168 1 1
+(D $p... (g y y (g $a x $p... y)) y x y $a) | alone: ok 47 119 1 1 | a: ok 74 170 1 1
+(D $p... ; $... $q... $_) | alone: ok 34 130
+(D $p... ; $b $_ y) | alone: ok 6 6 1 1 | b: ok 26 50 1 1
+(D $p... ; $q... ; (g y $p... ; (g y $q... y $...))) | alone: ok 69 237 52 172
+(D $p... ; (g $b x)) | alone: ok 10 10 1 1 | b: ok 27 51 1 1
+(D $p... ; ; x $_ x) | alone: ok 7 7 1 1
+(D $p... ; x (g $... y ; (g $p... $...)) ; (g $q... y)) | alone: ok 48 144 49 145
+(D $p... ; x) | alone: ok 4 4 1 1
+(D $p... x $_) | alone: ok 25 97 22 94
+(D $p... x $p...) | alone: ok 25 97 36 144
+(D $p... x $q... y) | alone: ok 5 5 1 1
+(D $p... x (g $p... $p... (g $q...)) y) | alone: ok 113 401 1 1
+(D $p... x x (g $b x (g y $b) x) $...) | alone: ok 33 57 1 1 | b: ok 116 332 1 1
+(D $p... x x (g y (g y x x) x x) y) | alone: ok 24 24 1 1
+(D $p... x x x x $p...) | alone: ok 49 193 84 336
+(D $p... y (g x) (g y y) $... y) | alone: ok 17 17 15 15
+(D $p... y (g x)) | alone: ok 8 8 1 1
+(D $p... y (g y x) y x) | alone: ok 12 12 1 1
+(D $p... y ; x $q...) | alone: ok 13 37 1 1
+(D $p... y x $b ; y) | alone: ok 7 7 1 1 | b: ok 30 54 1 1
+(D $p... y x (g $a) (g (g $q... $p...) ; x y) $b) | alone: ok 106 346 1 1 | a: ok 138 402 1 1 | b: ok 138 402 1 1 | a b: ok 138 402 1 1
+(D $p... y x (g (g x) $a $... x)) | alone: ok 26 74 20 68 | a: ok 50 122 22 70
+(D $p... y) | alone: ok 3 3 1 1
+(D $p...) | alone: ok 9 33
+(D $q... $... $_ (g $b y y (g $q... y x $b)) $q...) | alone: ok 129 417 102 414 | b: ok 828 10116 102 414
+(D $q... $...) | alone: ok 17 65
+(D $q... $_ $_ ; y) | alone: ok 6 6 1 1
+(D $q... $_ y $p...) | alone: ok 12 36 1 1
+(D $q... $a x y (g x) $...) | alone: ok 18 42 1 1 | a: ok 99 315 1 1
+(D $q... $a y) | alone: ok 4 4 1 1 | a: ok 28 76 1 1
+(D $q... $a) | alone: ok 17 65 | a: ok 37 133
+(D $q... $b $...) | alone: ok 18 66 | b: ok 98 386
+(D $q... $p... $a y x x) | alone: ok 7 7 1 1 | a: ok 84 276 1 1
+(D $q... $p... (g (g $q...) y) $b $q...) | alone: ok 91 307 1 1 | b: ok 481 5293 1 1
+(D $q... $p... ; $q...) | alone: ok 33 129
+(D $q... $p...) | alone: ok 17 65
+(D $q... $q... (g (g $p... $b $_) y (g y $p... y) (g $...)) $q... x) | alone: ok 85 277 102 342 | b: ok 130 418 106 346
+(D $q... $q... x $p... $...) | alone: ok 34 130 34 130
+(D $q... $q... x y y) | alone: ok 27 99 1 1
+(D $q... $q... y $q...) | alone: ok 19 67 1 1
+(D $q... $q...) | alone: ok 17 65
+(D $q... (g $... $a ; $...)) | alone: ok 15 39 | a: ok 68 236
+(D $q... (g $... $p... $b x) x) | alone: ok 51 195 1 1 | b: ok 103 367 1 1
+(D $q... (g $... $q...)) | alone: ok 86 326
+(D $q... (g $... y)) | alone: ok 6 6 2 2
+(D $q... (g $...)) | alone: ok 12 36
+(D $q... (g $_ (g $a) x) (g y x) y x) | alone: ok 24 24 1 1 | a: ok 57 81 1 1
+(D $q... (g $p... (g x) (g $p...) x) $... y $_) | alone: ok 38 110 1 1
+(D $q... (g $q... (g x))) | alone: ok 31 103 11 35
+(D $q... (g (g y $_) ; y $p...) (g $p... ; $...) $q... x) | alone: ok 58 178 69 213
+(D $q... (g (g y $p... y $...) x) x) | alone: ok 22 46 1 1
+(D $q... (g (g y x $q...) (g $q... $a x) x) $q... $a y) | alone: ok 64 184 1 1 | a: ok 94 262 1 1
+(D $q... (g x y y $b)) | alone: ok 13 13 1 1 | b: ok 31 55 1 1
+(D $q... (g x y)) | alone: ok 9 9 1 1
+(D $q... (g x) (g x (g x x) (g x x $p... $_))) | alone: ok 41 89 11 11
+(D $q... (g y $... (g x y))) | alone: ok 13 13 3 3
+(D $q... (g y) y $b) | alone: ok 9 9 1 1 | b: ok 30 54 1 1
+(D $q... ; $q...) | alone: ok 11 35
+(D $q... ; (g (g x) ; y x) x $q...) | alone: ok 20 44 1 1
+(D $q... ; (g (g y) (g y $b x) (g y y x)) y y y) | alone: ok 35 35 1 1 | b: ok 72 96 1 1
+(D $q... ; y $...) | alone: ok 12 36 1 1
+(D $q... ; y x (g x)) | alone: ok 10 10 1 1
+(D $q... x $... $p... x y) | alone: ok 7 7 1 1
+(D $q... x $... x) | alone: ok 33 129 31 127
+(D $q... x $p...) | alone: ok 18 66 18 66
+(D $q... x (g x (g y)) (g y) x) | alone: ok 20 20 1 1
+(D $q... x (g x x ; (g $q...)) $p...) | alone: ok 49 169 1 1
+(D $q... x (g x y $p...) y) | alone: ok 16 40 1 1
+(D $q... x x $b $q... y) | alone: ok 42 162 1 1 | b: ok 129 465 1 1
+(D $q... x y x x x) | alone: ok 7 7 1 1
+(D $q... y $a (g $p... x $_)) | alone: ok 30 102 23 95 | a: ok 49 145 23 95
+(D $q... y $p... x x) | alone: ok 27 99 24 96
+(D $q... y (g $p... y) ; $b) | alone: ok 9 9 2 2 | b: ok 29 53 2 2
+(D $q... y x $b $... (g $p... $... (g y))) | alone: ok 15 15 6 6 | b: ok 62 158 6 6
+(D $q... y x $q... y) | alone: ok 13 37 22 70
+(D $q... y x x) | alone: ok 5 5 1 1
+(D $q... y x) | alone: ok 4 4 1 1
+(D $q... y y $... (g (g x)) (g (g x x y))) | alone: ok 27 27 1 1
+(D $q... y y ; y $a) | alone: ok 7 7 1 1 | a: ok 31 55 1 1
+(D $q... y y x) | alone: ok 5 5 1 1
+(D $q... y y y x) | alone: ok 6 6 1 1
+(D $q... y y) | alone: ok 4 4 1 1
+(D $q... y) | alone: ok 3 3 1 1
+(D $q...) | alone: ok 9 33
+(D (g $... $...)) | alone: ok 19 67
+(D (g $... $b $q... y) y) | alone: ok 8 8 7 7 | b: ok 106 394 100 388
+(D (g $... $p... $_) y $_ y) | alone: ok 37 133 36 132
+(D (g $... $q... y) x x y) | alone: ok 9 9 8 8
+(D (g $... $q...) $... x) | alone: ok 35 131 33 129
+(D (g $... (g x $... y) x) y $q... $_) | alone: ok 27 75 10 10
+(D (g $... (g x y $p... y) x) $... ; $p... $b y) | alone: ok 56 152 35 83 | b: ok 139 403 35 83
+(D (g $... ; $a $a) y x ; (g $... x (g $... x $q...))) | alone: ok 37 85 37 85 | a: ok 57 129 57 129
+(D (g $... x y (g y $q...)) $... x) | alone: ok 33 105 31 103
+(D (g $... y $a $q...)) | alone: ok 14 38 2 2 | a: ok 45 141 20 68
+(D (g $... y y y) x y) | alone: ok 9 9 8 8
+(D (g $... y y) $p...) | alone: ok 14 38 2 2
+(D (g $... y) $... y $p... y) | alone: ok 9 9 7 7
+(D (g $... y) x x x x x) | alone: ok 10 10 9 9
+(D (g $...) x y $p... (g y)) | alone: ok 19 43 13 37
+(D (g $...)) | alone: ok 11 35
+(D (g $_ $a) y $... y (g x) y) | alone: ok 14 14 6 6 | a: ok 43 67 6 6
+(D (g $_ $p... (g $_)) (g (g $q... x) $q... x y)) | alone: ok 52 148 32 80
+(D (g $_ $p... y) x (g x $... y) $p...) | alone: ok 40 112 20 44
+(D (g $_ (g y y x)) y) | alone: ok 10 10 9 9
+(D (g $_ x x) x x) | alone: ok 8 8 7 7
+(D (g $_) $q... y (g x) y) | alone: ok 12 12 4 4
+(D (g $_) ; y y) | alone: ok 7 7 6 6
+(D (g $_)) | alone: ok 4 4
+(D (g $a $p...)) | alone: ok 12 36 | a: ok 17 41
+(D (g $a (g x $_ $q... $a) ; (g $q... x $b)) (g $p... $q...)) | alone: ok 132 444 63 207 | a: ok 137 449 63 207 | b: ok 139 451 63 207 | a b: ok 139 451 63 207
+(D (g $a y (g $q... x)) y $_) | alone: ok 25 73 23 71 | a: ok 35 83 26 74
+(D (g $a y) y x) | alone: ok 7 7 6 6 | a: ok 17 17 6 6
+(D (g $b $... ; (g $_)) x $a y $b) | alone: ok 26 50 22 46 | a: ok 39 63 22 46 | b: ok 39 63 22 46 | a b: ok 39 63 22 46
+(D (g $b $...) x (g $...)) | alone: ok 23 71 12 36 | b: ok 32 80 14 38
+(D (g $b $q... x) y) | alone: ok 21 69 20 68 | b: ok 30 78 24 72
+(D (g $b $q... y) (g $... $p...)) | alone: ok 24 72 3 3 | b: ok 40 112 12 36
+(D (g $b (g $p... $p... $...) y $...)) | alone: ok 39 135 29 101 | b: ok 46 142 29 101
+(D (g $b (g x x $...)) y x) | alone: ok 18 42 17 41 | b: ok 27 51 19 43
+(D (g $b (g x x $q...) x) x x x) | alone: ok 20 44 19 43 | b: ok 32 56 22 46
+(D (g $b (g x)) (g (g $q...) x) $_ $q... x) | alone: ok 42 114 41 113 | b: ok 93 237 41 113
+(D (g $b ; y) x x y x x) | alone: ok 11 11 10 10 | b: ok 28 28 10 10
+(D (g $b y y (g y ; y)) y ; y y (g y (g y y y y) $_)) | alone: ok 25 25 21 21 | b: ok 55 55 21 21
+(D (g $b) $q...) | alone: ok 12 36 | b: ok 26 74
+(D (g $b) (g $p... y x $p...) ; (g (g $b x) (g x)) x) | alone: ok 30 54 29 53 | b: ok 52 76 29 53
+(D (g $p... $... $q... $a) ; x $a) | alone: ok 167 671 163 667 | a: ok 177 681 163 667
+(D (g $p... $... (g $...)) $a) | alone: ok 16 40 | a: ok 21 45
+(D (g $p... $...) y x y y) | alone: ok 23 71 22 70
+(D (g $p... $a (g x x $...)) $a) | alone: ok 40 112 23 71 | a: ok 47 119 23 71
+(D (g $p... $b $...)) | alone: ok 20 68 | b: ok 99 387
+(D (g $p... $q... x x) $p... y x $...) | alone: ok 169 625 99 387
+(D (g $p... x (g y) x) (g (g $q...) $q...) ; x y) | alone: ok 44 116 43 115
+(D (g $p... x x (g y x $p...)) x ; ; (g (g $a) $q...) (g x)) | alone: ok 67 211 65 209 | a: ok 82 226 67 211
+(D (g $p... x y $p...) $q... y) | alone: ok 23 71 21 69
+(D (g $p... x y) (g x) $_) | alone: ok 10 10 7 7
+(D (g $p... x) y x $q... (g $a $b) y) | alone: ok 30 78 21 69 | a: ok 55 127 21 69 | b: ok 55 127 21 69 | a b: ok 55 127 21 69
+(D (g $p... x)) | alone: ok 19 67 16 64
+(D (g $p... y $...) y (g (g y) $p... (g y))) | alone: ok 65 209 44 140
+(D (g $p... y (g x $q... $a)) ; $... ; $q...) | alone: ok 60 180 14 38 | a: ok 135 423 14 38
+(D (g $p... y)) | alone: ok 5 5 2 2
+(D (g $p...) $p... y $p... x) | alone: ok 69 237 68 236
+(D (g $p...) (g (g y x) $... $q...) $q... (g $...)) | alone: ok 127 487 14 38
+(D (g $p...) x $b ; $a x) | alone: ok 16 40 15 39 | a: ok 28 52 15 39 | b: ok 28 52 15 39 | a b: ok 28 52 15 39
+(D (g $p...) y y x x x) | alone: ok 16 40 15 39
+(D (g $p...)) | alone: ok 11 35
+(D (g $q... $...) ; y ; y) | alone: ok 23 71 22 70
+(D (g $q... $b) $a $... (g (g $p... $... x) (g x x y $b))) | alone: ok 77 221 23 71 | a: ok 104 272 23 71 | b: ok 104 272 23 71 | a b: ok 104 272 23 71
+(D (g $q... $p...)) | alone: ok 19 67
+(D (g $q... $q... x y) x) | alone: ok 29 101 28 100
+(D (g $q... $q... x) y y $p... $b) | alone: ok 45 165 28 100 | b: ok 71 239 28 100
+(D (g $q... (g y y $...) $...) y y) | alone: ok 26 74 25 73
+(D (g $q... ; $...) (g y ; x $p...)) | alone: ok 26 74 16 40
+(D (g $q... x)) | alone: ok 19 67 16 64
+(D (g $q... y y y) x $p... $... x $...) | alone: ok 33 105 33 105
+(D (g $q...) $a x) | alone: ok 13 37 12 36 | a: ok 20 44 12 36
+(D (g $q...) y $... y) | alone: ok 14 38 12 36
+(D (g $q...) y x y) | alone: ok 14 38 13 37
+(D (g (g $... $... x) $a x $q...) x $p... x y) | alone: ok 50 170 47 167 | a: ok 81 249 51 171
+(D (g (g $... $a)) $a) | alone: ok 28 76 | a: ok 35 83
+(D (g (g $... $p... x y) x x x)) | alone: ok 12 12 10 10
+(D (g (g $... $q... y y))) | alone: ok 9 9 3 3
+(D (g (g $... $q...) $...) $...) | alone: ok 37 133
+(D (g (g $... x $p...)) y y x) | alone: ok 25 73 24 72
+(D (g (g $... x)) $b x x) | alone: ok 24 72 23 71 | b: ok 35 83 23 71
+(D (g (g $...) ; y x) y) | alone: ok 17 41 16 40
+(D (g (g $_ y y)) (g x) x) | alone: ok 12 12 11 11
+(D (g (g $_ y)) (g $b (g $b $...) $q...) $b x (g y $b) y) | alone: ok 45 93 44 92 | b: ok 70 118 44 92
+(D (g (g $a $_) y ; $...) $p... (g (g x $a x)) $q...) | alone: ok 46 94 20 44 | a: ok 93 237 20 44
+(D (g (g $b x x) $...) ; y (g x) x) | alone: ok 22 46 21 45 | b: ok 36 60 23 47
+(D (g (g $p... $... y) (g x) y) $... (g $a x) (g (g x y x y))) | alone: ok 35 35 12 12 | a: ok 71 95 12 12
+(D (g (g $p... $b) $q... $b) y x $_) | alone: ok 75 267 73 265 | b: ok 72 216 61 205
+(D (g (g $p... $p... x $...))) | alone: ok 30 102 30 102
+(D (g (g $p... y $... y) x y)) | alone: ok 11 11 9 9
+(D (g (g $p... y y) $... y)) | alone: ok 10 10 7 7
+(D (g (g $p...) x (g $b) x) (g y y)) | alone: ok 22 46 20 44 | b: ok 34 58 24 48
+(D (g (g $q... y)) (g y y $...)) | alone: ok 19 43 9 9
+(D (g (g $q...)) (g (g y y x) $p...) $q... y) | alone: ok 48 144 30 78
+(D (g (g x $...) x (g $p...) $_) $q...) | alone: ok 34 106 13 37
+(D (g (g x $a)) ; $... ; (g y $...)) | alone: ok 21 45 9 9 | a: ok 43 91 9 9
+(D (g (g x $p... $p...) x) $p...) | alone: ok 52 172 31 103
+(D (g (g x $p... x) y ; x) ; y $...) | alone: ok 35 107 26 74
+(D (g (g x $p...) $p... x) y x y) | alone: ok 37 109 36 108
+(D (g (g x x ; y)) y (g x) $q...) | alone: ok 21 45 11 11
+(D (g (g x x))) | alone: ok 7 7 4 4
+(D (g (g x y x y) $p...) y $... y x (g y)) | alone: ok 26 50 18 42
+(D (g (g x y) $q... y $q...) (g $... (g $_) (g x x) y)) | alone: ok 33 57 18 42
+(D (g (g x y) x y) (g y x (g y)) $...) | alone: ok 24 48 13 13
+(D (g (g x y)) $a $... y x $q...) | alone: ok 19 43 8 8 | a: ok 68 188 8 8
+(D (g (g x) $b) (g $q... (g x) (g x) (g y)) x ; x) | alone: ok 28 28 27 27 | b: ok 43 43 27 27
+(D (g (g x) $b) x) | alone: ok 8 8 7 7 | b: ok 18 18 7 7
+(D (g (g x) (g y $q...) $p...)) | alone: ok 25 73 6 6
+(D (g (g x) x (g y $... $...) y) $... y) | alone: ok 29 77 27 75
+(D (g (g x)) $... y) | alone: ok 8 8 6 6
+(D (g (g y $a ; x)) $_ $q... x y) | alone: ok 13 13 10 10 | a: ok 47 95 10 10
+(D (g (g y $q...)) (g $... x) ; $p... $p...) | alone: ok 49 169 29 101
+(D (g (g y $q...)) ; $q... (g $... y y)) | alone: ok 40 112 36 108
+(D (g (g y $q...)) x (g $a) $... $p...) | alone: ok 34 106 14 38 | a: ok 92 308 14 38
+(D (g (g y x $...) ; (g y)) $... y) | alone: ok 21 45 19 43
+(D (g (g y x) $q... $a) $a x) | alone: ok 31 79 30 78 | a: ok 40 88 30 78
+(D (g (g y x) y $p... x) ; y y ; y) | alone: ok 29 77 28 76
+(D (g (g y y $b) y $...) (g $... y) (g x)) | alone: ok 24 48 22 46 | b: ok 36 60 25 49
+(D (g (g y) (g x y x $b)) y x) | alone: ok 14 14 13 13 | b: ok 31 31 13 13
+(D (g (g y) (g y x) $p... $...) (g x ; y) (g y x (g x) y) y $...) | alone: ok 48 120 39 87
+(D (g (g y)) x (g (g y $p... $q...))) | alone: ok 28 76 9 9
+(D (g x $a x) y (g x x) (g y $q... $q... $...)) | alone: ok 38 110 12 12 | a: ok 54 126 12 12
+(D (g x $b) $p... x $... $q...) | alone: ok 30 102 30 102 | b: ok 217 865 215 863
+(D (g x $p... $b y) x x) | alone: ok 9 9 8 8 | b: ok 37 85 29 77
+(D (g x $p...) $... $q... x) | alone: ok 43 163 57 225
+(D (g x $q... $...) ; $q... $q... $p...) | alone: ok 155 587 2 2
+(D (g x $q... $b) (g y) (g $a) $_ x x) | alone: ok 29 77 28 76 | a: ok 46 94 28 76 | b: ok 50 98 32 80 | a b: ok 50 98 32 80
+(D (g x $q...) $... y y) | alone: ok 15 39 12 36
+(D (g x (g $... $... $b y) ; (g x)) x) | alone: ok 15 15 14 14 | b: ok 87 279 81 273
+(D (g x (g $... x $p...)) x) | alone: ok 24 72 23 71
+(D (g x (g $_) $q...) x y) | alone: ok 17 41 16 40
+(D (g x (g $a ; x y))) | alone: ok 10 10 7 7 | a: ok 21 21 7 7
+(D (g x (g $q... x y y) $_) (g $p... y $_ y) $_ y) | alone: ok 19 19 18 18
+(D (g x (g x $_ $... y) ; $p...)) | alone: ok 19 43 6 6
+(D (g x (g x ; x)) y $q... ; y) | alone: ok 13 13 10 10
+(D (g x (g x ; x)) y (g x) x) | alone: ok 14 14 13 13
+(D (g x (g x x y) x) $p... x) | alone: ok 26 74 24 72
+(D (g x (g x y)) x ; (g $...) y $...) | alone: ok 29 77 20 44
+(D (g x (g y $p... $p...)) x $b) | alone: ok 25 73 23 71 | b: ok 35 83 23 71
+(D (g x ; y) ; x $p... $...) | alone: ok 24 72 7 7
+(D (g x x $...)) | alone: ok 13 37 3 3
+(D (g x x $q...) (g x)) | alone: ok 16 40 14 38
+(D (g x x (g $... y $_)) x x) | alone: ok 12 12 11 11
+(D (g x x (g $p...)) y y) | alone: ok 17 41 16 40
+(D (g x x (g $q...) y) x $_ x) | alone: ok 19 43 18 42
+(D (g x x (g x)) (g $b $p... x y) $... $a) | alone: ok 30 78 10 10 | a: ok 60 156 10 10 | b: ok 80 224 28 76 | a b: ok 80 224 28 76
+(D (g x x x)) | alone: ok 6 6 4 4
+(D (g x x y) x) | alone: ok 7 7 6 6
+(D (g x x) x y y) | alone: ok 8 8 7 7
+(D (g x x) y y y x) | alone: ok 9 9 8 8
+(D (g x y $b (g y y)) ; $p... y) | alone: ok 13 13 11 11 | b: ok 37 61 11 11
+(D (g x y $b y) (g $p... x) $q... $b x) | alone: ok 81 297 74 290 | b: ok 139 475 74 290
+(D (g x y $q...) $b x x y (g (g $p...) x (g x y $b $q...) $_)) | alone: ok 58 154 34 82 | b: ok 76 172 34 82
+(D (g x y x x)) | alone: ok 7 7 5 5
+(D (g x y y y) $q... ; (g x y)) | alone: ok 16 16 7 7
+(D (g x y) $q... $p... ; $p...) | alone: ok 170 2582 3 3
+(D (g x y) (g x $... x y) $p... y $p...) | alone: ok 21 45 11 11
+(D (g x y) x) | alone: ok 6 6 5 5
+(D (g x y)) | alone: ok 5 5 3 3
+(D (g x) $...) | alone: ok 12 36 2 2
+(D (g x) $q... x y (g y (g $q... x) y y) $p...) | alone: ok 54 174 4 4
+(D (g x) (g $a $q...) $... (g (g y) (g y x $...)) x) | alone: ok 39 87 15 39 | a: ok 68 140 17 41
+(D (g x) (g $a) $... $...) | alone: ok 23 71 2 2 | a: ok 79 271 2 2
+(D (g x) x $... (g (g $q... $p...) x) y) | alone: ok 31 79 5 5
+(D (g x) x $...) | alone: ok 13 37 4 4
+(D (g x) x x $q...) | alone: ok 14 38 5 5
+(D (g x) x) | alone: ok 5 5 4 4
+(D (g x) y $...) | alone: ok 13 37 4 4
+(D (g x) y $_ (g (g x ; ; x)) $_ x) | alone: ok 16 16 15 15
+(D (g x) y $p...) | alone: ok 13 37 4 4
+(D (g x) y (g x y y)) | alone: ok 10 10 8 8
+(D (g x) y (g x y) $q...) | alone: ok 17 41 7 7
+(D (g x)) | alone: ok 4 4 2 2
+(D (g y $... y) x $b) | alone: ok 8 8 6 6 | b: ok 15 15 6 6
+(D (g y $...) $...) | alone: ok 20 68 2 2
+(D (g y $_ x)) | alone: ok 6 6 4 4
+(D (g y $a x x) $q... $a) | alone: ok 55 199 5 5 | a: ok 98 338 5 5
+(D (g y $b (g y y y)) y (g y y y $_) y) | alone: ok 18 18 17 17 | b: ok 40 40 17 17
+(D (g y $p... x (g $a)) $b (g (g x y) (g $p... x) y $...) (g y (g $p... y x)) $p... y) | alone: ok 107 323 89 257 | a: ok 198 558 89 257 | b: ok 198 558 89 257 | a b: ok 198 558 89 257
+(D (g y $p... x) (g x) x $_) | alone: ok 25 73 23 71
+(D (g y $q... $a (g x y $q...))) | alone: ok 41 137 24 72 | a: ok 51 147 24 72
+(D (g y $q...) (g x $_ y) x) | alone: ok 18 42 17 41
+(D (g y (g $...)) $q... y x) | alone: ok 17 41 14 38
+(D (g y (g $q... ; x) $... x) (g $... (g x y $q... $...)) $q...) | alone: ok 89 281 43 115
+(D (g y (g x $q...) ; $_) (g x (g y $_ y $...))) | alone: ok 33 81 22 46
+(D (g y (g x x) $...) x x) | alone: ok 18 42 17 41
+(D (g y (g x y $q...) y) ; ; $_ ; $p...) | alone: ok 29 77 15 39
+(D (g y ; y $_) $a (g x x y) x) | alone: ok 14 14 13 13 | a: ok 32 32 13 13
+(D (g y x $... y)) | alone: ok 7 7 4 4
+(D (g y x $b $q...) $q... $a x (g x y x)) | alone: ok 42 114 18 42 | a: ok 96 240 18 42 | b: ok 96 240 18 42 | a b: ok 96 240 18 42
+(D (g y x $p... $_) ; y) | alone: ok 23 71 22 70
+(D (g y x (g x $a) $p...) $... y x) | alone: ok 20 44 17 41 | a: ok 42 90 21 45
+(D (g y x (g y $a $_))) | alone: ok 10 10 5 5 | a: ok 21 21 5 5
+(D (g y x ; (g y x x)) x) | alone: ok 12 12 11 11
+(D (g y x x)) | alone: ok 6 6 4 4
+(D (g y x y (g $a ; y)) $p... $p... y) | alone: ok 28 76 11 11 | a: ok 68 188 11 11
+(D (g y x y (g x)) y (g $_ x x $...)) | alone: ok 23 47 13 13
+(D (g y x) $_ $p... x y) | alone: ok 9 9 6 6
+(D (g y x) $q...) | alone: ok 13 37 3 3
+(D (g y x) ; y (g $... y) $... $p...) | alone: ok 27 75 8 8
+(D (g y x) y y) | alone: ok 7 7 6 6
+(D (g y y $q...)) | alone: ok 13 37 3 3
+(D (g y y (g $a $q...)) (g y $q... x $...)) | alone: ok 50 146 40 112 | a: ok 55 151 40 112
+(D (g y y (g x x)) (g (g $q... y) (g x y) $b)) | alone: ok 20 20 16 16 | b: ok 35 35 16 16
+(D (g y y x $...) $q...) | alone: ok 22 70 4 4
+(D (g y y x (g $_ ; x)) x ; $_ y y) | alone: ok 16 16 15 15
+(D (g y y x x) x x (g $... y) $...) | alone: ok 21 45 10 10
+(D (g y y y y) $q...) | alone: ok 15 39 5 5
+(D (g y y y y) (g y $p... y) (g x)) | alone: ok 15 15 13 13
+(D (g y y y) (g $a $p...)) | alone: ok 17 41 4 4 | a: ok 28 52 4 4
+(D (g y y) ; y) | alone: ok 7 7 6 6
+(D (g y) $...) | alone: ok 12 36 2 2
+(D (g y) $b) | alone: ok 5 5 2 2 | b: ok 12 12 2 2
+(D (g y) $p... $q... $b y) | alone: ok 8 8 4 4 | b: ok 81 273 4 4
+(D (g y) $p...) | alone: ok 12 36 2 2
+(D (g y) $q...) | alone: ok 12 36 2 2
+(D (g y) (g $p... $b)) | alone: ok 22 70 2 2 | b: ok 32 80 2 2
+(D (g y) (g $q...)) | alone: ok 14 38 2 2
+(D (g y) (g x $p...) ; $p...) | alone: ok 35 107 5 5
+(D (g y) (g y $q... $a) $q...) | alone: ok 44 140 5 5 | a: ok 84 252 5 5
+(D (g y) ; x $... $...) | alone: ok 22 70 5 5
+(D (g y) x x (g (g x $p...))) | alone: ok 19 43 8 8
+(D (g y) x x x y $p...) | alone: ok 16 40 7 7
+(D (g y)) | alone: ok 4 4 2 2
+(D x $... $...) | alone: ok 18 66 1 1
+(D x $... $_ $... x) | alone: ok 34 130 32 128
+(D x $... $a $... (g x)) | alone: ok 10 10 2 2 | a: ok 112 400 2 2
+(D x $... $p... (g x) $...) | alone: ok 17 41 2 2
+(D x $... (g $_) $_ x) | alone: ok 10 10 2 2
+(D x $... (g $a) (g y y) x y) | alone: ok 17 17 2 2 | a: ok 48 72 2 2
+(D x $... (g $p...)) | alone: ok 13 37 1 1
+(D x $... x y $p... (g x x)) | alone: ok 13 13 2 2
+(D x $... y (g x) $p... (g x $p...)) | alone: ok 37 109 19 43
+(D x $... y y) | alone: ok 5 5 2 2
+(D x $...) | alone: ok 10 34 1 1
+(D x $_ x x $...) | alone: ok 13 37 4 4
+(D x $_ x y (g (g x x) $b) $...) | alone: ok 20 44 8 8 | b: ok 46 94 8 8
+(D x $a $b) | alone: ok 4 4 1 1 | a: ok 11 11 1 1 | b: ok 11 11 1 1 | a b: ok 11 11 1 1
+(D x $a ; $_ x $q...) | alone: ok 14 38 5 5 | a: ok 33 81 5 5
+(D x $a x x $p...) | alone: ok 13 37 4 4 | a: ok 31 79 4 4
+(D x $a y (g $p...) x (g (g y) y y)) | alone: ok 22 46 20 44 | a: ok 41 65 20 44
+(D x $a) | alone: ok 3 3 1 1 | a: ok 8 8 1 1
+(D x $b (g $a (g y) $a) $...) | alone: ok 20 44 6 6 | a: ok 44 92 6 6 | b: ok 44 92 6 6 | a b: ok 44 92 6 6
+(D x $b (g y (g y) $p... $p...)) | alone: ok 25 73 6 6 | b: ok 32 80 6 6
+(D x $b ; y ; x) | alone: ok 7 7 6 6 | b: ok 18 18 6 6
+(D x $b y $p...) | alone: ok 12 36 3 3 | b: ok 28 76 3 3
+(D x $p... $... (g $q... (g $...))) | alone: ok 17 41 1 1
+(D x $p... $... y $_) | alone: ok 6 6 2 2
+(D x $p... $... y x x) | alone: ok 7 7 2 2
+(D x $p... $p... x) | alone: ok 26 98 34 130
+(D x $p... $q... $q... y y) | alone: ok 64 244 2 2
+(D x $p... (g $a) $a x) | alone: ok 14 14 2 2 | a: ok 39 63 2 2
+(D x $p... (g (g x x) (g $p...) (g $q... $a $a)) x) | alone: ok 94 334 2 2 | a: ok 105 321 2 2
+(D x $p... (g x x (g y $p... y) $...) x) | alone: ok 44 140 2 2
+(D x $p... x $q... y) | alone: ok 6 6 2 2
+(D x $p... x y) | alone: ok 5 5 2 2
+(D x $p...) | alone: ok 10 34 1 1
+(D x $q... $...) | alone: ok 18 66 1 1
+(D x $q... $_) | alone: ok 18 66 1 1
+(D x $q... $p...) | alone: ok 18 66 1 1
+(D x $q... $q... (g (g x ; $q... $q...) (g $p...) $a x) $p...) | alone: ok 154 514 2 2 | a: ok 262 886 2 2
+(D x $q... $q... y) | alone: ok 19 67 2 2
+(D x $q... (g (g y) (g $q... $_ $...))) | alone: ok 43 139 2 2
+(D x $q... ; (g x (g $q... $q...))) | alone: ok 82 274 2 2
+(D x $q... ; x y $p...) | alone: ok 14 38 2 2
+(D x $q... x y x y) | alone: ok 7 7 2 2
+(D x $q... x y) | alone: ok 5 5 2 2
+(D x $q... y $a (g (g $p...) $b x) y) | alone: ok 24 48 2 2 | a: ok 53 101 2 2 | b: ok 48 96 2 2 | a b: ok 48 96 2 2
+(D x $q... y) | alone: ok 4 4 2 2
+(D x $q...) | alone: ok 10 34 1 1
+(D x (g $... x)) | alone: ok 20 68 17 65
+(D x (g $_ x) $_ x) | alone: ok 8 8 7 7
+(D x (g $b $p... x)) | alone: ok 21 69 18 66 | b: ok 30 78 20 68
+(D x (g $p...) $q...) | alone: ok 20 68 1 1
+(D x (g $p...) y $p...) | alone: ok 31 103 13 37
+(D x (g $q... $p... ; (g $q...)) x) | alone: ok 70 238 69 237
+(D x (g $q... (g y $p... x) y) ; $a y x) | alone: ok 29 77 28 76 | a: ok 41 89 28 76
+(D x (g $q... y y) y (g y) (g $q... $p... y) y) | alone: ok 46 118 45 117
+(D x (g (g $p...)) y) | alone: ok 15 39 14 38
+(D x (g (g x x y y))) | alone: ok 10 10 7 7
+(D x (g (g x x)) $_ $p... $...) | alone: ok 25 73 5 5
+(D x (g (g x y) $... x y)) | alone: ok 11 11 7 7
+(D x (g x $... (g $p... x $q... y)) x) | alone: ok 13 13 12 12
+(D x (g x $_ $q...) x) | alone: ok 15 39 14 38
+(D x (g x $b $p... x) x (g x (g y) $p...)) | alone: ok 51 147 31 79 | b: ok 60 156 31 79
+(D x (g x $b x (g y)) x $_ $_) | alone: ok 13 13 10 10 | b: ok 31 31 10 10
+(D x (g x (g $... y x) $q...) (g y y y) y x $...) | alone: ok 33 81 24 48
+(D x (g x (g y $p... $b) (g $a $p...) y) ; ; x $p...) | alone: ok 73 217 55 151 | a: ok 134 374 56 152 | b: ok 133 373 55 151 | a b: ok 134 374 56 152
+(D x (g x x x) $... x x) | alone: ok 31 103 28 100
+(D x (g x x) $p... $q... (g x)) | alone: ok 13 13 6 6
+(D x (g x y ; $q...) (g (g $p... x) y $a)) | alone: ok 37 109 34 106 | a: ok 47 119 34 106
+(D x (g x y ; x) (g x) (g y) (g y y x x) y) | alone: ok 21 21 20 20
+(D x (g x y) ; x y) | alone: ok 9 9 8 8
+(D x (g x)) | alone: ok 5 5 3 3
+(D x (g y $...) x $b x x) | alone: ok 17 41 16 40 | b: ok 30 54 16 40
+(D x (g y $p... x) y) | alone: ok 22 70 21 69
+(D x (g y (g $p...))) | alone: ok 15 39 3 3
+(D x (g y) (g $... $q... (g y)) x y) | alone: ok 16 16 15 15
+(D x ; $... (g (g $...))) | alone: ok 18 42 1 1
+(D x ; $... (g x)) | alone: ok 9 9 3 3
+(D x ; $... ; y) | alone: ok 6 6 3 3
+(D x ; $q... (g (g x x) (g $p... $_ $... x) y (g $_ x y x))) | alone: ok 64 160 3 3
+(D x ; $q... y $a) | alone: ok 6 6 3 3 | a: ok 25 49 3 3
+(D x ; (g $p... x) $q... x $...) | alone: ok 38 134 38 134
+(D x ; (g $q... $_ $p... $q...) y) | alone: ok 52 196 51 195
+(D x ; (g x) $p... (g y y x)) | alone: ok 16 16 6 6
+(D x ; (g x) y (g y x x)) | alone: ok 12 12 10 10
+(D x ; ; $a (g (g $b ; y $...) y)) | alone: ok 21 45 19 43 | a: ok 33 57 19 43 | b: ok 35 59 22 46 | a b: ok 35 59 22 46
+(D x ; ; y) | alone: ok 5 5 4 4
+(D x ; x $_ ; x) | alone: ok 7 7 6 6
+(D x ; x $_) | alone: ok 5 5 3 3
+(D x ; x $b) | alone: ok 5 5 3 3 | b: ok 13 13 3 3
+(D x ; y $... x) | alone: ok 20 68 18 66
+(D x ; y $b y) | alone: ok 6 6 5 5 | b: ok 16 16 5 5
+(D x ; y x) | alone: ok 5 5 4 4
+(D x ; y) | alone: ok 4 4 3 3
+(D x x $... ; $q... (g y (g y x x) $b (g y y $q... $...))) | alone: ok 51 147 24 48 | b: ok 91 259 24 48
+(D x x $... x y) | alone: ok 6 6 3 3
+(D x x $... x) | alone: ok 19 67 17 65
+(D x x $_ (g $...)) | alone: ok 14 38 2 2
+(D x x $a $q...) | alone: ok 12 36 2 2 | a: ok 28 76 2 2
+(D x x $b (g $_ $b ; (g x y $p...)) $...) | alone: ok 31 79 12 12 | b: ok 56 128 12 12
+(D x x $p... ; $b) | alone: ok 6 6 2 2 | b: ok 24 48 2 2
+(D x x $p...) | alone: ok 11 35 2 2
+(D x x (g $b (g y) $b)) | alone: ok 12 12 6 6 | b: ok 27 27 6 6
+(D x x (g (g $q... x)) y) | alone: ok 24 72 23 71
+(D x x (g x $_ x (g $_ y y))) | alone: ok 13 13 10 10
+(D x x (g x)) | alone: ok 6 6 4 4
+(D x x ; (g $... x (g $... y $b) x)) | alone: ok 14 14 5 5 | b: ok 56 128 41 113
+(D x x ; y) | alone: ok 5 5 4 4
+(D x x x $... x (g y x)) | alone: ok 13 13 4 4
+(D x x x $q...) | alone: ok 12 36 3 3
+(D x x x x ; $q...) | alone: ok 14 38 4 4
+(D x x x x) | alone: ok 5 5 4 4
+(D x x x) | alone: ok 4 4 3 3
+(D x x y $_ $q...) | alone: ok 13 37 3 3
+(D x x y $b $_) | alone: ok 6 6 3 3 | b: ok 17 17 3 3
+(D x x y (g $_ y y) x (g $_ x y y)) | alone: ok 16 16 14 14
+(D x x y ; $a (g $q... x (g $q...) $...)) | alone: ok 51 171 7 7 | a: ok 63 183 7 7
+(D x x y) | alone: ok 4 4 3 3
+(D x x) | alone: ok 3 3 2 2
+(D x y $... x x $b) | alone: ok 35 131 31 127 | b: ok 82 274 31 127
+(D x y $...) | alone: ok 11 35 2 2
+(D x y $_) | alone: ok 4 4 2 2
+(D x y $a $p... (g y $a) y) | alone: ok 17 17 4 4 | a: ok 44 68 4 4
+(D x y $a) | alone: ok 4 4 2 2 | a: ok 11 11 2 2
+(D x y $p...) | alone: ok 11 35 2 2
+(D x y $q... x) | alone: ok 19 67 17 65
+(D x y (g $q...)) | alone: ok 13 37 2 2
+(D x y (g y) y) | alone: ok 7 7 6 6
+(D x y ; $a) | alone: ok 5 5 2 2 | a: ok 13 13 2 2
+(D x y ; $p...) | alone: ok 12 36 2 2
+(D x y ; (g $q... $...) x y) | alone: ok 24 72 23 71
+(D x y ; (g x $... x (g y $p... y $p...)) y (g x (g $q...) $p...)) | alone: ok 85 253 56 152
+(D x y x $_ y) | alone: ok 6 6 5 5
+(D x y x (g (g y y ; x) $... $_) $b) | alone: ok 29 77 9 9 | b: ok 40 88 9 9
+(D x y x x $p... x) | alone: ok 21 69 19 67
+(D x y x x y x) | alone: ok 7 7 6 6
+(D x y x y $q...) | alone: ok 13 37 4 4
+(D x y x y y) | alone: ok 6 6 5 5
+(D x y x) | alone: ok 4 4 3 3
+(D x y y y) | alone: ok 5 5 4 4
+(D x y y) | alone: ok 4 4 3 3
+(D x y) | alone: ok 3 3 2 2
+(D x) | alone: ok 2 2 1 1
+(D y $... $... $b $b y) | alone: ok 11 11 2 2 | b: ok 132 468 2 2
+(D y $... $b y x (g y x y y)) | alone: ok 17 17 2 2 | b: ok 56 104 2 2
+(D y $... $b) | alone: ok 18 66 1 1 | b: ok 40 136 1 1
+(D y $... $p... y) | alone: ok 5 5 2 2
+(D y $... $p...) | alone: ok 18 66 1 1
+(D y $... $q... $p...) | alone: ok 26 98 1 1
+(D y $... $q...) | alone: ok 18 66 1 1
+(D y $... (g $... (g y)) x $p...) | alone: ok 20 44 2 2
+(D y $... ; $b $_ (g (g $p...) y)) | alone: ok 22 46 2 2 | b: ok 47 95 2 2
+(D y $... x (g y (g x x $b) y)) | alone: ok 21 21 2 2 | b: ok 54 102 2 2
+(D y $... x (g y (g y x y)) y y) | alone: ok 21 21 2 2
+(D y $... x y) | alone: ok 5 5 2 2
+(D y $... y $q...) | alone: ok 12 36 2 2
+(D y $...) | alone: ok 10 34 1 1
+(D y $_ $a x x) | alone: ok 6 6 5 5 | a: ok 17 17 5 5
+(D y $_ (g x ; x) y (g (g x) (g x y) $p... (g $q...)) x) | alone: ok 30 54 29 53
+(D y $_ x (g $a y $...)) | alone: ok 16 40 6 6 | a: ok 28 52 6 6
+(D y $_ y) | alone: ok 4 4 3 3
+(D y $_) | alone: ok 3 3 1 1
+(D y $a $b (g $_ x $q... y) (g y (g $q... x) $... y)) | alone: ok 47 119 44 116 | a: ok 58 130 44 116 | b: ok 58 130 44 116 | a b: ok 58 130 44 116
+(D y $a $p... (g $... x $_) y) | alone: ok 31 103 3 3 | a: ok 51 147 3 3
+(D y $a $p...) | alone: ok 11 35 1 1 | a: ok 25 73 1 1
+(D y $a $q... $... y) | alone: ok 6 6 3 3 | a: ok 61 205 3 3
+(D y $a (g (g $q... $p...) y)) | alone: ok 24 72 22 70 | a: ok 34 82 22 70
+(D y $a (g y $q... x) x $p... y) | alone: ok 25 73 23 71 | a: ok 46 118 23 71
+(D y $a (g y) $_) | alone: ok 7 7 4 4 | a: ok 18 18 4 4
+(D y $a (g y) $p...) | alone: ok 14 38 4 4 | a: ok 32 80 4 4
+(D y $a x $_) | alone: ok 5 5 3 3 | a: ok 14 14 3 3
+(D y $a y (g (g $_ x $p...) $... $... x) ; y) | alone: ok 51 171 50 170 | a: ok 63 183 50 170
+(D y $a y) | alone: ok 4 4 3 3 | a: ok 11 11 3 3
+(D y $a) | alone: ok 3 3 1 1 | a: ok 8 8 1 1
+(D y $b (g $_ y) ; y) | alone: ok 9 9 8 8 | b: ok 22 22 8 8
+(D y $b (g (g $q... y $...) $...) y (g y)) | alone: ok 29 77 27 75 | b: ok 42 90 27 75
+(D y $b y $a $q...) | alone: ok 13 37 3 3 | a: ok 31 79 3 3 | b: ok 31 79 3 3 | a b: ok 31 79 3 3
+(D y $b y) | alone: ok 4 4 3 3 | b: ok 11 11 3 3
+(D y $b) | alone: ok 3 3 1 1 | b: ok 8 8 1 1
+(D y $p... $... $a $p... $b) | alone: ok 91 379 1 1 | a: ok 955 12475 1 1 | b: ok 945 12429 1 1 | a b: ok 955 12475 1 1
+(D y $p... $a $...) | alone: ok 19 67 1 1 | a: ok 115 451 1 1
+(D y $p... $a $b) | alone: ok 26 98 1 1 | a: ok 59 203 1 1 | b: ok 59 203 1 1 | a b: ok 59 203 1 1
+(D y $p... $b (g $_ y)) | alone: ok 11 11 2 2 | b: ok 40 88 2 2
+(D y $p... $p... y) | alone: ok 19 67 2 2
+(D y $p... (g $a $b) $...) | alone: ok 18 42 1 1 | a: ok 60 180 1 1 | b: ok 60 180 1 1 | a b: ok 60 180 1 1
+(D y $p... (g x y)) | alone: ok 10 10 2 2
+(D y $p... (g y $b $b $_) x x (g y y $q...)) | alone: ok 32 56 11 11 | b: ok 68 116 11 11
+(D y $p... x x $p... y) | alone: ok 35 131 2 2
+(D y $p... x y (g $q... y $p...)) | alone: ok 40 136 23 71
+(D y $p... x) | alone: ok 18 66 16 64
+(D y $p... y $_ $b) | alone: ok 6 6 2 2 | b: ok 27 51 2 2
+(D y $p... y (g y) (g y $...)) | alone: ok 20 44 5 5
+(D y $p...) | alone: ok 10 34 1 1
+(D y $q... $b) | alone: ok 18 66 1 1 | b: ok 40 136 1 1
+(D y $q... $p...) | alone: ok 18 66 1 1
+(D y $q... (g $... (g $q... ; $_ $...)) (g x $q...) $q...) | alone: ok 63 207 54 174
+(D y $q... (g $b x $_ y) x $q...) | alone: ok 18 42 2 2 | b: ok 50 122 2 2
+(D y $q... (g y (g $q... $q... $_) ; (g y $p... $...))) | alone: ok 123 411 105 345
+(D y $q... (g y y) x) | alone: ok 11 11 2 2
+(D y $q... x $q... (g (g $q... y $_ x))) | alone: ok 50 170 46 166
+(D y $q...) | alone: ok 10 34 1 1
+(D y (g $... $p... $... y)) | alone: ok 8 8 3 3
+(D y (g $... $p... x y) x $b y $q...) | alone: ok 19 43 10 10 | b: ok 39 87 10 10
+(D y (g $...) y) | alone: ok 13 37 12 36
+(D y (g $_ (g x) $q... x) ; (g $_ ; $q... y)) | alone: ok 52 148 33 81
+(D y (g $_ (g x)) $... $a) | alone: ok 24 72 5 5 | a: ok 53 149 5 5
+(D y (g $_)) | alone: ok 5 5 1 1
+(D y (g $a $... $q...) x (g y)) | alone: ok 25 73 23 71 | a: ok 68 212 55 199
+(D y (g $b ; y) $p...) | alone: ok 15 39 5 5 | b: ok 33 81 5 5
+(D y (g $p... $p... y) x) | alone: ok 22 70 21 69
+(D y (g $p... (g $p... x x $...) (g $p... $q... x)) (g y) (g (g x) y y)) | alone: ok 86 278 84 276
+(D y (g $q... (g y $q... y)) x $_ y (g x $p...)) | alone: ok 47 143 37 109
+(D y (g $q... y) ; $p... y) | alone: ok 9 9 7 7
+(D y (g $q...) $... (g (g $a $a x y) $p...) x) | alone: ok 32 80 12 36 | a: ok 54 126 12 36
+(D y (g $q...) $p... (g y (g y)) y) | alone: ok 25 49 12 36
+(D y (g $q...) y $q... y (g $... y (g $p... y))) | alone: ok 40 112 34 106
+(D y (g $q...)) | alone: ok 12 36 1 1
+(D y (g (g $p... $p... x $_) x $... y) x) | alone: ok 42 138 41 137
+(D y (g (g $q... x)) (g $q... y) (g $p... x $... x) x y) | alone: ok 82 274 81 273
+(D y (g (g x y y x) $q... (g x $a y) y)) | alone: ok 21 21 9 9 | a: ok 35 59 24 48
+(D y (g (g x y y) $_ x) $p... $... (g y y)) | alone: ok 20 20 11 11
+(D y (g (g y $b x)) $p... y y $p...) | alone: ok 20 44 9 9 | b: ok 56 128 9 9
+(D y (g (g y) x x) y $... (g y y (g $b x))) | alone: ok 26 26 10 10 | b: ok 58 82 10 10
+(D y (g x $b) x $...) | alone: ok 15 39 6 6 | b: ok 34 82 6 6
+(D y (g x (g y x)) $b) | alone: ok 10 10 6 6 | b: ok 23 23 6 6
+(D y (g x x $... y) (g $a y y $...) $p... $_ $p...) | alone: ok 45 141 11 11 | a: ok 99 315 11 11
+(D y (g x x) x $_ x) | alone: ok 9 9 8 8
+(D y (g x y) (g x $q... ; $p...)) | alone: ok 19 43 7 7
+(D y (g x y) y $q... (g x) x) | alone: ok 14 14 7 7
+(D y (g x) $a x $q...) | alone: ok 15 39 6 6 | a: ok 35 83 6 6
+(D y (g x) $q...) | alone: ok 13 37 3 3
+(D y (g x) x x $a $p...) | alone: ok 16 40 6 6 | a: ok 38 86 6 6
+(D y (g x) x) | alone: ok 6 6 5 5
+(D y (g x) y $q... $q... $q...) | alone: ok 30 102 5 5
+(D y (g y $a) x) | alone: ok 7 7 6 6 | a: ok 17 17 6 6
+(D y (g y x y $a) x) | alone: ok 9 9 8 8 | a: ok 21 21 8 8
+(D y (g y) $p... $... $q... x) | alone: ok 51 195 96 384
+(D y (g y) y $a x y) | alone: ok 9 9 8 8 | a: ok 24 24 8 8
+(D y (g y)) | alone: ok 5 5 3 3
+(D y ; $p... ; y) | alone: ok 6 6 3 3
+(D y ; $q...) | alone: ok 11 35 1 1
+(D y ; (g $_ (g y $a))) | alone: ok 10 10 6 6 | a: ok 22 22 6 6
+(D y ; (g $a (g $...) $p...) $b x y) | alone: ok 27 75 26 74 | a: ok 42 90 29 77 | b: ok 39 87 26 74 | a b: ok 42 90 29 77
+(D y ; (g x (g y y $q... y) $...) (g y x $q... y) (g (g $a) x $_ x)) | alone: ok 65 161 63 159 | a: ok 82 178 63 159
+(D y ; (g x) (g $b $p... (g $p...))) | alone: ok 36 108 4 4 | b: ok 50 122 4 4
+(D y ; (g x) y) | alone: ok 7 7 6 6
+(D y ; (g y x $... y)) | alone: ok 9 9 6 6
+(D y ; (g y x $...) y $... $q...) | alone: ok 32 104 15 39
+(D y ; x $... y $p...) | alone: ok 14 38 4 4
+(D y ; x $a) | alone: ok 5 5 3 3 | a: ok 13 13 3 3
+(D y ; y (g $p...)) | alone: ok 14 38 3 3
+(D y ; y x (g y)) | alone: ok 8 8 6 6
+(D y ; y) | alone: ok 4 4 3 3
+(D y x $_ ; (g $p...)) | alone: ok 15 39 2 2
+(D y x $_) | alone: ok 4 4 2 2
+(D y x $a $p... x) | alone: ok 20 68 18 66 | a: ok 46 142 18 66
+(D y x $a (g $_ x)) | alone: ok 8 8 6 6 | a: ok 20 20 6 6
+(D y x $b x y y) | alone: ok 7 7 6 6 | b: ok 20 20 6 6
+(D y x $q... (g y ; y $_) x y) | alone: ok 17 17 3 3
+(D y x $q...) | alone: ok 11 35 2 2
+(D y x (g $...) (g $p... (g $q...) $a (g $b $p... y $...)) y) | alone: ok 64 208 63 207 | a: ok 102 294 90 282 | b: ok 105 297 93 285 | a b: ok 105 297 93 285
+(D y x (g $...) y) | alone: ok 14 38 13 37
+(D y x (g $p...) $q...) | alone: ok 21 69 2 2
+(D y x (g $q... (g x ; $a $q...) ; $...) $a x (g $b (g x) $q...)) | alone: ok 92 284 72 216 | a: ok 107 299 72 216 | b: ok 109 301 72 216 | a b: ok 109 301 72 216
+(D y x (g (g $b x)) $... y x) | alone: ok 12 12 9 9 | b: ok 39 63 9 9
+(D y x (g (g $p... $... $_) x $q... (g $...)) $... x (g y x (g y $q... $...))) | alone: ok 100 316 66 210
+(D y x (g (g y) $q...) y x x) | alone: ok 19 43 18 42
+(D y x (g x (g $q...) $b x) y) | alone: ok 19 43 18 42 | b: ok 32 56 22 46
+(D y x (g x (g y)) y $...) | alone: ok 18 42 9 9
+(D y x (g y) x y) | alone: ok 8 8 7 7
+(D y x x $a) | alone: ok 5 5 3 3 | a: ok 14 14 3 3
+(D y x x (g $q...) (g y) $_) | alone: ok 18 42 15 39
+(D y x x x) | alone: ok 5 5 4 4
+(D y x y (g x $p...) y x) | alone: ok 17 41 16 40
+(D y x y y x) | alone: ok 6 6 5 5
+(D y x y y) | alone: ok 5 5 4 4
+(D y x) | alone: ok 3 3 2 2
+(D y y $_ y) | alone: ok 5 5 4 4
+(D y y $_) | alone: ok 4 4 2 2
+(D y y $a $_ (g x x)) | alone: ok 9 9 7 7 | a: ok 23 23 7 7
+(D y y $a $q... $b) | alone: ok 20 68 2 2 | a: ok 46 142 2 2 | b: ok 46 142 2 2 | a b: ok 46 142 2 2
+(D y y $a ; y y) | alone: ok 7 7 6 6 | a: ok 19 19 6 6
+(D y y $a) | alone: ok 4 4 2 2 | a: ok 11 11 2 2
+(D y y $b (g $b y)) | alone: ok 10 10 8 8 | b: ok 24 24 8 8
+(D y y $q...) | alone: ok 11 35 2 2
+(D y y (g $... $q... $q...) (g $a) $q... $...) | alone: ok 380 4964 2 2 | a: ok 558 5670 2 2
+(D y y (g $_ $b) y $b $p...) | alone: ok 19 43 7 7 | b: ok 44 92 7 7
+(D y y (g $p...)) | alone: ok 13 37 2 2
+(D y y (g x ; (g y x $q...) x) $p...) | alone: ok 28 76 18 42
+(D y y (g y (g $...)) $p...) | alone: ok 24 72 4 4
+(D y y (g y x y (g $q... $...)) (g y x $p...)) | alone: ok 38 110 28 76
+(D y y ; x) | alone: ok 5 5 4 4
+(D y y ; y) | alone: ok 5 5 4 4
+(D y y x (g x) $b (g y y $q...)) | alone: ok 20 44 10 10 | b: ok 35 59 10 10
+(D y y x y) | alone: ok 5 5 4 4
+(D y y x) | alone: ok 4 4 3 3
+(D y y y $...) | alone: ok 12 36 3 3
+(D y y y $_) | alone: ok 5 5 3 3
+(D y y y $p...) | alone: ok 12 36 3 3
+(D y y y $q... $p...) | alone: ok 20 68 3 3
+(D y y y x $b) | alone: ok 6 6 4 4 | b: ok 17 17 4 4
+(D y y y y $a $...) | alone: ok 14 38 4 4 | a: ok 34 82 4 4
+(D y y y y x x) | alone: ok 7 7 6 6
+(D y y y y x) | alone: ok 6 6 5 5
+(D y y y) | alone: ok 4 4 3 3
+(D y y) | alone: ok 3 3 2 2
+(D y) | alone: ok 2 2 1 1
+(g $... $...) | alone: ok 17 65
+(g $... $b $q... y) y | alone: ok 9 9 8 8 | b: ok 107 395 101 389
+(g $... $p... $_) y $_ y | alone: ok 40 136 39 135
+(g $... $q... y) x x y | alone: ok 12 12 11 11
+(g $... $q...) $... x | alone: ok 30 102 30 102
+(g $... (g x $... y) x) y $q... $_ | alone: ok 23 47 20 44
+(g $... (g x y $p... y) x) $... ; $p... $b y | alone: ok 74 218 53 149 | b: second at 9 $... 164 500 53 149
+(g $... ; $a $a) y x ; (g $... x (g $... x $q...)) | alone: ok 41 89 41 89 | a: ok 71 167 71 167
+(g $... x y (g y $q...)) $... x | alone: ok 28 76 28 76
+(g $... y $a $q...) | alone: ok 12 36 1 1 | a: ok 52 172 1 1
+(g $... y y y) x y | alone: ok 11 11 10 10
+(g $... y) $... y $p... y | alone: ok 27 75 25 73
+(g $... y) x x x x x | alone: ok 15 15 14 14
+(g $...) | alone: ok 9 33
+(g $...) x y $p... (g y) | alone: ok 33 81 27 75
+(g $_ $a) y $... y (g x) y | alone: ok 28 52 20 44 | a: ok 64 136 20 44
+(g $_ $p... (g $_)) (g (g $q... x) $q... x y) | alone: ok 55 151 35 83
+(g $_ (g y y x)) y | alone: ok 11 11 10 10
+(g $_ x x) x x | alone: ok 10 10 9 9
+(g $_) | alone: ok 2 2
+(g $_) $q... y (g x) y | alone: ok 26 50 18 42
+(g $_) ; y y | alone: ok 9 9 8 8
+(g $a $p...) | alone: ok 10 34 | a: ok 22 70
+(g $a (g x $_ $q... $a) ; (g $q... x $b)) (g $p... $q...) | alone: ok 135 447 66 210 | a: ok 140 452 66 210 | b: ok 142 454 66 210 | a b: ok 142 454 66 210
+(g $a y (g $q... x)) y $_ | alone: ok 27 75 25 73 | a: ok 37 85 28 76
+(g $a y) y x | alone: ok 9 9 8 8 | a: ok 19 19 8 8
+(g $b $... ; (g $_)) x $a y $b | alone: ok 30 54 26 50 | a: ok 43 67 26 50 | b: ok 43 67 26 50 | a b: ok 43 67 26 50
+(g $b $...) x (g $...) | alone: ok 35 107 24 72 | b: ok 46 118 28 76
+(g $b $q... x) y | alone: ok 22 70 21 69 | b: ok 31 79 25 73
+(g $b $q... y) (g $... $p...) | alone: ok 27 75 6 6 | b: ok 58 178 30 102
+(g $b (g $p... $p... $...) y $...) | alone: ok 39 135 30 102 | b: ok 55 175 30 102
+(g $b (g x x $...)) y x | alone: ok 20 44 19 43 | b: ok 29 53 21 45
+(g $b (g x x $q...) x) x x x | alone: ok 23 47 22 46 | b: ok 35 59 25 49
+(g $b (g x)) (g (g $q...) x) $_ $q... x | alone: ok 55 151 54 150 | b: ok 106 274 54 150
+(g $b ; y) x x y x x | alone: ok 16 16 15 15 | b: ok 33 33 15 15
+(g $b y y (g y ; y)) y ; y y (g y (g y y y y) $_) | alone: ok 31 31 27 27 | b: ok 61 61 27 27
+(g $b) (g $p... y x $p...) ; (g (g $b x) (g x)) x | alone: ok 37 61 36 60 | b: ok 59 83 36 60
+(g $p... $... $q... $a) ; x $a | alone: ok 169 673 165 669 | a: ok 179 683 165 669
+(g $p... $... (g $...)) $a | alone: ok 17 41 | a: ok 22 46
+(g $p... $...) y x y y | alone: ok 27 75 26 74
+(g $p... $a (g x x $...)) $a | alone: ok 41 113 24 72 | a: ok 48 120 24 72
+(g $p... $b $...) | alone: ok 18 66 | b: ok 98 386
+(g $p... x (g y) x) (g (g $q...) $q...) ; x y | alone: ok 48 120 47 119
+(g $p... x x (g y x $p...)) x ; ; (g (g $a) $q...) (g x) | alone: ok 72 216 70 214 | a: ok 87 231 72 216
+(g $p... x y $p...) $q... y | alone: ok 32 104 30 102
+(g $p... x y) (g x) $_ | alone: ok 13 13 10 10
+(g $p... x) | alone: ok 17 65 15 63
+(g $p... x) y x $q... (g $a $b) y | alone: ok 47 119 37 109 | a: ok 79 199 37 109 | b: ok 79 199 37 109 | a b: ok 79 199 37 109
+(g $p... y $...) y (g (g y) $p... (g y)) | alone: ok 78 246 57 177
+(g $p... y) | alone: ok 3 3 1 1
+(g $p...) | alone: ok 9 33
+(g $p...) $p... y $p... x | alone: ok 87 303 86 302
+(g $p...) (g (g y x) $... $q...) $q... (g $...) | alone: ok 166 622 53 173
+(g $p...) x $b ; $a x | alone: ok 20 44 19 43 | a: ok 32 56 19 43 | b: ok 32 56 19 43 | a b: ok 32 56 19 43
+(g $p...) y y x x x | alone: ok 21 45 20 44
+(g $q... $...) ; y ; y | alone: ok 25 73 24 72
+(g $q... $b) $a $... (g (g $p... $... x) (g x x y $b)) | alone: ok 94 262 40 112 | a: ok 128 344 40 112 | b: ok 128 344 40 112 | a b: ok 128 344 40 112
+(g $q... $p...) | alone: ok 17 65
+(g $q... $q... x y) x | alone: ok 30 102 29 101
+(g $q... $q... x) y y $p... $b | alone: ok 42 138 39 135 | b: ok 131 863 39 135
+(g $q... (g y y $...) $...) y y | alone: ok 28 76 27 75
+(g $q... ; $...) (g y ; x $p...) | alone: ok 40 112 30 78
+(g $q... x) | alone: ok 17 65 15 63
+(g $q...) $a x | alone: ok 15 39 14 38 | a: ok 22 46 14 38
+(g $q...) y $... y | alone: ok 24 72 22 70
+(g $q...) y x y | alone: ok 17 41 16 40
+(g (g $... $... x) $a x $q...) x $p... x y | alone: ok 61 205 58 202 | a: ok 99 315 62 206
+(g (g $... $a)) $a | alone: ok 29 77 | a: ok 36 84
+(g (g $... $p... x y) x x x) | alone: ok 11 11 10 10
+(g (g $... $q... y y)) | alone: ok 8 8 3 3
+(g (g $... x $p...)) y y x | alone: ok 28 76 27 75
+(g (g $... x)) $b x x | alone: ok 27 75 26 74 | b: ok 38 86 26 74
+(g (g $...) ; y x) y | alone: ok 18 42 17 41
+(g (g $_ y y)) (g x) x | alone: ok 15 15 14 14
+(g (g $_ y)) (g $b (g $b $...) $q...) $b x (g y $b) y | alone: ok 52 100 51 99 | b: ok 77 125 51 99
+(g (g $b x x) $...) ; y (g x) x | alone: ok 26 50 25 49 | b: ok 40 64 27 51
+(g (g $p... $... y) (g x) y) $... (g $a x) (g (g x y x y)) | alone: ok 52 76 29 53 | a: ok 95 167 29 53
+(g (g $p... $b) $q... $b) y x $_ | alone: ok 78 270 76 268 | b: ok 75 219 64 208
+(g (g $p... $p... x $...)) | alone: ok 29 101 29 101
+(g (g $p... y $... y) x y) | alone: ok 10 10 9 9
+(g (g $p... y y) $... y) | alone: ok 9 9 7 7
+(g (g $p...) x (g $b) x) (g y y) | alone: ok 24 48 22 46 | b: ok 36 60 26 50
+(g (g $q... y)) (g y y $...) | alone: ok 21 45 11 11
+(g (g $q...)) (g (g y y x) $p...) $q... y | alone: ok 65 185 47 119
+(g (g x $a)) ; $... ; (g y $...) | alone: ok 31 79 19 43 | a: ok 60 156 19 43
+(g (g x $p...) $p... x) y x y | alone: ok 40 112 39 111
+(g (g x x)) | alone: ok 6 6 4 4
+(g (g x y x y) $p...) y $... y x (g y) | alone: ok 39 87 31 79
+(g (g x y) $q... y $q...) (g $... (g $_) (g x x) y) | alone: ok 35 59 20 44
+(g (g x) $b) (g $q... (g x) (g x) (g y)) x ; x | alone: ok 32 32 31 31 | b: ok 47 47 31 31
+(g (g x) $b) x | alone: ok 9 9 8 8 | b: ok 19 19 8 8
+(g (g x) (g y $q...) $p...) | alone: ok 25 73 7 7
+(g (g x) x (g y $... $...) y) $... y | alone: ok 38 110 36 108
+(g (g x)) $... y | alone: ok 17 41 15 39
+(g (g y $a ; x)) $_ $q... x y | alone: ok 24 48 21 45 | a: ok 65 161 21 45
+(g (g y $q...)) ; $q... (g $... y y) | alone: ok 50 146 46 142
+(g (g y x $...) ; (g y)) $... y | alone: ok 30 78 28 76
+(g (g y x) $q... $a) $a x | alone: ok 33 81 32 80 | a: ok 42 90 32 80
+(g (g y x) y $p... x) ; y y ; y | alone: ok 32 80 31 79
+(g (g y y $b) y $...) (g $... y) (g x) | alone: ok 28 52 26 50 | b: ok 40 64 29 53
+(g (g y) (g x y x $b)) y x | alone: ok 16 16 15 15 | b: ok 33 33 15 15
+(g (g y)) x (g (g y $p... $q...)) | alone: ok 33 81 13 13
+(g x $a x) y (g x x) (g y $q... $q... $...) | alone: ok 45 117 19 19 | a: ok 61 133 19 19
+(g x $p... $b y) x x | alone: ok 11 11 10 10 | b: ok 39 87 31 79
+(g x $p...) $... $q... x | alone: together at 5 $q... 32 104 32 104
+(g x $q... $b) (g y) (g $a) $_ x x | alone: ok 37 85 36 84 | a: ok 54 102 36 84 | b: ok 58 106 40 88 | a b: ok 58 106 40 88
+(g x $q...) $... y y | alone: ok 25 73 22 70
+(g x (g $... $... $b y) ; (g x)) x | alone: ok 16 16 15 15 | b: ok 88 280 82 274
+(g x (g $... x $p...)) x | alone: ok 25 73 24 72
+(g x (g $_) $q...) x y | alone: ok 19 43 18 42
+(g x (g $a ; x y)) | alone: ok 10 10 8 8 | a: ok 20 20 8 8
+(g x (g $q... x y y) $_) (g $p... y $_ y) $_ y | alone: ok 24 24 23 23
+(g x (g x $_ $... y) ; $p...) | alone: ok 19 43 7 7
+(g x (g x ; x)) y $q... ; y | alone: ok 23 47 20 44
+(g x (g x ; x)) y (g x) x | alone: ok 19 19 18 18
+(g x (g x x y) x) $p... x | alone: ok 21 45 21 45
+(g x (g y $p... $p...)) x $b | alone: ok 27 75 25 73 | b: ok 37 85 25 73
+(g x x $...) | alone: ok 11 35 2 2
+(g x x $q...) (g x) | alone: ok 19 43 16 40
+(g x x (g $... y $_)) x x | alone: ok 14 14 13 13
+(g x x (g $p...)) y y | alone: ok 19 43 18 42
+(g x x (g $q...) y) x $_ x | alone: ok 22 46 21 45
+(g x x (g x)) (g $b $p... x y) $... $a | alone: ok 29 53 23 47 | a: ok 115 751 23 47 | b: ok 100 292 41 113 | a b: ok 135 819 41 113
+(g x x x) | alone: ok 4 4 3 3
+(g x x y) x | alone: ok 8 8 7 7
+(g x x) x y y | alone: ok 11 11 10 10
+(g x x) y y y x | alone: ok 13 13 12 12
+(g x y $b (g y y)) ; $p... y | alone: ok 22 46 20 44 | b: ok 53 125 20 44
+(g x y $b y) (g $p... x) $q... $b x | alone: ok 45 117 45 117 | b: ok 131 419 125 413
+(g x y $q...) $b x x y (g (g $p...) x (g x y $b $q...) $_) | alone: ok 64 160 40 88 | b: ok 82 178 40 88
+(g x y x x) | alone: ok 5 5 4 4
+(g x y y y) $q... ; (g x y) | alone: ok 28 52 18 42
+(g x y) | alone: ok 3 3 2 2
+(g x y) x | alone: ok 7 7 6 6
+(g x) | alone: ok 2 2 1 1
+(g x) (g $a $q...) $... (g (g y) (g y x $...)) x | alone: ok 53 125 29 77 | a: ok 89 209 31 79
+(g x) x | alone: ok 6 6 5 5
+(g x) x $... (g (g $q... $p...) x) y | alone: ok 43 115 17 41
+(g x) y $_ (g (g x ; ; x)) $_ x | alone: ok 22 22 21 21
+(g x) y (g x y y) | alone: ok 14 14 12 12
+(g y $... y) x $b | alone: ok 10 10 8 8 | b: ok 17 17 8 8
+(g y $_ x) | alone: ok 4 4 3 3
+(g y $a x x) $q... $a | alone: ok 22 46 14 38 | a: ok 86 278 14 38
+(g y $b (g y y y)) y (g y y y $_) y | alone: ok 24 24 23 23 | b: ok 46 46 23 23
+(g y $p... x (g $a)) $b (g (g x y) (g $p... x) y $...) (g y (g $p... y x)) $p... y | alone: ok 123 363 105 297 | a: ok 214 598 105 297 | b: ok 214 598 105 297 | a b: ok 214 598 105 297
+(g y $p... x) (g x) x $_ | alone: ok 29 77 27 75
+(g y $q... $a (g x y $q...)) | alone: ok 40 136 24 72 | a: ok 66 210 24 72
+(g y $q...) (g x $_ y) x | alone: ok 21 45 20 44
+(g y (g $...)) $q... y x | alone: ok 27 75 24 72
+(g y (g x $q...) ; $_) (g x (g y $_ y $...)) | alone: ok 35 83 24 48
+(g y (g x x) $...) x x | alone: ok 20 44 19 43
+(g y ; y $_) $a (g x x y) x | alone: ok 18 18 17 17 | a: ok 36 36 17 17
+(g y x $... y) | alone: ok 5 5 3 3
+(g y x $b $q...) $q... $a x (g x y x) | alone: ok 54 150 30 78 | a: ok 108 276 30 78 | b: ok 108 276 30 78 | a b: ok 108 276 30 78
+(g y x $p... $_) ; y | alone: ok 24 72 23 71
+(g y x (g x $a) $p...) $... y x | alone: ok 30 78 27 75 | a: ok 59 155 31 79
+(g y x (g y $a $_)) | alone: ok 11 11 5 5 | a: ok 22 22 5 5
+(g y x ; (g y x x)) x | alone: ok 13 13 12 12
+(g y x x) | alone: ok 4 4 3 3
+(g y x y (g $a ; y)) $p... $p... y | alone: together at 9 $p... 45 141 28 76 | a: together at 9 $p... 85 253 28 76
+(g y x y (g x)) y (g $_ x x $...) | alone: ok 26 50 16 16
+(g y x) $_ $p... x y | alone: ok 20 44 17 41
+(g y x) y y | alone: ok 9 9 8 8
+(g y y $q...) | alone: ok 11 35 2 2
+(g y y (g $a $q...)) (g y $q... x $...) | alone: ok 53 149 43 115 | a: ok 58 154 43 115
+(g y y (g x x)) (g (g $q... y) (g x y) $b) | alone: ok 22 22 18 18 | b: ok 37 37 18 18
+(g y y x (g $_ ; x)) x ; $_ y y | alone: ok 20 20 19 19
+(g y y y y) (g y $p... y) (g x) | alone: ok 20 20 18 18
+(g y y y) (g $a $p...) | alone: ok 19 43 6 6 | a: ok 30 54 6 6
+(g y y) ; y | alone: ok 8 8 7 7
+(g y) | alone: ok 2 2 1 1
+(g y) $b | alone: ok 6 6 3 3 | b: ok 13 13 3 3
+(g y) $p... $q... $b y | alone: together at 4 $q... 26 74 22 70 | b: together at 4 $q... 129 465 22 70
+(g y) (g $p... $b) | alone: ok 24 72 4 4 | b: ok 34 82 4 4
+(g y) (g $q...) | alone: ok 16 40 4 4
+(g y) x x (g (g x $p...)) | alone: ok 23 47 12 12
+x | alone: ok 0 0 0 0
+x $... $_ $... x | alone: ok 102 390 97 385
+x $... $a $... (g x) | alone: ok 105 393 37 133 | a: ok 446 4814 37 133
+x $... (g $_) $_ x | alone: ok 45 141 22 70
+x $... (g $a) (g y y) x y | alone: ok 73 241 23 71 | a: ok 125 389 23 71
+x $... (g $p...) | alone: ok 30 102 29 101
+x $... x y $p... (g x x) | alone: ok 49 145 38 134
+x $... y (g x) $p... (g x $p...) | alone: second at 6 $p... 86 302 68 236
+x $... y y | alone: ok 23 71 20 68
+x $a | alone: ok 5 5 3 3 | a: ok 10 10 3 3
+x $a $b | alone: ok 9 9 6 6 | a: ok 16 16 6 6 | b: ok 16 16 6 6 | a b: ok 16 16 6 6
+x $a y (g $p...) x (g (g y) y y) | alone: ok 31 55 29 53 | a: ok 50 74 29 53
+x $b (g y (g y) $p... $p...) | alone: ok 29 77 10 10 | b: ok 36 84 10 10
+x $b ; y ; x | alone: ok 12 12 10 10 | b: ok 23 23 10 10
+x $p... $... (g $q... (g $...)) | alone: together at 3 $... 66 234 64 232
+x $p... $... y $_ | alone: together at 3 $... 58 202 37 133
+x $p... $... y x x | alone: together at 3 $... 62 206 38 134
+x $p... $p... x | alone: together at 3 $p... 83 323 80 320
+x $p... $q... $q... y y | alone: together at 3 $q... 336 3918 52 196
+x $p... (g $a) $a x | alone: ok 63 207 22 70 | a: ok 109 349 22 70
+x $p... (g (g x x) (g $p...) (g $q... $a $a)) x | alone: ok 251 1319 20 68 | a: ok 262 1306 20 68
+x $p... (g x x (g y $p... y) $...) x | alone: ok 192 1092 20 68
+x $p... x $q... y | alone: ok 71 263 37 133
+x $p... x y | alone: ok 24 72 21 69
+x $q... $_ | alone: ok 36 132 33 129
+x $q... $q... y | alone: together at 3 $q... 159 1779 35 131
+x $q... (g (g y) (g $q... $_ $...)) | alone: ok 200 1148 19 67
+x $q... ; (g x (g $q... $q...)) | alone: ok 176 1052 19 67
+x $q... x y | alone: ok 24 72 21 69
+x $q... x y x y | alone: ok 29 77 24 72
+x $q... y | alone: ok 21 69 19 67
+x $q... y $a (g (g $p...) $b x) y | alone: ok 73 241 23 71 | a: ok 123 387 23 71 | b: ok 90 258 23 71 | a b: ok 90 258 23 71
+x (g $... x) | alone: ok 21 69 18 66
+x (g $_ x) $_ x | alone: ok 13 13 11 11
+x (g $b $p... x) | alone: ok 22 70 19 67 | b: ok 31 79 21 69
+x (g $q... $p... ; (g $q...)) x | alone: ok 73 241 71 239
+x (g $q... (g y $p... x) y) ; $a y x | alone: ok 35 83 33 81 | a: ok 47 95 33 81
+x (g $q... y y) y (g y) (g $q... $p... y) y | alone: ok 51 123 50 122
+x (g (g $p...)) y | alone: ok 17 41 16 40
+x (g (g x x y y)) | alone: ok 11 11 8 8
+x (g (g x y) $... x y) | alone: ok 12 12 8 8
+x (g x $... (g $p... x $q... y)) x | alone: ok 16 16 14 14
+x (g x $_ $q...) x | alone: ok 18 42 16 40
+x (g x $b $p... x) x (g x (g y) $p...) | alone: ok 78 222 58 154 | b: ok 87 231 58 154
+x (g x $b x (g y)) x $_ $_ | alone: ok 20 20 16 16 | b: ok 38 38 16 16
+x (g x x x) $... x x | alone: ok 31 79 30 78
+x (g x x) $p... $q... (g x) | alone: together at 6 $q... 49 145 41 137
+x (g x y ; $q...) (g (g $p... x) y $a) | alone: ok 39 111 36 108 | a: ok 49 121 36 108
+x (g x y ; x) (g x) (g y) (g y y x x) y | alone: ok 26 26 25 25
+x (g x y) ; x y | alone: ok 13 13 12 12
+x (g x) | alone: ok 6 6 4 4
+x (g y $...) x $b x x | alone: ok 26 50 24 48 | b: ok 39 63 24 48
+x (g y $p... x) y | alone: ok 24 72 23 71
+x (g y (g $p...)) | alone: ok 16 40 4 4
+x (g y) (g $... $q... (g y)) x y | alone: ok 21 21 20 20
+x ; $... (g (g $...)) | alone: ok 35 107 18 66
+x ; $... (g x) | alone: ok 26 74 20 68
+x ; $... ; y | alone: ok 24 72 21 69
+x ; $q... (g (g x x) (g $p... $_ $... x) y (g $_ x y x)) | alone: ok 81 225 20 68
+x ; $q... y $a | alone: ok 25 73 22 70 | a: ok 51 147 22 70
+x ; (g $q... $_ $p... $q...) y | alone: ok 54 198 53 197
+x ; (g x) $p... (g y y x) | alone: ok 34 82 24 72
+x ; (g x) y (g y x x) | alone: ok 15 15 13 13
+x ; ; $a (g (g $b ; y $...) y) | alone: ok 24 48 22 46 | a: ok 36 60 22 46 | b: ok 38 62 25 49 | a b: ok 38 62 25 49
+x ; ; y | alone: ok 6 6 5 5
+x ; x $_ | alone: ok 9 9 6 6
+x ; x $_ ; x | alone: ok 15 15 12 12
+x ; x $b | alone: ok 9 9 6 6 | b: ok 17 17 6 6
+x ; y | alone: ok 5 5 4 4
+x ; y $... x | alone: ok 25 73 24 72
+x ; y $b y | alone: ok 10 10 9 9 | b: ok 20 20 9 9
+x ; y x | alone: ok 8 8 6 6
+x x | alone: ok 5 5 3 3
+x x $... ; $q... (g y (g y x x) $b (g y y $q... $...)) | alone: second at 4 $q... 101 341 74 242 | b: second at 4 $q... 176 608 74 242
+x x $... x | alone: ok 48 168 44 164
+x x $... x y | alone: ok 36 108 33 105
+x x $_ (g $...) | alone: ok 21 45 6 6
+x x $p... ; $b | alone: ok 34 106 31 103 | b: ok 87 303 72 288
+x x (g $b (g y) $b) | alone: ok 15 15 9 9 | b: ok 30 30 9 9
+x x (g (g $q... x)) y | alone: ok 28 76 27 75
+x x (g x $_ x (g $_ y y)) | alone: ok 16 16 13 13
+x x (g x) | alone: ok 9 9 7 7
+x x ; (g $... x (g $... y $b) x) | alone: ok 17 17 8 8 | b: ok 59 131 44 116
+x x ; y | alone: ok 8 8 7 7
+x x x | alone: ok 9 9 6 6
+x x x $... x (g y x) | alone: ok 76 244 46 142
+x x x x | alone: ok 14 14 10 10
+x x y | alone: ok 7 7 6 6
+x x y $b $_ | alone: ok 14 14 11 11 | b: ok 25 25 11 11
+x x y (g $_ y y) x (g $_ x y y) | alone: ok 23 23 21 21
+x x y ; $a (g $q... x (g $q...) $...) | alone: ok 57 177 13 13 | a: ok 69 189 13 13
+x y | alone: ok 4 4 3 3
+x y $... x x $b | alone: ok 30 78 29 77 | b: ok 147 903 129 861
+x y $_ | alone: ok 7 7 5 5
+x y $a | alone: ok 7 7 5 5 | a: ok 14 14 5 5
+x y $a $p... (g y $a) y | alone: ok 38 86 25 73 | a: ok 72 168 25 73
+x y $q... x | alone: ok 24 72 23 71
+x y (g $q...) | alone: ok 15 39 4 4
+x y (g y) y | alone: ok 10 10 9 9
+x y ; $a | alone: ok 8 8 5 5 | a: ok 16 16 5 5
+x y ; (g $q... $...) x y | alone: ok 30 78 28 76
+x y ; (g x $... x (g y $p... y $p...)) y (g x (g $q...) $p...) | alone: ok 89 257 60 156
+x y x | alone: ok 7 7 5 5
+x y x $_ y | alone: ok 13 13 11 11
+x y x (g (g y y ; x) $... $_) $b | alone: ok 35 83 15 15 | b: ok 46 94 15 15
+x y x x $p... x | alone: ok 30 78 29 77
+x y x x y x | alone: ok 17 17 14 14
+x y x y y | alone: ok 12 12 11 11
+x y y | alone: ok 6 6 5 5
+x y y y | alone: ok 8 8 7 7
+y | alone: ok 0 0 0 0
+y $... $... $b $b y | alone: together at 3 $... 31 79 21 69 | b: together at 3 $... 183 663 21 69
+y $... $b | alone: ok 13 37 10 34 | b: ok 84 696 10 34
+y $... $b y x (g y x y y) | alone: ok 30 54 15 39 | b: ok 76 172 15 39
+y $... $p... y | alone: together at 3 $p... 23 71 19 67
+y $... ; $b $_ (g (g $p...) y) | alone: ok 33 81 13 37 | b: ok 65 161 13 37
+y $... x (g y (g x x $b) y) | alone: ok 31 55 12 36 | b: ok 71 167 12 36
+y $... x (g y (g y x y)) y y | alone: ok 35 59 15 39
+y $... x y | alone: ok 16 40 12 36
+y $_ | alone: ok 4 4 2 2
+y $_ $a x x | alone: ok 10 10 9 9 | a: ok 21 21 9 9
+y $_ (g x ; x) y (g (g x) (g x y) $p... (g $q...)) x | alone: ok 37 61 36 60
+y $_ x (g $a y $...) | alone: ok 19 43 9 9 | a: ok 31 55 9 9
+y $_ y | alone: ok 7 7 5 5
+y $a | alone: ok 4 4 2 2 | a: ok 9 9 2 2
+y $a $b (g $_ x $q... y) (g y (g $q... x) $... y) | alone: ok 51 123 48 120 | a: ok 62 134 48 120 | b: ok 62 134 48 120 | a b: ok 62 134 48 120
+y $a $p... (g $... x $_) y | alone: ok 43 139 14 38 | a: ok 70 214 14 38
+y $a $q... $... y | alone: together at 4 $... 25 73 21 69 | a: together at 4 $... 109 397 21 69
+y $a (g (g $q... $p...) y) | alone: ok 26 74 24 72 | a: ok 36 84 24 72
+y $a (g y $q... x) x $p... y | alone: ok 38 110 35 107 | a: ok 66 186 35 107
+y $a (g y) $_ | alone: ok 10 10 7 7 | a: ok 21 21 7 7
+y $a x $_ | alone: ok 8 8 6 6 | a: ok 17 17 6 6
+y $a y | alone: ok 7 7 5 5 | a: ok 14 14 5 5
+y $a y (g (g $_ x $p...) $... $... x) ; y | alone: ok 58 178 56 176 | a: ok 70 190 56 176
+y $b | alone: ok 4 4 2 2 | b: ok 9 9 2 2
+y $b (g $_ y) ; y | alone: ok 13 13 11 11 | b: ok 26 26 11 11
+y $b (g (g $q... y $...) $...) y (g y) | alone: ok 35 83 33 81 | b: ok 48 96 33 81
+y $b y | alone: ok 7 7 5 5 | b: ok 14 14 5 5
+y $p... $... $a $p... $b | alone: together at 3 $... 33 105 27 99 | a: together at 3 $... 2117 87071 27 99 | b: together at 3 $... 2117 87071 27 99 | a b: together at 3 $... 2227 89233 27 99
+y $p... $a $b | alone: ok 15 39 11 35 | a: ok 104 764 11 35 | b: ok 104 764 11 35 | a b: ok 104 764 11 35
+y $p... $b (g $_ y) | alone: ok 21 45 12 36 | b: ok 57 153 12 36
+y $p... $p... y | alone: together at 3 $p... 37 133 19 67
+y $p... (g x y) | alone: ok 19 43 11 35
+y $p... (g y $b $b $_) x x (g y y $q...) | alone: ok 44 92 23 47 | b: ok 87 183 23 47
+y $p... x | alone: ok 13 37 13 37
+y $p... x x $p... y | alone: ok 55 199 21 69
+y $p... x y (g $q... y $p...) | alone: ok 52 172 35 107
+y $p... y $_ $b | alone: ok 18 42 13 37 | b: ok 46 118 13 37
+y $p... y (g y) (g y $...) | alone: ok 32 80 17 41
+y $q... $b | alone: ok 13 37 10 34 | b: ok 84 696 10 34
+y $q... (g y (g $q... $q... $_) ; (g y $p... $...)) | alone: ok 132 444 114 378
+y $q... (g y y) x | alone: ok 21 45 12 36
+y $q... x $q... (g (g $q... y $_ x)) | alone: ok 68 236 64 232
+y (g $... $p... $... y) | alone: ok 9 9 4 4
+y (g $...) y | alone: ok 16 40 14 38
+y (g $_ (g x) $q... x) ; (g $_ ; $q... y) | alone: ok 54 150 35 83
+y (g $_ (g x)) $... $a | alone: ok 20 44 15 39 | a: ok 105 741 15 39
+y (g $_) | alone: ok 6 6 2 2
+y (g $a $... $q...) x (g y) | alone: ok 28 76 26 74 | a: ok 71 215 58 202
+y (g $p... $p... y) x | alone: ok 24 72 23 71
+y (g $p... (g $p... x x $...) (g $p... $q... x)) (g y) (g (g x) y y) | alone: ok 89 281 87 279
+y (g $q... (g y $q... y)) x $_ y (g x $p...) | alone: ok 54 150 44 116
+y (g $q... y) ; $p... y | alone: ok 20 44 17 41
+y (g $q...) | alone: ok 13 37 2 2
+y (g $q...) $... (g (g $a $a x y) $p...) x | alone: ok 43 115 23 71 | a: ok 72 192 23 71
+y (g $q...) $p... (g y (g y)) y | alone: ok 37 85 23 71
+y (g $q...) y $q... y (g $... y (g $p... y)) | alone: ok 67 187 61 181
+y (g (g $p... $p... x $_) x $... y) x | alone: ok 44 140 43 139
+y (g (g $q... x)) (g $q... y) (g $p... x $... x) x y | alone: ok 88 280 86 278
+y (g (g x y y x) $q... (g x $a y) y) | alone: ok 22 22 10 10 | a: ok 36 60 25 49
+y (g (g x y y) $_ x) $p... $... (g y y) | alone: together at 10 $... 38 86 29 77
+y (g (g y) x x) y $... (g y y (g $b x)) | alone: ok 38 62 22 46 | b: ok 77 149 22 46
+y (g x (g y x)) $b | alone: ok 12 12 8 8 | b: ok 25 25 8 8
+y (g x x) x $_ x | alone: ok 13 13 12 12
+y (g x y) (g x $q... ; $p...) | alone: ok 21 45 9 9
+y (g x y) y $q... (g x) x | alone: ok 27 51 20 44
+y (g x) x | alone: ok 8 8 7 7
+y (g y $a) x | alone: ok 9 9 8 8 | a: ok 19 19 8 8
+y (g y x y $a) x | alone: ok 11 11 10 10 | a: ok 23 23 10 10
+y (g y) | alone: ok 6 6 4 4
+y (g y) $p... $... $q... x | alone: together at 5 $... 35 107 35 107
+y (g y) y $a x y | alone: ok 16 16 14 14 | a: ok 31 31 14 14
+y ; $p... ; y | alone: ok 16 40 12 36
+y ; (g $_ (g y $a)) | alone: ok 11 11 7 7 | a: ok 23 23 7 7
+y ; (g $a (g $...) $p...) $b x y | alone: ok 32 80 30 78 | a: ok 47 95 33 81 | b: ok 44 92 30 78 | a b: ok 47 95 33 81
+y ; (g x (g y y $q... y) $...) (g y x $q... y) (g (g $a) x $_ x) | alone: ok 68 164 66 162 | a: ok 85 181 66 162
+y ; (g x) (g $b $p... (g $p...)) | alone: ok 38 110 6 6 | b: ok 52 124 6 6
+y ; (g x) y | alone: ok 10 10 8 8
+y ; (g y x $... y) | alone: ok 10 10 7 7
+y ; x $a | alone: ok 7 7 5 5 | a: ok 15 15 5 5
+y ; y | alone: ok 6 6 4 4
+y ; y (g $p...) | alone: ok 17 41 5 5
+y ; y x (g y) | alone: ok 12 12 10 10
+y x | alone: ok 4 4 3 3
+y x $_ | alone: ok 6 6 4 4
+y x $_ ; (g $p...) | alone: ok 18 42 5 5
+y x $a $p... x | alone: ok 17 41 17 41 | a: ok 64 208 60 204
+y x $a (g $_ x) | alone: ok 11 11 9 9 | a: ok 23 23 9 9
+y x $b x y y | alone: ok 14 14 12 12 | b: ok 27 27 12 12
+y x $q... (g y ; y $_) x y | alone: ok 30 54 15 39
+y x (g $...) (g $p... (g $q...) $a (g $b $p... y $...)) y | alone: ok 69 213 67 211 | a: ok 107 299 94 286 | b: ok 110 302 97 289 | a b: ok 110 302 97 289
+y x (g $...) y | alone: ok 18 42 16 40
+y x (g $q... (g x ; $a $q...) ; $...) $a x (g $b (g x) $q...) | alone: ok 97 289 77 221 | a: ok 112 304 77 221 | b: ok 114 306 77 221 | a b: ok 114 306 77 221
+y x (g (g $b x)) $... y x | alone: ok 26 50 22 46 | b: ok 60 132 22 46
+y x (g (g $p... $... $_) x $q... (g $...)) $... x (g y x (g y $q... $...)) | alone: ok 112 352 78 246
+y x (g (g y) $q...) y x x | alone: ok 26 50 25 49
+y x (g x (g $q...) $b x) y | alone: ok 23 47 21 45 | b: ok 36 60 25 49
+y x (g y) x y | alone: ok 13 13 11 11
+y x x $a | alone: ok 8 8 6 6 | a: ok 17 17 6 6
+y x x (g $q...) (g y) $_ | alone: ok 23 47 20 44
+y x x x | alone: ok 8 8 7 7
+y x y (g x $p...) y x | alone: ok 25 49 23 47
+y x y y | alone: ok 10 10 8 8
+y x y y x | alone: ok 13 13 11 11
+y y | alone: ok 5 5 3 3
+y y $_ | alone: ok 7 7 4 4
+y y $_ y | alone: ok 10 10 8 8
+y y $a | alone: ok 7 7 4 4 | a: ok 14 14 4 4
+y y $a $_ (g x x) | alone: ok 14 14 12 12 | a: ok 28 28 12 12
+y y $a $q... $b | alone: ok 18 42 13 37 | a: ok 65 209 13 37 | b: ok 107 767 13 37 | a b: ok 107 767 13 37
+y y $a ; y y | alone: ok 15 15 12 12 | a: ok 27 27 12 12
+y y $b (g $b y) | alone: ok 14 14 12 12 | b: ok 28 28 12 12
+y y (g $p...) | alone: ok 16 40 4 4
+y y (g y x y (g $q... $...)) (g y x $p...) | alone: ok 42 114 32 80
+y y ; x | alone: ok 8 8 7 7
+y y ; y | alone: ok 9 9 7 7
+y y x | alone: ok 7 7 6 6
+y y x (g x) $b (g y y $q...) | alone: ok 26 50 16 16 | b: ok 41 65 16 16
+y y x y | alone: ok 10 10 8 8
+y y y | alone: ok 9 9 6 6
+y y y $_ | alone: ok 11 11 7 7
+y y y x $b | alone: ok 13 13 11 11 | b: ok 24 24 11 11
+y y y y x | alone: ok 16 16 15 15
+y y y y x x | alone: ok 18 18 17 17

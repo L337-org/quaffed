@@ -15,7 +15,7 @@
 //! pair is worked out twice; [`List`] says how, and what it costs.
 
 use std::cell::{OnceCell, RefCell};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -183,6 +183,7 @@ fn find_in(
     let mut found = Vec::new();
     if let [only] = content.as_slice() {
         for node in target.nodes().filter(|&node| inside(node)) {
+            matcher.next_node();
             matcher.start();
             let mut bindings = initial.clone();
             if matcher.node(*only, node, &mut bindings)
@@ -197,6 +198,7 @@ fn find_in(
         }
     } else {
         for node in target.nodes().filter(|&node| inside(node)) {
+            matcher.next_node();
             let available = parts(target, node);
             let in_a_list =
                 |part: &Part<'_>| matches!(part, Part::Child(c) if target.list(*c).is_some());
@@ -355,31 +357,40 @@ pub enum Costly {
     /// Two sequences stand together in a run of statements with no statement between them, so
     /// nothing settles how the statements divide between them: the second of them.
     Together(NodeId),
-    /// A second place where what a sequence takes decides what later code must match, each such
-    /// place multiplying a search's work by the length of the list it stands in: the hole that
-    /// makes it one.
+    /// A state of the search that depends on more than two places where it can go more than one
+    /// way, each multiplying its work by the code's length ([`Pattern::costly`]): the last
+    /// sequence whose stop it depends on.
     SecondChoice(NodeId),
 }
 
 impl Pattern {
-    /// Whether matching this pattern could cost more than the square of the length of a list it
-    /// is matched in, and why.
+    /// Whether matching this pattern could cost more than the square of the length of the code
+    /// it is matched in, and why.
     ///
-    /// A list with sequence holes is matched by remembering, for each place in the pattern and
-    /// place in the code, whether the rest matched from there ([`List`]), which costs about the
-    /// list's length times the pattern's.  That holds while the rest depends only on where it
-    /// starts.  A **choice** is a place where it depends on more: where a name is bound in a way
-    /// that varies with where an earlier sequence stopped, and is used later in the same list, or
-    /// where a sequence named elsewhere in the list starts.  Each choice multiplies the work by
-    /// the list's length, so one makes it quadratic and a second cubic.  The fixed code before a
-    /// list's first sequence is not a choice, since where it stands is where the list, or the
-    /// run, starts.
+    /// The matcher remembers each state of a list's search - a part of the pattern, a place in
+    /// the code, and what the names the rest reads hold - and works each out once ([`List`]), so
+    /// its work is the number of states it makes.  This counts them as it makes them ([`Cost`]).
+    /// Each state depends on some of the places where a search can go more than one way: a
+    /// sequence's stop, and where a run of statements starts.  It takes as many forms as the
+    /// code's length to the power of how many, and a pattern is costly where some state
+    /// depends on more than two, counting a sequence's own stop where it tries each.
     ///
-    /// Two choices multiply only when they are in one list, or when one list uses a name whose
-    /// binding the other's choice varies: a list is remembered by the bindings of the names it
-    /// uses, so a list that uses none of another's varying names is worked out once whatever that
-    /// other chose.  So a second choice is refused only where it conflicts with an earlier one,
-    /// and `f(g($a..., x, $a...), h($b..., y, $b...))` is accepted.
+    /// What a state depends on follows the matcher.  A place stands a fixed way from the last
+    /// stop before it; a single hole binds where it stands, and a sequence from there to its
+    /// stop.  A node's list starts where the node stands, and since a node matches its whole
+    /// list, a sequence with no free sequence after it in a node's list ends where the list
+    /// does.  A sequence that repeats an earlier binding takes that binding's length.  A plain
+    /// search stops a sequence whose name nothing else reads at the first place the code after it
+    /// stands, when that settles the rest; over a run of statements it works out again, from
+    /// every start, what it worked out with a name bound.  A `where` gathers every way of binding
+    /// what it tests, carrying each to the end.  A place in the code, or a node, is one of as
+    /// many as the code's length however many stops it depends on, a run of code one of the
+    /// square; and a stop inside a node settles where the node stands, where that is a fixed way
+    /// from what put it there.
+    ///
+    /// So `f(g($a..., x, $a...), h($b..., y, $b...))` is accepted, each list worked out once
+    /// whatever the other took, and so is `f($a..., $b...) + g($a..., x, $b...)`, whose one stop
+    /// divides `f`'s arguments; three stops whose bindings a later list reads together are not.
     ///
     /// Every language's compiler refuses a pattern this names, and [`find`] panics on one, as a
     /// defect in its compiler.  Two sequences standing together in a run of statements are
@@ -391,56 +402,79 @@ impl Pattern {
     }
 
     /// [`Pattern::costly`], with the names in `tested` also read once a match is complete, as a
-    /// `where` that tests them reads them: each is then one more later use of its name, and may
-    /// make a choice where the pattern alone makes none.  [`find_where`] panics on a pattern and
+    /// `where` that tests them reads them: its search then gathers every way of binding them,
+    /// and may cost more where the pattern alone does not.  [`find_where`] panics on a pattern and
     /// names this names, as a defect in its caller.
     #[must_use]
     pub fn costly_with(&self, tested: &[&str]) -> Option<Costly> {
         let shape = self.arena();
         let root = shape.root();
-        let mut lists = Vec::new();
-        if shape.children(root).nth(1).is_some() {
+        let run = shape.children(root).nth(1).is_some();
+        let wanted = if run {
             let run = between_first_and_last(&parts(shape, root));
             if let Some(second) = together(self, &run) {
                 return Some(Costly::Together(second));
             }
-            lists.push(list_choices(self, &run, tested));
+            run
+        } else {
+            parts(shape, root)
+        };
+        // A run starts anywhere; a node's parts stand where the node does, a different node each
+        // time, so that what one node costs only adds to what the others do.
+        let at = if run {
+            Free::from([START])
+        } else {
+            Free::new()
+        };
+        // A search first finds a match plainly, and a `where` then gathers every way of binding
+        // what it tests, each costing what it costs.
+        let mut plain = Cost::new(self, tested, run);
+        plain.list(&Walk {
+            owner: root,
+            wanted: &wanted,
+            whole: false,
+            at: &at,
+            exact: true,
+            carried: &[],
+            plain: true,
+        });
+        if let Some(found) = plain.found {
+            return Some(Costly::SecondChoice(found));
         }
-        for node in shape.nodes().filter(|node| *node != root) {
-            let wanted = parts(shape, node);
-            let varying = |part: &Part<'_>| match part {
-                Part::Child(child) => !exported(self, *child, tested).is_empty(),
-                Part::Token(_) => false,
-            };
-            if wanted
-                .iter()
-                .any(|part| is_sequence(self, part) || varying(part))
-            {
-                lists.push(list_choices(self, &wanted, tested));
-            }
-        }
-        // Every choice with the list it is in, in the pattern's order.
-        let mut choices: Vec<(usize, &Choice<'_>)> = lists
-            .iter()
-            .enumerate()
-            .flat_map(|(at, list)| list.choices.iter().map(move |choice| (at, choice)))
-            .collect();
-        choices.sort_by_key(|(_, choice)| choice.hole);
-        for (later, (list, choice)) in choices.iter().enumerate() {
-            // A node's ways reach each list enclosing it - its call's, the expression's around
-            // that - as one choice reported at each level, which never conflicts with itself.
-            let conflicts = choices[..later].iter().any(|(other_list, other)| {
-                other.hole != choice.hole
-                    && (other_list == list
-                        || !lists[*list].names.is_disjoint(&other.varies)
-                        || !lists[*other_list].names.is_disjoint(&choice.varies))
+        if !tested.is_empty() {
+            let mut gathering = Cost::new(self, tested, run);
+            gathering.list(&Walk {
+                owner: root,
+                wanted: &wanted,
+                whole: false,
+                at: &at,
+                exact: true,
+                carried: tested,
+                plain: false,
             });
-            if conflicts {
-                return Some(Costly::SecondChoice(choice.hole));
+            if let Some(found) = gathering.found {
+                return Some(Costly::SecondChoice(found));
             }
         }
         None
     }
+}
+
+/// Whether `hole` is a sequence whose name an earlier hole binds, so that it is compared with
+/// what that hole took rather than taking code of its own.
+fn compared(pattern: &Pattern, hole: NodeId) -> bool {
+    let Some(name) = pattern
+        .hole(hole)
+        .filter(|spelled| spelled.sequence)
+        .and_then(|spelled| spelled.name.as_deref())
+    else {
+        return false;
+    };
+    // Holes come in pre-order, so the first with a name is where it is bound.
+    pattern
+        .holes()
+        .find(|(_, spelled)| spelled.name.as_deref() == Some(name))
+        .is_some_and(|(first, _)| first != hole)
 }
 
 fn is_sequence(pattern: &Pattern, part: &Part<'_>) -> bool {
@@ -457,19 +491,6 @@ fn together(pattern: &Pattern, run: &[Part<'_>]) -> Option<NodeId> {
         }
         _ => None,
     })
-}
-
-/// A choice a list of a pattern's parts makes: the hole that makes it, and the names whose
-/// binding varies with it - those first bound in the list from the choice on.
-struct Choice<'p> {
-    hole: NodeId,
-    varies: BTreeSet<&'p str>,
-}
-
-/// The choices a list makes, and every name used within it: see [`Pattern::costly`].
-struct Choices<'p> {
-    choices: Vec<Choice<'p>>,
-    names: BTreeSet<&'p str>,
 }
 
 /// The names a node of a pattern can bind in more than one way and that are used again after
@@ -514,110 +535,408 @@ fn exported<'p>(pattern: &'p Pattern, node: NodeId, tested: &[&str]) -> Vec<(&'p
         .collect()
 }
 
-/// The choices a list of a pattern's parts makes, each named by the hole that makes it: see
-/// [`Pattern::costly`].
-///
-/// The list is split at its sequences into segments, the fixed code between them, possibly
-/// none.  Each hole within the list belongs to one part of it, numbered in order - segment 0,
-/// the sequence before segment 1, segment 1, and so on - a sequence being a part of its own and
-/// any other hole lying inside one of a segment's children.  A segment after the first makes a
-/// choice when a name first bound by the sequence before it or within it is used further on in
-/// the list, or when the sequence after it is named elsewhere in the list, since that sequence
-/// then holds different code from a later place.  And a node in any segment makes one for each
-/// name it can bind in more than one way that is used after it ([`exported`]), since each way is
-/// tried in turn.  A name in `tested` is used after the list, as a `where` reads it once the
-/// match is complete.
-fn list_choices<'p>(pattern: &'p Pattern, wanted: &[Part<'_>], tested: &[&str]) -> Choices<'p> {
-    let shape = pattern.arena();
-    let mut segments: Vec<Vec<NodeId>> = vec![Vec::new()];
-    let mut holes = Vec::new();
-    for part in wanted {
-        match part {
-            Part::Child(child) if is_sequence(pattern, part) => {
-                holes.push(*child);
-                segments.push(Vec::new());
+/// The places a search's work depends on, as [`Cost`] counts them: each a sequence's stop, by
+/// its hole, or [`START`], where a run of statements starts.  A state of the search that depends
+/// on `k` of them is worked out for as many as the list's length to the `k`th.
+type Free = BTreeSet<u32>;
+
+/// Where a run of statements starts, which a search tries every place for: see [`Free`].
+const START: u32 = u32::MAX;
+
+/// Where a shared sequence's state stands, apart from the stops its ways range over: see
+/// [`Cost::list`].
+const HERE: u32 = u32::MAX - 1;
+
+/// How many times over a search works out each state of a pattern's lists, as
+/// [`Pattern::costly`] judges it: see there.  It walks the lists as the matcher does, in order,
+/// working out what each binding and each place in the code depends on, and finds the first
+/// state that depends on more than two of [`Free`]'s places once its own sequence's stop is
+/// counted.
+struct Cost<'p> {
+    pattern: &'p Pattern,
+    /// The names a `where` tests, which its search carries to the end of every way.
+    tested: &'p [&'p str],
+    /// The names the matcher compares: used more than once, or tested.
+    slots: BTreeSet<&'p str>,
+    /// Each name's first hole, which binds it.
+    first: BTreeMap<&'p str, NodeId>,
+    /// What each first hole's binding depends on.
+    bound: HashMap<NodeId, Free>,
+    /// Whether the pattern is a run of statements, whose search starts at every place.
+    run: bool,
+    /// For each stop inside a node, the places that put the node where it stands: a place in a
+    /// node's code is that node's, so it settles them too, and a state counts them once.
+    implies: HashMap<u32, Free>,
+    /// The hole or node at the first state found to cost more than the square.
+    found: Option<NodeId>,
+}
+
+impl<'p> Cost<'p> {
+    fn new(pattern: &'p Pattern, tested: &'p [&'p str], run: bool) -> Cost<'p> {
+        let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+        let mut first = BTreeMap::new();
+        // Holes come in pre-order, which is the order a search binds them in.
+        for (hole, spelled) in pattern.holes() {
+            if let Some(name) = spelled.name.as_deref() {
+                *counts.entry(name).or_default() += 1;
+                first.entry(name).or_insert(hole);
             }
-            Part::Child(child) => segments.last_mut().expect("begun with one").push(*child),
-            Part::Token(_) => {}
+        }
+        let slots = counts
+            .into_iter()
+            .filter(|(name, count)| *count > 1 || tested.contains(name))
+            .map(|(name, _)| name)
+            .collect();
+        Cost {
+            pattern,
+            tested,
+            slots,
+            first,
+            bound: HashMap::new(),
+            run,
+            implies: HashMap::new(),
+            found: None,
         }
     }
-    let part_of = |node: NodeId| -> Option<usize> {
-        if let Some(at) = holes.iter().position(|hole| *hole == node) {
-            return Some(2 * at + 1);
-        }
-        let range = shape.range(node);
-        segments
-            .iter()
-            .position(|segment| {
-                segment.iter().any(|child| {
-                    let outer = shape.range(*child);
-                    outer.start <= range.start && range.end <= outer.end
-                })
+
+    /// The names the matcher compares that holes within `part` use, itself included.
+    fn names_in(&self, part: &Part<'_>) -> BTreeSet<&'p str> {
+        let Part::Child(node) = part else {
+            return BTreeSet::new();
+        };
+        let shape = self.pattern.arena();
+        let outer = shape.range(*node);
+        self.pattern
+            .holes()
+            .filter(|&(hole, _)| {
+                let range = shape.range(hole);
+                hole >= *node && outer.start <= range.start && range.end <= outer.end
             })
-            .map(|segment| 2 * segment)
-    };
-    // Each name's first and last part in the list, and the hole it is first bound by: holes
-    // come in pre-order, which is the order of the parts, so the first seen is the first.
-    let mut uses: BTreeMap<&'p str, (usize, usize, NodeId)> = BTreeMap::new();
-    for (node, hole) in pattern.holes() {
-        if let (Some(name), Some(at)) = (&hole.name, part_of(node)) {
-            uses.entry(name).or_insert((at, at, node)).1 = at;
-        }
+            .filter_map(|(_, spelled)| spelled.name.as_deref())
+            .filter(|name| self.slots.contains(name))
+            .collect()
     }
-    // Past every part of the list: what a `where` reads, it reads after the match.
-    let after = 2 * segments.len();
-    for (name, use_) in &mut uses {
-        if tested.contains(name) {
-            use_.1 = after;
-        }
+
+    /// What a name's binding depends on, once its first hole has been walked.
+    fn depends(&self, name: &str) -> Free {
+        self.first
+            .get(name)
+            .and_then(|hole| self.bound.get(hole))
+            .cloned()
+            .unwrap_or_default()
     }
-    let mut choices: Vec<Choice<'p>> = (1..segments.len())
-        .filter_map(|i| {
-            let next = holes.get(i).copied().filter(|next| {
-                pattern
-                    .hole(*next)
-                    .and_then(|hole| hole.name.as_deref())
-                    .is_some_and(|name| (uses[name].0, uses[name].1) != (2 * i + 1, 2 * i + 1))
-            });
-            let bound_here = uses
-                .values()
-                .find(|&&(first, last, _)| 2 * i - 1 <= first && first <= 2 * i && last > 2 * i)
-                .map(|&(_, _, node)| node);
-            let hole = next.or(bound_here)?;
-            // From the sequence before this segment on, every name first bound in the list takes
-            // what this choice leaves it.
-            let varies = uses
-                .iter()
-                .filter(|(_, (first, _, _))| *first >= 2 * i - 1)
-                .map(|(name, _)| *name)
-                .collect();
-            Some(Choice { hole, varies })
-        })
-        .collect();
-    for (i, segment) in segments.iter().enumerate() {
-        for &child in segment {
-            let names = exported(pattern, child, tested);
-            for &(_, hole) in &names {
-                if choices.iter().any(|choice| choice.hole == hole) {
-                    continue;
+
+    /// How many places' worth of values a name's binding can take at most: a node one, a run of
+    /// code two.
+    fn cap(&self, name: &str) -> usize {
+        let sequence = self
+            .first
+            .get(name)
+            .and_then(|hole| self.pattern.hole(*hole))
+            .is_some_and(|hole| hole.sequence);
+        if sequence { 2 } else { 1 }
+    }
+
+    fn free_sequence(&self, part: &Part<'_>) -> bool {
+        matches!(part, Part::Child(child) if is_sequence(self.pattern, part) && !compared(self.pattern, *child))
+    }
+
+    /// Whether a plain search settles the sequence at `i` at the first place the fixed code
+    /// after it stands, as the matcher's [`List`] works it out: then it tries no other.
+    fn settled(&self, wanted: &[Part<'_>], whole: bool, i: usize) -> bool {
+        let len = wanted.len();
+        if !is_sequence(self.pattern, &wanted[i]) || i + 1 == len {
+            return false;
+        }
+        // A name used again binds other code at each length, so each is tried.
+        if let Part::Child(child) = wanted[i]
+            && self
+                .pattern
+                .hole(child)
+                .and_then(|hole| hole.name.as_deref())
+                .is_some_and(|name| self.slots.contains(name))
+        {
+            return false;
+        }
+        let end = (i + 1..len)
+            .find(|&j| is_sequence(self.pattern, &wanted[j]))
+            .unwrap_or(len);
+        if end == i + 1 || (end == len && whole) {
+            return false;
+        }
+        if let Some(Part::Child(next)) = wanted.get(end)
+            && self
+                .pattern
+                .hole(*next)
+                .and_then(|hole| hole.name.as_deref())
+                .is_some_and(|name| self.slots.contains(name))
+        {
+            return false;
+        }
+        let later: BTreeSet<&str> = wanted[end..]
+            .iter()
+            .flat_map(|part| self.names_in(part))
+            .collect();
+        !wanted[i + 1..end]
+            .iter()
+            .flat_map(|part| self.names_in(part))
+            .any(|name| later.contains(name))
+    }
+
+    /// Walks a list, then counts its states.
+    fn list(&mut self, walk: &Walk<'_, '_>) {
+        let walked = self.walk(walk);
+        self.count(walk, &walked);
+    }
+
+    /// Walks a list's parts in order, as a search does, working out where each state stands and
+    /// what each binding depends on, and walking each node's own list where it stands.
+    fn walk(&mut self, walk: &Walk<'_, '_>) -> Walked {
+        let shape = self.pattern.arena();
+        let len = walk.wanted.len();
+        let mut walked = Walked {
+            places: Vec::with_capacity(len + 1),
+            stops: vec![None; len],
+            ways: vec![None; len],
+            shared: vec![false; len],
+        };
+        let mut here = (walk.at.clone(), walk.exact);
+        for i in 0..len {
+            walked.places.push(here.0.clone());
+            let Part::Child(child) = walk.wanted[i] else {
+                continue;
+            };
+            match self.pattern.hole(child) {
+                Some(hole) if hole.sequence => {
+                    if compared(self.pattern, child) {
+                        // It takes the length of the code it repeats, wherever that came from,
+                        // and so no longer gives back where it stood.
+                        let name = hole.name.as_deref().expect("a compared hole has a name");
+                        here.0.extend(self.depends(name));
+                        here.1 = false;
+                    } else {
+                        here = self.sequence(walk, i, child, hole, &here, &mut walked);
+                    }
                 }
-                let varies = names
-                    .iter()
-                    .map(|&(name, _)| name)
-                    .chain(
-                        uses.iter()
-                            .filter(|(_, (first, _, _))| *first >= 2 * i)
-                            .map(|(name, _)| *name),
-                    )
-                    .collect();
-                choices.push(Choice { hole, varies });
+                Some(_) => {
+                    self.bound.insert(child, here.0.clone());
+                }
+                None => {
+                    // A plain search matches a pattern of one node plainly, and only a `where`
+                    // then gathers its ways; a node inside gathers them for what it exports in
+                    // either search, as its list records them.
+                    let top = walk.owner == shape.root() && !self.run && walk.plain;
+                    let exports: Vec<&'p str> = if top {
+                        Vec::new()
+                    } else {
+                        exported(self.pattern, child, self.tested)
+                            .into_iter()
+                            .map(|(name, _)| name)
+                            .filter(|name| self.slots.contains(name))
+                            .collect()
+                    };
+                    let parts = parts(shape, child);
+                    self.list(&Walk {
+                        owner: child,
+                        wanted: &parts,
+                        whole: true,
+                        at: &here.0,
+                        exact: here.1,
+                        carried: &exports,
+                        plain: exports.is_empty(),
+                    });
+                    if !exports.is_empty() {
+                        let free: Free =
+                            exports.iter().flat_map(|name| self.depends(name)).collect();
+                        let cap = exports.iter().map(|name| self.cap(name)).sum();
+                        walked.ways[i] = Some((free, cap));
+                    }
+                }
             }
         }
+        walked.places.push(here.0);
+        walked
     }
-    Choices {
-        choices,
-        names: uses.into_keys().collect(),
+
+    /// The sequence `child` at `i` of a list, standing `here`: records what it binds and the
+    /// stop it tries, and says where the walk stands after it, and whether that is exact.
+    fn sequence(
+        &mut self,
+        walk: &Walk<'_, '_>,
+        i: usize,
+        child: NodeId,
+        hole: &Hole,
+        here: &(Free, bool),
+        walked: &mut Walked,
+    ) -> (Free, bool) {
+        let shape = self.pattern.arena();
+        let wanted = walk.wanted;
+        let settled = walk.plain && self.settled(wanted, walk.whole, i);
+        // A node's parts all match, so a stop with no sequence of its own after it is wherever
+        // the code after it, which ends where the node does, starts.
+        let pinned = walk.whole && !wanted[i + 1..].iter().any(|part| self.free_sequence(part));
+        // Gathering ways, a sequence whose take nothing reads or carries, and whose ways more
+        // than one place asks for, has them from the next place's ([`Matcher::ways_sequence`]):
+        // its states are one for each place it could stop and what the rest reads, wherever it
+        // was reached from.
+        walked.shared[i] = !walk.plain
+            && (walk.owner == shape.root() && self.run
+                || wanted[..i].iter().any(|part| self.free_sequence(part)))
+            && hole.name.as_deref().is_none_or(|name| {
+                !self.slots.contains(name)
+                    || !walk.carried.contains(&name)
+                        && !wanted[i + 1..]
+                            .iter()
+                            .any(|part| self.names_in(part).contains(name))
+            });
+        if !settled {
+            walked.stops[i] = Some(child.0);
+            // A place inside a node settles where the node stands, and so the places that put
+            // it there where it stands a fixed way from them.
+            if walk.whole && walk.exact {
+                let mut settles = walk.at.clone();
+                for place in walk.at {
+                    settles.extend(self.implies.get(place).into_iter().flatten());
+                }
+                self.implies.insert(child.0, settles);
+            }
+        }
+        let after = if settled {
+            (here.0.clone(), false)
+        } else if pinned {
+            (walk.at.clone(), walk.exact)
+        } else {
+            (Free::from([child.0]), true)
+        };
+        let mut binding = here.0.clone();
+        binding.extend(after.0.iter().copied());
+        self.bound.insert(child, binding);
+        after
     }
+
+    /// Counts each state of a walked list: where it stands, what the names it reads were bound
+    /// to before it, and what the ways it gathers bind from it on.
+    fn count(&mut self, walk: &Walk<'_, '_>, walked: &Walked) {
+        let shape = self.pattern.arena();
+        let wanted = walk.wanted;
+        for i in 0..=wanted.len() {
+            if self.found.is_some() {
+                return;
+            }
+            let later: BTreeSet<&'p str> = wanted[i..]
+                .iter()
+                .flat_map(|part| self.names_in(part))
+                .collect();
+            let bound_later: BTreeSet<NodeId> = wanted[i..]
+                .iter()
+                .filter_map(|part| match part {
+                    Part::Child(child) => Some(*child),
+                    Part::Token(_) => None,
+                })
+                .flat_map(|child| {
+                    let outer = shape.range(child);
+                    self.first
+                        .values()
+                        .copied()
+                        .filter(move |&hole| {
+                            let range = shape.range(hole);
+                            hole >= child && outer.start <= range.start && range.end <= outer.end
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            let shared = walked.shared.get(i).copied().unwrap_or(false);
+            // Each thing the state is worked out by, with what it depends on and how many
+            // places' worth of values it can take at most: a place in the code or a node one, a
+            // run of code two, its start and its end.  A shared sequence's state is where it
+            // stands among the places it could stop, a place of its own whatever reached it;
+            // the ways it holds are those from every later stop, so its stop counts only through
+            // what those ways carry.
+            let place = if shared {
+                Free::from([HERE])
+            } else {
+                walked.places[i].clone()
+            };
+            let mut state: Vec<(Free, usize)> = vec![(place, 1)];
+            let mut reads = false;
+            for name in &later {
+                if !bound_later.contains(&self.first[name]) {
+                    state.push((self.depends(name), self.cap(name)));
+                    reads = true;
+                }
+            }
+            for name in walk.carried {
+                if bound_later.contains(&self.first[name]) {
+                    state.push((self.depends(name), self.cap(name)));
+                }
+            }
+            // A plain search forgets what it worked out with a name bound at each start, so a
+            // run's states that read one are worked out again from every start.
+            if self.run && walk.plain && reads {
+                state.push((Free::from([START]), 1));
+            }
+            if let Some(stop) = walked.stops.get(i).copied().flatten()
+                && !shared
+            {
+                state.push((Free::from([stop]), 1));
+            }
+            if let Some(Some(gathered)) = walked.ways.get(i) {
+                state.push(gathered.clone());
+            }
+            self.judge(&state);
+        }
+    }
+
+    /// Records a state that costs more than the square, if this one does.
+    fn judge(&mut self, state: &[(Free, usize)]) {
+        let all: Free = state
+            .iter()
+            .flat_map(|(free, _)| free.iter().copied())
+            .collect();
+        let settled: Free = all
+            .iter()
+            .flat_map(|place| self.implies.get(place).into_iter().flatten())
+            .copied()
+            .collect();
+        let free: Free = all.difference(&settled).copied().collect();
+        let most: usize = state
+            .iter()
+            .filter(|(free, _)| !free.is_empty())
+            .map(|(_, cap)| cap)
+            .sum();
+        if free.len().min(most) > 2 {
+            // Named by the last sequence whose stop the state depends on, a hole of the
+            // pattern's: it depends on at least two besides where a run starts.
+            let last = free
+                .iter()
+                .rev()
+                .find(|&&free| free != START && free != HERE);
+            self.found = Some(NodeId(*last.expect("a costly state depends on a stop")));
+        }
+    }
+}
+
+/// A list as [`Cost::list`] walks it: whose it is, its parts, whether a match takes all of them,
+/// where it stands, and how it is searched.  With `exact`, where the list stands is a fixed way
+/// from each place `at` names, so that it gives them back; a plain search finds one way, and
+/// one that gathers every way of binding `carried` carries them to the end.
+struct Walk<'w, 't> {
+    owner: NodeId,
+    wanted: &'w [Part<'t>],
+    whole: bool,
+    at: &'w Free,
+    exact: bool,
+    carried: &'w [&'w str],
+    plain: bool,
+}
+
+/// What walking a list found of each of its states: where it stands, the stop it tries, what
+/// the ways a node there is asked for bind, and whether its sequence's ways are shared.
+struct Walked {
+    places: Vec<Free>,
+    stops: Vec<Option<u32>>,
+    ways: Vec<Option<(Free, usize)>>,
+    shared: Vec<bool>,
 }
 
 /// What a named hole matched: one child for a hole, a run of a node's parts for a sequence, by
@@ -738,6 +1057,14 @@ struct Matcher<'p, 't> {
     /// are kept for the whole search, and those with one only for the start they were found at.
     outcomes: RefCell<HashMap<Remembered, Outcome>>,
     bound_outcomes: RefCell<HashMap<Remembered, Outcome>>,
+    /// Every way a list's rest matches from a pair of places, by what the names it reads hold
+    /// and which names' bindings were asked for ([`Matcher::ways`]): kept for every start in one
+    /// node's parts, since none depends on where the match started.
+    ways_seen: RefCell<HashMap<WaysAt, Rc<[Way]>>>,
+    /// For each pair of nodes whose parts' code a name has been compared between, by the node
+    /// it was bound in and the node it was compared in: nothing once compared, and the two
+    /// nodes' code read together once compared again ([`Matcher::equal_run`]).
+    joints: RefCell<Joints>,
     /// How many steps and pieces of compared code the search has taken, for tests that hold
     /// its growth.
     #[cfg(test)]
@@ -747,15 +1074,55 @@ struct Matcher<'p, 't> {
 /// A list's part where fixed code starts, and the node among whose parts it is looked for.
 type Stands = (Within, usize, NodeId);
 
-/// The ways one node matches that [`Matcher::node_ways`] gathers: the slots it gathers them for,
-/// each different binding of those slots found so far, and the places already worked out, by
-/// where they are and what the names they read hold, with whether any way completed from there.
-struct Ways<'e> {
-    exports: &'e [usize],
-    gathered: Vec<Vec<Option<Bound>>>,
-    /// Where each way gathered ended among the list's code, in the same order.
-    ends: Vec<usize>,
-    seen: HashMap<(usize, usize, Vec<Option<Key>>), bool>,
+/// For each pair of nodes compared, nothing once compared and their code read together once
+/// compared again: see [`Matcher::equal_run`].
+type Joints = HashMap<(NodeId, NodeId), Option<Rc<Joint>>>;
+
+/// Two nodes' code read together, as [`Matcher::joint`] makes it: how far any two places in it
+/// agree, and where the second node's code starts.
+struct Joint {
+    common: Common,
+    second: usize,
+}
+
+/// One way a list's rest matches, as [`Matcher::ways`] finds it: what it binds each name asked
+/// for - only those it binds itself, from where the rest starts on, and `None` for the others -
+/// and where among the list's code it ends.
+type Way = (Vec<Option<Bound>>, usize);
+
+/// Where [`Matcher::ways`] worked out a list's rest, and what that depends on: the list, the
+/// pair of places, the names whose bindings were asked for, and what the names the rest reads
+/// hold.  Nothing else changes the ways found, so a rest reached again - by another way of
+/// binding an earlier name, or from another start - is never worked out twice.
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct WaysAt {
+    within: Within,
+    place: Place,
+    at: usize,
+    exports: Vec<usize>,
+    bound: Vec<Option<Key>>,
+}
+
+/// Where [`Matcher::ways`] works out `list`'s rest from `at` and `place`, for the names
+/// `exports` holds, with `bindings` as they stand: see [`WaysAt`].
+fn ways_at(
+    list: &List<'_>,
+    within: Within,
+    place: Place,
+    at: usize,
+    exports: &[usize],
+    bindings: &Bindings,
+) -> WaysAt {
+    WaysAt {
+        within,
+        place,
+        at,
+        exports: exports.to_vec(),
+        bound: list.uses[at]
+            .iter()
+            .map(|&slot| bindings[slot].as_ref().map(Bound::key))
+            .collect(),
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Hash)]
@@ -806,6 +1173,8 @@ impl<'p, 't> Matcher<'p, 't> {
             stands: RefCell::default(),
             outcomes: RefCell::default(),
             bound_outcomes: RefCell::default(),
+            ways_seen: RefCell::default(),
+            joints: RefCell::default(),
             #[cfg(test)]
             work: std::cell::Cell::new(0),
         }
@@ -848,31 +1217,27 @@ impl<'p, 't> Matcher<'p, 't> {
         first: &[NodeId],
         accept: &mut Accept<'_>,
     ) -> Option<usize> {
-        let mut found = Ways {
-            exports: slots,
-            gathered: Vec::new(),
-            ends: Vec::new(),
-            seen: HashMap::new(),
-        };
-        self.ways(Within::Run, at, available, 0, self.unbound(), &mut found);
-        found
-            .gathered
-            .into_iter()
-            .zip(found.ends)
-            .find_map(|(way, end)| {
-                let mut bindings = self.unbound();
-                for (&slot, bound) in slots.iter().zip(way) {
-                    bindings[slot] = bound;
-                }
-                // The first way has been answered already.
-                let nodes = bound_nodes(&bindings, slots);
-                (nodes != first && accept(&nodes)).then_some(end)
-            })
+        let found = self.ways(Within::Run, at, available, 0, self.unbound(), slots);
+        found.iter().find_map(|(way, end)| {
+            let mut bindings = self.unbound();
+            for (&slot, bound) in slots.iter().zip(way) {
+                bindings[slot].clone_from(bound);
+            }
+            // The first way has been answered already.
+            let nodes = bound_nodes(&bindings, slots);
+            (nodes != first && accept(&nodes)).then_some(*end)
+        })
     }
 
     /// Forgets what depended on the bindings of the last start, before another.
     fn start(&self) {
         self.bound_outcomes.borrow_mut().clear();
+    }
+
+    /// Forgets the ways worked out among the last node's parts, before another's: they serve
+    /// every start among one node's parts, and are kept no longer.
+    fn next_node(&self) {
+        self.ways_seen.borrow_mut().clear();
     }
 
     fn unbound(&self) -> Bindings {
@@ -1066,35 +1431,30 @@ impl<'p, 't> Matcher<'p, 't> {
             from: 0,
             limit: available.len(),
         };
-        let mut found = Ways {
-            exports,
-            gathered: Vec::new(),
-            ends: Vec::new(),
-            seen: HashMap::new(),
-        };
         self.ways(
             Within::Node(wanted),
             place,
             &available,
             0,
             bindings.clone(),
-            &mut found,
-        );
-        found
-            .gathered
-            .into_iter()
-            .map(|way| {
-                way.into_iter()
-                    .zip(exports)
-                    .filter_map(|(bound, &slot)| bound.map(|bound| (slot, bound)))
-                    .collect()
-            })
-            .collect()
+            exports,
+        )
+        .iter()
+        .map(|(way, _)| {
+            way.iter()
+                .zip(exports)
+                .filter_map(|(bound, &slot)| bound.clone().map(|bound| (slot, bound)))
+                .collect()
+        })
+        .collect()
     }
 
-    /// Every way the list's parts from `at` onwards match the code from `place.from`, added to
-    /// `found` once for each different binding of its names; whether any did.  Each place is
-    /// worked out once for what the names it reads hold, as [`Matcher::list`] works out one.
+    /// Every way the list's parts from `at` onwards match the code from `place.from` that binds
+    /// the names `exports` holds differently, in order of preference - the order backtracking
+    /// finds them in - each with what the rest binds them to and where it ends: none if it does
+    /// not match.  Each place is worked out once for what the names it reads hold, as
+    /// [`Matcher::list`] works out one, and never for what was bound before it that it does not
+    /// read, so that the ways after a name is bound are found once, however many ways it has.
     fn ways(
         &self,
         within: Within,
@@ -1102,28 +1462,54 @@ impl<'p, 't> Matcher<'p, 't> {
         available: &[Part<'t>],
         at: usize,
         bindings: Bindings,
-        found: &mut Ways<'_>,
-    ) -> bool {
+        exports: &[usize],
+    ) -> Rc<[Way]> {
         let list = self.list_of(within);
-        let key = self.remember.then(|| {
-            let read = list.uses[at].iter().chain(found.exports);
-            (
-                place.from,
-                at,
-                read.map(|&slot| bindings[slot].as_ref().map(Bound::key))
-                    .collect::<Vec<_>>(),
-            )
-        });
+        let key = self
+            .remember
+            .then(|| ways_at(&list, within, place, at, exports, &bindings));
         if let Some(key) = &key
-            && let Some(&any) = found.seen.get(key)
+            && let Some(found) = self.ways_seen.borrow().get(key)
         {
-            return any;
+            return Rc::clone(found);
         }
-        let any = self.ways_step(&list, within, place, available, at, bindings, found);
+        let found: Rc<[Way]> = self
+            .ways_step(&list, within, place, available, at, bindings, exports)
+            .into();
         if let Some(key) = key {
-            found.seen.insert(key, any);
+            self.ways_seen.borrow_mut().insert(key, Rc::clone(&found));
         }
-        any
+        found
+    }
+
+    /// Adds to `out` each way in `rest`, found after a step that took `before` to `after`, with
+    /// what that step bound of the names `exports` holds, unless `out` has a way that binds them
+    /// the same, which it found first and so prefers.
+    #[cfg_attr(
+        not(test),
+        expect(clippy::unused_self, reason = "it counts its work only in tests")
+    )]
+    fn extend(
+        &self,
+        out: &mut Vec<Way>,
+        seen: &mut HashSet<Vec<Option<Key>>>,
+        (before, after): (&Bindings, &Bindings),
+        exports: &[usize],
+        rest: &[Way],
+    ) {
+        for (way, end) in rest {
+            #[cfg(test)]
+            self.work.set(self.work.get() + 1);
+            let mut way = way.clone();
+            for (bound, &slot) in way.iter_mut().zip(exports) {
+                if before[slot].is_none() && after[slot].is_some() {
+                    bound.clone_from(&after[slot]);
+                }
+            }
+            if seen.insert(way.iter().map(|b| b.as_ref().map(Bound::key)).collect()) {
+                out.push((way, *end));
+            }
+        }
     }
 
     #[expect(
@@ -1138,84 +1524,76 @@ impl<'p, 't> Matcher<'p, 't> {
         available: &[Part<'t>],
         at: usize,
         bindings: Bindings,
-        found: &mut Ways<'_>,
-    ) -> bool {
+        exports: &[usize],
+    ) -> Vec<Way> {
         #[cfg(test)]
         self.work.set(self.work.get() + 1);
         let next = |from: usize| Place { from, ..place };
         let Some(wanted) = list.wanted.get(at) else {
             if list.whole && place.from != place.limit {
-                return false;
+                return Vec::new();
             }
-            let way: Vec<Option<Bound>> = found
-                .exports
-                .iter()
-                .map(|&slot| bindings[slot].clone())
-                .collect();
-            let key: Vec<_> = way.iter().map(|b| b.as_ref().map(Bound::key)).collect();
-            if !found.gathered.iter().any(|known| {
-                known
-                    .iter()
-                    .map(|b| b.as_ref().map(Bound::key))
-                    .eq(key.iter().cloned())
-            }) {
-                found.gathered.push(way);
-                found.ends.push(place.from);
-            }
-            return true;
+            return vec![(vec![None; exports.len()], place.from)];
         };
         let Some(here) = available[..place.limit].get(place.from).copied() else {
-            return false;
+            return Vec::new();
         };
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
         match (*wanted, here) {
             (Part::Token(token), Part::Token(other)) => {
-                self.shape.token_text(token) == self.target.token_text(other)
-                    && self.ways(
+                if self.shape.token_text(token) == self.target.token_text(other) {
+                    let rest = self.ways(
                         within,
                         next(place.from + 1),
                         available,
                         at + 1,
                         bindings,
-                        found,
-                    )
+                        exports,
+                    );
+                    out.extend(rest.iter().cloned());
+                }
             }
             (Part::Child(child), Part::Child(node)) => match self.pattern.hole(child) {
                 Some(hole) if hole.sequence => {
-                    self.ways_sequence(within, place, available, at, hole, bindings, found)
+                    return self
+                        .ways_sequence(within, place, available, at, hole, bindings, exports);
                 }
                 _ if !list.exports[at].is_empty() => {
-                    let mut any = false;
                     for way in self.node_ways(child, node, &bindings, &list.exports[at]) {
                         let mut attempt = bindings.clone();
                         for (slot, bound) in way {
                             attempt[slot] = Some(bound);
                         }
-                        any |= self.ways(
+                        let rest = self.ways(
                             within,
                             next(place.from + 1),
                             available,
                             at + 1,
-                            attempt,
-                            found,
+                            attempt.clone(),
+                            exports,
                         );
+                        self.extend(&mut out, &mut seen, (&bindings, &attempt), exports, &rest);
                     }
-                    any
                 }
                 _ => {
-                    let mut attempt = bindings;
-                    self.node(child, node, &mut attempt)
-                        && self.ways(
+                    let mut attempt = bindings.clone();
+                    if self.node(child, node, &mut attempt) {
+                        let rest = self.ways(
                             within,
                             next(place.from + 1),
                             available,
                             at + 1,
-                            attempt,
-                            found,
-                        )
+                            attempt.clone(),
+                            exports,
+                        );
+                        self.extend(&mut out, &mut seen, (&bindings, &attempt), exports, &rest);
+                    }
                 }
             },
-            _ => false,
+            _ => {}
         }
+        out
     }
 
     /// [`Matcher::ways_step`] for the sequence hole `hole` at `at`: every length it can take.
@@ -1231,8 +1609,8 @@ impl<'p, 't> Matcher<'p, 't> {
         at: usize,
         hole: &Hole,
         bindings: Bindings,
-        found: &mut Ways<'_>,
-    ) -> bool {
+        exports: &[usize],
+    ) -> Vec<Way> {
         let next = |from: usize| Place { from, ..place };
         let block_end = self.ends_of(place.owner)[place.from].min(place.limit);
         let stops: Vec<usize> = (place.from..block_end)
@@ -1250,19 +1628,75 @@ impl<'p, 't> Matcher<'p, 't> {
                     .map(|stop| stop + 1)
                     .find(|&end| self.equal(&earlier, &Bound::Run(place.owner, place.from..end)))
             };
-            return end.is_some_and(|end| {
-                self.ways(within, next(end), available, at + 1, bindings, found)
+            return end.map_or_else(Vec::new, |end| {
+                self.ways(within, next(end), available, at + 1, bindings, exports)
+                    .to_vec()
             });
         }
-        let mut any = false;
+        let list = self.list_of(within);
+        // More than one place asks for this sequence's ways where a run starts anywhere, or a
+        // sequence of its own before it in the list stops anywhere; otherwise only one does,
+        // and the ways from the other places would be worked out for nothing.
+        let asked_often = matches!(within, Within::Run)
+            || list.wanted[..at].iter().any(|part| {
+                matches!(part, Part::Child(child)
+                    if is_sequence(self.pattern, part) && !compared(self.pattern, *child))
+            });
+        if self.remember
+            && asked_often
+            && slot
+                .is_none_or(|slot| !exports.contains(&slot) && !list.uses[at + 1].contains(&slot))
+        {
+            // Nothing reads what the sequence takes, so the ways from one place are those after
+            // stopping there, then those from the next place it could stop: worked out from the
+            // block's last stop back, each once, however many places reach it.
+            let mut later: Rc<[Way]> = Rc::from(Vec::new());
+            for &stop in stops.iter().rev() {
+                let key = ways_at(&list, within, next(stop), at, exports, &bindings);
+                if stop != place.from
+                    && let Some(found) = self.ways_seen.borrow().get(&key)
+                {
+                    later = Rc::clone(found);
+                    continue;
+                }
+                let rest = self.ways(
+                    within,
+                    next(stop + 1),
+                    available,
+                    at + 1,
+                    bindings.clone(),
+                    exports,
+                );
+                let mut out = Vec::new();
+                let mut seen = HashSet::new();
+                for ways in [&rest, &later] {
+                    self.extend(&mut out, &mut seen, (&bindings, &bindings), exports, ways);
+                }
+                later = out.into();
+                if stop != place.from {
+                    self.ways_seen.borrow_mut().insert(key, Rc::clone(&later));
+                }
+            }
+            return later.to_vec();
+        }
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
         for stop in stops {
             let mut attempt = bindings.clone();
             if let Some(slot) = slot {
                 attempt[slot] = Some(Bound::Run(place.owner, place.from..stop + 1));
             }
-            any |= self.ways(within, next(stop + 1), available, at + 1, attempt, found);
+            let rest = self.ways(
+                within,
+                next(stop + 1),
+                available,
+                at + 1,
+                attempt.clone(),
+                exports,
+            );
+            self.extend(&mut out, &mut seen, (&bindings, &attempt), exports, &rest);
         }
-        any
+        out
     }
 
     /// Matches the list's parts from `at` onwards against the code from `place.from`, and says
@@ -1638,8 +2072,63 @@ impl<'p, 't> Matcher<'p, 't> {
         if ours.hash(place.from..end) != theirs.hash(range.clone()) {
             return None;
         }
-        self.equal(earlier, &Bound::Run(place.owner, place.from..end))
-            .then_some(end)
+        // Between two nodes' parts, equal hashes are checked by reading the code: directly the
+        // first time two nodes are compared, and from then on by a common prefix of the two
+        // nodes' code read together, in constant time, so that comparing the same two nodes at
+        // many places costs no more than within one.
+        let pair = (*owner, place.owner);
+        let joint = {
+            let mut joints = self.joints.borrow_mut();
+            match joints.get(&pair) {
+                None => {
+                    joints.insert(pair, None);
+                    None
+                }
+                Some(None) => {
+                    let made = Rc::new(self.joint(*owner, place.owner));
+                    joints.insert(pair, Some(Rc::clone(&made)));
+                    Some(made)
+                }
+                Some(Some(made)) => Some(Rc::clone(made)),
+            }
+        };
+        let Some(joint) = joint else {
+            return self
+                .equal(earlier, &Bound::Run(place.owner, place.from..end))
+                .then_some(end);
+        };
+        let theirs_at = theirs.lengths[range.start];
+        let ours_at = joint.second + ours.lengths[place.from];
+        (joint.common.common(theirs_at, ours_at) >= length).then_some(end)
+    }
+
+    /// The code of `first`'s parts and then `second`'s, numbered together and kept apart by a
+    /// piece neither holds, with how far any two places in it agree.
+    fn joint(&self, first: NodeId, second: NodeId) -> Joint {
+        let same = Same { arena: self.target };
+        let mut numbers: HashMap<Code<'_>, u32> = HashMap::new();
+        let mut pieces = Vec::new();
+        let mut code = Vec::new();
+        let mut number = |code: &mut Vec<Code<'t>>, pieces: &mut Vec<u32>| {
+            for piece in code.drain(..) {
+                let next =
+                    u32::try_from(numbers.len()).expect("fewer pieces than an arena's offsets");
+                pieces.push(*numbers.entry(piece).or_insert(next));
+            }
+        };
+        same.code(&self.parts_of(first), &mut code);
+        number(&mut code, &mut pieces);
+        // Numbers count up from zero, and an arena holds fewer pieces than this.
+        pieces.push(u32::MAX);
+        let second_at = pieces.len();
+        same.code(&self.parts_of(second), &mut code);
+        number(&mut code, &mut pieces);
+        #[cfg(test)]
+        self.work.set(self.work.get() + pieces.len());
+        Joint {
+            common: Common::new(&pieces),
+            second: second_at,
+        }
     }
 
     /// Binds `bound` to `hole`'s name, or checks it equals what the name already holds.  A hole
@@ -2081,10 +2570,12 @@ mod tests {
         // Alone, neither name is used again, so no sequence's stop decides anything later.
         let two = pattern("f($a...,$x,$b...,$y,$c...)");
         assert_eq!(two.costly(), None);
-        // Testing one makes one choice, which is allowed; testing both makes two in one list.
+        // Testing both makes every pair of stops a way to try, the square; testing three, with
+        // three stops, every triple of them, the cube.
         assert_eq!(two.costly_with(&["x"]), None);
+        assert_eq!(two.costly_with(&["x", "y"]), None);
         assert!(matches!(
-            two.costly_with(&["x", "y"]),
+            pattern("f($a...,$x,$b...,$y,$c...,$z,$d...)").costly_with(&["x", "y", "z"]),
             Some(Costly::SecondChoice(_))
         ));
     }
@@ -2291,8 +2782,8 @@ mod remembered_against_backtracking {
             Fixed(2),
         ]);
         assert_eq!(single.costly(), None);
-        // Two sequences each named twice: placing `x` decides `$b`, and placing `y` decides
-        // the second `$a`, which is named as the second step that matters.
+        // Two sequences each named twice: with where the run starts, the first `$a`'s stop and
+        // the first `$b`'s are three places that decide what follows, named at the first `$b`.
         let twice = pattern(&[
             Fixed(0),
             Sequence(Some(0)),
@@ -2304,8 +2795,9 @@ mod remembered_against_backtracking {
             Sequence(Some(1)),
             Fixed(0),
         ]);
-        assert_eq!(twice.costly(), Some(Costly::SecondChoice(nth(&twice, 5))));
-        // One sequence named twice, but with a step before each use.
+        assert_eq!(twice.costly(), Some(Costly::SecondChoice(nth(&twice, 3))));
+        // One sequence named twice, but with a step before each use: where the run starts, and
+        // where `$...` and the first `$a` stop, named at the last of them.
         let spread = pattern(&[
             Fixed(0),
             Sequence(None),
@@ -2315,7 +2807,7 @@ mod remembered_against_backtracking {
             Sequence(Some(0)),
             Fixed(0),
         ]);
-        assert_eq!(spread.costly(), Some(Costly::SecondChoice(nth(&spread, 5))));
+        assert_eq!(spread.costly(), Some(Costly::SecondChoice(nth(&spread, 3))));
         // Unnamed sequences between fixed statements decide nothing.
         let free = pattern(&[Fixed(0), Sequence(None), Fixed(1), Sequence(None), Fixed(2)]);
         assert_eq!(free.costly(), None);
@@ -2539,9 +3031,8 @@ mod remembered_against_backtracking {
     }
 
     #[test]
-    fn choices_inside_a_node_are_judged_as_in_a_run() {
+    fn a_node_starts_where_it_stands_and_a_run_anywhere() {
         use Item::{Fixed, Sequence, Single};
-        // One choice inside a node is allowed, a second refused, as at the top level.
         let once = nested_pattern(&[Sequence(Some(0)), Fixed(1), Sequence(Some(0))], false);
         assert_eq!(once.costly(), None);
         let twice = nested_pattern(
@@ -2557,7 +3048,24 @@ mod remembered_against_backtracking {
             ],
             false,
         );
-        assert!(matches!(twice.costly(), Some(Costly::SecondChoice(_))));
+        // Two stops inside a node, which starts where it stands, are the square; the same in a
+        // run, which starts anywhere, are the cube.
+        assert_eq!(twice.costly(), None);
+        assert!(matches!(
+            pattern(&[
+                Fixed(0),
+                Sequence(Some(0)),
+                Fixed(1),
+                Sequence(Some(1)),
+                Fixed(2),
+                Sequence(Some(0)),
+                Fixed(1),
+                Sequence(Some(1)),
+                Fixed(0),
+            ])
+            .costly(),
+            Some(Costly::SecondChoice(_))
+        ));
         // Sequences standing together inside a node decide nothing and cost nothing more.
         let together = nested_pattern(&[Sequence(None), Sequence(None), Single(None)], true);
         assert_eq!(together.costly(), None);
@@ -2927,14 +3435,25 @@ mod trees {
             pattern("(f (g $a... x $a...) (h $b... y $b...))").costly(),
             None
         );
-        // But a list that uses a name the other's choice binds is worked out again for each.
-        assert!(matches!(
+        // A name bound last in its node binds one way, so the other list reads one binding.
+        assert_eq!(
             pattern("(f (g $a... x $a... $v) (h $b... $v $b...))").costly(),
+            None
+        );
+        // But a list that reads names another node binds is worked out again for each way it
+        // binds them, here as many as the triples of its three stops.
+        assert!(matches!(
+            pattern("(f (g $a... $v $c... $w $e... $u $k...) (h $v $w $u))").costly(),
             Some(Costly::SecondChoice(_))
         ));
-        // And two in one list multiply, as ever.
-        assert!(matches!(
+        // Stops in one list multiply as ever: two in a node, which starts where it stands, are
+        // the square, and three the cube.
+        assert_eq!(
             pattern("(f w $a... x $b... y $a... x $b... z)").costly(),
+            None
+        );
+        assert!(matches!(
+            pattern("(f w $a... x $b... y $c... z $a... $b... $c...)").costly(),
             Some(Costly::SecondChoice(_))
         ));
     }
@@ -3153,6 +3672,45 @@ mod trees {
         }
     }
 
+    /// A `where` over a run of statements is judged by every way the run binds its names, as
+    /// over one node, and a match it keeps covers the whole run.
+    #[test]
+    fn a_where_over_a_run_keeps_a_match_any_binding_satisfies() {
+        let compiled = super::trees::pattern("(f $a... $x $b...) (g y)");
+        let (built, _) = build("[(f p q r s) (g y)]");
+        let kept = |wanted: &str| -> Vec<String> {
+            find_where(&compiled, &built, &["x"], &mut |nodes| {
+                built.source(nodes[0]) == wanted
+            })
+            .into_iter()
+            .map(|m| built.text()[m.range].to_owned())
+            .collect()
+        };
+        // Each sequence takes one or more, so `$x` is q, as the first way binds it, or r.
+        for wanted in ["q", "r"] {
+            assert_eq!(kept(wanted), ["p q r s y"], "{wanted}");
+        }
+        for wanted in ["p", "s"] {
+            assert_eq!(kept(wanted), Vec::<String>::new(), "{wanted}");
+        }
+    }
+
+    /// `matches_at` with `anywhere` looks inside the node it is given, never beside it.
+    #[test]
+    fn anywhere_is_inside_the_node_and_nowhere_else() {
+        let compiled = super::trees::pattern("(f $x)");
+        let (built, _) = build("(B (f y) (g x))");
+        let block = built.children(built.root()).next().expect("B");
+        let [f, g]: [NodeId; 2] = built
+            .children(block)
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
+        assert!(matches_at(&compiled, &built, f, true, &[]));
+        assert!(matches_at(&compiled, &built, block, true, &[]));
+        assert!(!matches_at(&compiled, &built, g, true, &[]));
+    }
+
     /// A nested node's match is not final: where a name it bound fails later, it is asked for
     /// its next way.  Here `f`'s `$a` must take `1, 2`, though `1` alone lets `f` itself match.
     #[test]
@@ -3205,6 +3763,182 @@ mod trees {
         assert_eq!(pattern("w $... (f $a... x) $... (g $a...)").costly(), None);
     }
 
+    /// How deep a list stands never changes whether testing its names is too costly: a node's
+    /// ways are one choice in every list enclosing it, however many names they move, and a name
+    /// bound before any sequence, or after the last, binds one way.  Two sequences moving names
+    /// of one node still make two choices, wherever the node is.
+    #[test]
+    fn testing_names_costs_the_same_however_deep_their_list_stands() {
+        for (list, tested, costly) in [
+            ("(g $b $q... $a)", &["a", "b"][..], false),
+            ("(g $q... $a $b)", &["a", "b"][..], false),
+            ("(g $b $q... $a)", &["b"][..], false),
+            // The last sequence's stop is settled where its list ends, so `$b` binds one way.
+            ("(g $q... $a $p... $b)", &["a", "b"][..], false),
+            // Two names two stops move are every pair of them to try, the square, and three
+            // the cube.
+            ("(g $q... $a $p... $b $r...)", &["a", "b"][..], false),
+            (
+                "(g $q... $a $p... $b $r... $c $s...)",
+                &["a", "b", "c"][..],
+                true,
+            ),
+            // A node matches its whole list, so a name with no sequence after it is pinned to
+            // the node's end and binds one way.
+            ("(f (g $q... $a) (h $p... $b))", &["a", "b"][..], false),
+            // Each node's name moves with its own stop: every pair of them, the square, and
+            // with a third node every triple, the cube.
+            (
+                "(f (g $q... $a $r...) (h $p... $b $s...))",
+                &["a", "b"][..],
+                false,
+            ),
+            (
+                "(f (g $q... $a $r...) (h $p... $b $s...) (k $t... $c $u...))",
+                &["a", "b", "c"][..],
+                true,
+            ),
+            // A list's own stop, and a node's beside it: each free only where something after
+            // it can move, and two together the square.
+            ("(f $q... $a (g $p... $b))", &["a", "b"][..], false),
+            (
+                "(f $q... $a (g $p... $b $s...) $r...)",
+                &["a", "b"][..],
+                false,
+            ),
+        ] {
+            for wrapped in [
+                list.to_owned(),
+                format!("(D {list})"),
+                format!("(D (D {list}))"),
+            ] {
+                assert_eq!(
+                    pattern(&wrapped).costly_with(tested).is_some(),
+                    costly,
+                    "{wrapped} testing {tested:?}"
+                );
+            }
+        }
+        // Nor does a name bound first in a node make a choice where it is used again.
+        assert_eq!(pattern("(g $a $q...) y $q... x x (g $a y)").costly(), None);
+    }
+
+    /// A name used twice repeats its code within one list: where the code it holds would run on
+    /// into the next list of the node, it does not stand there, though the code reads alike.
+    #[test]
+    fn repeated_code_stays_in_the_list_it_starts_in() {
+        let (fast, slow) = both("(D $a... x $a... y)", "(D [p q] x [p] [q] y)");
+        assert_eq!(fast, Vec::<String>::new());
+        assert_eq!(slow, Vec::<String>::new());
+        // Where it fits in one list, it stands.
+        let (fast, slow) = both("(D $a... x $a... y)", "(D [p q] x [p q] y)");
+        assert_eq!(fast, ["p q x p q y"]);
+        assert_eq!(slow, fast);
+    }
+
+    /// Each rule of the cost count, by a pattern whose verdict turns on it: with the search
+    /// counted as the matcher makes it, each refused pattern makes some state depend on three of
+    /// the places a search can go more than one way, and each accepted one on no more than two.
+    #[test]
+    fn the_cost_check_counts_the_states_the_matcher_makes() {
+        for (text, tested, costly) in [
+            // A sequence followed straight by another is not settled at the first place the code
+            // after it stands, since there is none, so both try every stop.
+            ("(D y $q... $... $... $q...)", &[][..], true),
+            // A sequence followed by fixed code that binds nothing the rest reads is settled
+            // there in a plain search, and tries no other stop.
+            ("(D $p... $... y $... $p... x y)", &[][..], false),
+            // But not where the fixed code after it is the last of a node's list, which only the
+            // place that ends the list settles.
+            ("(D $p... $... $q... (g $p...))", &[][..], true),
+            // A sequence whose ways a `where` gathers shares them between the places that ask
+            // only where more than one does: in a run, or after a free sequence in its list.
+            ("x ; $p... (g (g $b $... $p...))", &["b"][..], false),
+            // And only where nothing reads or carries what it takes.
+            (
+                "y (g y) $q... (g y $q... $a $p...) $b y",
+                &["a", "b"][..],
+                false,
+            ),
+            // A name bound inside a later part is read only after it is bound there.
+            (
+                "$b $... (g x $... $b $p...) (g $p...) $p... x",
+                &["b"][..],
+                false,
+            ),
+            (
+                "(D (g x x) $q... $... $q... $p... $b (g (g x x) $p...))",
+                &[][..],
+                false,
+            ),
+            // A plain search matches a pattern of one node plainly, and only the `where` gathers
+            // its ways, so the plain search's own states count too.
+            (
+                "(D (g (g $... $b $q...)) $p... $... x $b)",
+                &["b"][..],
+                true,
+            ),
+        ] {
+            assert_eq!(
+                pattern(text).costly_with(tested).is_some(),
+                costly,
+                "{text} testing {tested:?}"
+            );
+        }
+    }
+
+    /// A `where` over a run of statements tries each way of binding its name at each start, and
+    /// what follows the name is worked out once whatever the name holds and wherever the run
+    /// started, so the work grows with the square of the run's length: four times over twice as
+    /// many statements, not eight.
+    #[test]
+    fn a_where_over_a_run_stays_quadratic_however_many_starts_it_has() {
+        let compiled = pattern("x $... $a $... y");
+        assert_eq!(compiled.costly_with(&["a"]), None);
+        let work = |n: usize| {
+            let (built, _) = build(&format!("[{}]", filled("x $... $a $... y", n)));
+            WORK.with(|work| work.set(0));
+            assert_eq!(
+                find_where(&compiled, &built, &["a"], &mut |_| false),
+                Vec::<Match>::new()
+            );
+            WORK.with(std::cell::Cell::get)
+        };
+        let (small, large) = (work(32), work(64));
+        assert!(large < 6 * small, "{small} then {large}");
+    }
+
+    /// A sequence after another in a node's list is moved by both their stops, so it binds as
+    /// many ways as the square of the list's length, and using it again after the node is a
+    /// second choice: refused, as searching it costs the cube, eight times the work over twice
+    /// the code where no way matches.  With no sequence after it, it ends where the node does,
+    /// and only one stop moves it.
+    #[test]
+    fn a_sequence_after_another_is_moved_by_both_their_stops() {
+        let both = pattern("(D (g $... $q... $...) $... $q... x y)");
+        assert!(matches!(both.costly(), Some(Costly::SecondChoice(_))));
+        let work = |n: usize| {
+            let target = format!(
+                "(D (g {}) {})",
+                vec!["x"; n].join(" "),
+                vec!["x y"; n].join(" ")
+            );
+            let (built, _) = build(&target);
+            WORK.with(|work| work.set(0));
+            assert_eq!(
+                find_in(&both, &built, true, &[], None, None, &[]),
+                Vec::<Match>::new()
+            );
+            WORK.with(std::cell::Cell::get)
+        };
+        let (small, large) = (work(16), work(32));
+        assert!(large > 6 * small, "{small} then {large}");
+        // Compared once after the node, its square of ways cost the square, as the node's own
+        // search does; and with no sequence after it, it ends where the node does.
+        assert_eq!(pattern("(D (g $... $q... $...) $q...)").costly(), None);
+        assert_eq!(pattern("(D (g $... $q...) $q...)").costly(), None);
+    }
+
     /// A node asked for its ways: each is one length of `$a`, and the one `g` needs is the
     /// longest, so every way is tried.  The work grows with the square of the arguments' number,
     /// four times over twice as many, not eight.
@@ -3239,7 +3973,13 @@ mod trees {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(4000))]
+        // About one generated run in five is assumed away - nothing but holes, a sequence at its
+        // edge, or too costly - which the default limit on rejects leaves little room for.
+        #![proptest_config(ProptestConfig {
+            cases: 4000,
+            max_global_rejects: 4096,
+            ..ProptestConfig::default()
+        })]
 
         #[test]
         fn remembering_finds_what_backtracking_finds_in_nested_trees(
@@ -3302,6 +4042,49 @@ mod trees {
             prop_assert_eq!(kept, oracle, "{} over {} testing ${}", pattern, target, name);
         }
 
+        /// The same over a run of statements, where a match's end is a way's too.
+        #[test]
+        fn a_where_over_a_run_keeps_what_the_oracle_finds_a_passing_way_for(
+            pattern in prop::collection::vec(pattern_item(2), 2..7),
+            target in prop::collection::vec(target_item(2), 1..12),
+            length in 1usize..5,
+        ) {
+            let pattern = trimmed(&pattern);
+            // A pattern compiler refuses a pattern of nothing but holes.
+            prop_assume!(pattern.split_whitespace().any(|word| !word.starts_with('$')));
+            let target = format!("[{}]", trimmed(&target));
+            let compiled = super::trees::pattern(&pattern);
+            let single = |name: &str| {
+                compiled
+                    .holes()
+                    .any(|(_, hole)| hole.name.as_deref() == Some(name) && !hole.sequence)
+                    && !compiled
+                        .holes()
+                        .any(|(_, hole)| hole.name.as_deref() == Some(name) && hole.sequence)
+            };
+            let Some(name) = ["a", "b"].into_iter().find(|name| single(name)) else {
+                return Ok(());
+            };
+            prop_assume!(compiled.unbounded_sequence().is_none());
+            prop_assume!(compiled.costly_with(&[name]).is_none());
+            let (built, _) = build(&target);
+            let same = Same { arena: &built };
+            let kept: Vec<String> = find_where(&compiled, &built, &[name], &mut |nodes| {
+                let mut code = Vec::new();
+                same.code(&[Part::Child(nodes[0])], &mut code);
+                code.len() == length
+            })
+            .into_iter()
+            .map(|m| built.text()[m.range].to_owned())
+            .collect();
+            let oracle: Vec<String> = Oracle { pattern: &compiled, target: &built }
+                .find_where(&mut |held| held.get(name).is_some_and(|code| code.len() == length))
+                .into_iter()
+                .map(|m| built.text()[m.range].to_owned())
+                .collect();
+            prop_assert_eq!(kept, oracle, "{} over {} testing ${}", pattern, target, name);
+        }
+
         #[test]
         fn the_common_prefix_of_two_places_is_read_exactly(
             sequence in prop::collection::vec(0u32..3, 1..60),
@@ -3316,5 +4099,237 @@ mod trees {
                 .count();
             prop_assert_eq!(Common::new(&sequence).common(a, b), plain);
         }
+    }
+
+    /// `pattern` as code it matches: each hole filled with `x`, and each sequence with `length`
+    /// of them, so that every sequence can stop in many places and every way is open.
+    fn filled(pattern: &str, length: usize) -> String {
+        let sequence = vec!["x"; length].join(" ");
+        words(pattern)
+            .iter()
+            .map(|word| match word.strip_prefix('$') {
+                Some(hole) if hole.ends_with("...") => sequence.as_str(),
+                Some(_) => "x",
+                None => word.as_str(),
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// [`filled`], with the last word the pattern itself spells changed to one it never does,
+    /// so that the match fails only at its end, once every way before has been tried: a search
+    /// that stops at the first way that matches is made to try them all.  None for a pattern
+    /// that spells no word.
+    fn spoiled(pattern: &str, length: usize) -> Option<String> {
+        let mut out = Vec::new();
+        let mut last = None;
+        for word in words(pattern) {
+            match word.strip_prefix('$') {
+                Some(hole) if hole.ends_with("...") => out.extend(vec!["x".to_owned(); length]),
+                Some(_) => out.push("x".to_owned()),
+                None => {
+                    if word == "x" || word == "y" {
+                        last = Some(out.len());
+                    }
+                    out.push(word);
+                }
+            }
+        }
+        out[last?] = "z".to_owned();
+        Some(out.join(" "))
+    }
+
+    /// The code [`growth`] measures a pattern over, in pairs of the same code at two lengths:
+    /// the pattern [`filled`] with 8 and then 32 for each sequence, and the same [`spoiled`]
+    /// where the pattern spells a word.  A run of statements is searched among a block's.
+    fn growth_targets(text: &str) -> Vec<Arena<'static>> {
+        let target = |code: String| {
+            let code = if text.starts_with("(D ") {
+                code
+            } else {
+                format!("[{code}]")
+            };
+            build(&code).0
+        };
+        let mut built: Vec<Arena<'static>> = [8, 32]
+            .into_iter()
+            .map(|length| target(filled(text, length)))
+            .collect();
+        if let (Some(small), Some(large)) = (spoiled(text, 8), spoiled(text, 32)) {
+            built.extend([target(small), target(large)]);
+        }
+        built
+    }
+
+    /// The names a `where` could test in `compiled`, alone and together: those it binds to one
+    /// node, of `a` and `b`, with testing nothing first.
+    fn testable(compiled: &Pattern) -> Vec<&'static [&'static str]> {
+        let single = |name: &str| {
+            compiled
+                .holes()
+                .any(|(_, hole)| hole.name.as_deref() == Some(name) && !hole.sequence)
+                && !compiled
+                    .holes()
+                    .any(|(_, hole)| hole.name.as_deref() == Some(name) && hole.sequence)
+        };
+        [&[][..], &["a"], &["b"], &["a", "b"]]
+            .into_iter()
+            .filter(|tested| tested.iter().all(|name| single(name)))
+            .collect()
+    }
+
+    /// The matcher's work searching each of `built` for `compiled`, testing `tested`, with every
+    /// way of binding them rejected so that all of them are tried.
+    fn work_over(compiled: &Pattern, built: &[Arena<'static>], tested: &[&str]) -> Vec<usize> {
+        built
+            .iter()
+            .map(|target| {
+                WORK.with(|work| work.set(0));
+                let mut reject = |_: &[NodeId]| false;
+                let accept: Option<&mut Accept<'_>> = (!tested.is_empty()).then_some(&mut reject);
+                let _ = find_in(compiled, target, true, tested, accept, None, &[]);
+                WORK.with(std::cell::Cell::get)
+            })
+            .collect()
+    }
+
+    /// Whether the work over the same code at two lengths, the second four times the first,
+    /// grew faster than the square: more than thirty-two times, between the square's sixteen
+    /// and the cube's sixty-four.
+    fn steep(pair: &[usize]) -> bool {
+        pair[1] > 32 * pair[0].max(1)
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 1000,
+            max_global_rejects: 100_000,
+            ..ProptestConfig::default()
+        })]
+
+        /// No pattern the cost check accepts makes the matcher's work grow faster than the
+        /// square of the code it searches, measured as the corpus is
+        /// ([`the_cost_check_gives_the_corpus_its_recorded_verdicts`]) but over patterns
+        /// generated afresh on every run, deeper than the corpus's, so that a shape the corpus
+        /// never holds is still met in time.
+        #[test]
+        fn no_accepted_pattern_costs_more_than_the_square(
+            items in prop::collection::vec(pattern_item(3), 1..10),
+            run in any::<bool>(),
+        ) {
+            let items = trimmed(&items);
+            // A pattern compiler refuses a pattern of nothing but holes.
+            prop_assume!(!run || items.split_whitespace().any(|word| !word.starts_with('$')));
+            let text = if run { items } else { format!("(D {items})") };
+            let compiled = super::trees::pattern(&text);
+            prop_assume!(compiled.unbounded_sequence().is_none());
+            let built = growth_targets(&text);
+            for tested in testable(&compiled) {
+                if compiled.costly_with(tested).is_some() {
+                    continue;
+                }
+                let work = work_over(&compiled, &built, tested);
+                for pair in work.chunks(2) {
+                    prop_assert!(
+                        !steep(pair),
+                        "{} testing {:?}: {} then {}",
+                        text,
+                        tested,
+                        pair[0],
+                        pair[1]
+                    );
+                }
+            }
+        }
+    }
+
+    /// The cost check's verdict on a fixed corpus of generated patterns, with the work each
+    /// search takes, as a snapshot, and no accepted pattern's work growing faster than the
+    /// square of the code it searches: so that a change to the check - relaxing a limit, say -
+    /// fails where it lets a costlier pattern through, and shows as a diff naming every pattern
+    /// whose verdict moved, and what searching it cost.
+    ///
+    /// Each line is one pattern - a run of statements, or a node `D` over its children - then its
+    /// verdict alone and with each name a `where` could test: `ok`, or why it is refused and at
+    /// which hole.  A run with a sequence at its edge is left out, since it is refused before
+    /// cost is asked.  The numbers after each verdict are the matcher's work over the pattern
+    /// [`filled`] with 8 and then 32 for each sequence, then over the same [`spoiled`] where the
+    /// pattern spells a word, searched whatever the verdict, with every way of binding the
+    /// tested names rejected so that all of them are tried.  Four times the
+    /// code is sixteen times the work where it grows with the square, and sixty-four with the
+    /// cube; an accepted pattern's growing more than thirty-two times fails.  This is work on
+    /// these targets, not a bound: they are not shown to be any pattern's worst case, so a
+    /// pattern that passes is not shown to be cheap everywhere.
+    ///
+    /// The corpus comes from a fixed seed through proptest, whose version is pinned; a new
+    /// version may generate other patterns, and the snapshot is then regenerated as a whole.
+    #[test]
+    fn the_cost_check_gives_the_corpus_its_recorded_verdicts() {
+        use proptest::strategy::ValueTree;
+        use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
+        use std::fmt::Write as _;
+
+        let mut runner = TestRunner::new_with_rng(
+            Config::default(),
+            TestRng::from_seed(RngAlgorithm::ChaCha, &[7; 32]),
+        );
+        let mut patterns = BTreeSet::new();
+        for _ in 0..1000 {
+            let strategy = prop::collection::vec(pattern_item(2), 1..7);
+            let items = trimmed(&strategy.new_tree(&mut runner).unwrap().current());
+            patterns.insert(format!("(D {items})"));
+            // A pattern compiler refuses a pattern of nothing but holes.
+            if items.split_whitespace().any(|word| !word.starts_with('$')) {
+                patterns.insert(items);
+            }
+        }
+
+        let mut out = String::new();
+        let mut steep_found = Vec::new();
+        for text in &patterns {
+            let compiled = super::trees::pattern(text);
+            // A sequence at the edge of a run is refused before cost is asked, and has no search
+            // to measure.
+            if compiled.unbounded_sequence().is_some() {
+                continue;
+            }
+            let built = growth_targets(text);
+            out.push_str(text);
+            for tested in testable(&compiled) {
+                let verdict = match compiled.costly_with(tested) {
+                    None => "ok".to_owned(),
+                    Some(Costly::Together(hole)) => {
+                        format!("together at {} {}", hole.0, compiled.arena().source(hole))
+                    }
+                    Some(Costly::SecondChoice(hole)) => {
+                        format!("second at {} {}", hole.0, compiled.arena().source(hole))
+                    }
+                };
+                let work = work_over(&compiled, &built, tested);
+                let tested = if tested.is_empty() {
+                    "alone".to_owned()
+                } else {
+                    tested.join(" ")
+                };
+                for pair in work.chunks(2) {
+                    if verdict == "ok" && steep(pair) {
+                        steep_found.push(format!(
+                            "{text} testing {tested}: {} then {}",
+                            pair[0], pair[1]
+                        ));
+                    }
+                }
+                let work: Vec<String> = work.iter().map(usize::to_string).collect();
+                write!(out, " | {tested}: {verdict} {}", work.join(" "))
+                    .expect("a string takes it");
+            }
+            out.push('\n');
+        }
+        assert!(
+            steep_found.is_empty(),
+            "accepted, but its work grows faster than the square:\n{}",
+            steep_found.join("\n")
+        );
+        insta::assert_snapshot!(out);
     }
 }

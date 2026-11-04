@@ -4,11 +4,11 @@ info:
   program: quaff
   args:
     - "-e"
-    - "find `connect($a..., $x, $b..., $y, $c...)` where $x matches \"a\" and $y matches \"b\""
+    - "find `connect($a..., $x, $b..., $y, $c..., $z, $d...)` where $x matches \"a\" and $y matches \"b\" and $z matches \"c\""
 ---
 success: false
 exit_code: 3
 ----- stdout -----
 
 ----- stderr -----
-quaff: -e expression 1, at character 51: testing `$x` and `$y` in `where` makes a second place where what a sequence takes decides what later code must match, and each such place multiplies the work of a search by the length of the block or list it stands in, so a pattern and its `where` may have one between them: test fewer of its names, or give the pattern more fixed code
+quaff: -e expression 1, at character 62: testing `$x` and `$y` and `$z` in `where` makes a search depend on a third place at once where it can go more than one way - where a sequence stops, or where a run of statements starts - and each such place multiplies the work of a search by the length of the block or list it stands in, so a pattern and its `where` may depend on two between them: test fewer of its names, or give the pattern more fixed code

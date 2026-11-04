@@ -681,14 +681,16 @@ quaff: -p, at character 17: "$b..." follows another sequence with no statement b
 [exit 3]
 ```
 
-**A pattern may have one place where what a sequence takes decides what later code must
-match.**  A sequence named twice is one such place: `w()`, `$a...`, `x()`, `$a...`, `y()` is fine,
-and so is a name bound in one statement and used in a later one.  The same goes inside a node, in
-a call's arguments or a function's body.  Two such places are fine when they are in lists that
-share no name, since neither then changes what the other is matched with: `f(g($a..., x,
-$a...), h($b..., y, $b...))` is accepted.  Each such place multiplies the work of a search by the
-length of the block or list it stands in, so a second is refused rather than left to make a
-search slow on a long file:
+**A search may depend on two places at once where it can go more than one way, but not
+three.**  Such a place is where a sequence stops, and, in a run of statements, where the run
+starts.  A sequence named twice is fine: `w()`, `$a...`, `x()`, `$a...`, `y()` depends on where
+the run starts and where the first `$a...` stops.  So is a name bound in one statement and used in
+a later one.  Inside a node, which starts where it stands, `f($a..., $b...) + g($a..., x, $b...)`
+is fine too, since one stop divides `f`'s arguments between `$a` and `$b`.  Places in lists that
+share no name do not add up, since neither changes what the other is matched with: `f(g($a..., x,
+$a...), h($b..., y, $b...))` is accepted.  Each place multiplies the work of a search by the
+length of the block or list it stands in, so a third is refused rather than left to make a search
+slow on a long file:
 
 ```
 $ quaff -p 'open_db()
@@ -700,7 +702,7 @@ $a...
 commit()
 $b...
 close_db()' play
-quaff: -p, at character 43: "$a..." makes a second place where what a sequence takes decides what later code must match, and each such place multiplies the work of a search by the length of the block or list it stands in, so a pattern may have one: give one of the names used twice a name of its own
+quaff: -p, at character 26: "$b..." makes a search depend on a third place at once where it can go more than one way - where a sequence stops, or where a run of statements starts - and each such place multiplies the work of a search by the length of the block or list it stands in, so a pattern may depend on two: give one of the names used twice a name of its own
 [exit 3]
 ```
 
@@ -903,14 +905,15 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
   short of the edge of its block, so one match would cover far more than the pattern spells.  Put
   fixed code on both sides of it.  So `return $x` then `$dead...`, every statement after a
   `return`, cannot be written.
-- **A pattern may have only one place where what a sequence takes decides what later code must
-  match**, in a run of statements or inside a node, unless the two are in lists that share no
-  name, and two sequences may not stand together in a run of statements.  Matching patterns
-  with names used more than once is, in general, a problem no algorithm solves quickly, so the
-  pattern is refused where its search could grow faster than the square of a block's or list's
-  length, rather than accepted and left to run for minutes on a long file.  A sequence named twice
-  is fine; two sequences each named twice in one list are not.  Two sequences together inside a
-  node, `f($a..., $b...)`, are fine: the node bounds them.
+- **A search may depend on at most two places at once where it can go more than one way** -
+  where a sequence stops, or where a run of statements starts - and two sequences may not stand
+  together in a run of statements.  Matching patterns with names used more than once is, in
+  general, a problem no algorithm solves quickly, so the pattern is refused where its search could
+  grow faster than the square of a block's or list's length, rather than accepted and left to run
+  for minutes on a long file.  A sequence named twice is fine; two sequences each named twice are
+  fine inside a node, which starts where it stands, but not in a run of statements, which could
+  start anywhere.  Two sequences together inside a node, `f($a..., $b...)`, are fine: the node
+  bounds them.
 - **Structural patterns ignore non-Python files rather than falling back to text**, and say so.
 - **A Python file quaff cannot parse stops a structural search** (exit 9): one Python refuses to
   read, and one Python reads in an encoding quaff does not, such as GBK.  A textual query alone

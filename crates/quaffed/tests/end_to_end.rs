@@ -866,7 +866,7 @@ fn a_where_on_what_its_pattern_cannot_bind_is_refused() {
         r#"find `fetch($s)` where $t matches "a""#,
         r#"find `fetch($_)` where $_ matches "a""#,
         r#"find `connect($xs...)` where $xs matches "a""#,
-        r#"find `connect($a..., $x, $b..., $y, $c...)` where $x matches "a" and $y matches "b""#,
+        r#"find `connect($a..., $x, $b..., $y, $c..., $z, $d...)` where $x matches "a" and $y matches "b" and $z matches "c""#,
         // Named where the name is tested, however deep in the filter that is.
         r#"find "fetch" where FILE matches "a" and not $x matches "a""#,
     ] {

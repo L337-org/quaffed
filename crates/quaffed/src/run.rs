@@ -1057,11 +1057,12 @@ fn check_filter(
         return Err(script(
             span,
             format!(
-                "testing {} in `where` makes a second place where what a sequence takes \
-                 decides what later code must match, and each such place multiplies the \
-                 work of a search by the length of the block or list it stands in, so a \
-                 pattern and its `where` may have one between them: test fewer of its \
-                 names, or give the pattern more fixed code",
+                "testing {} in `where` makes a search depend on a third place at once where \
+                 it can go more than one way - where a sequence stops, or where a run of \
+                 statements starts - and each such place multiplies the work of a search by \
+                 the length of the block or list it stands in, so a pattern and its `where` \
+                 may depend on two between them: test fewer of its names, or give the \
+                 pattern more fixed code",
                 names
                     .iter()
                     .map(|name| format!("`${name}`"))
