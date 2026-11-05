@@ -1,0 +1,15 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "find `connect($b..., $x, $a...)` where not $x contains \"password\""
+---
+success: true
+exit_code: 0
+----- stdout -----
+src/client.py:1:1-1:43: connect(host, port, "password123", timeout)
+src/client.py:2:1-2:28: connect(host, port, timeout)
+
+----- stderr -----

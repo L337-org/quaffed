@@ -1,0 +1,14 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "find `log($m)` where $m matches `format($xs...)`"
+---
+success: true
+exit_code: 0
+----- stdout -----
+src/log.py:1:1-1:17: log(format(user))
+
+----- stderr -----

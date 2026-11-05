@@ -1,0 +1,16 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "find `x = $v`"
+---
+success: false
+exit_code: 9
+----- stdout -----
+
+----- stderr -----
+quaff: refused: 1 Python file in scope cannot be parsed, so a structural search cannot count matches in it:
+  "tests/broken.py": line 1, column 5: Expected an identifier
+To search without it, leave it out of the statement: with `in`, with `where not FILE matches`, such as where not FILE matches "tests/broken.py", or project-wide by listing it in .ignore

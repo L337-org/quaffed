@@ -33,8 +33,12 @@ What a user sees is in `docs/language.md`, _What is searched_.  How it is built:
    that knows any version control system.  For git it is the nearest directory at or above the
    current one containing `.git`, tested for existence rather than type, so a submodule's `.git`
    file counts.  With no root, the current directory stands in.
-2. **A scope** is one path, never a glob.  It must exist (exit 7) and lie inside the project
-   (exit 3), because a scope narrows and never widens.
+2. **Discovery starts from a base**, a path that exists: the scope the command line gives, or,
+   for a statement with an `in` and none, the directory its glob's leading text names, or the
+   current directory (_Scope and filters_ below).  Each distinct base is walked once, by **the
+   rules of the project it is in**: the current directory's under its root, otherwise the one
+   `workspace::find` finds above the base, or with none the base itself standing in, as it would
+   if quaff ran there.  Each project keeps its own declarations, for its files' encodings.
 3. **quaff walks the project itself** (`src/discover.rs`), with the standard library's directory
    listing and the `ignore` crate's pattern matcher - ripgrep's - but not its walker, because:
    - **no ignore file above the project root may be read**, so that nothing outside the project
@@ -43,10 +47,13 @@ What a user sees is in `docs/language.md`, _What is searched_.  How it is built:
      costs nothing; a walker that filters what it has listed reads every name first.  A test
      counts the directories listed.
 4. **Ignore files rank as the `ignore` crate's walker ranks them**, and a repository's own stop at
-   its root.  Which files are listed is held to git's own answer by a test replaying what
-   `scripts/generate-ignore-cases` recorded; to pin a behaviour, add a case there and run it
-   again.
-5. **The walk starts at the root and narrows to the scope as it goes down**, so the ignore files
+   its root and apply only within a repository, as git's do.  So with no project the walk is still
+   given git's ignore files (`workspace::ignore_files_outside`), and a repository it enters keeps
+   its own rules, as a submodule does inside a project; a file in one takes its declared encoding
+   from it too (`Projects::of_file`).  Which files are listed is held to git's own answer by a test
+   replaying what `scripts/generate-ignore-cases` recorded; to pin a behaviour, add a case there and
+   run it again.
+5. **The walk starts at the boundary and narrows to the base as it goes down**, so the ignore files
    between them still apply.  A scope naming an ignored file or directory is searched, crossing
    only the boundaries on the way to it; every rule beneath it still applies.
 6. **Every file is read once, through `src/contents.rs`**, whatever reads it: an ignore file,
@@ -61,6 +68,53 @@ What a user sees is in `docs/language.md`, _What is searched_.  How it is built:
    line and the glob parser's words.  Anything else that cannot be read stops the run, exit 7,
    rather than answering short.
 9. Files are searched in path order, so output is the same on every run.
+
+## Scope and filters
+
+Which files each statement looks at (`src/scope.rs`, and `Scoping` in `src/run.rs`).  The path
+rules a user sees are `docs/language.md`'s _Paths and globs_.
+
+- **Every pattern of the run has its own scope**: the base its files come from, its `in`, and
+  the part of its `where` a path alone can decide.  A file no pattern looks at is not read.
+- **A path is matched as printed**, relative to the current directory with `/` between its
+  segments, relative to the root for a glob that begins `:/`, and as the absolute path for one
+  that is absolute.  A glob's leading directory, where it is there, is the exception: it is
+  resolved on disk and the glob matched as an absolute one (`scope::on_disk`), so it names the
+  directory a path with no wildcard would - `"../"**` from `src/` takes in `src/` as `in ".."`
+  does - and follows a symbolic link as discovery does.  `contains` reads none of those prefixes: it is text anywhere in the path as
+  printed.  A glob is compiled to a regular expression (`src/glob.rs`), with `regex-automata`,
+  so a match takes time linear in the path however the glob is written.  `*`, `?` and a
+  class are kept within a segment - for a path a directory name, for a string a line - and `**`
+  crosses them.
+- **A path with no wildcard names what is on disk**: it is resolved and compared by where it is,
+  so `in "src"` and `in "../src"` from inside `src/` agree, as a scope on the command line would.
+- **`where` is decided as far as it can be before a file is parsed** (`FileTest`), with every
+  test of a metavariable unknown until a match binds it.  A file whose `where` is false whatever
+  the unknowns are is not needed by that statement: it is never parsed for it, and so cannot
+  refuse the run with exit 9.  This is the units rule, and it is why excluding by `FILE` and by
+  `in` behave alike.
+- **A test of a metavariable is decided per match** (`src/filter.rs`): `find_where` in
+  `quaffed-syntax` offers every way a match binds the tested names, and the match is kept if any
+  way passes the whole `where`.  A quoted glob compares a string literal's content or other code's
+  text; a backticked pattern is compiled before any file is read, searched for once per file, and
+  matches the bound node when it has the node's range, or is inside it for `contains`.  A pattern
+  that shares a name with the statement's is instead matched at the bound node with that name bound
+  in advance (`quaffed_syntax::matches_at`), once per binding, remembered, and the shared name is
+  tested too, so the cost check counts it.  Each tested name counts as one more use of it, read once
+  the match is complete, so `Pattern::costly_with` bounds the search as it bounds a name used twice,
+  and a pattern that with its `where` would be too costly is refused before any file is read.
+- **The command-line scope narrows every statement**: a statement's `in` still names its own
+  base, and fails the run if that is not there; the deeper of the two is walked, and a
+  statement whose `in` and scope share nothing looks at nothing.  So an `in` finds the same
+  files whether or not a scope holding it is given.  A note says so only where the scope
+  changes what the statement looks at: where it is deeper than the `in`, or shares nothing
+  with it.
+- **A path is only computed where something reads it**: a run with no `in` and no `where`
+  works out no file's path as a glob would see it, and a structural search works it out for a
+  file only where one of its patterns has a `where`.
+- **What names nothing is said**: an `in` whose path or leading directory is not there fails the
+  run, exit 7, as a missing scope does, and a `FILE matches` path that is not there is noted.
+  Either gives the marker spelling of a path that reads as a glob (`scope::as_markers`).
 
 ## Matching, in the file's own encoding
 
@@ -132,9 +186,9 @@ The format is in `docs/language.md`, _Output_.  The rules behind it:
 | 0 | every assertion held; or, with no assertion, something was found |
 | 1 | nothing was found, and there was no assertion; not an error |
 | 2 | an assertion failed |
-| 3 | a usage error, a malformed script, a program with no statements, an edit with no `expect`, or a scope outside the project |
+| 3 | a usage error, a malformed script, a program with no statements, an edit with no `expect`, or a command-line scope holding a double quote |
 | 5 | a statement or construct this build does not have: outside the MVP, or in it and not built |
-| 7 | an I/O error, naming the path and quoting the system's error; for edits that could not be written, saying what was left |
+| 7 | an I/O error, naming the path and quoting the system's error; an `in` that names nothing there; for edits that could not be written, saying what was left |
 | 9 | the script or a file must change first: a structural search needs a Python file quaff cannot parse, naming each and how to leave it out; an edit would break a Python file that parsed; or a file's encoding cannot write a replacement |
 
 **An assertion block** - consecutive `find ... expect` statements - is evaluated to the end, and
@@ -145,8 +199,8 @@ and binary files never decide it, so that a file quaff cannot read never blocks 
 those it can, and a `find` and an edit with the same `expect` count the same matches.
 
 **The whole program is read, parsed and checked before any file is looked at**, so a script with
-an error anywhere does not run.  The constructs that parse but are not built - an `in` or `where`
-clause, a structural `replace`, and `delete` - exit 5, named, where they were written.
+an error anywhere does not run.  The constructs that parse but are not built - a structural
+`replace`, and `delete` - exit 5, named, where they were written.
 
 **A run that cannot give an answer - exit 3, 5, 7 or 9 - prints nothing on standard output**, so
 a partial answer never passes for a whole one.  Every message says what was being done, quotes

@@ -1,0 +1,14 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "find \"TODO\" where FILE contains \"sub\""
+---
+success: true
+exit_code: 0
+----- stdout -----
+src/sub/deep.py:1:10-1:13: TODO
+
+----- stderr -----

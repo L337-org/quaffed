@@ -372,9 +372,12 @@ fn finding_nothing_exits_1_and_is_not_an_error() {
 }
 
 #[test]
-fn from_a_subdirectory_it_searches_the_whole_project() {
+fn from_a_subdirectory_it_searches_that_directory_and_colon_slash_names_the_project() {
     let project = Project::new(PROJECT);
     assert_quaff_snapshot!(project.quaff_in("pkg", &["TODO"]));
+    // `:/` is the project root, whose files are printed relative to where quaff runs.
+    assert_quaff_snapshot!(project.quaff_in("pkg", &["TODO", ":/"]));
+    assert_quaff_snapshot!(project.quaff_in("pkg", &["TODO", ":/app.py"]));
     project.assert_unchanged();
 }
 
@@ -423,26 +426,516 @@ fn a_scope_that_does_not_exist_is_an_io_error_naming_it() {
     let project = Project::new(PROJECT);
     assert_quaff_snapshot!(project.quaff(&["TODO", "missing"]));
     assert_quaff_snapshot!(project.quaff(&["TODO", "src/**/*.py"]));
+    // A path that cannot be looked up is not one that is not there: the system says why.
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find "TODO" in "app.py/x""#]));
     project.assert_unchanged();
 }
 
 #[test]
-fn a_scope_outside_the_project_is_refused() {
+fn a_scope_outside_the_project_is_searched_by_that_projects_rules() {
     let project = Project::new(&[
-        ("outside.py", "TODO\n"),
         ("inner/.git/HEAD", ""),
         ("inner/a.py", "TODO\n"),
+        // Another project: its own .gitignore applies to it.
+        ("other/.git/HEAD", ""),
+        ("other/.gitignore", "ignored.txt\n"),
+        ("other/ignored.txt", "TODO\n"),
+        ("other/kept.txt", "TODO\n"),
+        // In no project: the directory named stands in for one, so its .ignore applies.
+        ("loose/.ignore", "skipped.txt\n"),
+        ("loose/skipped.txt", "TODO\n"),
+        ("loose/kept.txt", "TODO\n"),
     ]);
-    assert_quaff_snapshot!(project.quaff_in("inner", &["TODO", ".."]));
+    assert_quaff_snapshot!(project.quaff_in("inner", &["TODO", "../other"]));
+    assert_quaff_snapshot!(project.quaff_in("inner", &["TODO", "../loose"]));
+    // A file named is searched whatever ignores it.
+    assert_quaff_snapshot!(project.quaff_in("inner", &["TODO", "../other/ignored.txt"]));
     project.assert_unchanged();
 }
 
 #[test]
-fn with_no_project_a_scope_outside_the_current_directory_is_refused() {
+fn a_scope_holding_a_double_quote_is_refused_naming_in() {
+    let project = Project::new(PROJECT);
+    assert_quaff_snapshot!(project.quaff(&["-s", "TODO", r#""pkg/"**"#]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn with_no_project_a_scope_outside_the_current_directory_is_searched() {
     let project = Project::new(&[("a.txt", "TODO\n"), ("sub/b.txt", "TODO\n")]);
     assert_quaff_snapshot!(project.quaff_in("sub", &["TODO", ".."]));
     // Inside it, a scope still narrows as usual.
     assert_quaff_snapshot!(project.quaff(&["TODO", "sub"]));
+    project.assert_unchanged();
+}
+
+/// A project to scope: code and its tests, nested, beside some text.
+const SCOPED: &[(&str, &str)] = &[
+    (".git/HEAD", ""),
+    ("src/app.py", "x = 1  # TODO\n"),
+    ("src/sub/deep.py", "y = 2  # TODO\n"),
+    ("src/notes.txt", "TODO\n"),
+    ("tests/test_app.py", "# TODO\n"),
+    ("tests/test_x/helper.py", "# TODO\n"),
+    ("lib/x.py", "# TODO\n"),
+];
+
+#[test]
+fn in_scopes_a_statement_to_a_path_or_a_glob() {
+    let project = Project::new(SCOPED);
+    // A path with no wildcard names a directory and everything under it, or a file.
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find "TODO" in "src""#]));
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find "TODO" in "src/app.py""#]));
+    // One star stays within a directory; two cross them.
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find "TODO" in "src/"*".py""#]));
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find "TODO" in "src/"**".py""#]));
+    // Alternatives and classes.
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find "TODO" in {"lib","tests"}"/"**"#]));
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find "TODO" in "tests/test_"[a-z]*"#]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn in_is_relative_to_the_current_directory_and_colon_slash_to_the_root() {
+    let project = Project::new(SCOPED);
+    assert_quaff_snapshot!(project.quaff_in("src", &["-e", r#"find "TODO" in "sub""#]));
+    assert_quaff_snapshot!(project.quaff_in("src", &["-e", r#"find "TODO" in ":/tests""#]));
+    assert_quaff_snapshot!(project.quaff_in("src", &["-e", r#"find "TODO" in "../lib""#]));
+    // `..` is an ordinary segment to a glob, as any directory name is.
+    assert_quaff_snapshot!(
+        project.quaff_in("src", &["-e", r#"find "TODO" in "../"**"/test_"*".py""#])
+    );
+    project.assert_unchanged();
+}
+
+#[test]
+fn where_file_leaves_files_out_by_the_same_path_rules_as_in() {
+    let project = Project::new(SCOPED);
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        r#"find "TODO" where not FILE matches **"/test_"*".py""#
+    ]));
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find "TODO" where not FILE matches "tests""#]));
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find "TODO" where FILE contains "sub""#]));
+    // A star stays within a directory, so this leaves out only a .txt file at the top.
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find "TODO" where not FILE matches *".txt""#]));
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        r#"find "TODO" in "src" where not FILE matches **".txt" and not FILE matches "src/sub""#
+    ]));
+    // A glob's leading directory is a directory on disk: from a subdirectory, `../` is the
+    // parent, and the subdirectory is under it as `in ".."` has it.
+    assert_quaff_snapshot!(project.quaff_in(
+        "src",
+        &["-e", r#"find "TODO" in ":/" where FILE matches "../"**"#]
+    ));
+    let all = |script: &str| {
+        let output = project
+            .quaff_in("src", &["-e", script])
+            .output()
+            .expect("running quaff");
+        assert_eq!(output.status.code(), Some(0), "{script}: {output:?}");
+        output.stdout
+    };
+    assert_eq!(
+        all(r#"find "TODO" in "../"**"#),
+        all(r#"find "TODO" in "..""#)
+    );
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_command_line_scope_narrows_a_statements_in_and_says_so() {
+    let project = Project::new(SCOPED);
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find "TODO" in "src""#, "src/sub"]));
+    // It never widens one: what is outside the `in` stays out.
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find "TODO" in "src/sub""#, "tests"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn an_in_that_names_nothing_there_fails_saying_how_to_write_a_glob() {
+    let project = Project::new(SCOPED);
+    // A glob written inside the quotes is literal, so it names nothing, and the run fails, as a
+    // missing scope does, giving the marker spelling.
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find "TODO" in "**/test_*.py""#]));
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find "TODO" in "docs""#]));
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find "TODO" in "docs/"**".md""#]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_file_test_that_names_nothing_there_is_a_note() {
+    let project = Project::new(SCOPED);
+    // A safeguard against a file that is not there yet does no harm, so it is only noted.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        r#"find "TODO" in "src" where not FILE matches "src/generated.py""#
+    ]));
+    assert_quaff_snapshot!(
+        project.quaff(&["-e", r#"find "TODO" where not FILE matches "**/test_*.py""#])
+    );
+    // Wherever in the filter the test is.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        r#"find "TODO" where FILE matches "src/"** and not FILE matches "src/generated.py""#
+    ]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_repository_walked_into_from_outside_any_project_keeps_its_own_rules() {
+    let project = Project::new(&[
+        ("repo/.git/HEAD", ""),
+        ("repo/.gitignore", "target/\n"),
+        ("repo/kept.txt", "TODO\n"),
+        ("repo/target/ignored.txt", "TODO\n"),
+        // In no repository, a .gitignore applies to nothing, as git has it.
+        (".gitignore", "loose.txt\n"),
+        ("loose.txt", "TODO\n"),
+    ]);
+    // Run where there is no project, and named from inside the repository, alike.
+    assert_quaff_snapshot!(project.quaff(&["TODO"]));
+    assert_quaff_snapshot!(project.quaff_in("repo", &["TODO", ".."]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_file_takes_its_encoding_from_the_repository_it_is_in() {
+    let mut project = Project::new(&[
+        ("app/.git/HEAD", ""),
+        ("other/.git/HEAD", ""),
+        (
+            "other/.gitattributes",
+            "*.txt working-tree-encoding=SHIFT-JIS\n",
+        ),
+        ("loose/repo/.git/HEAD", ""),
+        (
+            "loose/repo/.gitattributes",
+            "*.txt working-tree-encoding=SHIFT-JIS\n",
+        ),
+    ]);
+    project.add_bytes("other/b.txt", b"\x93\xfa\n");
+    project.add_bytes("loose/repo/c.txt", b"\x93\xfa\n");
+    // Another project's file is read by that project's declarations, not the current one's...
+    assert_quaff_snapshot!(project.quaff_in("app", &["\u{65e5}", "../other"]));
+    // ...whichever of a run's statements found it, and in whatever order they were written.
+    assert_quaff_snapshot!(project.quaff_in(
+        "app",
+        &[
+            "-e",
+            "find \"\u{65e5}\"",
+            "-e",
+            "find \"\u{65e5}\" in \"../other\""
+        ]
+    ));
+    // In no project, a repository the walk enters declares its own files' encodings.
+    assert_quaff_snapshot!(project.quaff_in("loose", &["\u{65e5}"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_scope_of_a_lone_colon_is_a_directory_of_that_name() {
+    let project = Project::new(&[
+        (".git/HEAD", ""),
+        (":/a.txt", "TODO\n"),
+        ("b.txt", "TODO\n"),
+    ]);
+    // Only `:/` starts at the project root; `:` alone is a name like any other.
+    assert_quaff_snapshot!(project.quaff(&["TODO", ":"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn file_contains_is_text_anywhere_in_the_path_as_printed() {
+    let mut project = Project::new(SCOPED);
+    project.add_bytes("Makefile", b"TODO\n");
+    // Not "everything": `.` is a character in the path, and `./` reads as two of them.
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find "TODO" where not FILE contains ".""#]));
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find "TODO" where FILE contains "./""#]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn an_absolute_glob_is_matched_where_it_says() {
+    let project = Project::new(SCOPED);
+    let root = std::fs::canonicalize(&project.dir).expect("the project");
+    let glob = format!(r#"find "TODO" in "{}/src/"**".py""#, root.display());
+    // The absolute path is filtered out of the snapshot's record of the command by the paths
+    // it prints, which are relative to where quaff runs.
+    let output = project
+        .quaff_in("tests", &["-e", &glob])
+        .output()
+        .expect("running quaff");
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "../src/app.py:1:10-1:13: TODO\n../src/sub/deep.py:1:10-1:13: TODO\n"
+    );
+    project.assert_unchanged();
+}
+
+#[test]
+fn an_absolute_glob_through_a_symbolic_link_finds_what_the_link_leads_to() {
+    let mut project = Project::new(SCOPED);
+    std::os::unix::fs::symlink("src", project.dir.join("alias")).expect("linking");
+    project.before = snapshot_files(&project.dir);
+    let root = std::fs::canonicalize(&project.dir).expect("the project");
+    let glob = format!(r#"find "TODO" in "{}/alias/"**".py""#, root.display());
+    let output = project
+        .quaff(&["-e", &glob])
+        .output()
+        .expect("running quaff");
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "src/app.py:1:10-1:13: TODO\nsrc/sub/deep.py:1:10-1:13: TODO\n"
+    );
+    // The directory stays one: a star after it is a name within it.
+    let glob = format!(r#"find "TODO" in "{}/alias/"*".py""#, root.display());
+    let output = project
+        .quaff(&["-e", &glob])
+        .output()
+        .expect("running quaff");
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "src/app.py:1:10-1:13: TODO\n"
+    );
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_glob_through_a_symbolic_link_finds_what_the_link_leads_to_however_it_starts() {
+    let mut project = Project::new(SCOPED);
+    std::os::unix::fs::symlink("src", project.dir.join("alias")).expect("linking");
+    project.before = snapshot_files(&project.dir);
+    let every = "src/app.py:1:10-1:13: TODO\nsrc/notes.txt:1:1-1:4: TODO\n\
+                 src/sub/deep.py:1:10-1:13: TODO\n";
+    // As a glob, from the current directory or the root, as `in "alias"` does without one.
+    for script in [
+        r#"find "TODO" in "alias""#,
+        r#"find "TODO" in "alias/"**"#,
+        r#"find "TODO" in ":/alias/"**"#,
+        r#"find "TODO" where FILE matches "alias/"**"#,
+    ] {
+        let output = project
+            .quaff(&["-e", script])
+            .output()
+            .expect("running quaff");
+        assert_eq!(output.status.code(), Some(0), "{script}: {output:?}");
+        assert_eq!(String::from_utf8_lossy(&output.stdout), every, "{script}");
+    }
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_dot_before_a_wildcard_is_part_of_a_name() {
+    let mut project = Project::new(SCOPED);
+    project.add_bytes(".hidden.py", b"# TODO\n");
+    project.add_bytes("top.py", b"# TODO\n");
+    let all = project
+        .quaff(&["TODO", "."])
+        .output()
+        .expect("running quaff");
+    let output = project
+        .quaff(&["-e", r#"find "TODO" where not FILE matches "."*"#])
+        .output()
+        .expect("running quaff");
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let kept = String::from_utf8_lossy(&output.stdout);
+    let every = String::from_utf8_lossy(&all.stdout);
+    // Only the file whose name starts with a dot is left out, not every file at the top.
+    assert!(every.contains(".hidden.py"), "{every}");
+    assert!(kept.contains("top.py"), "{kept}");
+    let others: Vec<&str> = every
+        .lines()
+        .filter(|line| !line.starts_with(".hidden.py"))
+        .collect();
+    assert_eq!(kept.lines().collect::<Vec<_>>(), others);
+    project.assert_unchanged();
+}
+
+#[test]
+fn an_in_under_a_command_line_scope_is_resolved_as_without_one() {
+    let mut project = Project::new(SCOPED);
+    project.add_bytes(".gitignore", b"build/\n");
+    project.add_bytes("build/out.py", b"# TODO\n");
+    // An `in` that names nothing fails, scope or none.
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find "TODO" in "docs""#, "src"]));
+    // Naming an ignored directory finds the same with `.` given as without it.
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find "TODO" in "build""#]));
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find "TODO" in "build""#, "."]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_link_two_statements_walk_past_is_counted_once() {
+    let mut project = Project::new(SCOPED);
+    std::os::unix::fs::symlink("app.py", project.dir.join("src/link.py")).expect("linking");
+    project.before = snapshot_files(&project.dir);
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find "TODO""#, "-e", r#"find "x" in "src""#]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_python_file_a_statement_leaves_out_cannot_refuse_it() {
+    let mut project = Project::new(SCOPED);
+    project.add_bytes("tests/broken.py", b"def (:\n");
+    // Needed: refused, naming how to leave the file out.
+    assert_quaff_snapshot!(project.quaff(&["-e", "find `x = $v`"]));
+    // Left out by `in`, or by `where not FILE`, it is never parsed.
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find `x = $v` in "src""#]));
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        r#"find `x = $v` where not FILE matches "tests/broken.py""#
+    ]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_text_tier_file_only_a_textual_statement_takes_is_not_counted_for_structure() {
+    let project = Project::new(SCOPED);
+    // src/notes.txt is outside the structural statement's scope, so nothing is said of it.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        r#"find "TODO""#,
+        "-e",
+        r#"find `x = $v` in "tests""#
+    ]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_scoped_replace_edits_only_what_its_scope_takes() {
+    let project = Project::new(SCOPED);
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        r#"replace string "TODO" with "DONE" in "src" where not FILE matches **".txt" expect 2"#
+    ]));
+    project.assert_changed(&[
+        ("src/app.py", b"x = 1  # DONE\n"),
+        ("src/sub/deep.py", b"y = 2  # DONE\n"),
+    ]);
+}
+
+#[test]
+fn a_scoped_assertion_counts_only_what_its_scope_takes() {
+    let project = Project::new(SCOPED);
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find "TODO" in "tests" expect 2"#]));
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find "TODO" in "tests" expect 7"#]));
+    project.assert_unchanged();
+}
+
+/// Calls whose arguments a `where` tests.
+const BOUND: &[(&str, &str)] = &[
+    (".git/HEAD", ""),
+    (
+        "src/client.py",
+        "connect(host, port, \"password123\", timeout)\nconnect(host, port, timeout)\n\
+         fetch(\"https://x\")\nfetch(r\"http://y\")\nfetch(url)\n\
+         fetch(\"\"\"line one\nline two\"\"\")\nfetch(\"con\" 'cat')\n",
+    ),
+    ("tests/test_client.py", "fetch(\"https://test\")\n"),
+    (
+        "src/log.py",
+        "log(format(user))\nlog(user)\nlog(wrap(format(user)))\n\
+         pair(format(a), a)\npair(format(a), b)\n",
+    ),
+];
+
+#[test]
+fn where_tests_what_a_match_binds_by_any_binding() {
+    let project = Project::new(BOUND);
+    // `$x` can bind any middle argument, so a call is kept if any of them passes.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        r#"find `connect($b..., $x, $a...)` where $x contains "password""#
+    ]));
+    // So `not` keeps a call one of whose middle arguments has no password, as both have.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        r#"find `connect($b..., $x, $a...)` where not $x contains "password""#
+    ]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_bound_string_is_compared_by_its_content_and_other_code_by_its_text() {
+    let project = Project::new(BOUND);
+    // The quotes and the prefix take no part.
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find `fetch($s)` where $s matches "http"*"#]));
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find `fetch($s)` where $s matches "url""#]));
+    // One star stays within a line of the value; two cross lines.
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find `fetch($s)` where $s matches "line"*"#]));
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find `fetch($s)` where $s matches "line"**"#]));
+    // A FILE test and a value test together.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        r#"find `fetch($s)` where $s matches "https"* and not FILE matches "tests""#
+    ]));
+    // Anchors and `$^` are the value's, not a line's: only one value starts with "line".
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find `fetch($s)` where $s contains ^"line""#]));
+    assert_quaff_snapshot!(
+        project.quaff(&["-e", r#"find `fetch($s)` where $s contains ^"line two""#])
+    );
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        r#"find `fetch($s)` where $s matches "line one" $^ "line two""#
+    ]));
+    // Implicitly concatenated literals are one value, joined.
+    assert_quaff_snapshot!(project.quaff(&["-e", r#"find `fetch($s)` where $s matches "concat""#]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_bound_node_is_compared_with_a_pattern_by_its_shape() {
+    let project = Project::new(BOUND);
+    // `matches` is the bound node itself; `contains` it or anything inside it.
+    assert_quaff_snapshot!(project.quaff(&["-e", "find `log($m)` where $m matches `format($x)`"]));
+    assert_quaff_snapshot!(project.quaff(&["-e", "find `log($m)` where $m contains `format($x)`"]));
+    assert_quaff_snapshot!(
+        project.quaff(&["-e", "find `log($m)` where not $m contains `format($x)`"])
+    );
+    // A pattern that is not one is refused where it was written, before any file is read.
+    assert_quaff_snapshot!(project.quaff(&["-e", "find `log($m)` where $m matches `format(`"]));
+    // A name the `where`'s pattern shares with the statement's is the same code in both.
+    assert_quaff_snapshot!(
+        project.quaff(&["-e", "find `pair($m, $u)` where $m matches `format($u)`"])
+    );
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "find `pair($m, $u)` where not $m contains `format($u)`"
+    ]));
+    // It is one node in both, never a sequence in either.
+    assert_quaff_snapshot!(
+        project.quaff(&["-e", "find `pair($m, $u)` where $m matches `format($u...)`"])
+    );
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "find `pair($m, $us...)` where $m matches `format($us)`"
+    ]));
+    // A sequence the `where`'s pattern does not share is its own, as any name is.
+    assert_quaff_snapshot!(
+        project.quaff(&["-e", "find `log($m)` where $m matches `format($xs...)`"])
+    );
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_where_on_what_its_pattern_cannot_bind_is_refused() {
+    let project = Project::new(BOUND);
+    for script in [
+        r#"find "fetch" where $x matches "a""#,
+        r#"find `fetch($s)` where $t matches "a""#,
+        r#"find `fetch($_)` where $_ matches "a""#,
+        r#"find `connect($xs...)` where $xs matches "a""#,
+        r#"find `connect($a..., $x, $b..., $y, $c..., $z, $d...)` where $x matches "a" and $y matches "b" and $z matches "c""#,
+        // Named where the name is tested, however deep in the filter that is.
+        r#"find "fetch" where FILE matches "a" and not $x matches "a""#,
+    ] {
+        assert_quaff_snapshot!(project.quaff(&["-e", script]));
+    }
     project.assert_unchanged();
 }
 
@@ -512,6 +1005,13 @@ fn an_unparseable_ignore_line_is_skipped_and_the_rest_of_the_file_applies() {
         ("build/out.py", "TODO in an ignored directory\n"),
     ]);
     assert_quaff_snapshot!(project.quaff(&["TODO"]));
+    // Noted once, however many of a run's statements start from where the file applies.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "find \"TODO\"",
+        "-e",
+        "find \"TODO\" in \"a.py\""
+    ]));
     project.assert_unchanged();
 }
 
@@ -821,8 +1321,6 @@ fn each_construct_outside_the_mvp_exits_5_naming_it() {
 fn each_construct_not_built_yet_exits_5_naming_it() {
     let project = Project::new(SCRIPTED);
     assert_quaff_snapshot!(project.quaff(&["-e", "replace `f($a)` with `g($a)` expect 1"]));
-    assert_quaff_snapshot!(project.quaff(&["-e", "find \"a\" in \"src/**\""]));
-    assert_quaff_snapshot!(project.quaff(&["-e", "find \"a\" where not FILE matches \"x\""]));
     assert_quaff_snapshot!(project.quaff(&["-e", "find \"a\"; delete `a` expect 1"]));
     project.assert_unchanged();
 }
@@ -984,7 +1482,8 @@ fn a_declaration_is_named_from_where_quaff_runs_and_a_nested_repository_has_its_
         ),
         ("vendor/.git/HEAD", ""),
     ]);
-    // Run from sub/, the declaring file and the skipped line are named from there.
+    // Run from sub/, the declaring file and the skipped line are named from there, and `:/`
+    // reaches the nested repository beside it.
     project.add_bytes("sub/a.cn", b"TODO \xc4\xe3\n");
     // A nested repository takes its attributes from its own files alone, so the outer *.txt
     // line does not make this UTF-8 file UTF-16.
@@ -992,7 +1491,7 @@ fn a_declaration_is_named_from_where_quaff_runs_and_a_nested_repository_has_its_
     // UTF-16 by a name that leaves the byte order to a mark, with no mark: an encoding quaff
     // does not read, not a binary file, though it is full of NULs.
     project.add_bytes("sub/wide.w", b"T\0O\0D\0O\0\n\0");
-    assert_quaff_snapshot!(project.quaff_in("sub", &["TODO"]));
+    assert_quaff_snapshot!(project.quaff_in("sub", &["TODO", ":/"]));
     project.assert_unchanged();
 }
 

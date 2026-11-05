@@ -4,11 +4,11 @@ info:
   program: quaff
   args:
     - "-e"
-    - "find \"a\"; delete `a` expect 1"
+    - "find `fetch($s)` where $s matches \"line\"*"
 ---
 success: false
-exit_code: 5
+exit_code: 1
 ----- stdout -----
 
 ----- stderr -----
-quaff: -e expression 1, at character 11: delete is not built yet
+quaff: no matches for `fetch($s)`

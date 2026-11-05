@@ -1,0 +1,15 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-s"
+    - TODO
+    - "\"pkg/\"**"
+---
+success: false
+exit_code: 3
+----- stdout -----
+
+----- stderr -----
+quaff: the scope "\"pkg/\"**" holds a double quote: the scope on the command line is a plain path.  To scope by a pattern, write it with `in` in the script, as -e 'find "x" in "src/"**'

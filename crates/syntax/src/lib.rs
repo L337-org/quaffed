@@ -12,7 +12,7 @@
 mod matching;
 mod pattern;
 
-pub use matching::{Costly, Match, find};
+pub use matching::{Costly, Match, find, find_where, matches_at};
 pub use pattern::{Hole, Pattern};
 
 use std::borrow::Cow;
@@ -152,7 +152,31 @@ impl<'text> Arena<'text> {
 
     /// Every node, in pre-order: each node before its children, and children in source order.
     pub fn nodes(&self) -> impl Iterator<Item = NodeId> + use<'_, 'text> {
-        (0..narrow(self.nodes.len())).map(NodeId)
+        (0..narrow(self.nodes.len())).map(|node| {
+            examined();
+            NodeId(node)
+        })
+    }
+
+    /// Every node whose range lies inside `range`, in pre-order: `node`'s subtree for its own
+    /// range, with any ancestor of the same range.  Since a node starts no earlier than the one
+    /// before it in pre-order - the range invariants under *What the ranges mean* in
+    /// `architecture/syntax.md` - they are one run of nodes, found without a walk of the arena.
+    pub fn nodes_within(
+        &self,
+        range: Range<usize>,
+    ) -> impl Iterator<Item = NodeId> + use<'_, 'text> {
+        let first = self
+            .nodes
+            .partition_point(|node| widen(node.start) < range.start);
+        let past =
+            first + self.nodes[first..].partition_point(|node| widen(node.start) <= range.end);
+        (narrow(first)..narrow(past))
+            .map(NodeId)
+            .filter(move |&node| {
+                examined();
+                widen(self.node(node).end) <= range.end
+            })
     }
 
     /// The kind of `node`.
@@ -472,6 +496,19 @@ impl<'text> Builder<'text> {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many nodes `nodes` and `nodes_within` have looked at, so a test can tell a search
+    /// that walks the whole arena from one that looks only where it is asked to.
+    pub(crate) static EXAMINED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Counts one node looked at, in a test build.
+fn examined() {
+    #[cfg(test)]
+    EXAMINED.with(|examined| examined.set(examined.get() + 1));
+}
+
 /// An offset, which fits in 32 bits because the builder refused longer text, or a node index.
 /// A parser gives far fewer nodes than 2^32 for text that short, but a node may be empty, so
 /// that is a bound rather than a proof.
@@ -544,6 +581,43 @@ mod tests {
         let inner = arena.children(arena.root()).nth(1).unwrap();
         assert_eq!(texts(inner), ["g", "x"]);
         assert_eq!(texts(arena.children(inner).next().unwrap()), [""; 0]);
+    }
+
+    #[test]
+    fn the_nodes_within_a_range_are_those_a_walk_of_every_node_finds() {
+        // A statement and the call it holds share a range, and an empty node sits at an edge.
+        let text = "f(g(x), y)";
+        let mut builder = Builder::new(TOY, text).unwrap();
+        builder.enter(Kind::new("Stmt"), 0..10);
+        builder.enter(Kind::new("Call"), 0..10);
+        builder.enter(Kind::new("Name"), 0..1);
+        builder.leave();
+        builder.enter(Kind::new("Call"), 2..6);
+        builder.enter(Kind::new("Name"), 2..3);
+        builder.leave();
+        builder.enter(Kind::new("Name"), 4..5);
+        builder.leave();
+        builder.leave();
+        builder.enter(Kind::new("Empty"), 6..6);
+        builder.leave();
+        builder.enter(Kind::new("Name"), 8..9);
+        builder.leave();
+        builder.leave();
+        builder.leave();
+        let arena = builder.finish();
+        let mut ranges: Vec<Range<usize>> = arena.nodes().map(|n| arena.range(n)).collect();
+        ranges.extend([0..0, 3..4, 6..6, 9..10, 10..10, 1..9]);
+        for range in ranges {
+            let walked: Vec<NodeId> = arena
+                .nodes()
+                .filter(|&n| {
+                    let r = arena.range(n);
+                    range.start <= r.start && r.end <= range.end
+                })
+                .collect();
+            let within: Vec<NodeId> = arena.nodes_within(range.clone()).collect();
+            assert_eq!(within, walked, "{range:?}");
+        }
     }
 
     #[test]

@@ -36,6 +36,38 @@ snapshot fails the run.  CI also runs `cargo insta test --workspace --check
 --unreferenced=reject`, so a snapshot no test produces fails; `cargo test --locked` runs
 separately because `cargo insta test` cannot take `--locked`.
 
+## The cost check's corpus
+
+`the_cost_check_gives_the_corpus_its_recorded_verdicts` (`crates/syntax/src/matching.rs`) holds
+the cost check (`Pattern::costly`) to a fixed corpus of generated patterns.  Its snapshot has one
+line per pattern: its verdict alone and with each name a `where` could test, and the matcher's
+work over the pattern filled in at two lengths, and spoiled so that it fails at its end.  The test
+fails where an accepted pattern's work grows faster than the square of the code, and its snapshot
+names every pattern whose verdict, reported hole or work moved.  The property
+`no_accepted_pattern_costs_more_than_the_square` measures the same way over patterns generated
+afresh on every run, deeper than the corpus's, so that a shape the corpus never holds is still
+met in time.  Proptest saves each failure it finds in `crates/syntax/proptest-regressions/` and
+replays it first on every later run; commit that file with the fix, so the failure stays a test.
+The targets are not worst cases, so passing is evidence, not proof, that what is accepted stays
+quadratic.
+
+When changing the cost check or how the matcher searches a list:
+
+1. Run `cargo insta test -p quaffed-syntax`.
+2. If the corpus fails with "accepted, but its work grows faster than the square", or the growth
+   property fails, the change accepts a pattern the matcher cannot search within the bound.  Find
+   out whether the check miscounts or the matcher does more than the check assumes: measure the
+   pattern's work at growing sizes, and again with comparing code left uncounted.  Fix whichever
+   is at fault at its cause; never raise the bound in the test to pass, and never single out the
+   failing pattern's shape.
+3. Read the snapshot's diff in `cargo insta review`.  Each changed line should be explained by the
+   change: a newly accepted pattern by the rule that now accepts it, a newly refused one by the
+   rule that refuses it, and a change in work by the matcher change.
+4. For a newly accepted shape whose cost the corpus's targets cannot show, add a named test with a
+   target built to make every way fail, as `a_sequence_after_another_is_moved_by_both_their_stops`
+   does, and check it fails without the change.
+5. Accept the snapshot only once every changed line is explained.
+
 ## The coverage ratchet
 
 The **Coverage ratchet** (`.github/workflows/coverage.yaml`) holds every pull request to the same

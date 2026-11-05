@@ -7,6 +7,7 @@
 //! statement, exit 5, naming it, and so is any construct outside the MVP; anything else
 //! malformed is a parse error, exit 3.  Nothing is parsed and ignored.
 
+use quaffed_representation::glob::{Class, ClassItem, Glob, GlobPart};
 use quaffed_representation::program::{
     Action, ActionKind, Count, Expectation, Filter, Operand, Program, Query, Statement, Subject,
     TextPattern,
@@ -89,7 +90,7 @@ struct Parser<'t> {
 /// What a statement's clauses said.
 #[derive(Default)]
 struct Clauses {
-    scope: Vec<Spanned<String>>,
+    scope: Vec<Spanned<Glob>>,
     filter: Option<Spanned<Filter>>,
     expect: Option<Spanned<Count>>,
 }
@@ -438,6 +439,15 @@ impl<'t> Parser<'t> {
                         token.expect("peeked"),
                     ));
                 }
+                Some(
+                    TokenKind::Star
+                    | TokenKind::DoubleStar
+                    | TokenKind::Question
+                    | TokenKind::Class { .. }
+                    | TokenKind::OpenBrace,
+                ) if pieces > 0 => {
+                    return Err(Self::wildcard_in_operand(token.expect("peeked")));
+                }
                 Some(TokenKind::EndAnchor) if pieces > 0 => {
                     let anchor = token.expect("peeked");
                     Self::refuse_anchor(anchor, usage)?;
@@ -473,6 +483,19 @@ impl<'t> Parser<'t> {
             Operand::Text(pattern),
             self.span(first.start, last_end),
         ))
+    }
+
+    /// The error for a wildcard after an operand's pieces: an operand is matched exactly.
+    fn wildcard_in_operand(wildcard: &Token) -> ParseError {
+        Self::malformed(
+            format!(
+                "{} is a wildcard, and wildcards are for `in` and `where`: an operand is matched \
+                 exactly, so a literal one goes inside the quotes, as \"a*b\"",
+                wildcard.kind
+            ),
+            Some(wildcard),
+            0,
+        )
     }
 
     fn refuse_anchor(anchor: &Token, usage: OperandUse) -> Result<(), ParseError> {
@@ -529,14 +552,8 @@ impl<'t> Parser<'t> {
         Ok(clauses)
     }
 
-    fn scope_glob(&mut self, keyword: &Token) -> Result<Spanned<String>, ParseError> {
-        match self.next() {
-            Some(
-                token @ Token {
-                    kind: TokenKind::Quoted(glob),
-                    ..
-                },
-            ) => Ok(Spanned::new(glob.clone(), self.token_span(token))),
+    fn scope_glob(&mut self, keyword: &Token) -> Result<Spanned<Glob>, ParseError> {
+        match self.peek() {
             Some(
                 token @ Token {
                     kind: TokenKind::Metavariable { .. },
@@ -546,15 +563,189 @@ impl<'t> Parser<'t> {
                 "unknown construct: `in` over a bound set is not in this build".into(),
                 token,
             )),
-            other => Err(Self::malformed(
-                format!(
-                    "`in` takes a quoted glob, such as in \"src/**/*.py\", but found {}",
-                    describe(other)
-                ),
-                other.or(Some(keyword)),
+            Some(
+                token @ Token {
+                    kind: TokenKind::Backticked(_),
+                    ..
+                },
+            ) => Err(Self::malformed(
+                "`in` takes a path or a glob - quoted text and wildcards, as in \"src/\"** - \
+                 not a backticked pattern"
+                    .into(),
+                Some(token),
                 0,
             )),
+            _ => self.glob(GlobUse::Path, keyword),
         }
+    }
+
+    /// A glob: quoted pieces and wildcard markers, joined, with `^` before them and `$` after
+    /// them for a value, and `$^` among them.  `after` is the token before it, for an error at
+    /// the end of the script.
+    fn glob(&mut self, usage: GlobUse, after: &Token) -> Result<Spanned<Glob>, ParseError> {
+        let mut glob = Glob::default();
+        let start = self.peek().map_or(after.end, |t| t.start);
+        if let Some(anchor) = self.peek().filter(|t| t.kind == TokenKind::StartAnchor) {
+            Self::refuse_in_path(anchor, usage)?;
+            glob.start_anchor = true;
+            self.at += 1;
+        }
+        if self.glob_parts(&mut glob, usage, false)? == 0 {
+            let found = self.peek();
+            return Err(Self::malformed(
+                format!(
+                    "expected {} - quoted text and wildcards, as {} - but found {}",
+                    usage.what(),
+                    usage.example(),
+                    describe(found)
+                ),
+                found,
+                self.end_position(),
+            ));
+        }
+        if let Some(anchor) = self.peek().filter(|t| t.kind == TokenKind::EndAnchor) {
+            Self::refuse_in_path(anchor, usage)?;
+            glob.end_anchor = true;
+            self.at += 1;
+        }
+        let span = self.span(start, self.last_span().end);
+        Ok(Spanned::new(glob, span))
+    }
+
+    /// Appends the glob parts that follow to `glob`, returning how many there were.  Inside
+    /// braces, `nested`, they end at a `,` or `}`, and anything else that is not a part is an
+    /// error, since alternatives are quoted as everything literal is.
+    fn glob_parts(
+        &mut self,
+        glob: &mut Glob,
+        usage: GlobUse,
+        nested: bool,
+    ) -> Result<usize, ParseError> {
+        let mut parts = 0;
+        while let Some(token) = self.peek() {
+            let part = match &token.kind {
+                TokenKind::Quoted(text) => GlobPart::Literal(text.clone()),
+                TokenKind::Star => GlobPart::Star,
+                TokenKind::DoubleStar => GlobPart::DoubleStar,
+                TokenKind::Question => GlobPart::One,
+                TokenKind::Class { negated, items } => Self::class(token, *negated, items)?,
+                TokenKind::LineBreak => {
+                    Self::refuse_in_path(token, usage)?;
+                    GlobPart::LineBreak
+                }
+                TokenKind::OpenBrace => {
+                    self.at += 1;
+                    GlobPart::Alternatives(self.alternatives(token, usage)?)
+                }
+                TokenKind::Metavariable { .. } if parts > 0 => {
+                    return Err(Self::unknown(
+                        "unknown construct: a metavariable among a glob's pieces is textual \
+                         capture, which is not in this build"
+                            .into(),
+                        token,
+                    ));
+                }
+                // Inside braces, `,` and `}` end an alternative; outside them, anything that is
+                // not a part ends the glob.
+                TokenKind::Comma | TokenKind::CloseBrace => break,
+                _ if nested => {
+                    return Err(Self::malformed(
+                        format!(
+                            "expected an alternative - quoted text and wildcards - or `,` or `}}`, \
+                             but found {}: alternatives are quoted, as {{\"src\",\"tests\"}}",
+                            token.kind
+                        ),
+                        Some(token),
+                        0,
+                    ));
+                }
+                _ => break,
+            };
+            if !matches!(part, GlobPart::Alternatives(_)) {
+                self.at += 1;
+            }
+            glob.push(part);
+            parts += 1;
+        }
+        Ok(parts)
+    }
+
+    /// The alternatives after `open`, a `{`, up to and including their `}`.
+    fn alternatives(&mut self, open: &Token, usage: GlobUse) -> Result<Vec<Glob>, ParseError> {
+        let mut alternatives = Vec::new();
+        loop {
+            let mut alternative = Glob::default();
+            if self.glob_parts(&mut alternative, usage, true)? == 0 {
+                let found = self.peek();
+                return Err(Self::malformed(
+                    format!(
+                        "an alternative is empty here: write \"\" for one that is nothing, but \
+                         found {}",
+                        describe(found)
+                    ),
+                    found.or(Some(open)),
+                    0,
+                ));
+            }
+            alternatives.push(alternative);
+            match self.next() {
+                Some(Token {
+                    kind: TokenKind::Comma,
+                    ..
+                }) => {}
+                Some(Token {
+                    kind: TokenKind::CloseBrace,
+                    ..
+                }) => return Ok(alternatives),
+                _ => {
+                    return Err(Self::malformed(
+                        "these alternatives are never closed: they run from { to the matching }"
+                            .into(),
+                        Some(open),
+                        0,
+                    ));
+                }
+            }
+        }
+    }
+
+    /// A class, refused if it holds a line break, which no class can match.
+    fn class(token: &Token, negated: bool, items: &[ClassItem]) -> Result<GlobPart, ParseError> {
+        let holds_break = items.iter().any(|item| match *item {
+            ClassItem::One(c) => c == '\n' || c == '\r',
+            ClassItem::Range(low, high) => {
+                (low..=high).contains(&'\n') || (low..=high).contains(&'\r')
+            }
+        });
+        if holds_break {
+            return Err(Self::malformed(
+                "a class matches one character within a line, so it cannot hold a line break; \
+                 $^ is a line break"
+                    .into(),
+                Some(token),
+                0,
+            ));
+        }
+        Ok(GlobPart::Class(Class {
+            negated,
+            items: items.to_vec(),
+        }))
+    }
+
+    /// Refuses an anchor or `$^` in a path glob: a path has no lines.
+    fn refuse_in_path(token: &Token, usage: GlobUse) -> Result<(), ParseError> {
+        if usage == GlobUse::Path {
+            return Err(Self::malformed(
+                format!(
+                    "{} cannot be in a path: a path has no lines, and a glob over one is \
+                     anchored at both ends already",
+                    token.kind
+                ),
+                Some(token),
+                0,
+            ));
+        }
+        Ok(())
     }
 
     /// `term (and term)*`.
@@ -620,7 +811,7 @@ impl<'t> Parser<'t> {
         let Some(first) = self.next() else {
             return Err(Self::malformed(
                 "expected a condition after `where`, such as where not FILE matches \
-                 \"**/test_*.py\""
+                 **\"/test_\"*\".py\""
                     .into(),
                 None,
                 self.end_position(),
@@ -642,7 +833,7 @@ impl<'t> Parser<'t> {
                 return Err(Self::malformed(
                     format!(
                         "a condition tests a metavariable or FILE, but found {other}; for \
-                         example, where $x matches \"test_*\""
+                         example, where $x matches \"test_\"*"
                     ),
                     Some(first),
                     0,
@@ -670,7 +861,27 @@ impl<'t> Parser<'t> {
                 ));
             }
         };
-        let operand = self.operand(OperandUse::Comparison)?;
+        let comparison = comparison.expect("matched");
+        let operand = match (self.peek().map(|t| &t.kind), &subject) {
+            (Some(TokenKind::Backticked(_)), Subject::File) => {
+                return Err(Self::malformed(
+                    "FILE is a path, so it is compared with a glob - quoted text and wildcards, \
+                     as **\"/test_\"*\".py\" - not a backticked pattern"
+                        .into(),
+                    self.peek(),
+                    0,
+                ));
+            }
+            (Some(TokenKind::Backticked(_)), _) => self.operand(OperandUse::Comparison)?,
+            (_, Subject::File) => {
+                let glob = self.glob(GlobUse::Path, comparison)?;
+                Spanned::new(Operand::Glob(glob.node), glob.span)
+            }
+            _ => {
+                let glob = self.glob(GlobUse::Value, comparison)?;
+                Spanned::new(Operand::Glob(glob.node), glob.span)
+            }
+        };
         let span = self.span(first.start, operand.span.end);
         let filter = if matches {
             Filter::Matches(subject, operand)
@@ -847,6 +1058,33 @@ impl<'t> Parser<'t> {
     }
 }
 
+/// What a glob is compared with, which decides what may appear in it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GlobUse {
+    /// A path: `in`, and `FILE`.  No anchors and no line breaks.
+    Path,
+    /// A metavariable's value, a string.
+    Value,
+}
+
+impl GlobUse {
+    /// What is expected, as an error names it.
+    fn what(self) -> &'static str {
+        match self {
+            GlobUse::Path => "a path or a glob",
+            GlobUse::Value => "a glob to compare with",
+        }
+    }
+
+    /// An example of one.
+    fn example(self) -> &'static str {
+        match self {
+            GlobUse::Path => "\"src/\"**",
+            GlobUse::Value => "\"https\"*",
+        }
+    }
+}
+
 /// How an operand is used, which decides what may appear in it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OperandUse {
@@ -1012,7 +1250,7 @@ mod tests {
     #[test]
     fn clauses_parse_in_order_and_refuse_any_other() {
         let Statement::Assert(block) = only(
-            r#"find "x" in "src/**" where not FILE matches "*_test.py" and $a contains "b" expect 1"#,
+            r#"find "x" in "src/"** where not FILE matches *"_test.py" and $a contains "b" expect 1"#,
         ) else {
             panic!()
         };
@@ -1020,7 +1258,10 @@ mod tests {
         else {
             panic!("counted matches")
         };
-        assert_eq!(query.scope[0].node, "src/**");
+        assert_eq!(
+            query.scope[0].node.parts(),
+            [GlobPart::Literal("src/".into()), GlobPart::DoubleStar]
+        );
         assert!(matches!(
             query.filter.as_ref().unwrap().node,
             Filter::And(_)
@@ -1062,6 +1303,182 @@ mod tests {
             "{}",
             not_built_after_any.message
         );
+    }
+
+    /// The glob of a `find "x" where ... matches GLOB` statement's one test.
+    fn compared(text: &str) -> Glob {
+        let Statement::Find(query) = only(text) else {
+            panic!("{text} is a find")
+        };
+        match query.filter.map(|f| f.node) {
+            Some(Filter::Matches(_, operand) | Filter::Contains(_, operand)) => {
+                match operand.node {
+                    Operand::Glob(glob) => glob,
+                    other => panic!("{text} compares with {other:?}"),
+                }
+            }
+            other => panic!("{text} gave {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_glob_is_quoted_pieces_and_the_wildcards_between_them() {
+        use quaffed_representation::glob::ClassItem::{One, Range};
+        let glob = compared(r#"find "x" where $s matches *"?page="*"#);
+        assert_eq!(
+            glob.parts(),
+            [
+                GlobPart::Star,
+                GlobPart::Literal("?page=".into()),
+                GlobPart::Star
+            ]
+        );
+        let glob = compared(r#"find "x" where $s matches "v"[0-9][!a] ? ** $^ "end""#);
+        assert_eq!(
+            glob.parts(),
+            [
+                GlobPart::Literal("v".into()),
+                GlobPart::Class(Class {
+                    negated: false,
+                    items: vec![Range('0', '9')]
+                }),
+                GlobPart::Class(Class {
+                    negated: true,
+                    items: vec![One('a')]
+                }),
+                GlobPart::One,
+                GlobPart::DoubleStar,
+                GlobPart::LineBreak,
+                GlobPart::Literal("end".into()),
+            ]
+        );
+        let glob = compared(r#"find "x" where $s contains ^"a"$"#);
+        assert!(glob.start_anchor && glob.end_anchor);
+        assert_eq!(glob.as_literal(), Some("a"));
+        // Alternatives hold globs, nested braces included, and adjacent text joins across none.
+        let glob = compared(r#"find "x" where FILE matches {"src","lib"{"/a","/b"}}"/"*"#);
+        let GlobPart::Alternatives(alternatives) = &glob.parts()[0] else {
+            panic!("{glob:?}")
+        };
+        assert_eq!(alternatives[0], Glob::literal("src"));
+        assert_eq!(alternatives[1].parts().len(), 2);
+        assert_eq!(
+            &glob.parts()[1..],
+            [GlobPart::Literal("/".into()), GlobPart::Star]
+        );
+        let Statement::Find(query) = only(r#"find "x" in ":/tests/"**".py""#) else {
+            panic!()
+        };
+        assert_eq!(
+            query.scope[0].node.parts(),
+            [
+                GlobPart::Literal(":/tests/".into()),
+                GlobPart::DoubleStar,
+                GlobPart::Literal(".py".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn a_glob_refuses_what_its_value_cannot_have() {
+        let cases = [
+            (
+                r#"find "x" in ^"src""#,
+                "`^` cannot be in a path: a path has no lines",
+            ),
+            (r#"find "x" in "src"$"#, "`$` cannot be in a path"),
+            (
+                r#"find "x" where FILE matches "a"$^"b""#,
+                "`$^` cannot be in a path",
+            ),
+            (
+                r#"find "x" where FILE matches `f()`"#,
+                "FILE is a path, so it is compared with a glob",
+            ),
+            (r#"find "x" in `src`"#, "not a backticked pattern"),
+            (
+                r#"find "x" in expect 1"#,
+                "expected a path or a glob - quoted text and wildcards, as \"src/\"** - but \
+                 found `expect`",
+            ),
+            (
+                r#"find "x" where $s matches"#,
+                "expected a glob to compare with",
+            ),
+            (
+                r#"find "x" in {src,"lib"}"#,
+                "expected an alternative - quoted text and wildcards - or `,` or `}`, but found \
+                 `src`: alternatives are quoted",
+            ),
+            (r#"find "x" in {"a",}"#, "an alternative is empty here"),
+            (r#"find "x" in {"a""#, "these alternatives are never closed"),
+            (
+                "find \"x\" where $s matches [a\nb]",
+                "cannot hold a line break",
+            ),
+            (
+                r#"find "a"*"b""#,
+                "`*` is a wildcard, and wildcards are for `in` and `where`",
+            ),
+            (
+                r#"replace string "a" with "b"? expect 1"#,
+                "`?` is a wildcard",
+            ),
+        ];
+        for (text, wanted) in cases {
+            let err = error(text);
+            assert_eq!(err.kind, ErrorKind::Malformed, "{text}");
+            assert!(err.message.contains(wanted), "{text}: {}", err.message);
+        }
+        let capture = error(r#"find "x" where $s matches "a"$b"#);
+        assert_eq!(capture.kind, ErrorKind::Unknown);
+        // Only between pieces is a metavariable or a wildcard read as one: first, it is not
+        // a glob or an operand at all.
+        for (text, wanted) in [
+            (
+                r#"find "x" where $s matches $t"#,
+                "expected a glob to compare with - quoted text and wildcards, as \"https\"* - but \
+                 found `$t`",
+            ),
+            (
+                r#"find *"x""#,
+                "expected an operand - quoted text or a backticked pattern - but found `*`",
+            ),
+        ] {
+            let err = error(text);
+            assert_eq!(err.kind, ErrorKind::Malformed, "{text}");
+            assert_eq!(err.message, wanted, "{text}");
+        }
+    }
+
+    #[test]
+    fn a_class_is_refused_only_if_it_holds_a_line_break() {
+        for (class, refused) in [
+            ("[\n]", true),
+            ("[\r]", true),
+            ("[\t-\n]", true),
+            ("[\r-\x0e]", true),
+            ("[\t-\t]", false),
+            // Between LF and CR, and holding neither.
+            ("[\x0b-\x0c]", false),
+            ("[\x0e-~]", false),
+        ] {
+            let text = format!(r#"find "x" where $s matches {class}"#);
+            assert_eq!(program(&text).is_err(), refused, "{class:?}");
+        }
+    }
+
+    #[test]
+    fn a_metavariable_is_compared_with_a_backticked_pattern_by_its_shape() {
+        let Statement::Find(query) = only("find `f($x)` where $x matches `g($y)`") else {
+            panic!("a find")
+        };
+        match query.filter.map(|f| f.node) {
+            Some(Filter::Matches(_, operand)) => {
+                assert_eq!(operand.node, Operand::Pattern("g($y)".into()));
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
@@ -1181,7 +1598,7 @@ mod tests {
             ("find \"x\" expect", "expected a count"),
             ("find \"x\" expect at 3", "`least` or `most`"),
             ("find \"x\" expect 3 or 4", "expected `none`"),
-            ("find \"x\" in `src`", "quoted glob"),
+            ("find \"x\" in `src`", "not a backticked pattern"),
             ("find \"x\" where FILE", "`matches` or `contains`"),
             (
                 "find \"x\" where FILE matches \"a\" or FILE matches \"b\"",
@@ -1229,7 +1646,7 @@ mod tests {
             (
                 "find \"x\" where FOO matches \"a\"",
                 "a condition tests a metavariable or FILE, but found `FOO`; for example, where \
-                 $x matches \"test_*\"",
+                 $x matches \"test_\"*",
             ),
             (
                 "find \"x\" where FILE equals \"a\"",

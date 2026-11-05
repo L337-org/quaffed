@@ -1,0 +1,14 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "find \"TODO\" in \"app.py/x\""
+---
+success: false
+exit_code: 7
+----- stdout -----
+
+----- stderr -----
+quaff: looking for "app.py/x": Not a directory (os error 20)

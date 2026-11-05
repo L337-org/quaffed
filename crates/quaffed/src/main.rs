@@ -12,9 +12,12 @@ mod cli;
 mod contents;
 mod discover;
 mod editorconfig;
+mod filter;
+mod glob;
 mod output;
 mod resolve;
 mod run;
+mod scope;
 mod search;
 mod structural;
 mod workspace;
@@ -67,10 +70,13 @@ run, into each file in place, or none is - unless quaff is killed while writing,
 leave a file half-written.  Nothing in quoted text is escaped: to include a \", fence the text
 with three or more, as \"\"\" say \"hi\" \"\"\".
 
-A search covers the whole project - the nearest directory at or above this one that holds
-.git - or this directory when there is no project.  PATH narrows it to one file or directory
-inside the project.  Files ignored by .gitignore, .ignore or .git/info/exclude are skipped,
-and so is version-control metadata.  Hidden files are searched.
+A search covers this directory.  PATH narrows it to one file or directory, relative to this
+directory, or from the project root - the nearest directory at or above this one that holds
+.git - when it begins :/; a path outside the project is searched by that project's rules.  In
+a script, `in` takes a path or a glob, quoted text with wildcards outside the quotes, as
+in \"src/\"**\".py\", and `where FILE matches` the same.  Files ignored by .gitignore, .ignore
+or .git/info/exclude are skipped, and so is version-control metadata.  Hidden files are
+searched.
 
 A pattern is Python code in which $name matches any one node - an expression, a statement,
 an argument, a parameter, a name - and $name... one or more in a row; a name used twice must

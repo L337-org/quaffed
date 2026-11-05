@@ -111,10 +111,40 @@ const VOCABULARY: &[&str] = &[
     "18446744073709551616",
     "[",
     "]",
+    "[a-z]",
+    "[!]x]",
+    "*",
+    "**",
+    "?",
+    "{",
+    ",",
+    "}",
+    "\":/src\"",
     ";",
     "\n",
     "#",
 ];
+
+/// A glob as tokens: quoted pieces and the markers between and around them.
+fn glob() -> impl Strategy<Value = Vec<String>> {
+    let part = prop_oneof![
+        "[a-z/*?{ ]{1,4}".prop_map(|text| vec![spell(&text, '"')]),
+        Just(vec!["*".to_string()]),
+        Just(vec!["**".to_string()]),
+        Just(vec!["?".to_string()]),
+        Just(vec!["[!a-c]".to_string()]),
+        ("[a-z]{1,3}", "[a-z]{0,3}").prop_map(|(a, b)| {
+            vec![
+                "{".into(),
+                spell(&a, '"'),
+                ",".into(),
+                spell(&b, '"'),
+                "}".into(),
+            ]
+        }),
+    ];
+    proptest::collection::vec(part, 1..4).prop_map(|parts| parts.concat())
+}
 
 /// Statements as token lists, so that they can be laid out in more than one way.
 fn statement() -> impl Strategy<Value = Vec<String>> {
@@ -135,6 +165,18 @@ fn statement() -> impl Strategy<Value = Vec<String>> {
             statement
         }),
         literal.prop_map(|text| vec![spell(&text, '`')]),
+        (literal, glob(), glob()).prop_map(|(text, within, test)| {
+            let mut statement = vec!["find".to_string(), spell(&text, '"'), "in".into()];
+            statement.extend(within);
+            statement.extend([
+                "where".into(),
+                "not".into(),
+                "FILE".into(),
+                "matches".into(),
+            ]);
+            statement.extend(test);
+            statement
+        }),
         (literal, literal, count).prop_map(|(from, to, count)| {
             let mut statement = vec![
                 "replace".to_string(),
@@ -174,7 +216,7 @@ proptest! {
     }
 
     #[test]
-    fn the_parser_never_panics(text in "[a-z\"`$^;#\\[\\]{}|.0-9 \n]{0,48}") {
+    fn the_parser_never_panics(text in "[a-z\"`$^;#\\[\\]{}|.,*?!:/0-9 \n-]{0,48}") {
         let _ = parse(&text);
     }
 

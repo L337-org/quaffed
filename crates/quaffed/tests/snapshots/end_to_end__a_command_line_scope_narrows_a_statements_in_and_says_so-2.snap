@@ -1,0 +1,16 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "find \"TODO\" in \"src/sub\""
+    - tests
+---
+success: false
+exit_code: 1
+----- stdout -----
+
+----- stderr -----
+quaff: no matches for "TODO"
+quaff: -e expression 1, at character 16: the scope "tests" given on the command line shares nothing with this statement's `in`, so it looks at nothing

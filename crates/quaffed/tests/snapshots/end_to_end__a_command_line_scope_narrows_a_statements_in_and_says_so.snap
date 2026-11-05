@@ -1,0 +1,16 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "find \"TODO\" in \"src\""
+    - src/sub
+---
+success: true
+exit_code: 0
+----- stdout -----
+src/sub/deep.py:1:10-1:13: TODO
+
+----- stderr -----
+quaff: -e expression 1, at character 16: the scope "src/sub" given on the command line narrows this statement's `in`

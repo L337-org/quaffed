@@ -315,11 +315,11 @@ fn a_run_whose_search_would_grow_faster_than_quadratic_is_refused() {
         }
         other => panic!("{other:?}"),
     }
-    // Two places where the statement a sequence stops at decides later code: `$b` after `x()`,
-    // and the second `$a` after `y()`, which is named.
+    // Where the run starts and where `$a` and `$b` stop are three places that decide later
+    // code, named at the last of them: the first `$b`.
     match compile_pattern("w()\n$a...\nx()\n$b...\ny()\n$a...\nx()\n$b...\nz()\n") {
-        Err(PatternError::SecondChoice { spelled, offset }) => {
-            assert_eq!((spelled.as_str(), offset), ("$a...", 24));
+        Err(PatternError::ThirdPlace { spelled, offset }) => {
+            assert_eq!((spelled.as_str(), offset), ("$b...", 14));
         }
         other => panic!("{other:?}"),
     }
@@ -329,11 +329,11 @@ fn a_run_whose_search_would_grow_faster_than_quadratic_is_refused() {
     assert!(compile_pattern("w()\n$...\nx()\n$...\ny()\n").is_ok());
     // Two sequences together inside one node are not a run of statements, and cost nothing.
     assert!(compile_pattern("f($a..., $b...)").is_ok());
-    // But choices inside a node count as they do in a run: `$b` after `x`, then `$a` again.
-    match compile_pattern("f(w, $a..., x, $b..., y, $a..., x, $b..., z)") {
-        Err(PatternError::SecondChoice { spelled, offset }) => {
-            assert_eq!((spelled.as_str(), offset), ("$a...", 25));
-        }
+    // Inside a node, which starts where it stands, the same two stops are the square; a third
+    // makes the cube.
+    assert!(compile_pattern("f(w, $a..., x, $b..., y, $a..., x, $b..., z)").is_ok());
+    match compile_pattern("f(w, $a..., x, $b..., y, $c..., z, $a..., $b..., $c...)") {
+        Err(PatternError::ThirdPlace { spelled, .. }) => assert_eq!(spelled, "$c..."),
         other => panic!("{other:?}"),
     }
     assert!(
@@ -581,25 +581,43 @@ fn a_node_is_asked_again_when_a_name_it_bound_fails_later() {
         matches("f($a..., $b...) + g($a...)", source),
         ["f(1, 2, 3) + g(1, 2)"]
     );
-    // The node's ways count as a choice: a second that can affect it is refused.
+    // One stop divides `f`'s arguments between `$a` and `$b`, and `$b` ends where they do, so
+    // the node's ways are one choice, however many names they move.
+    assert_eq!(
+        matches(
+            "f($a..., $b...) + g($a..., x, $b...)",
+            "f(1, 2) + g(1, x, 2)\nf(1, 2) + g(1, 2, x)\n"
+        ),
+        ["f(1, 2) + g(1, x, 2)"]
+    );
+    // Three stops in it are as many ways as their triples, each compared with `g`'s
+    // arguments: refused, where two are the square.
+    assert!(compile_pattern("f($a..., $b..., $c...) + g($a..., x, $b...)").is_ok());
     assert!(matches!(
-        compile_pattern("f($a..., $b...) + g($a..., x, $b...)"),
-        Err(PatternError::SecondChoice { .. })
+        compile_pattern("f($a..., $b..., $c..., $d...) + g($a..., $b..., $c...)"),
+        Err(PatternError::ThirdPlace { .. })
     ));
 }
 
 #[test]
-fn a_choice_in_a_nodes_own_list_still_counts_when_its_name_is_used_outside() {
-    // `$b` and `$c` are two choices in `f`'s list; using `$b` after `f` as well does not hide
-    // either from the list that makes them.
+fn a_stop_in_a_nodes_own_list_still_counts_when_its_name_is_used_outside() {
+    // `$c...` and its repeat end where `f`'s arguments do, so their length is settled and
+    // `$a`'s and `$b`'s stops are the only two, the square, whether or not `$b` is used after.
     for pattern in [
         "f($a..., 1, $b..., 2, $b..., 3, $c..., 4, $c...)",
         "f($a..., 1, $b..., 2, $b..., 3, $c..., 4, $c...) + g($b...)",
     ] {
+        assert!(compile_pattern(pattern).is_ok(), "{pattern}");
+    }
+    // With a sequence after them, `$c...` stops anywhere too: three stops, the cube.
+    for pattern in [
+        "f($a..., 1, $b..., 2, $b..., 3, $c..., 4, $c..., $d...)",
+        "f($a..., 1, $b..., 2, $b..., 3, $c..., 4, $c..., $d...) + g($b...)",
+    ] {
         assert!(
             matches!(
                 compile_pattern(pattern),
-                Err(PatternError::SecondChoice { .. })
+                Err(PatternError::ThirdPlace { .. })
             ),
             "{pattern}"
         );

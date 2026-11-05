@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 
 use quaffed_python::{ParseError, parse_module};
-use quaffed_syntax::{Pattern, find};
+use quaffed_syntax::{Arena, NodeId, Pattern, find, find_where};
 
 use crate::search::{Match, Position};
 
@@ -33,17 +33,42 @@ pub struct Unparsed {
     pub message: String,
 }
 
-/// Every match of each of `patterns` in `text`, a Python file's decoded text, in source order.
+/// Whether a match in the file parsed into the arena given, binding a `where`'s names to the
+/// nodes given, in order, passes.
+pub type Holds<'a> = dyn Fn(&Arena<'_>, &[NodeId]) -> bool + 'a;
+
+/// A `where` over what a pattern binds: the names it tests, and whether a match that binds them
+/// to the nodes given, in that order, passes.
+pub struct Where<'a> {
+    /// The names, without `$`.
+    pub names: Vec<&'a str>,
+    /// Whether values bound to them pass.
+    pub holds: Box<Holds<'a>>,
+}
+
+/// Every match of each of `patterns` in `text`, a Python file's decoded text, in source order,
+/// kept by its `where` where it has one.
 ///
 /// # Errors
 ///
 /// Returns [`Unparsed`] if the text is not Python, saying where and why; a file that does not
 /// parse is searched for nothing.
-pub fn search(text: &str, patterns: &[&Pattern]) -> Result<Vec<Vec<Found>>, Unparsed> {
+pub fn search(
+    text: &str,
+    patterns: &[(&Pattern, Option<&Where>)],
+) -> Result<Vec<Vec<Found>>, Unparsed> {
     let arena = parse_module(text).map_err(|err| unparsed(text, err))?;
     let ranges: Vec<Vec<Range<usize>>> = patterns
         .iter()
-        .map(|pattern| find(pattern, &arena).into_iter().map(|m| m.range).collect())
+        .map(|(pattern, filter)| {
+            let found = match filter {
+                None => find(pattern, &arena),
+                Some(filter) => find_where(pattern, &arena, &filter.names, &mut |nodes| {
+                    (filter.holds)(&arena, nodes)
+                }),
+            };
+            found.into_iter().map(|m| m.range).collect()
+        })
         .collect();
     // Every first and last character, placed in one walk of the text.
     let wanted: Vec<usize> = ranges
@@ -146,11 +171,39 @@ mod tests {
     }
 
     #[test]
+    fn a_where_is_offered_the_nodes_a_match_binds_and_keeps_what_it_passes() {
+        let pattern = compile_pattern("connect($a, $b)").unwrap();
+        let text = "connect('https://x', port)\nconnect(r\"http://y\", 80)\n";
+        let offered = std::cell::RefCell::new(Vec::new());
+        let filter = Where {
+            names: vec!["a", "b"],
+            holds: Box::new(|arena: &Arena<'_>, nodes: &[NodeId]| {
+                offered.borrow_mut().push(
+                    nodes
+                        .iter()
+                        .map(|&node| arena.source(node).to_owned())
+                        .collect::<Vec<_>>(),
+                );
+                arena
+                    .value(nodes[0])
+                    .is_some_and(|v| v.starts_with("https"))
+            }),
+        };
+        let found = search(text, &[(&pattern, Some(&filter))]).unwrap();
+        assert_eq!(found[0].len(), 1);
+        assert_eq!(found[0][0].text, "connect('https://x', port)");
+        assert_eq!(
+            *offered.borrow(),
+            [vec!["'https://x'", "port"], vec!["r\"http://y\"", "80"]]
+        );
+    }
+
+    #[test]
     fn a_match_is_placed_by_its_first_and_last_character() {
         let pattern = compile_pattern("connect($a)").unwrap();
         // On an attribute, `client.connect(host)` is another shape, so only the bare call matches.
         let text = "client.connect(x)\nif ready: connect(host)\n";
-        let found = search(text, &[&pattern]).unwrap();
+        let found = search(text, &[(&pattern, None)]).unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(
             found[0],
@@ -216,7 +269,7 @@ mod tests {
     fn a_match_that_spans_lines_ends_on_its_last_line() {
         let pattern = compile_pattern("f($a, $b)").unwrap();
         let text = "f(\n    1,\n    2,\n)\n";
-        let found = search(text, &[&pattern]).unwrap();
+        let found = search(text, &[(&pattern, None)]).unwrap();
         assert_eq!(
             found[0][0].at,
             Match {
@@ -229,7 +282,7 @@ mod tests {
     #[test]
     fn a_file_that_does_not_parse_says_where_and_why() {
         let pattern = compile_pattern("f($a)").unwrap();
-        let err = search("x = 1\ndef (:\n", &[&pattern]).unwrap_err();
+        let err = search("x = 1\ndef (:\n", &[(&pattern, None)]).unwrap_err();
         assert_eq!(err.at, pos(2, 5));
         assert_eq!(err.message, "Expected an identifier");
     }
@@ -245,7 +298,7 @@ mod tests {
     #[test]
     fn matches_inside_matches_are_each_placed() {
         let pattern = compile_pattern("f($x)").unwrap();
-        let found = search("f(f(1))\n", &[&pattern]).unwrap();
+        let found = search("f(f(1))\n", &[(&pattern, None)]).unwrap();
         let texts: Vec<&str> = found[0].iter().map(|f| f.text.as_str()).collect();
         assert_eq!(texts, ["f(f(1))", "f(1)"]);
         assert_eq!(

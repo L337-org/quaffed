@@ -39,7 +39,7 @@ would become characters that are not in the file, and an interpolated string can
 
 ```
 find "TODO"                                   # search; `find` may be omitted
-find "TODO" in "src/**" where not FILE matches "*_test.py" expect none
+find "TODO" in "src/"** where not FILE matches *"_test.py" expect none
 replace string "old" with "new" expect 3      # a textual edit
 replace `f($a)` with `g($a)` expect 1         # a structural edit
 delete `breakpoint()` expect any
@@ -63,6 +63,26 @@ A textual operand is built from **pieces** joined, with `$^` for a line break an
 anchoring it, as `docs/language.md` describes.  On a backticked operand all three are errors,
 since a pattern is already anchored by its shape; in a replacement anchors are errors, since a
 replacement only writes text, and an empty operand is allowed, to delete text.
+
+## Globs
+
+`in` and `where` take a **glob**: quoted pieces, which are literal, and the wildcard markers
+between them, which `docs/language.md`'s _Paths and globs_ lists.  The lexer reads the markers
+outside operands - `*`, `**`, `?`, `{`, `,`, `}`, and a whole class from `[` to the next `]`, a
+`]` first being a member, its members characters as written - so that nothing inside quotes is
+ever special.  The parser builds a `Glob` (`representation.md`) from them in `glob`:
+
+- **What may appear depends on what is compared** (`GlobUse`).  `in` and `FILE` take a path,
+  which has no lines, so `^`, `$` and `$^` are errors there; a metavariable's value takes all
+  three.  `FILE` with a backticked operand is an error too: a path is not code.
+- **Alternatives are quoted as everything literal is.**  Bare text inside `{}` is an error, so a
+  shell that strips quotes - PowerShell 5.1 strips every `"` - leaves a script that fails to
+  parse rather than one that means something else.
+- **A wildcard after a `find` or `replace` operand is an error** saying wildcards are for `in`
+  and `where`; an operand is matched exactly.
+
+What a segment is - a path's directory name, a string's line - is the engine's to decide, since
+only it knows which it is comparing (`search.md`, _Scope and filters_).
 
 ## Errors
 
@@ -91,8 +111,8 @@ character.
 ## Running a script
 
 The command line (`crates/quaffed/src/run.rs`) parses every source into one `Program`, runs the
-checker, then refuses anything this build cannot yet run - an `in` or `where` clause, a
-structural `replace`, and `delete` - each exit 5 at where it was written.  It compiles every
+checker, then refuses anything this build cannot yet run - a structural `replace` and
+`delete` - each exit 5 at where it was written.  It compiles every
 backticked pattern, so one that is not a pattern is exit 3 there too.  Only then does it look at
 a file.  Every file is read once, and taken through the statements in order, so a statement sees
 the edits before it; the statements are then evaluated in order over the results.  Editing,

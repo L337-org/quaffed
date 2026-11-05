@@ -759,6 +759,7 @@ dependencies = [
  "quaffed-representation",
  "quaffed-script",
  "quaffed-syntax",
+ "regex-automata",
 ]
 
 [[package]]
@@ -798,6 +799,7 @@ dependencies = [
 name = "quaffed-syntax"
 version = "0.1.0"
 dependencies = [
+ "insta",
  "proptest",
 ]
 

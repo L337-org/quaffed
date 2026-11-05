@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
 use crate::contents::Contents;
-use crate::workspace::{IgnoreFiles, Workspace};
+use crate::workspace::IgnoreFiles;
 
 /// Directory and file names that hold version-control metadata, never searched.
 ///
@@ -36,11 +36,12 @@ pub const VCS_METADATA: &[&str] = &[
 pub struct Found {
     /// Every regular file, sorted by path, so that output is the same on every run.
     pub files: Vec<PathBuf>,
-    /// Symbolic links met and not followed, so the run can say it did not look through them.
-    pub links_not_followed: usize,
+    /// Symbolic links met and not followed, so the run can say it did not look through them;
+    /// kept by path, so that two walks meeting one link count it once.
+    pub links_not_followed: Vec<PathBuf>,
     /// FIFOs, sockets and device files met and not searched: reading a FIFO would wait for a
     /// writer that may never come, so they are counted rather than read.
-    pub special_files: usize,
+    pub special_files: Vec<PathBuf>,
     /// Each line of an ignore file that could not be parsed, described for the user.  The line
     /// is skipped and the rest of its file applies, as git applies the lines it understands.
     pub skipped_rules: Vec<String>,
@@ -51,11 +52,11 @@ impl Found {
     /// a special file, which are not read.
     fn count(&mut self, path: &Path, kind: fs::FileType) {
         if kind.is_symlink() {
-            self.links_not_followed += 1;
+            self.links_not_followed.push(path.to_path_buf());
         } else if kind.is_file() {
             self.files.push(path.to_path_buf());
         } else {
-            self.special_files += 1;
+            self.special_files.push(path.to_path_buf());
         }
     }
 }
@@ -124,14 +125,15 @@ impl std::error::Error for Error {
     }
 }
 
-/// Finds every file under `scope`, which may be a directory or a single file.
+/// Finds every file under `scope`, which may be a directory or a single file, and lies at or
+/// under `boundary`: the root of the project it is in, whose system's ignore files `system`
+/// says where to find, or with no project the directory that stands in for one.
 ///
 /// A scope that names a file, or an ignored directory, is searched even so: naming it is
 /// asking for it.  Naming an ignored directory crosses only that one boundary: every ignore
 /// rule from the boundary down still applies to what is beneath it, so a file or directory
-/// inside that another rule ignores is not searched.  No ignore file above the boundary - the
-/// project root, or `cwd` with no project - is read, so that nothing outside the project changes
-/// which files are searched.
+/// inside that another rule ignores is not searched.  No ignore file above the boundary is
+/// read, so that nothing outside a project changes which of its files are searched.
 ///
 /// # Errors
 ///
@@ -139,18 +141,18 @@ impl std::error::Error for Error {
 /// than searching the rest and reporting a short answer as complete.
 pub fn files(
     scope: &Path,
+    boundary: &Path,
+    system: Option<Box<dyn IgnoreFiles>>,
     cwd: &Path,
-    workspace: Option<&dyn Workspace>,
     contents: &Contents,
 ) -> Result<Found, Error> {
-    let boundary = workspace.map_or(cwd, |w| w.root());
     let mut found = Found::default();
     // The rules are read and matched here, as each directory is met, ranked as the ignore
     // crate's walker ranks its own, and none above the boundary is read.  The walk is quaff's
     // own too: a directory is listed only once it is to be entered, so an ignored one - or one
     // beside the way to the scope - is never opened, where a walker that filters what it has
     // already listed would read every name in it.
-    let rules = Rules::new(boundary, workspace.map(Workspace::ignore_files), contents);
+    let rules = Rules::new(boundary, system, contents);
     if scope.is_dir() {
         walk(boundary, scope, &rules, cwd, &mut found)?;
     } else {
@@ -354,9 +356,11 @@ impl Rules {
     /// Whether `path`, in the directory whose chain of rules is `dirs`, is ignored, decided as
     /// the `ignore` crate's walker decides: in each kind of ignore file, the nearest directory
     /// with a rule that matches decides that kind, and the kinds then rank `.ignore` above the
-    /// system's own files above its exclude file.  The system's files stop at the nearest
-    /// repository root, so a nested repository's own rules alone apply in it; `.ignore` files
-    /// apply up to the boundary.  None above the boundary is ever read.
+    /// system's own files above its exclude file.  The system's files apply only inside a
+    /// repository, from the nearest repository root down, so a nested repository's own rules
+    /// alone apply in it, with or without a project above it, and a `.gitignore` in no
+    /// repository applies to nothing, as git has it; `.ignore` files apply up to the boundary.
+    /// None above the boundary is ever read.
     ///
     /// The walk fetches a directory's chain once, for everything the directory holds.
     fn ignored_in(dirs: &[Arc<DirRules>], path: &Path, is_dir: bool) -> bool {
@@ -370,12 +374,17 @@ impl Rules {
             }
         };
         let (mut dot_ignore, mut system, mut exclude) = (None, None, None);
-        let mut past_repository = false;
-        for rules in dirs {
+        // The directories inside the repository the path is in, nearest first: none when it is
+        // in no repository.
+        let in_repository = dirs
+            .iter()
+            .position(|rules| rules.repository_root)
+            .map_or(0, |root| root + 1);
+        for (i, rules) in dirs.iter().enumerate() {
             if dot_ignore.is_none() {
                 dot_ignore = decide(rules.dot_ignore.matched(path, is_dir));
             }
-            if !past_repository {
+            if i < in_repository {
                 if system.is_none() {
                     system = decide(rules.system.matched(path, is_dir));
                 }
@@ -383,7 +392,6 @@ impl Rules {
                     exclude = decide(rules.exclude.matched(path, is_dir));
                 }
             }
-            past_repository = past_repository || rules.repository_root;
         }
         dot_ignore.or(system).or(exclude).unwrap_or(false)
     }
@@ -477,7 +485,14 @@ mod tests {
     fn files_in(scope: &Path, cwd: &Path) -> Result<Found, Error> {
         let contents = Contents::default();
         let workspace = crate::workspace::find(cwd, &contents);
-        files(scope, cwd, workspace.as_deref(), &contents)
+        let boundary = workspace.as_ref().map_or(cwd, |w| w.root()).to_path_buf();
+        files(
+            scope,
+            &boundary,
+            workspace.as_ref().map(|w| w.ignore_files()),
+            cwd,
+            &contents,
+        )
     }
 
     struct Tree(PathBuf);
@@ -1104,7 +1119,7 @@ mod tests {
         assert!(made.success(), "mkfifo {} failed", fifo.display());
         let found = files_in(&tree.0, &tree.0).unwrap();
         assert_eq!(found.files.len(), 1);
-        assert_eq!(found.special_files, 1);
+        assert_eq!(found.special_files.len(), 1);
     }
 
     #[test]
@@ -1179,7 +1194,7 @@ mod tests {
         std::os::unix::fs::symlink("a.py", tree.0.join("link.py")).unwrap();
         let found = files_in(&tree.0, &tree.0).unwrap();
         assert_eq!(found.files.len(), 1);
-        assert_eq!(found.links_not_followed, 1);
+        assert_eq!(found.links_not_followed.len(), 1);
     }
 
     #[test]

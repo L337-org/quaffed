@@ -4,11 +4,11 @@ info:
   program: quaff
   args:
     - "-e"
-    - "find \"a\" where not FILE matches \"x\""
+    - "find \"TODO\" in \"docs\""
 ---
 success: false
-exit_code: 5
+exit_code: 7
 ----- stdout -----
 
 ----- stderr -----
-quaff: -e expression 1, at character 16: a `where` clause is not built yet
+quaff: -e expression 1, at character 16: `in` names "docs", which is not there

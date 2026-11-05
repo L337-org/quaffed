@@ -18,6 +18,10 @@ without the engine noticing, and keeps a script's meaning in one place.
   against structural is never a separate flag that could disagree with it.  A structural
   pattern is carried as written; the engine compiles it through the front end for each file's
   language, so this crate depends on no parser.
+- **`Glob`** (`src/glob.rs`): what `in` and `where` compare with - literal text and the wildcard
+  parts between it, built from quoted pieces and markers as `TextPattern` is.  It says nothing
+  about segments: a path's and a string's differ, and the engine knows which it compares.  A
+  `where` test's quoted operand is `Operand::Glob`.
 - **`TextPattern`**: literal text and line breaks, optionally anchored at either end, built
   from the pieces a script writes.  Adjacent literals join as it is built, so `"ab"` and
   `"a" "b"` are the same pattern.

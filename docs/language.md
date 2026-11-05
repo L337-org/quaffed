@@ -93,6 +93,7 @@ with the exit status after it.  Structural examples over the whole project also 
 - [Running quaff](#running-quaff)
 - [Textual search](#textual-search)
 - [Scripts](#scripts)
+- [Paths and globs](#paths-and-globs)
 - [Assertions](#assertions)
 - [Replacing text](#replacing-text)
 - [Structural search](#structural-search)
@@ -137,14 +138,22 @@ next argument or after `=`.  A short option never takes `=`: `-s=x` is an unknow
 
 - **The project** is the nearest directory at or above the current one that holds `.git`.  With
   no project, the current directory stands in for it.
-- **A search covers the whole project by default**, wherever you run it from.
-- **`PATH` narrows it** to one file or directory.  It must exist (exit 7 otherwise) and lie inside
-  the project (exit 3 otherwise).  It is a path, not a glob: a quoted glob is reported as not
-  found, with a note that globs are not expanded.
+- **A search covers the current directory by default**, and `:/` names the whole project.
+- **`PATH` narrows it** to one file or directory, by the [path rules](#paths-and-globs) `in` and
+  `FILE` follow: relative to the current directory, or from the project root after `:/`.  It must
+  exist (exit 7 otherwise).  It is a plain path, never a glob: a quoted glob is reported as not
+  found, and one holding a double quote is refused (exit 3), pointing to `in`, which takes globs.
+- **A path outside the project is searched**, since you named it, by that project's own ignore
+  files and declarations; with no project there, the directory named stands in for one, as it
+  would if quaff were run from inside it.
 - **Paths in the output are relative to the current directory**, so from `src/`:
 
   ```
   $ quaff TODO
+  app.py:7:7-7:10: TODO
+  [exit 0]
+
+  $ quaff TODO :/
   ../docs/notes.md:3:1-3:4: TODO
   app.py:7:7-7:10: TODO
   [exit 0]
@@ -253,6 +262,126 @@ A textual operand can be built from pieces:
   A CRLF is one line ending, so neither anchor holds between its CR and its LF.
 
 - **None of these apply to a backticked pattern**, which is anchored by its shape.
+
+### Scope and filters: `in` and `where`
+
+A statement's clauses follow its operand in the order `in`, `where`, `expect`, each at most once.
+
+- **`in` says which files a statement looks at**: a path or a glob, by the
+  [path rules](#paths-and-globs).
+
+  ```
+  $ quaff -e 'find "TODO" in "src"'
+  src/app.py:7:7-7:10: TODO
+  [exit 0]
+  ```
+
+- **`where` keeps what passes its tests**: `matches` and `contains`, of `FILE` or of a
+  metavariable the pattern binds, joined with `and` and turned round with `not`.  There is no
+  `or`: write a statement for each alternative.
+
+  ```
+  $ quaff -e 'find "TODO" where not FILE matches **".md"'
+  src/app.py:7:7-7:10: TODO
+  [exit 0]
+  ```
+
+- **A metavariable is compared by what its match bound**: a string literal by its content, as
+  written between its quotes, with the quotes and any prefix taking no part, and any other code
+  by its text.  A glob over a value takes the same markers as a path's, with a line in place of
+  a directory name, so `*` stays within a line and `**` crosses lines:
+
+  ```
+  $ quaff -e 'find `log.info($s, $x)` where $s matches "user "*'
+  src/app.py:11:5-11:34: log.info("user %s", user.name)
+
+  $ quaff -e 'find `return $x` where not $x contains "("'
+  src/totals.py:4:5-4:25: return subtotal + tax
+  src/totals.py:8:5-8:31: return price - price * rate
+  ```
+
+- **With a backticked pattern, `matches` is the pattern matching the bound node itself, and
+  `contains` it matching the node or anything inside it:**
+
+  ```
+  $ quaff -e 'find `return $x` where $x matches `response.$m($a)`'
+  src/app.py:10:9-10:34: return response.error(404)
+  src/app.py:12:5-12:46: return response.ok(render(user, response))
+
+  $ quaff -e 'find `return $x` where $x contains `render($a, $b)`'
+  src/app.py:12:5-12:46: return response.ok(render(user, response))
+  ```
+
+  A name the `where`'s pattern shares with the statement's is the same code in both, as a name
+  used twice in one pattern is: `find `pair($m, $u)` where $m matches `format($u)`` keeps
+  `pair(format(a), a)` but not `pair(format(a), b)`.  A shared name must be one node in both,
+  never a sequence in either (exit 3).
+- **A match is kept if any way it binds its names passes the whole `where`.**  In
+  `connect($before..., $x, $after...)`, `$x` can be any argument but the first and last, so
+  `where $x contains "password"` keeps a call with a password anywhere among them - and
+  `where not $x contains "password"` keeps a call any of whose middle arguments has none, which
+  is not the same as having no password at all.
+- **A test of a metavariable must test one the pattern binds to one node**: a textual search binds
+  none, `$_` binds nothing, and a sequence binds many, so each is refused (exit 3).  A test is
+  also one more use of its name: where a pattern and its `where` together would make the search
+  grow faster than the square of a list's length, as two names used twice can
+  ([Runs of statements](#runs-of-statements)), the statement is refused the same way.
+- **A file a statement leaves out by its path is never parsed for it**, so a Python file quaff
+  cannot parse there cannot [refuse the run](#which-files): leave it out with `in`, or with
+  `where not FILE matches`.
+- **The scope on the command line narrows every statement and never widens one**: a statement
+  with an `in` looks only at what is in both.  A note says so where the scope is deeper than the
+  `in`, or shares nothing with it, so that the statement looks at nothing.
+
+## Paths and globs
+
+The scope on the command line, `in` and `FILE` follow one set of rules.
+
+- **A path is relative to the current directory**, as the output prints it, so from `src/` a
+  file in `docs/` is `../docs/notes.md`.  **One that begins `:/` starts at the project root**,
+  or the current directory with no project: from `src/`, `in ":/docs"` is the root's `docs/`.
+  Only a leading `:/` counts, and a directory really named `:` is written `./:`.  **An absolute
+  path is where it says**, whatever the current directory: `in "/srv/app/"**".py"` is every
+  Python file under `/srv/app`.
+- **A glob's leading directory is a directory on disk**, as a path with no wildcard is: its
+  text up to the last `/` before any wildcard.  So from `src/`, `"../"**` is every file under
+  the parent, `src/` included, as `in ".."` is, though the output prints those as `app.py`
+  rather than `../src/app.py`.  Through a symbolic link it is where the link leads: where
+  `alias` links to `src`, `in "alias/"**` finds the files of `src`, as `in "alias"` does.  A
+  glob with no leading directory, such as `**".py"`, is matched against the path as printed.
+- **A path with no wildcard names a file or a directory**, and a directory stands for everything
+  under it: `in "src"`, `where not FILE matches "src/app.py"`.
+- **A glob is quoted text and wildcards, and text inside quotes is always literal.**  Each
+  wildcard is a marker outside the quotes, joined to the text beside it, so nothing is ever
+  escaped:
+
+  | marker | matches |
+  | --- | --- |
+  | `*` | any run of characters within one directory name |
+  | `**` | any run of characters, across directory names |
+  | `?` | one character, never `/` |
+  | `[abc]`, `[a-z]`, `[!a]` | one character in the set, or with `!` first one not in it, never `/` |
+  | `{"src","tests"}` | any one of the alternatives, each quoted text and wildcards in turn |
+
+  So `in "src/"**".py"` is every `.py` file under `src`, and `where not FILE matches
+  **"/test_"*".py"` leaves out test files below the top directory.  In a class, a `]` that is a
+  member goes first and a `-` first or last, and nothing else is special.
+- **A glob matches the whole path**.  After its leading directory, `..` is an ordinary
+  directory name to it.  `FILE contains "x"` is `x` anywhere in the path as printed, the same as
+  `FILE matches **"x"**`, so `FILE contains "./"` is those two characters, not a start.
+- **An `in` that names nothing there fails the run** (exit 7), as a missing scope does: a path
+  that is not there, or a glob whose leading directory is not.  A glob written inside the quotes
+  is literal, so `"**/*.md"` names a file of that name, and the message gives the marker
+  spelling:
+
+  ```
+  $ quaff -e 'find "TODO" in "**/*.md"'
+  quaff: -e expression 1, at character 16: `in` names "**/*.md", which is not there; text in quotes is literal, so to match a pattern write **"/"*".md"
+  [exit 7]
+  ```
+
+- **A `FILE matches` path that names nothing there is only noted**, since it may be there to
+  guard against a file that does not exist yet.
 
 ## Assertions
 
@@ -558,14 +687,16 @@ quaff: -p, at character 17: "$b..." follows another sequence with no statement b
 [exit 3]
 ```
 
-**A pattern may have one place where what a sequence takes decides what later code must
-match.**  A sequence named twice is one such place: `w()`, `$a...`, `x()`, `$a...`, `y()` is fine,
-and so is a name bound in one statement and used in a later one.  The same goes inside a node, in
-a call's arguments or a function's body.  Two such places are fine when they are in lists that
-share no name, since neither then changes what the other is matched with: `f(g($a..., x,
-$a...), h($b..., y, $b...))` is accepted.  Each such place multiplies the work of a search by the
-length of the block or list it stands in, so a second is refused rather than left to make a
-search slow on a long file:
+**A search may depend on two places at once where it can go more than one way, but not
+three.**  Such a place is where a sequence stops, and, in a run of statements, where the run
+starts.  A sequence named twice is fine: `w()`, `$a...`, `x()`, `$a...`, `y()` depends on where
+the run starts and where the first `$a...` stops.  So is a name bound in one statement and used in
+a later one.  Inside a node, which starts where it stands, `f($a..., $b...) + g($a..., x, $b...)`
+is fine too, since one stop divides `f`'s arguments between `$a` and `$b`.  Places in lists that
+share no name do not add up, since neither changes what the other is matched with: `f(g($a..., x,
+$a...), h($b..., y, $b...))` is accepted.  Each place multiplies the work of a search by the
+length of the block or list it stands in, so a third is refused rather than left to make a search
+slow on a long file:
 
 ```
 $ quaff -p 'open_db()
@@ -577,7 +708,7 @@ $a...
 commit()
 $b...
 close_db()' play
-quaff: -p, at character 43: "$a..." makes a second place where what a sequence takes decides what later code must match, and each such place multiplies the work of a search by the length of the block or list it stands in, so a pattern may have one: give one of the names used twice a name of its own
+quaff: -p, at character 26: "$b..." makes a search depend on a third place at once where it can go more than one way - where a sequence stops, or where a run of statements starts - and each such place multiplies the work of a search by the length of the block or list it stands in, so a pattern may depend on two: give one of the names used twice a name of its own
 [exit 3]
 ```
 
@@ -611,7 +742,7 @@ alone.
   $ quaff -p 'wrap($x)' broken
   quaff: refused: 1 Python file in scope cannot be parsed, so a structural search cannot count matches in it:
     "broken/bad.py": line 1, column 12: Expected a parameter or the end of the parameter list
-  To search without it, list it in .ignore, or give a narrower scope on the command line
+  To search without it, leave it out of the statement: with `in`, with `where not FILE matches`, such as where not FILE matches "broken/bad.py", or project-wide by listing it in .ignore
   [exit 9]
   ```
 
@@ -631,7 +762,9 @@ alone.
 
 - **Files ignored by `.gitignore`, `.ignore` or `.git/info/exclude` are skipped.**  `.ignore`
   outranks `.gitignore`, which outranks `info/exclude`, and within each kind the nearest
-  directory with a matching rule decides.  With no project, only `.ignore` applies.
+  directory with a matching rule decides.  A `.gitignore` and `info/exclude` apply only inside
+  a repository, so with no project only `.ignore` applies - until the search enters a
+  repository, a submodule or one in a directory that is in no project, which keeps its own.
 - **No ignore file above the project root is read**, and no git configuration, so a global
   excludes file does not apply.
 - **Naming an ignored file or directory as the scope searches it anyway**, but every ignore rule
@@ -700,9 +833,9 @@ src/app.py:16:5-17:32: return lookup(request.args["id"], default=None,)
 | 0 | every assertion held; or, with no assertion, something was found |
 | 1 | nothing was found, and there was no assertion; not an error |
 | 2 | an assertion failed |
-| 3 | a usage error, a malformed script or pattern, an empty program, or a scope outside the project |
+| 3 | a usage error, a malformed script or pattern, an empty program, or a scope holding a double quote |
 | 5 | a statement or construct this build does not have |
-| 7 | an I/O error, naming the path and quoting the system's error, or edits that could not be written, saying what was left as it was |
+| 7 | an I/O error, naming the path and quoting the system's error; an `in` that names nothing there; or edits that could not be written, saying what was left as it was |
 | 9 | a structural search needs a Python file quaff cannot parse, an edit would break a Python file that parses, or a file's encoding cannot write a replacement: the script or the file must change first |
 
 **A run that cannot give an answer - exit 3, 5, 7 or 9 - prints nothing on standard output**, so
@@ -714,12 +847,11 @@ file is looked at, so a script with an error anywhere does not run at all.
 These parse, and are refused with exit 5 at the place they were written, rather than being
 ignored or treated as unknown:
 
-- a structural `replace`, and `delete`;
-- an `in` clause, and a `where` clause.
+- a structural `replace`, and `delete`.
 
 ```
-$ quaff -e 'find "x" in "src/**"'
-quaff: -e expression 1, at character 13: an `in` clause is not built yet
+$ quaff -e 'replace `f($a)` with `g($a)` expect 1'
+quaff: -e expression 1, at character 1: a structural replace is not built yet
 [exit 5]
 ```
 
@@ -740,7 +872,16 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
 - **An empty program is an error, not an empty answer.**  `-e "$CHECKS"` with the variable unset
   exits 3, naming the sources, rather than searching for nothing and exiting 1.
 - **A quoted glob as the scope is not expanded.**  It is reported as not found, with a note that
-  globs are not expanded.
+  globs are not expanded; `in` takes globs.  A scope holding a double quote is refused, so that
+  a pattern there can mean something later.
+- **A glob's leading directory is where it is on disk, not text in the path as printed**: from
+  `src/`, `"../"**` takes in `src/app.py`, printed `app.py`, and `"alias/"**` finds the files of
+  `src` where `alias` links to it, printed under `src/`.  `FILE contains` is text anywhere in
+  the path as printed, so `FILE contains "alias"` finds none of the files of `src`.
+- **A star stays within one directory name**: `where not FILE matches *".txt"` leaves out only
+  the `.txt` files at the top, and `**".txt"` every one.
+- **The default scope is the current directory, not the project**: from a subdirectory, `:/`
+  searches the whole project.
 - **A script is UTF-8.**  Anything else is refused at its first byte that is not.  A leading
   byte-order mark is skipped, so locations count from the first visible character.
 - **A possible match never decides an assertion**, so that a file quaff cannot read never blocks
@@ -772,14 +913,15 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
   short of the edge of its block, so one match would cover far more than the pattern spells.  Put
   fixed code on both sides of it.  So `return $x` then `$dead...`, every statement after a
   `return`, cannot be written.
-- **A pattern may have only one place where what a sequence takes decides what later code must
-  match**, in a run of statements or inside a node, unless the two are in lists that share no
-  name, and two sequences may not stand together in a run of statements.  Matching patterns
-  with names used more than once is, in general, a problem no algorithm solves quickly, so the
-  pattern is refused where its search could grow faster than the square of a block's or list's
-  length, rather than accepted and left to run for minutes on a long file.  A sequence named twice
-  is fine; two sequences each named twice in one list are not.  Two sequences together inside a
-  node, `f($a..., $b...)`, are fine: the node bounds them.
+- **A search may depend on at most two places at once where it can go more than one way** -
+  where a sequence stops, or where a run of statements starts - and two sequences may not stand
+  together in a run of statements.  Matching patterns with names used more than once is, in
+  general, a problem no algorithm solves quickly, so the pattern is refused where its search could
+  grow faster than the square of a block's or list's length, rather than accepted and left to run
+  for minutes on a long file.  A sequence named twice is fine; two sequences each named twice are
+  fine inside a node, which starts where it stands, but not in a run of statements, which could
+  start anywhere.  Two sequences together inside a node, `f($a..., $b...)`, are fine: the node
+  bounds them.
 - **Structural patterns ignore non-Python files rather than falling back to text**, and say so.
 - **A Python file quaff cannot parse stops a structural search** (exit 9): one Python refuses to
   read, and one Python reads in an encoding quaff does not, such as GBK.  A textual query alone

@@ -13,4 +13,4 @@ exit_code: 9
 ----- stderr -----
 quaff: refused: 1 Python file in scope cannot be parsed, so a structural search cannot count matches in it:
   "gbk.py": line 1 declares the encoding "gbk", Python's "gbk", which Python reads and quaff does not
-To search without it, list it in .ignore, or give a narrower scope on the command line
+To search without it, leave it out of the statement: with `in`, with `where not FILE matches`, such as where not FILE matches "gbk.py", or project-wide by listing it in .ignore

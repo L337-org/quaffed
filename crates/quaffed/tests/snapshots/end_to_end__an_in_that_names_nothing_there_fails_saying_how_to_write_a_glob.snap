@@ -1,0 +1,14 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "find \"TODO\" in \"**/test_*.py\""
+---
+success: false
+exit_code: 7
+----- stdout -----
+
+----- stderr -----
+quaff: -e expression 1, at character 16: `in` names "**/test_*.py", which is not there; text in quotes is literal, so to match a pattern write **"/test_"*".py"

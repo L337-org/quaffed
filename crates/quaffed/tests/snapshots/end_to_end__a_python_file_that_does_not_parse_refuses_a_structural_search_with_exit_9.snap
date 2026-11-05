@@ -16,4 +16,4 @@ quaff: refused: 4 Python files in scope cannot be parsed, so a structural search
   "src/bad_coding.py": line 1 declares the encoding "uft-8", which Python does not know
   "src/broken.py": line 1, column 12: Expected a parameter or the end of the parameter list
   "src/wide.py": line 1 has a NUL byte, which Python source cannot contain
-To search without them, list them in .ignore, or give a narrower scope on the command line
+To search without them, leave them out of the statement: with `in`, with `where not FILE matches`, such as where not FILE matches "src/bad_byte.py", or project-wide by listing them in .ignore

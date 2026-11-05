@@ -1,0 +1,14 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "find `pair($m, $us...)` where $m matches `format($us)`"
+---
+success: false
+exit_code: 3
+----- stdout -----
+
+----- stderr -----
+quaff: -e expression 1, at character 42: `$us...` is a sequence in the statement's pattern and one node in the `where`'s, and a name shared between them is one or the other: name it differently in one of them

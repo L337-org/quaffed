@@ -69,10 +69,10 @@ pub enum PatternError {
         /// Where in the pattern the second sequence is.
         offset: usize,
     },
-    /// A second place where what a sequence takes decides what later code must match, in a run
-    /// of statements or among a node's children, each such place multiplying a search's work by
-    /// the length of the block or list it stands in.
-    SecondChoice {
+    /// A search that would depend on more than two places at once where it can go more than one
+    /// way - where a sequence stops, or where a run of statements starts - each such place
+    /// multiplying its work by the length of the block or list it stands in.
+    ThirdPlace {
         /// The hole that makes it so, as written: `$x` or `$x...`.
         spelled: String,
         /// Where in the pattern it is.
@@ -140,12 +140,13 @@ impl fmt::Display for PatternError {
                  between them",
                 name.as_deref().unwrap_or("")
             ),
-            PatternError::SecondChoice { spelled, .. } => write!(
+            PatternError::ThirdPlace { spelled, .. } => write!(
                 f,
-                "\"{spelled}\" makes a second place where what a sequence takes decides what later \
-                 code must match, and each such place multiplies the work of a search by the length \
-                 of the block or list it stands in, so a pattern may have one: give one of the \
-                 names used twice a name of its own"
+                "\"{spelled}\" makes a search depend on a third place at once where it can go more \
+                 than one way - where a sequence stops, or where a run of statements starts - and \
+                 each such place multiplies the work of a search by the length of the block or list \
+                 it stands in, so a pattern may depend on two: give one of the names used twice a \
+                 name of its own"
             ),
             PatternError::InsideAName { spelled, .. } => write!(
                 f,
@@ -168,7 +169,7 @@ impl PatternError {
             | PatternError::MixedHole { offset, .. }
             | PatternError::UnboundedSequence { offset, .. }
             | PatternError::SequencesTogether { offset, .. }
-            | PatternError::SecondChoice { offset, .. }
+            | PatternError::ThirdPlace { offset, .. }
             | PatternError::InsideAName { offset, .. } => Some(*offset),
             PatternError::NoShape | PatternError::Empty | PatternError::TooLong(_) => None,
         }
@@ -274,7 +275,7 @@ pub fn compile_pattern(text: &str) -> Result<Pattern, PatternError> {
     }
     if let Some(costly) = pattern.costly() {
         let node = match costly {
-            Costly::Together(node) | Costly::SecondChoice(node) => node,
+            Costly::Together(node) | Costly::ThirdPlace(node) => node,
         };
         let (_, claim) = placed
             .iter()
@@ -286,7 +287,7 @@ pub fn compile_pattern(text: &str) -> Result<Pattern, PatternError> {
                 name: claim.hole.name.clone(),
                 offset,
             },
-            Costly::SecondChoice(_) => PatternError::SecondChoice {
+            Costly::ThirdPlace(_) => PatternError::ThirdPlace {
                 spelled: text[claim.written.clone()].to_owned(),
                 offset,
             },
