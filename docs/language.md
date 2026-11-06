@@ -864,9 +864,10 @@ written:
   ```
 
   where `app.py` holds `config = load(` then, each on a line of its own and indented by four
-  spaces, `path,  # the user's file` and `strict,`, then `)`.  A comment on a compound statement's header, before the first statement of
-  its body, or before an `elif`, `else` or `except` is in no hole's reach, so an edit that spells
-  such a header is refused wherever one has such a comment.
+  spaces, `path,  # the user's file` and `strict,`, then `)`.  A comment on a compound
+  statement's header, before the first statement of its body, or before an `elif`, `else` or
+  `except` is in no hole's reach, so an edit that spells such a header is refused wherever one has
+  such a comment.
 - **An interpolation that changes the literal it is written into**: a value that closes the string,
   or opens an f-string field, would change more than the literal's text.  So would a value
   spanning lines in a one-line string; and a value Python does not allow, such as a non-ASCII one

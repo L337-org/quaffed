@@ -12,10 +12,11 @@
 //! structure by interpolating into it, or write a capture where Python would read it together
 //! with what surrounds it - is refused, and nothing in the file is changed.
 
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use quaffed_python::{Lexed, Rewrite, lex, parse_module, token_kinds};
-use quaffed_syntax::{Captured, Pattern, find_captured, find_where_captured};
+use quaffed_syntax::{Arena, Captured, NodeId, Pattern, find_captured, find_where_captured};
 
 use crate::search::{Match, Position};
 use crate::structural::{Found, Unparsed, Where, last_char, positions, unparsed};
@@ -168,14 +169,9 @@ fn rewritten(
     // would change its meaning.  Each code site must still be code of its own: one node, or for
     // a sequence a run of them.  A file that no longer parses is left to the parse check.
     if let Ok(arena) = parse_module(&out) {
+        let code = CodeIndex::of(&arena);
         for (range, match_start, sequence) in &written_sites {
-            let whole = arena.nodes().any(|node| arena.range(node) == *range);
-            let run = *sequence
-                && arena
-                    .nodes()
-                    .any(|node| arena.range(node).start == range.start)
-                && arena.nodes().any(|node| arena.range(node).end == range.end);
-            if !whole && !run {
+            if !(code.whole(range) || (*sequence && code.run(range))) {
                 return Err(refused(
                     *match_start,
                     format!(
@@ -190,6 +186,50 @@ fn rewritten(
         }
     }
     Ok(out)
+}
+
+/// Where a parsed file's code stands, gathered in one walk so that each written site is looked up
+/// rather than searched for: every node's range, and for each offset the parents of the nodes
+/// that start or end there.
+struct CodeIndex {
+    ranges: HashSet<(usize, usize)>,
+    starting: HashMap<usize, Vec<Option<NodeId>>>,
+    ending: HashMap<usize, Vec<Option<NodeId>>>,
+}
+
+impl CodeIndex {
+    fn of(arena: &Arena<'_>) -> CodeIndex {
+        let mut index = CodeIndex {
+            ranges: HashSet::new(),
+            starting: HashMap::new(),
+            ending: HashMap::new(),
+        };
+        let mut walk = vec![(arena.root(), None)];
+        while let Some((node, parent)) = walk.pop() {
+            let range = arena.range(node);
+            index.ranges.insert((range.start, range.end));
+            index.starting.entry(range.start).or_default().push(parent);
+            index.ending.entry(range.end).or_default().push(parent);
+            walk.extend(arena.children(node).map(|child| (child, Some(node))));
+        }
+        index
+    }
+
+    /// Whether `range` is exactly one node.
+    fn whole(&self, range: &Range<usize>) -> bool {
+        self.ranges.contains(&(range.start, range.end))
+    }
+
+    /// Whether `range` is a run of sibling nodes: one starting where it starts and one ending
+    /// where it ends, under the same parent, so that nothing but separators stands between them.
+    fn run(&self, range: &Range<usize>) -> bool {
+        let (Some(first), Some(last)) =
+            (self.starting.get(&range.start), self.ending.get(&range.end))
+        else {
+            return false;
+        };
+        first.iter().any(|parent| last.contains(parent))
+    }
 }
 
 /// The rewrite of one match: the template indented, and its line breaks spelled, for where the
@@ -688,6 +728,8 @@ mod tests {
         );
         // A sequence is a run of code, so it may stand as several.
         assert_eq!(ok("f($xs...)", "g($xs...)", "f(a, b)\n"), "g(a, b)\n");
+        // But only as siblings: here the first would become part of `1 + a`.
+        assert!(replaced("f($xs...)", "f(1 + $xs...)", "f(a, b)\n").is_err());
     }
 
     #[test]
