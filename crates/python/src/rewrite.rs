@@ -350,9 +350,9 @@ fn code_site(
 }
 
 /// Every `$` the template spells before a name, a brace or `...`, in order, with how it is
-/// spelled; where it landed is learnt only from the parse.  `$_`, `$_...` and `${_}` are refused here,
-/// wherever they stand, since `_` is never bound; so is `${` before anything but a name and `}`,
-/// which is an error in a literal and not Python in code.
+/// spelled; where it landed is learnt only from the parse.  `$_`, `$_...` and `${_}` are refused
+/// here, wherever they stand, since `_` is never bound; so is `${` before anything but a name and
+/// `}`, which is an error in a literal and not Python in code.
 fn claim(text: &str) -> Result<(Vec<Claim>, Vec<Spelling>), RewriteError> {
     let mut claims = Vec::new();
     let mut spellings = Vec::new();
