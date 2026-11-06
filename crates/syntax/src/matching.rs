@@ -333,9 +333,10 @@ struct Asked {
 }
 
 impl Asked {
-    /// The bindings a match made again from the same place gives, as the way `accepted` - the
-    /// nodes it bound the tested names to - binds the rest, with what `make` returned.  Where the accepted way is not the first the search found,
-    /// its captures are found this way.
+    /// Makes a match again from the same place with `make`, as the way `accepted` binds it, and
+    /// gives what `make` returned with the bindings it made.  `accepted` holds the nodes that way
+    /// bound the tested names to.  Where the accepted way is not the first the search found, its
+    /// captures are found this way.
     ///
     /// Each tested name must first be bound to the very node the way bound it to, while the match
     /// is made again by plain backtracking; what was remembered is forgotten before and after,
@@ -4444,11 +4445,6 @@ mod trees {
         assert!(large < 6 * small, "{small} then {large}");
     }
 
-    /// A sequence after another in a node's list is moved by both their stops, so it binds as many
-    /// ways as the square of the list's length, and using it again after the node makes a third
-    /// place the search depends on: refused, as searching it costs the cube, eight times the work
-    /// over twice the code where no way matches.  With no sequence after it, it ends where the node
-    /// does, and only one stop moves it.
     #[test]
     fn a_where_over_a_run_captures_a_name_inside_a_node_that_binds_a_tested_one() {
         // `$a` is tested, so the first statement is matched by its ways of binding `$a`, which
@@ -4488,6 +4484,11 @@ mod trees {
         assert_eq!(found[0].captures[0].start, third);
     }
 
+    /// A sequence after another in a node's list is moved by both their stops, so it binds as many
+    /// ways as the square of the list's length, and using it again after the node makes a third
+    /// place the search depends on: refused, as searching it costs the cube, eight times the work
+    /// over twice the code where no way matches.  With no sequence after it, it ends where the node
+    /// does, and only one stop moves it.
     #[test]
     fn a_sequence_after_another_is_moved_by_both_their_stops() {
         let both = pattern("(D (g $... $q... $...) $... $q... x y)");
