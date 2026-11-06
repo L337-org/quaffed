@@ -832,17 +832,28 @@ arguments, with the template's `, ` between them.
 
   leaves `data = read(path)` and `check(data)` at the function's own level.  Nothing else is
   reformatted: a project's formatter does the rest.
-- **A trailing comma inside the match is kept**, where the rewrite ends with the same closing
-  bracket and does not say otherwise, since a formatter reads it as asking for one item to a line:
+- **Line breaks are the file's own**: each line break the template writes is spelled as the
+  file's line ending where the match stands, as `$^` writes one in a textual replace, except one
+  inside a string, which is part of its value.
+- **A trailing comma before the match's own closing bracket is kept**, where the pattern and the
+  rewrite are both a call, or a list, set or dict display, and the rewrite ends with its own
+  bracket and does not say otherwise, since a formatter reads the comma as asking for one item to
+  a line.  It is never added anywhere else - a bracketed expression, a subscript, or a bracket a
+  capture wrote back - where it would change what the code means:
   ``replace `log($msg, $a, $b)` with `log($msg, $b, $a)` expect 1`` over `save` above leaves
   `log("saving %s to %s", path, data,)`.
 
 **What cannot be done as written is refused**, exit 9, naming the file and where, and nothing is
 written:
 
-- **Matches that overlap**: `f($x)` over `f(f(1))` is two matches, one inside the other, and
-  rewriting either would change the other, so a replace of it is refused, naming both.  Narrow
-  the pattern so that it cannot match inside itself.
+- **Matches that overlap**: `f($x)` over `f(f(1))` is two matches, one inside the other, and a
+  run of statements tried from every start can overlap the next; rewriting either would change
+  the other, so a replace of them is refused, naming both.  Narrow the pattern so that its matches
+  cannot overlap.
+- **A capture Python would read with what surrounds it**: ``replace `f($a)` with `$a * 2` ``
+  over `f(x + 1)` would write `x + 1 * 2`, and `return wrap($x)` over `return a, b` would call
+  `wrap` with two arguments, so each is refused.  Put brackets round the hole in the rewrite,
+  `($a) * 2`, and it is written as one piece of code.
 - **A comment in no capture the rewrite writes back**, which the edit would drop:
 
   ```
@@ -852,8 +863,8 @@ written:
   [exit 9]
   ```
 
-  where `app.py` holds `config = load(` then `path,  # the user's file`, `strict,` and `)` on
-  lines of their own.  A comment on a compound statement's header, before the first statement of
+  where `app.py` holds `config = load(` then, each on a line of its own and indented by four
+  spaces, `path,  # the user's file` and `strict,`, then `)`.  A comment on a compound statement's header, before the first statement of
   its body, or before an `elif`, `else` or `except` is in no hole's reach, so an edit that spells
   such a header is refused wherever one has such a comment.
 - **An interpolation that changes the literal it is written into**: a value that closes the string,
@@ -992,8 +1003,9 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
   an answer about the files it can.
 - **Structural matches inside matches are each reported**, so `f($x)` over `f(f(1))` is two
   matches.
-- **A structural replace of matches inside matches is refused**, exit 9, though a `find` of the
-  same pattern counts them, since rewriting one changes the other.
+- **A structural replace of matches that overlap is refused**, exit 9, though a `find` of the
+  same pattern counts them, since rewriting one changes the other: matches inside matches, and
+  runs of statements that share some.
 - **A rewrite drops what no hole captures**, layout and the template's spelling replacing it, but
   never a comment: one in no capture refuses the edit.  A sequence hole captures everything between
   its first node and its last.

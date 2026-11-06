@@ -1424,6 +1424,20 @@ fn an_interpolation_that_changes_a_literal_exits_9() {
 }
 
 #[test]
+fn a_capture_python_would_read_with_its_surroundings_exits_9() {
+    let project = Project::new(&[(".git/HEAD", ""), ("a.py", "y = f(x + 1)\n")]);
+    assert_quaff_snapshot!(project.quaff(&["-e", "replace `f($a)` with `$a * 2` expect 1"]));
+    project.assert_unchanged();
+    // Brackets in the rewrite keep it one piece of code.
+    let output = project
+        .quaff(&["-e", "replace `f($a)` with `($a) * 2` expect 1"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    project.assert_changed(&[("a.py", b"y = (x + 1) * 2\n")]);
+}
+
+#[test]
 fn a_structural_replace_that_would_break_a_file_exits_9() {
     let project = Project::new(&[(".git/HEAD", ""), ("a.py", "f(caf\u{e9})\n")]);
     // A non-ASCII value in a bytes literal is not Python: the literal's structure is unchanged,
