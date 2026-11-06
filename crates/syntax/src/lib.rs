@@ -12,7 +12,9 @@
 mod matching;
 mod pattern;
 
-pub use matching::{Costly, Match, find, find_where, matches_at};
+pub use matching::{
+    Captured, Costly, Match, find, find_captured, find_where, find_where_captured, matches_at,
+};
 pub use pattern::{Hole, Pattern};
 
 use std::borrow::Cow;
