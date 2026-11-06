@@ -11,7 +11,7 @@
 //! the same as `$name` anywhere, and separates a name from the text after it, which a name
 //! otherwise runs into as an identifier does.  Anything else after a `$` that is a name or a brace
 //! is an error rather than literal text, so a typo, a name run into the text after it, or a
-//! value filter that does not exist yet stops the run instead of reaching a file.  A `$` before
+//! value filter stops the run instead of reaching a file as literal text.  A `$` before
 //! anything else is ordinary text, and a literal `$` before a name is written in Python's own
 //! spelling, `\x24` or implicit concatenation.
 
@@ -153,7 +153,8 @@ impl fmt::Display for RewriteError {
             RewriteError::NotAName { spelled, .. } => write!(
                 f,
                 "\"{spelled}\" is not a name the pattern binds: inside braces only a bound name \
-                 may stand, as in \"${{name}}\""
+                 may stand, as in \"${{name}}\"; for a literal dollar, write it as Python does, \
+                 \"\\x24\", as in f\"\\x24{{$amount}}\""
             ),
             RewriteError::BindsNothing { spelled, .. } => write!(
                 f,
@@ -349,7 +350,7 @@ fn code_site(
 }
 
 /// Every `$` the template spells before a name, a brace or `...`, in order, with how it is
-/// spelled; where it landed is learnt only from the parse.  `$_` and `$_...` are refused here,
+/// spelled; where it landed is learnt only from the parse.  `$_`, `$_...` and `${_}` are refused here,
 /// wherever they stand, since `_` is never bound; so is `${` before anything but a name and `}`,
 /// which is an error in a literal and not Python in code.
 fn claim(text: &str) -> Result<(Vec<Claim>, Vec<Spelling>), RewriteError> {
@@ -369,6 +370,12 @@ fn claim(text: &str) -> Result<(Vec<Claim>, Vec<Spelling>), RewriteError> {
                     .map_or(after + 1, |i| after + i + 1);
                 return Err(RewriteError::NotAName {
                     spelled: text[start..end].to_owned(),
+                    offset: start,
+                });
+            }
+            if &text[after + 1..close] == "_" {
+                return Err(RewriteError::BindsNothing {
+                    spelled: text[start..=close].to_owned(),
                     offset: start,
                 });
             }
@@ -459,9 +466,10 @@ mod tests {
         compile_rewrite(template, &binder()).expect_err(template)
     }
 
-    // QU-9's measured cases that are decided when a rewrite is compiled, in the order its table
-    // lists them.  Those decided when a value is written - the structure check, a non-ASCII value
-    // in bytes, a value spanning lines - belong to the edit.
+    // The cases measured when the rule for interpolation was chosen that are decided when a
+    // rewrite is compiled, in the order they were measured.  Those decided when a value is
+    // written - the structure check, a non-ASCII value in bytes, a value spanning lines - belong
+    // to the edit.
 
     #[test]
     fn a_bare_name_in_a_docstring_interpolates() {
@@ -559,7 +567,7 @@ mod tests {
     }
 
     #[test]
-    fn a_value_filter_is_refused_today() {
+    fn a_value_filter_is_refused() {
         assert_eq!(
             refused(r#""${name|upper}""#),
             RewriteError::NotAName {
@@ -570,12 +578,28 @@ mod tests {
     }
 
     #[test]
+    fn a_dollar_before_an_f_string_field_is_refused_and_says_how_to_write_it() {
+        // In an f-string, Python reads `${...}` as a dollar then a field, but here `${` is always
+        // the start of a name in braces; a literal dollar is written as Python spells it.
+        let err = refused(r#"f"${$v}""#);
+        assert_eq!(
+            err,
+            RewriteError::NotAName {
+                spelled: "${$v}".to_owned(),
+                offset: 2
+            }
+        );
+        assert!(err.to_string().contains(r"\x24"), "{err}");
+        assert_eq!(sites(r#"f"\x24{$v}""#), ["v code $v"]);
+    }
+
+    #[test]
     fn pythons_own_spellings_of_a_literal_dollar_are_untouched() {
         assert_eq!(sites(r"'\x24HOME'"), Vec::<String>::new());
         assert_eq!(sites("'$' 'HOME'"), Vec::<String>::new());
     }
 
-    // The decisions beyond QU-9's table.
+    // The decisions beyond those measured cases.
 
     #[test]
     fn a_name_the_pattern_does_not_bind_is_refused_in_code_too() {
@@ -587,7 +611,7 @@ mod tests {
 
     #[test]
     fn holes_that_bind_nothing_are_refused() {
-        for template in ["call($_)", "call($...)", "call($_...)", "'$_'"] {
+        for template in ["call($_)", "call($...)", "call($_...)", "'$_'", "'${_}'"] {
             assert!(
                 matches!(refused(template), RewriteError::BindsNothing { .. }),
                 "{template}"

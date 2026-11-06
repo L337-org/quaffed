@@ -68,11 +68,12 @@ are not in the arena:
   something silently.
 
 Everything else after a `$` that is a name or a brace is an error, never literal text, so that a
-typo or a value filter, which does not exist yet, cannot reach a file and a filter can be added
+typo or a value filter cannot reach a file as literal text, and a filter can be added
 later without changing what any working script means.  A `$` before anything else is text.  What
 is decided only once a value is known - whether interpolating it keeps the literal one token of
 its kind, and whether the file still parses - is the edit's to check.
 
+## What a match compares
 
 **The arena keeps Ruff's tokens less those that carry no meaning in Python**, judged by whether
 `CPython`'s tree records them: comments, line breaks, indentation, the end of the file,
