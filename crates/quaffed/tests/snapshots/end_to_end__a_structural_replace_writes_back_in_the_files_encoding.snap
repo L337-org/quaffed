@@ -1,0 +1,16 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "replace `f($a)` with `g($a, \"€\")` expect 1"
+---
+success: false
+exit_code: 9
+----- stdout -----
+
+----- stderr -----
+quaff: refused: the replacement cannot be written in the encoding of 1 file, so nothing was written:
+  "l.py": latin_1 cannot hold "€"
+Use a replacement its encoding can hold, or leave it out of the statement: with `in`, with `where not FILE matches`, such as where not FILE matches "l.py", or with a narrower scope on the command line

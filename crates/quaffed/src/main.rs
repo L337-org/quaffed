@@ -16,6 +16,7 @@ mod filter;
 mod glob;
 mod output;
 mod resolve;
+mod rewrite;
 mod run;
 mod scope;
 mod search;

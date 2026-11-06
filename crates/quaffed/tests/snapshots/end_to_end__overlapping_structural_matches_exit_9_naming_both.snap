@@ -1,0 +1,15 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "replace `f($x)` with `g($x)` expect 2"
+---
+success: false
+exit_code: 9
+----- stdout -----
+
+----- stderr -----
+quaff: refused: the replace cannot be made as written in 1 file, so nothing was written:
+  "a.py": line 1, column 3: this match lies inside the one at line 1, column 1, so rewriting one would change or remove the other: narrow the pattern so that it cannot match inside itself

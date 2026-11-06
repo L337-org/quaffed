@@ -1,0 +1,14 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "replace `f($a)` with `g($b)` expect 1"
+---
+success: false
+exit_code: 3
+----- stdout -----
+
+----- stderr -----
+quaff: -e expression 1, at character 25: "$b" names nothing the pattern binds: check the spelling, put braces round a name followed by more text, as in "${name}_id", or write a literal dollar as Python does, "\x24" or '$' 'text'
