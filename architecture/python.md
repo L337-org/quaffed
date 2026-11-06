@@ -13,6 +13,8 @@ Ruff warns "will have frequent breaking changes", is absorbed here and reaches n
   with Ruff's message verbatim and the byte offset; text too long for an arena is
   `ParseError::TooLong`.  Never a partial arena.
 - **`compile_pattern`**: a structural pattern compiled into a `Pattern`, below.
+- **`compile_rewrite`**: a structural `replace`'s rewrite template checked against its pattern,
+  under *Rewrites*.
 - **`kinds_in_module`**, **`kinds_in_expression`**, **`kinds_in_ipython`** and **`all_kinds`**:
   the kinds an arena holds, and every kind the pinned Ruff knows, which the synthetic corpus's
   coverage check reads.
@@ -44,6 +46,32 @@ and one name used for both a node and a sequence.  An error from Ruff is placed 
 written, not in the text with placeholders.  Each error with a place carries it as a byte offset
 into the pattern (`PatternError::offset`) and leaves it out of its message: the caller says where,
 in the terms its reader knows.
+
+## Rewrites
+
+`compile_rewrite` (`src/rewrite.rs`) takes the `with` side of a structural `replace` and the
+compiled pattern whose captures it writes back, and gives the template with each **site**: where a
+captured name is written, and whether that is in code or in a literal.  It claims every `$` before
+a name, `...` or a brace and substitutes placeholders exactly as `compile_pattern` does, so both
+sides agree on where a `$` lands, but it reads **Ruff's tokens** to decide that, since comments
+are not in the arena:
+
+- **In code** - an identifier token that is exactly the placeholder, and a node of its own - a
+  site writes back the captured code.  It must be a name the pattern binds, written as the pattern
+  binds it, one node or a sequence.  `${name}` is accepted there too, though a name in code cannot
+  run into text, so that one spelling means one thing everywhere.
+- **In a string, an f-string's or t-string's literal part, or a comment**, `$name` and `${name}`
+  interpolate the captured source text, the dots after `$name...` and a whole `$...` are text, and
+  the name must be one the pattern binds.  A name runs to the end of the identifier, as on the
+  match side, whatever is bound, so `$name_id` is the name `name_id` and `${name}_id` separates
+  them: reading the longest bound name instead would let a typo or a forgotten binding write
+  something silently.
+
+Everything else after a `$` that is a name or a brace is an error, never literal text, so that a
+typo or a value filter cannot reach a file as literal text, and a filter can be added
+later without changing what any working script means.  A `$` before anything else is text.  What
+is decided only once a value is known - whether interpolating it keeps the literal one token of
+its kind, and whether the file still parses - is the edit's to check.
 
 ## What a match compares
 
