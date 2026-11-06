@@ -118,6 +118,16 @@ the reference**: property tests (`remembered_against_backtracking` and `trees` i
 to an independent `Oracle`.  Named tests beside them hold each case where a shortcut must not
 apply, and the work's growth, counted rather than timed.
 
+**What a match captured** (`find_captured`, `find_where_captured`) is the code each named hole
+bound there, for an edit to write back.  **A name asked for only for its capture never steers
+the search**: only a name used more than once, or tested by a `where`, is compared, and one only
+kept is recorded where the search went.  So asking for captures changes neither the matches nor
+the work - the property tests above require both - and the cost check needs no change for it.
+Where a name could capture different code at one match, it captures what the search settles on,
+each sequence taking the fewest nodes that let the rest match.  With a `where`, the captures are
+those of the way it accepted: where that is not the first way found, the match is made again from
+the same place with the tested names bound as that way bound them.
+
 ## Building one
 
 An adapter makes a `Builder` over the text and walks its parser's tree once: `enter` with a
