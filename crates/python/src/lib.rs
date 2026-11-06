@@ -12,6 +12,7 @@
 mod kinds;
 mod parse;
 mod pattern;
+mod rewrite;
 
 pub use kinds::all_kinds;
 pub use parse::{
@@ -20,3 +21,4 @@ pub use parse::{
 };
 pub use pattern::{PatternError, compile_pattern};
 pub use quaffed_syntax::Kind;
+pub use rewrite::{Rewrite, RewriteError, Site, compile_rewrite};
