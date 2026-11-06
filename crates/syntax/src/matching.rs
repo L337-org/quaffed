@@ -68,7 +68,8 @@ pub fn find(pattern: &Pattern, target: &Arena<'_>) -> Vec<Match> {
 /// [`find`], with the code each name in `kept` captured at each match.  Where a name could
 /// capture different code at one match - a sequence beside a hole, say - it captures what the
 /// search settles on: each sequence, left to right, takes the fewest nodes that let the rest
-/// match.  Asking for captures changes neither which matches are found nor how the search runs.
+/// match.  Asking for captures never changes which matches are found; where a name is used more
+/// than once, recording them can match a node once more per match found.
 ///
 /// # Panics
 ///
@@ -332,17 +333,37 @@ struct Asked {
 }
 
 impl Asked {
-    /// The bindings to make a match again from the same place, as the way `accepted` - the nodes
-    /// it bound the tested names to - binds the rest: the initial ones with the tested names
-    /// bound as that way bound them.  Where the accepted way is not the first the search found,
+    /// The bindings a match made again from the same place gives, as the way `accepted` - the
+    /// nodes it bound the tested names to - binds the rest, with what `make` returned.  Where the accepted way is not the first the search found,
     /// its captures are found this way.
-    fn again(&self, matcher: &Matcher<'_, '_>, accepted: &[NodeId]) -> Bindings {
+    ///
+    /// Each tested name must first be bound to the very node the way bound it to, while the match
+    /// is made again by plain backtracking; what was remembered is forgotten before and after,
+    /// since outcomes worked out with pinned names would not hold for the search, nor the
+    /// search's for the pinned match.
+    fn again<T>(
+        &self,
+        matcher: &Matcher<'_, '_>,
+        accepted: &[NodeId],
+        make: impl FnOnce(&mut Bindings) -> T,
+    ) -> (T, Bindings) {
         let mut again = self.initial.clone();
+        let mut pins = vec![None; again.len()];
         for (&slot, &node) in self.tested.iter().zip(accepted) {
-            again[slot] = Some(Bound::Node(node));
+            pins[slot] = Some(node);
         }
         matcher.start();
-        again
+        matcher.next_node();
+        // Plain backtracking: the shortcuts assume a name takes any code equal to what it holds,
+        // so one would give up on a later place where only the pinned node stands.
+        let remember = matcher.remember.replace(false);
+        *matcher.pins.borrow_mut() = pins;
+        let outcome = make(&mut again);
+        matcher.pins.borrow_mut().clear();
+        matcher.remember.set(remember);
+        matcher.start();
+        matcher.next_node();
+        (outcome, again)
     }
 }
 
@@ -377,9 +398,10 @@ fn node_found(
     if asked.kept.is_empty() || accepted == bound_nodes(&bindings, &asked.tested) {
         return Some(matcher.captures(&bindings, &asked.kept));
     }
-    let mut again = asked.again(matcher, &accepted);
+    let (found_again, again) =
+        asked.again(matcher, &accepted, |again| matcher.node(only, node, again));
     assert!(
-        matcher.node(only, node, &mut again),
+        found_again,
         "a node matches again with a way it was accepted with"
     );
     Some(matcher.captures(&again, &asked.kept))
@@ -416,9 +438,11 @@ fn run_found<'t>(
         return Some((end, Vec::new()));
     }
     let accepted = accepted.expect("an accepted way was offered");
-    let mut again = asked.again(matcher, &accepted);
+    let (again_end, again) = asked.again(matcher, &accepted, |again| {
+        matcher.list(Within::Run, at, available, 0, again)
+    });
     assert_eq!(
-        matcher.list(Within::Run, at, available, 0, &mut again),
+        again_end,
         Some(end),
         "a run matches again, to the same end, with a way it was accepted with"
     );
@@ -453,6 +477,53 @@ struct CaptureCheck {
     fast_work: usize,
     /// The matches and captures found by backtracking alone.
     slow: Vec<Captured>,
+    /// Whether any name is compared - used more than once, or tested - so that a node may be
+    /// matched by its ways of binding it, and matched again to record what it captured.
+    compared: bool,
+}
+
+#[cfg(test)]
+impl CaptureCheck {
+    /// What asking for captures must leave alone and give: the same captures however the search
+    /// runs, the same matches as without them, each capture inside its match and none
+    /// overlapping another, since holes never nest; and the same work where no name is compared,
+    /// and otherwise at most one more match of a node per match found, held here to double.
+    fn holds(&self) -> Result<(), String> {
+        if self.fast != self.slow {
+            return Err(format!(
+                "remembered {:?}, backtracked {:?}",
+                self.fast, self.slow
+            ));
+        }
+        let ranges: Vec<Range<usize>> = self.fast.iter().map(|f| f.range.clone()).collect();
+        if ranges != self.plain {
+            return Err(format!("captured {ranges:?}, plain {:?}", self.plain));
+        }
+        for found in &self.fast {
+            for (i, capture) in found.captures.iter().enumerate() {
+                if capture.start < found.range.start || found.range.end < capture.end {
+                    return Err(format!("{capture:?} outside its match {found:?}"));
+                }
+                if found.captures[..i].iter().any(|other| {
+                    other != capture && other.start < capture.end && capture.start < other.end
+                }) {
+                    return Err(format!("overlapping captures in {found:?}"));
+                }
+            }
+        }
+        let work_holds = if self.compared {
+            self.fast_work <= 2 * self.plain_work
+        } else {
+            self.fast_work == self.plain_work
+        };
+        if !work_holds {
+            return Err(format!(
+                "work {} with captures, {} without",
+                self.fast_work, self.plain_work
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// [`CaptureCheck`] for `pattern` over `target`, with a `where` testing `tested` if `accept`.
@@ -468,7 +539,9 @@ fn capture_check(
         .filter_map(|(_, hole)| hole.name.as_deref())
         .collect();
     kept.sort_unstable();
+    let used = kept.len();
     kept.dedup();
+    let compared = used > kept.len() || !tested.is_empty();
     let search = |remember: bool, kept: &[&str], accept: Option<&mut Accept<'_>>| {
         let found = find_in(pattern, target, remember, tested, accept, None, &[], kept);
         (found, WORK.with(std::cell::Cell::get))
@@ -482,6 +555,7 @@ fn capture_check(
         fast,
         fast_work,
         slow,
+        compared,
     }
 }
 
@@ -1260,7 +1334,7 @@ struct Matcher<'p, 't> {
     shape: &'p Arena<'static>,
     pattern: &'p Pattern,
     target: &'t Arena<'t>,
-    remember: bool,
+    remember: std::cell::Cell<bool>,
     /// Each name used more than once, that a `where` tests, or whose capture is asked for,
     /// numbered.
     slots: BTreeMap<&'p str, usize>,
@@ -1269,6 +1343,11 @@ struct Matcher<'p, 't> {
     /// recorded where the search went, so asking for captures costs nothing in how the search
     /// runs and changes none of the matches it finds.
     compared: Vec<bool>,
+    /// For each slot, the very node its name must first be bound to, if any: set while a match is
+    /// made again as the way a `where` accepted, so that the search reproduces that way rather
+    /// than one binding an earlier node with equal code ([`Asked::again`]).  Later uses of the
+    /// name compare by code with that node, as ever.
+    pins: RefCell<Vec<Option<NodeId>>>,
     /// The names a `where` tests, which it reads once a match is complete.
     tested: Vec<&'p str>,
     /// Each list of the pattern's, by node, the run of statements last.
@@ -1397,9 +1476,10 @@ impl<'p, 't> Matcher<'p, 't> {
             shape: pattern.arena(),
             pattern,
             target,
-            remember,
+            remember: std::cell::Cell::new(remember),
             slots,
             compared,
+            pins: RefCell::default(),
             tested,
             lists: RefCell::new(vec![None; pattern.arena().nodes().count() + 1]),
             parts: RefCell::default(),
@@ -1513,6 +1593,29 @@ impl<'p, 't> Matcher<'p, 't> {
     fn keep(&self, hole: &Hole, place: Place, end: usize, bindings: &mut Bindings) {
         if let Some(slot) = self.slot(hole).filter(|&slot| !self.compared[slot]) {
             bindings[slot] = Some(Bound::Run(place.owner, place.from..end));
+        }
+    }
+
+    /// Records what the names only kept within `wanted` captured, where `wanted` matched `node`
+    /// by a way of binding the names used after it ([`Matcher::node_ways`]), which binds only
+    /// those.  The node is matched again with the way's bindings, and only the kept names are
+    /// taken from it, so that nothing the rest is matched with changes.
+    fn keep_within(&self, wanted: NodeId, node: NodeId, bindings: &mut Bindings) {
+        let kept: Vec<usize> = self
+            .slots_in(&Part::Child(wanted))
+            .into_iter()
+            .filter(|&slot| !self.compared[slot])
+            .collect();
+        if kept.is_empty() {
+            return;
+        }
+        let mut again = bindings.clone();
+        assert!(
+            self.node(wanted, node, &mut again),
+            "a node matches again with a way it was found to bind"
+        );
+        for slot in kept {
+            bindings[slot] = again[slot].take();
         }
     }
 
@@ -1739,6 +1842,7 @@ impl<'p, 't> Matcher<'p, 't> {
         let list = self.list_of(within);
         let key = self
             .remember
+            .get()
             .then(|| ways_at(&list, within, place, at, exports, &bindings));
         if let Some(key) = &key
             && let Some(found) = self.ways_seen.borrow().get(key)
@@ -1892,7 +1996,7 @@ impl<'p, 't> Matcher<'p, 't> {
         if let Some(slot) = slot
             && let Some(earlier) = bindings[slot].clone()
         {
-            let end = if self.remember {
+            let end = if self.remember.get() {
                 self.equal_run(&earlier, place, available, block_end)
             } else {
                 stops
@@ -1914,7 +2018,7 @@ impl<'p, 't> Matcher<'p, 't> {
                 matches!(part, Part::Child(child)
                     if is_sequence(self.pattern, part) && !compared(self.pattern, *child))
             });
-        if self.remember
+        if self.remember.get()
             && asked_often
             && slot
                 .is_none_or(|slot| !exports.contains(&slot) && !list.uses[at + 1].contains(&slot))
@@ -1982,7 +2086,7 @@ impl<'p, 't> Matcher<'p, 't> {
         bindings: &mut Bindings,
     ) -> Option<usize> {
         let list = self.list_of(within);
-        let remembered = (self.remember && list.sequences).then(|| Remembered {
+        let remembered = (self.remember.get() && list.sequences).then(|| Remembered {
             within,
             place,
             at,
@@ -2068,6 +2172,7 @@ impl<'p, 't> Matcher<'p, 't> {
                         }
                         if let Some(end) = self.list(within, next, available, at + 1, &mut attempt)
                         {
+                            self.keep_within(child, node, &mut attempt);
                             *bindings = attempt;
                             return Some(end);
                         }
@@ -2108,7 +2213,7 @@ impl<'p, 't> Matcher<'p, 't> {
         };
         // Every later run of fixed code must still be able to stand somewhere after this sequence
         // starts, or no length it takes can complete the list.
-        if self.remember
+        if self.remember.get()
             && list
                 .segments
                 .iter()
@@ -2127,7 +2232,7 @@ impl<'p, 't> Matcher<'p, 't> {
             && let Some(earlier) = bindings[slot].clone()
         {
             // A name already bound takes equal code again, which leaves it one end.
-            let end = if self.remember {
+            let end = if self.remember.get() {
                 self.equal_run(&earlier, place, available, block_end)?
             } else {
                 stops
@@ -2155,7 +2260,7 @@ impl<'p, 't> Matcher<'p, 't> {
             return None;
         }
         let next = at + 1;
-        if !self.remember || next == list.wanted.len() || list.segment_end[next] == next {
+        if !self.remember.get() || next == list.wanted.len() || list.segment_end[next] == next {
             for stop in stops {
                 if let Some(end) = self.list(within, after(stop), available, at + 1, bindings) {
                     keep(bindings, stop + 1);
@@ -2420,6 +2525,11 @@ impl<'p, 't> Matcher<'p, 't> {
         }
         match &bindings[slot] {
             None => {
+                if let Some(pin) = self.pins.borrow().get(slot).copied().flatten()
+                    && bound.key() != Key::Node(pin)
+                {
+                    return false;
+                }
                 bindings[slot] = Some(bound);
                 true
             }
@@ -2832,6 +2942,32 @@ mod tests {
             })
             .collect();
         assert_eq!(texts, [["a,b", "c", "d"]]);
+    }
+
+    #[test]
+    fn a_where_that_tells_equal_code_apart_captures_the_way_it_accepted() {
+        // Both `c`s have equal code; only the second passes.  Made again with `$x` bound by
+        // code, the search would take the first `c` and give `$b...` the rest.
+        let (target, _) = call("f(a,c,b,c,d)");
+        let found = find_where_captured(
+            &pattern("f($a...,$x,$b...)"),
+            &target,
+            &["x"],
+            &mut |nodes| target.range(nodes[0]) == (8..9),
+            &["a", "x", "b"],
+        );
+        let texts: Vec<Vec<&str>> = found
+            .iter()
+            .map(|found| {
+                found
+                    .captures
+                    .iter()
+                    .map(|r| &target.text()[r.clone()])
+                    .collect()
+            })
+            .collect();
+        assert_eq!(texts, [["a,c,b", "c", "d"]]);
+        assert_eq!(found[0].captures[1], 8..9);
     }
 
     #[test]
@@ -3505,13 +3641,9 @@ mod remembered_against_backtracking {
                 items,
                 statements
             );
-            let check = capture_check(&pattern, &target, &[], None);
-            prop_assert_eq!(&check.fast, &check.slow, "{:?} over {:?}", items, statements);
-            prop_assert_eq!(
-                check.fast.iter().map(|f| f.range.clone()).collect::<Vec<_>>(),
-                check.plain
-            );
-            prop_assert_eq!(check.fast_work, check.plain_work);
+            capture_check(&pattern, &target, &[], None)
+                .holds()
+                .map_err(|err| TestCaseError::fail(format!("{items:?} over {statements:?}: {err}")))?;
         }
 
         /// A `where` keeps the same matches whether the search remembers or backtracks, so
@@ -3545,11 +3677,9 @@ mod remembered_against_backtracking {
             prop_assert_eq!(everything, find(&pattern, &target));
             // The captures are a passing way's, whichever way the search went.
             let check = capture_check(&pattern, &target, &[&name], Some(&mut passes));
-            prop_assert_eq!(&check.fast, &check.slow, "{:?} over {:?}", items, statements);
-            prop_assert_eq!(
-                check.fast.iter().map(|f| f.range.clone()).collect::<Vec<_>>(),
-                check.plain
-            );
+            check
+                .holds()
+                .map_err(|err| TestCaseError::fail(format!("{items:?} over {statements:?}: {err}")))?;
             let mut kept: Vec<&str> =
                 pattern.holes().filter_map(|(_, hole)| hole.name.as_deref()).collect();
             kept.sort_unstable();
@@ -3557,6 +3687,16 @@ mod remembered_against_backtracking {
             let at = kept.iter().position(|kept| *kept == name).expect("the tested name is bound");
             for found in &check.fast {
                 prop_assert_eq!(&target.text()[found.captures[at].clone()], STATEMENTS[wanted]);
+            }
+            // A `where` may tell apart nodes whose code is equal, by where they are: the
+            // captures are still the accepted way's, never one with equal code found earlier.
+            let mut placed = |nodes: &[NodeId]| target.range(nodes[0]).start % 3 == wanted;
+            let check = capture_check(&pattern, &target, &[&name], Some(&mut placed));
+            check
+                .holds()
+                .map_err(|err| TestCaseError::fail(format!("{items:?} over {statements:?}: {err}")))?;
+            for found in &check.fast {
+                prop_assert_eq!(found.captures[at].start % 3, wanted, "{:?} over {:?}", items, statements);
             }
         }
 
@@ -3579,13 +3719,9 @@ mod remembered_against_backtracking {
                 split,
                 separated
             );
-            let check = capture_check(&pattern, &target, &[], None);
-            prop_assert_eq!(&check.fast, &check.slow, "{:?} over {:?}", items, statements);
-            prop_assert_eq!(
-                check.fast.iter().map(|f| f.range.clone()).collect::<Vec<_>>(),
-                check.plain
-            );
-            prop_assert_eq!(check.fast_work, check.plain_work);
+            capture_check(&pattern, &target, &[], None)
+                .holds()
+                .map_err(|err| TestCaseError::fail(format!("{items:?} over {statements:?}: {err}")))?;
         }
     }
 }
@@ -4314,6 +4450,45 @@ mod trees {
     /// over twice the code where no way matches.  With no sequence after it, it ends where the node
     /// does, and only one stop moves it.
     #[test]
+    fn a_where_over_a_run_captures_a_name_inside_a_node_that_binds_a_tested_one() {
+        // `$a` is tested, so the first statement is matched by its ways of binding `$a`, which
+        // say nothing of `$p...` inside it; the capture must still be recorded.
+        let compiled = pattern("(g (g $p...) $a) y");
+        let (built, _) = build("[(g (g x) x) y]");
+        let found = find_where_captured(&compiled, &built, &["a"], &mut |_| true, &["p", "a"]);
+        let texts: Vec<Vec<&str>> = found
+            .iter()
+            .map(|found| {
+                found
+                    .captures
+                    .iter()
+                    .map(|r| &built.text()[r.clone()])
+                    .collect()
+            })
+            .collect();
+        assert_eq!(texts, [["x", "x"]]);
+    }
+
+    #[test]
+    fn a_where_over_a_run_that_tells_equal_code_apart_captures_the_way_it_accepted() {
+        // Three `x`s; only the third passes.  Made again with `$x` bound by code, the run would
+        // end two statements early, at the second `x`'s `y`.
+        let compiled = pattern("w $... $x y");
+        let (built, _) = build("[w x x y x y]");
+        let third = built.text().rfind('x').expect("the target has an x");
+        let found = find_where_captured(
+            &compiled,
+            &built,
+            &["x"],
+            &mut |nodes| built.range(nodes[0]).start == third,
+            &["x"],
+        );
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].range, 0..built.text().len());
+        assert_eq!(found[0].captures[0].start, third);
+    }
+
+    #[test]
     fn a_sequence_after_another_is_moved_by_both_their_stops() {
         let both = pattern("(D (g $... $q... $...) $... $q... x y)");
         assert!(matches!(both.costly(), Some(Costly::ThirdPlace(_))));
@@ -4398,13 +4573,9 @@ mod trees {
                 .map(|m| built.text()[m.range].to_owned())
                 .collect();
             prop_assert_eq!(fast, oracle, "{} over {} against the oracle", pattern, target);
-            let check = capture_check(&compiled, &built, &[], None);
-            prop_assert_eq!(&check.fast, &check.slow, "{} over {}", pattern, target);
-            prop_assert_eq!(
-                check.fast.iter().map(|f| f.range.clone()).collect::<Vec<_>>(),
-                check.plain
-            );
-            prop_assert_eq!(check.fast_work, check.plain_work, "{} over {}", pattern, target);
+            capture_check(&compiled, &built, &[], None)
+                .holds()
+                .map_err(|err| TestCaseError::fail(format!("{pattern} over {target}: {err}")))?;
         }
 
         /// A `where` keeps exactly the matches the oracle finds a way for whose code for the
@@ -4497,11 +4668,9 @@ mod trees {
                 code.len() == length
             };
             let check = capture_check(&compiled, &built, &[name], Some(&mut passes));
-            prop_assert_eq!(&check.fast, &check.slow, "{} over {} testing ${}", pattern, target, name);
-            prop_assert_eq!(
-                check.fast.iter().map(|f| f.range.clone()).collect::<Vec<_>>(),
-                check.plain
-            );
+            check
+                .holds()
+                .map_err(|err| TestCaseError::fail(format!("{pattern} over {target}: {err}")))?;
             let mut names: Vec<&str> =
                 compiled.holes().filter_map(|(_, hole)| hole.name.as_deref()).collect();
             names.sort_unstable();
@@ -4513,6 +4682,14 @@ mod trees {
                     .find(|&node| built.range(node) == found.captures[at])
                     .expect("a single hole captures a node");
                 prop_assert!(passes(&[node]), "{} over {} testing ${}", pattern, target, name);
+            }
+            let mut placed = |nodes: &[NodeId]| built.range(nodes[0]).start % 3 == length % 3;
+            let check = capture_check(&compiled, &built, &[name], Some(&mut placed));
+            check
+                .holds()
+                .map_err(|err| TestCaseError::fail(format!("{pattern} over {target}: {err}")))?;
+            for found in &check.fast {
+                prop_assert_eq!(found.captures[at].start % 3, length % 3, "{} over {}", pattern, target);
             }
         }
 
