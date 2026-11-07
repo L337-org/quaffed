@@ -10,11 +10,13 @@
 //! corpus's coverage check needs.  `architecture/python.md` describes it.
 
 mod kinds;
+mod lex;
 mod parse;
 mod pattern;
 mod rewrite;
 
 pub use kinds::all_kinds;
+pub use lex::{Lexed, lex, token_kinds};
 pub use parse::{
     PYTHON, ParseError, kinds_in_expression, kinds_in_ipython, kinds_in_module, parse_expression,
     parse_ipython, parse_module,

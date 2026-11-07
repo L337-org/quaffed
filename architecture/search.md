@@ -189,7 +189,7 @@ The format is in `docs/language.md`, _Output_.  The rules behind it:
 | 3 | a usage error, a malformed script, a program with no statements, an edit with no `expect`, or a command-line scope holding a double quote |
 | 5 | a statement or construct this build does not have: outside the MVP, or in it and not built |
 | 7 | an I/O error, naming the path and quoting the system's error; an `in` that names nothing there; for edits that could not be written, saying what was left |
-| 9 | the script or a file must change first: a structural search needs a Python file quaff cannot parse, naming each and how to leave it out; an edit would break a Python file that parsed; or a file's encoding cannot write a replacement |
+| 9 | the script or a file must change first: a structural search needs a Python file quaff cannot parse, naming each and how to leave it out; an edit would break a Python file that parsed; a file's encoding cannot write a replacement; or a structural replace cannot be made as written |
 
 **An assertion block** - consecutive `find ... expect` statements - is evaluated to the end, and
 if any assertion failed the run stops after it, exit 2.
@@ -199,8 +199,8 @@ and binary files never decide it, so that a file quaff cannot read never blocks 
 those it can, and a `find` and an edit with the same `expect` count the same matches.
 
 **The whole program is read, parsed and checked before any file is looked at**, so a script with
-an error anywhere does not run.  The constructs that parse but are not built - a structural
-`replace`, and `delete` - exit 5, named, where they were written.
+an error anywhere does not run.  The constructs that parse but are not built - `delete`, and a
+structural `replace` whose rewrite has no code - exit 5, named, where they were written.
 
 **A run that cannot give an answer - exit 3, 5, 7 or 9 - prints nothing on standard output**, so
 a partial answer never passes for a whole one.  Every message says what was being done, quotes
@@ -209,7 +209,8 @@ the path or argument it concerns, and says what to do where there is something t
 
 ## Editing
 
-`replace string` edits text (`src/run.rs`, `src/search.rs`, `src/write.rs`).
+`replace string` edits text (`src/run.rs`, `src/search.rs`, `src/write.rs`), and a structural
+`replace` edits code (`src/rewrite.rs`), through the same pipeline.
 
 - **Each file is taken through the program's statements in order** and read once: the patterns
   between two replaces are searched in one pass over the file as it then is, and a replace changes
@@ -235,6 +236,22 @@ the path or argument it concerns, and says what to do where there is something t
   a hook for each system after each file is written and after them all, each a no-op, where a
   flush goes once decided.  `src/write.rs` is the only file besides `src/contents.rs` that
   opens a project's files, and only to write; `contents_containment.rs` holds both.
+- **A structural replace edits a Python file's decoded text** and encodes the result back as the
+  file is encoded (`python::Source::encode`), which gives a file's own bytes back exactly, so
+  every byte outside the matches is kept.  A character the encoding cannot hold is refused as for a
+  textual replace.  Each match is written over with its rewrite: what each hole captured, from the
+  matcher, put where the template's sites say (`quaffed_python::compile_rewrite`).  **What the user
+  did not write is derived, never guessed**: the indentation of the template's later lines and of
+  captured code moved to another depth, from the file's indent unit; the file's own line ending
+  for the template's line breaks; and a trailing comma the match had before its own closing
+  bracket, kept only where pattern and rewrite are both a call or a list, set or dict display
+  ending with its own bracket, and the result still parses as one.  **Anything else is refused**,
+  exit 9, naming the file and where - matches that overlap; a comment no capture writes back; an
+  interpolation that changes the token structure of the literal it is written into, found by
+  lexing the rewrite with the values and with a filler; and a capture that is no longer one node,
+  or a run of them, once the file is written, found by parsing the result - because each would
+  change something the script did not ask for.  A refusal is decided before anything is printed, as
+  a file that cannot be parsed is.
 - **A file an earlier replace broke is refused as an edit** when a later structural statement
   needs it, naming the replaces that changed it, not as a file that cannot be parsed, since on
   disk it parses.

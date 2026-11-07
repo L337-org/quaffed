@@ -97,6 +97,7 @@ with the exit status after it.  Structural examples over the whole project also 
 - [Assertions](#assertions)
 - [Replacing text](#replacing-text)
 - [Structural search](#structural-search)
+- [Replacing code](#replacing-code)
 - [What is searched](#what-is-searched)
 - [Encodings](#encodings)
 - [Output](#output)
@@ -203,8 +204,9 @@ find `return $x` expect at least 1 # every function returns
 | ``find `PATTERN` `` | a structural search, the same as `-p PATTERN` |
 | `find ... expect COUNT` | an [assertion](#assertions) |
 | `replace string "TEXT" with "TEXT" expect COUNT` | a [textual replace](#replacing-text) |
+| ``replace `PATTERN` with `CODE` expect COUNT`` | a [structural replace](#replacing-code) |
 
-A structural `replace` and `delete` parse but are [not built yet](#not-built-yet).  A misspelt
+`delete` parses but is [not built yet](#not-built-yet).  A misspelt
 statement is refused, naming the ones there are:
 
 ```
@@ -758,6 +760,119 @@ alone.
   does not change what Python runs.  One in an encoding Python reads and quaff does not, such as
   GBK, refuses a structural search, as above.
 
+## Replacing code
+
+``replace `PATTERN` with `CODE` expect COUNT`` replaces every match of a structural pattern with
+the code after `with`, in which the pattern's holes stand for what they captured.  Everything a
+[textual replace](#replacing-text) promises holds: an edit says how many it changes, nothing is
+written unless every count holds, every edit is written at the end of the run or none is,
+`--dry-run` writes nothing, a file is written back in its own encoding, and a replace that would
+break a Python file that parsed is refused, exit 9.
+
+With `src/store.py` holding:
+
+```python
+def load(path):
+    log("loading %s", path)
+    with lock:
+        data = read(path)
+        check(data)
+    return data
+
+
+def save(path, data):
+    log("saving %s to %s", data,
+        path,)
+    write(path, data)
+```
+
+```
+$ quaff --dry-run -e 'replace `log($msg, $args...)` with `logger.info($msg, $args...)` expect 2'
+src/store.py:2:5-2:27: log("loading %s", path)
+src/store.py:10:5-11:14: log("saving %s to %s", data, path,)
+quaff: dry run: 2 matches in 1 file would be replaced; nothing was written
+[exit 0]
+```
+
+**A rewrite is built from two sources only.**  A hole writes back the source it captured,
+exactly as written; everything else comes from the template, exactly as written, its comments
+included.  So the hole you choose decides what is kept: `$args...` keeps everything between the
+arguments it captured, comments and line breaks included, while `$a, $b` keep only the two
+arguments, with the template's `, ` between them.
+
+- **A name the pattern does not bind is an error**, exit 3, before any file is read: `$_`, `$...`,
+  a typo, or a name the pattern spells as a sequence written as one node, or the other way round.
+- **In a string, an f-string's or t-string's literal part, or a comment**, `$name` and `${name}`
+  write the captured source text verbatim, quotes and all.  A name runs to the end of the
+  identifier, so `"$name_id"` is the name `name_id`; `"${name}_id"` separates them.  A `$`
+  before anything but a name or a brace is text, as in `"costs $5"`, and a literal `$` before a
+  name is written as Python writes it, `"\x24HOME"` or `'$' 'HOME'`:
+
+  ```
+  $ quaff -e 'replace `deprecated($name)` with `warn("$name is deprecated")` expect 1'
+  app.py:5:1-5:20: deprecated(old_name)
+  quaff: replaced 1 match in 1 file
+  [exit 0]
+  ```
+
+  leaves `warn("old_name is deprecated")`.  Inside braces only a bound name may stand, so
+  `${name|upper}` is refused as a value filter this build does not have, exit 5.
+- **Indentation is derived, never written.**  A template's later lines take the indentation of the
+  line the match starts on, in the file's own indent unit; captured code moved to another depth
+  is shifted with it, except the lines of a multi-line string, which are part of its value.  So
+  unwrapping a block is a replace:
+
+  ```
+  $ quaff -e 'replace `with lock:
+      $body...` with `$body...` expect 1'
+  src/store.py:3:5-5:19: with lock: data = read(path) check(data)
+  quaff: replaced 1 match in 1 file
+  [exit 0]
+  ```
+
+  leaves `data = read(path)` and `check(data)` at the function's own level.  Nothing else is
+  reformatted: a project's formatter does the rest.
+- **Line breaks are the file's own**: each line break the template writes is spelled as the
+  file's line ending where the match stands, as `$^` writes one in a textual replace, except one
+  inside a string, which is part of its value.
+- **A trailing comma before the match's own closing bracket is kept**, where the pattern and the
+  rewrite are both a call, or a list, set or dict display, and the rewrite ends with its own
+  bracket and does not say otherwise, since a formatter reads the comma as asking for one item to
+  a line.  It is never added anywhere else - a bracketed expression, a subscript, or a bracket a
+  capture wrote back - where it would change what the code means:
+  ``replace `log($msg, $a, $b)` with `log($msg, $b, $a)` expect 1`` over `save` above leaves
+  `log("saving %s to %s", path, data,)`.
+
+**What cannot be done as written is refused**, exit 9, naming the file and where, and nothing is
+written:
+
+- **Matches that overlap**: `f($x)` over `f(f(1))` is two matches, one inside the other, and a
+  run of statements tried from every start can overlap the next; rewriting either would change
+  the other, so a replace of them is refused, naming both.  Narrow the pattern so that its matches
+  cannot overlap.
+- **A capture Python would read with what surrounds it**: ``replace `f($a)` with `$a * 2` ``
+  over `f(x + 1)` would write `x + 1 * 2`, and `return wrap($x)` over `return a, b` would call
+  `wrap` with two arguments, so each is refused.  Put brackets round the hole in the rewrite,
+  `($a) * 2`, and it is written as one piece of code.
+- **A comment in no capture the rewrite writes back**, which the edit would drop:
+
+  ```
+  $ quaff -e 'replace `load($p, $s)` with `load($p, strict=$s)` expect 1'
+  quaff: refused: the replace cannot be made as written in 1 file, so nothing was written:
+    "app.py": line 2, column 12: the comment "# the user's file" is in the match but in no capture the rewrite writes back, so the edit would drop it: capture it with a sequence hole, such as $args..., or narrow the pattern so that it does not match here
+  [exit 9]
+  ```
+
+  where `app.py` holds `config = load(` then, each on a line of its own and indented by four
+  spaces, `path,  # the user's file` and `strict,`, then `)`.  A comment on a compound
+  statement's header, before the first statement of its body, or before an `elif`, `else` or
+  `except` is in no hole's reach, so an edit that spells such a header is refused wherever one has
+  such a comment.
+- **An interpolation that changes the literal it is written into**: a value that closes the string,
+  or opens an f-string field, would change more than the literal's text.  So would a value
+  spanning lines in a one-line string; and a value Python does not allow, such as a non-ASCII one
+  in a bytes literal, leaves the file unparseable, which is refused as any such edit is.
+
 ## What is searched
 
 - **Files ignored by `.gitignore`, `.ignore` or `.git/info/exclude` are skipped.**  `.ignore`
@@ -836,7 +951,7 @@ src/app.py:16:5-17:32: return lookup(request.args["id"], default=None,)
 | 3 | a usage error, a malformed script or pattern, an empty program, or a scope holding a double quote |
 | 5 | a statement or construct this build does not have |
 | 7 | an I/O error, naming the path and quoting the system's error; an `in` that names nothing there; or edits that could not be written, saying what was left as it was |
-| 9 | a structural search needs a Python file quaff cannot parse, an edit would break a Python file that parses, or a file's encoding cannot write a replacement: the script or the file must change first |
+| 9 | a structural search needs a Python file quaff cannot parse, an edit would break a Python file that parses, a file's encoding cannot write a replacement, or a structural replace cannot be made as written - its matches overlap, it would drop a comment, or it would change a literal's structure: the script or the file must change first |
 
 **A run that cannot give an answer - exit 3, 5, 7 or 9 - prints nothing on standard output**, so
 a partial answer never passes for a whole one.  The whole program is read and checked before any
@@ -847,11 +962,12 @@ file is looked at, so a script with an error anywhere does not run at all.
 These parse, and are refused with exit 5 at the place they were written, rather than being
 ignored or treated as unknown:
 
-- a structural `replace`, and `delete`.
+- `delete`;
+- a structural `replace` whose rewrite has no code, which would delete what matched.
 
 ```
-$ quaff -e 'replace `f($a)` with `g($a)` expect 1'
-quaff: -e expression 1, at character 1: a structural replace is not built yet
+$ quaff -e 'find "a"; delete `a` expect 1'
+quaff: -e expression 1, at character 11: delete is not built yet
 [exit 5]
 ```
 
@@ -888,6 +1004,12 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
   an answer about the files it can.
 - **Structural matches inside matches are each reported**, so `f($x)` over `f(f(1))` is two
   matches.
+- **A structural replace of matches that overlap is refused**, exit 9, though a `find` of the
+  same pattern counts them, since rewriting one changes the other: matches inside matches, and
+  runs of statements that share some.
+- **A rewrite drops what no hole captures**, layout and the template's spelling replacing it, but
+  never a comment: one in no capture refuses the edit.  A sequence hole captures everything between
+  its first node and its last.
 - **A trailing comma and a semicolon between statements are layout**, so `f($a, $b)` matches a
   call a formatter has split over lines and ended with a comma.
 - **Implicitly concatenated plain strings are joined, but f-strings are not**: `"abc"` matches

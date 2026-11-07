@@ -96,7 +96,7 @@ pub fn search(
 
 /// Why `text` did not parse, placed in it: where Ruff's error starts, or the start of the
 /// file for text too long to parse at all.
-fn unparsed(text: &str, err: ParseError) -> Unparsed {
+pub(crate) fn unparsed(text: &str, err: ParseError) -> Unparsed {
     match err {
         ParseError::Invalid { message, offset } => Unparsed {
             at: positions(text, &[offset])[&offset],
@@ -110,7 +110,7 @@ fn unparsed(text: &str, err: ParseError) -> Unparsed {
 }
 
 /// Where the last character of `range` starts; the start itself for an empty range.
-fn last_char(text: &str, range: &Range<usize>) -> usize {
+pub(crate) fn last_char(text: &str, range: &Range<usize>) -> usize {
     text[range.clone()]
         .char_indices()
         .last()
@@ -120,7 +120,7 @@ fn last_char(text: &str, range: &Range<usize>) -> usize {
 /// The position of each of `offsets` in `text`, each the start of a character or the end of the
 /// text, by one walk that counts lines and columns as a textual search does: LF, CRLF and a
 /// lone CR each end a line, the LF of a CRLF on the CR's line, and a column is a character.
-fn positions(text: &str, offsets: &[usize]) -> BTreeMap<usize, Position> {
+pub(crate) fn positions(text: &str, offsets: &[usize]) -> BTreeMap<usize, Position> {
     let mut wanted: Vec<usize> = offsets.to_vec();
     wanted.sort_unstable();
     wanted.dedup();

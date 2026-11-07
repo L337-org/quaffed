@@ -1344,6 +1344,8 @@ struct Matcher<'p, 't> {
     /// recorded where the search went, so asking for captures costs nothing in how the search
     /// runs and changes none of the matches it finds.
     compared: Vec<bool>,
+    /// For each slot, whether its capture is asked for.
+    asked: Vec<bool>,
     /// For each slot, the very node its name must first be bound to, if any: set while a match is
     /// made again as the way a `where` accepted, so that the search reproduces that way rather
     /// than one binding an earlier node with equal code ([`Asked::again`]).  Later uses of the
@@ -1468,6 +1470,7 @@ impl<'p, 't> Matcher<'p, 't> {
             })
             .collect();
         let compared = named.iter().map(|&(_, compared)| compared).collect();
+        let asked = named.iter().map(|(name, _)| kept.contains(name)).collect();
         let slots = named
             .into_iter()
             .enumerate()
@@ -1480,6 +1483,7 @@ impl<'p, 't> Matcher<'p, 't> {
             remember: std::cell::Cell::new(remember),
             slots,
             compared,
+            asked,
             pins: RefCell::default(),
             tested,
             lists: RefCell::new(vec![None; pattern.arena().nodes().count() + 1]),
@@ -1597,16 +1601,20 @@ impl<'p, 't> Matcher<'p, 't> {
         }
     }
 
-    /// Records what the names only kept within `wanted` captured, where `wanted` matched `node`
+    /// Records what the names asked for within `wanted` captured, where `wanted` matched `node`
     /// by a way of binding the names used after it ([`Matcher::node_ways`]), which binds only
-    /// those.  The node is matched again with the way's bindings, and only the kept names are
-    /// taken from it, so that nothing the rest is matched with changes.
+    /// those: a name only kept, and a name compared only inside the node, are left unbound.  The
+    /// node is matched again with the way's bindings, and only those names are taken from it, so
+    /// that nothing the rest is matched with changes.
     fn keep_within(&self, wanted: NodeId, node: NodeId, bindings: &mut Bindings) {
-        let kept: Vec<usize> = self
+        // A name used more than once inside the node is listed once for each use.
+        let mut kept: Vec<usize> = self
             .slots_in(&Part::Child(wanted))
             .into_iter()
-            .filter(|&slot| !self.compared[slot])
+            .filter(|&slot| self.asked[slot] && bindings[slot].is_none())
             .collect();
+        kept.sort_unstable();
+        kept.dedup();
         if kept.is_empty() {
             return;
         }
@@ -1616,7 +1624,7 @@ impl<'p, 't> Matcher<'p, 't> {
             "a node matches again with a way it was found to bind"
         );
         for slot in kept {
-            bindings[slot] = again[slot].take();
+            bindings[slot].clone_from(&again[slot]);
         }
     }
 
@@ -4463,6 +4471,27 @@ mod trees {
             })
             .collect();
         assert_eq!(texts, [["x", "x"]]);
+    }
+
+    #[test]
+    fn a_where_over_a_run_captures_a_name_compared_only_inside_a_node_it_tests() {
+        // `$a` is tested, so the node is matched by its ways of binding `$a`; `$q...` is used
+        // twice, but only inside the node, so no way binds it, and its capture must still be
+        // recorded.
+        let compiled = pattern("y (g $q... $q... $a)");
+        let (built, _) = build("[y (g y y x)]");
+        let found = find_where_captured(&compiled, &built, &["a"], &mut |_| true, &["q", "a"]);
+        let texts: Vec<Vec<&str>> = found
+            .iter()
+            .map(|found| {
+                found
+                    .captures
+                    .iter()
+                    .map(|r| &built.text()[r.clone()])
+                    .collect()
+            })
+            .collect();
+        assert_eq!(texts, [["y", "x"]]);
     }
 
     #[test]

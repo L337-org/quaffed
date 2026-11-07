@@ -4,11 +4,11 @@ info:
   program: quaff
   args:
     - "-e"
-    - "replace `f($a)` with `g($a)` expect 1"
+    - "find \"a\"; delete `a` expect 1"
 ---
 success: false
 exit_code: 5
 ----- stdout -----
 
 ----- stderr -----
-quaff: -e expression 1, at character 1: a structural replace is not built yet
+quaff: -e expression 1, at character 11: delete is not built yet
