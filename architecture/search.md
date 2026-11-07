@@ -245,11 +245,12 @@ the path or argument it concerns, and says what to do where there is something t
   captured code moved to another depth, from the file's indent unit; the file's own line ending
   for the template's line breaks; and the trailing commas a pattern ignores.  **What the pattern
   ignored must survive or the edit is refused**, exit 9, naming the file and where: a comment no
-  capture writes back, and a trailing comma with no one bracket to go to.  A trailing comma is
-  one the file parses to the same tree without (`ignored_commas`); it is carried to the bracket
-  in the rewrite that holds the same holes as its own, brackets paired from the lexer's
-  (`quaffed_python::Lexed::brackets`), and refused where no one bracket does or where the result
-  would parse to a different tree.  **Also refused**: matches that overlap, and an interpolation
+  capture writes back, and a trailing comma with no one bracket to go to.  A trailing comma the
+  pattern ignores is one the arena keeps no token for, so the matcher and the edit agree on it
+  (`ignored_by_matcher`); it is carried to the bracket in the rewrite that holds the same holes
+  as its own, brackets paired from the lexer's (`quaffed_python::Lexed::brackets`), and refused
+  where no one bracket does or where the comma would be a token where it lands, as a tuple's
+  is.  **Also refused**: matches that overlap, and an interpolation
   that changes the token structure of the literal it is written into, found by lexing the rewrite
   with the values and with a filler, because each would change something the script did not ask
   for.  **A capture that is no longer one node**, or a run of them, once the file is written, is

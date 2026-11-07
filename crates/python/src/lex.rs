@@ -46,8 +46,9 @@ enum Open {
     Bracket(usize),
     /// An f-string or t-string, inside which a brace opens a field.
     String,
-    /// A field of one, or a format spec's nested field.
-    Field,
+    /// A field of one, or a format spec's nested field; `true` once its format spec has begun,
+    /// after which a brace opens a nested field rather than a display.
+    Field(bool),
 }
 
 /// `text` lexed for the parts a rewrite must handle with care.
@@ -64,9 +65,15 @@ pub fn lex(text: &str) -> Lexed {
         match kind {
             TokenKind::Lpar | TokenKind::Lsqb => open.push(Open::Bracket(range.start)),
             TokenKind::Lbrace => open.push(match open.last() {
-                Some(Open::String | Open::Field) => Open::Field,
+                Some(Open::String | Open::Field(true)) => Open::Field(false),
                 _ => Open::Bracket(range.start),
             }),
+            // A colon directly in a field, not in a bracket inside it, starts its format spec.
+            TokenKind::Colon => {
+                if let Some(Open::Field(spec)) = open.last_mut() {
+                    *spec = true;
+                }
+            }
             TokenKind::FStringStart | TokenKind::TStringStart => open.push(Open::String),
             TokenKind::Rpar
             | TokenKind::Rsqb
@@ -187,7 +194,7 @@ mod tests {
 
     #[test]
     fn brackets_pair_with_their_trailing_commas_and_a_string_field_is_not_one() {
-        let text = "f(a, [b,  # c\n  ],\n  {d: e}, s'{x}', f'{g(h,)}')\n";
+        let text = "f(a, [b,  # c\n  ],\n  {d: e}, s'{x}', f'{g(h,)}', f'{ {i: 1,} :>{w}}')\n";
         let found: Vec<(&str, Option<&str>)> = lex(text)
             .brackets
             .iter()
@@ -205,6 +212,7 @@ mod tests {
                 ("[b,  # c\n  ]", Some(",  # c\n  ")),
                 ("{d: e}", None),
                 ("(h,)", Some(",")),
+                ("{i: 1,}", Some(",")),
             ]
         );
     }

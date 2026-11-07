@@ -855,8 +855,8 @@ written:
   same holes as the comma's, as when it drops or splits that bracket, or where the comma would
   change what the code means there, as in a bracketed expression, where it would make a tuple.
   ``replace `max($a, $b)` with `($a if $a > $b else $b)` expect 1`` over a call to `max` that
-  ends `y,` is refused.  Narrow the pattern so that it does not match there, or capture the
-  bracket with a hole.
+  ends `y,` is refused.  Narrow the pattern so that it does not match there, or take the comma
+  out first.
 - **A comment in no capture the rewrite writes back**, which the edit would drop:
 
   ```
@@ -1030,8 +1030,8 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
   runs of statements that share some.
 - **A rewrite drops what no hole captures**, layout and the template's spelling replacing it, but
   never a comment or a trailing comma: a comment in no capture refuses the edit, and a trailing
-  comma is carried to the rewrite's matching bracket or refuses it.  A sequence hole captures everything between
-  its first node and its last.
+  comma is carried to the rewrite's matching bracket or refuses it.  A sequence hole captures
+  everything between its first node and its last.
 - **A trailing comma and a semicolon between statements are layout**, so `f($a, $b)` matches a
   call a formatter has split over lines and ended with a comma.
 - **Implicitly concatenated plain strings are joined, but f-strings are not**: `"abc"` matches

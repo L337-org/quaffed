@@ -1723,9 +1723,10 @@ struct Searched {
     /// Files a structural replace cannot be made in as written, by the paths a message shows,
     /// with where and why.
     edits_refused: Vec<(PathBuf, String)>,
-    /// Places a structural replace was made as written but may have changed what the code means,
-    /// by the paths a message shows, with where and why.
-    questioned: Vec<(PathBuf, String)>,
+    /// For each structural replace, the places it was made as written but may have changed what
+    /// the code means, by the paths a message shows, with where and why: noted only for the
+    /// statements the run reached.
+    questioned: Vec<Vec<(PathBuf, String)>>,
     /// Every file a replace changed, with its bytes before and after, held until the run ends.
     changed: Vec<Changed>,
     /// For each structural pattern, the Python files an earlier replace left unparseable, though
@@ -1917,7 +1918,7 @@ fn search_files(
         unspelled: vec![Vec::new(); patterns.len()],
         unwritable: vec![Vec::new(); patterns.len()],
         edits_refused: Vec::new(),
-        questioned: Vec::new(),
+        questioned: vec![Vec::new(); patterns.len()],
         changed: Vec::new(),
         broken: vec![Vec::new(); patterns.len()],
         refused: Vec::new(),
@@ -2348,7 +2349,7 @@ impl Searched {
             Ok(Some(edited)) => match source.encode(&edited.text) {
                 Ok(bytes) => {
                     for questioned in edited.questioned {
-                        self.questioned.push((
+                        self.questioned[index].push((
                             shown.to_owned(),
                             format!(
                                 "line {}, column {}: {}",
@@ -2895,7 +2896,7 @@ fn structural_notes(searched: &Searched, evaluated: &[Searching]) -> Vec<String>
     {
         return notes;
     }
-    for (path, why) in &searched.questioned {
+    for (path, why) in searched.questioned[..evaluated.len()].iter().flatten() {
         notes.push(format!("{path:?}: {why}"));
     }
     // With no Python in scope, the run's own message counts these instead.

@@ -1431,6 +1431,17 @@ fn a_capture_python_would_read_with_its_surroundings_is_written_and_questioned()
 }
 
 #[test]
+fn a_replace_the_run_never_reached_is_not_questioned() {
+    let project = Project::new(&[(".git/HEAD", ""), ("calc.py", "total = f(x + 1)\n")]);
+    // The failed assertion ends the run before the replace, so nothing is said of it.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "find `f($a)` expect 0\nreplace `f($a)` with `$a * 2` expect 1",
+    ]));
+    project.assert_unchanged();
+}
+
+#[test]
 fn brackets_in_the_rewrite_keep_a_capture_one_piece_of_code() {
     let project = Project::new(&[(".git/HEAD", ""), ("calc.py", "total = f(x + 1)\n")]);
     assert_quaff_snapshot!(project.quaff(&["-e", "replace `f($a)` with `($a) * 2` expect 1"]));

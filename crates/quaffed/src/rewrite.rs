@@ -214,28 +214,31 @@ fn rewritten(
         sites: &written_sites,
     };
     let carried = carry_trailing_commas(&before, &after).map_err(|(at, why)| refused(at, why))?;
-    let (out, written_sites) = match carried {
-        Some(carried) => carried,
-        None => (out, written_sites),
+    let (out, questioned) = if let Some((carried, sites)) = carried {
+        let arena = parse_module(&carried).expect("a comma is carried only where it parses");
+        let questioned = questioned(text, captured, &carried, &arena, &sites);
+        (carried, questioned)
+    } else {
+        let questioned = questioned(text, captured, &out, &out_arena, &written_sites);
+        (out, questioned)
     };
-    let questioned = questioned(text, captured, &out, &written_sites);
     Ok(Edited {
         text: out,
         questioned,
     })
 }
 
-/// Each capture in `out`, the file's new text, written where Python reads it with what surrounds
+/// Each capture in `out`, the file's new text parsed as `arena`, written where Python reads it with what surrounds
 /// it - `x + 1` into `$a * 2` - so that its meaning may have changed: each code site should still
 /// be code of its own, one node, or for a sequence a run of them.
 fn questioned(
     text: &str,
     captured: &[Captured],
     out: &str,
+    arena: &Arena<'_>,
     sites: &[WrittenSite],
 ) -> Vec<Questioned> {
-    let arena = parse_module(out).expect("a carried comma is kept only where it parses");
-    let code = CodeIndex::of(&arena);
+    let code = CodeIndex::of(arena);
     sites
         .iter()
         .filter(|site| !(code.whole(&site.range) || (site.sequence && code.run(&site.range))))
@@ -319,16 +322,26 @@ fn carry_trailing_commas(
         carried.push_str(&out[copied..]);
         carried
     };
-    let same_code = |carried: &str| {
-        parse_module(carried).is_ok_and(|parsed| kinds(&parsed) == kinds(after.arena))
-    };
     let all: Vec<&Insertion> = insertions.iter().collect();
     let carried = with(&all);
-    if !same_code(&carried) {
-        let culprit = insertions
+    // A carried comma must be one the matcher ignores where it lands: not a token of the new
+    // tree, as a tuple's comma is.  Only where the result does not parse at all is each tried
+    // alone, to name the one at fault.
+    let culprit = match parse_module(&carried) {
+        Ok(parsed) => insertions
             .iter()
-            .find(|insertion| !same_code(&with(&[*insertion])))
-            .unwrap_or(&insertions[0]);
+            .enumerate()
+            .find(|(i, insertion)| !ignored_by_matcher(&parsed, insertion.at + i))
+            .map(|(_, insertion)| insertion)
+            .or_else(|| (kinds(&parsed) != kinds(after.arena)).then(|| &insertions[0])),
+        Err(_) => Some(
+            insertions
+                .iter()
+                .find(|insertion| parse_module(&with(&[*insertion])).is_err())
+                .unwrap_or(&insertions[0]),
+        ),
+    };
+    if let Some(culprit) = culprit {
         return Err((
             culprit.comma,
             format!(
@@ -358,20 +371,7 @@ fn carry_trailing_commas(
 /// none correspond by their order.  A comma whose bracket has no one counterpart refuses the
 /// edit, with where it is in the old text and why.
 fn commas_to_carry(before: &Before<'_>, after: &After<'_>) -> Result<Vec<Insertion>, CommaRefused> {
-    // Each match's own brackets: not inside any capture, whose brackets are the capture's.
-    let own: Vec<Vec<&Bracket>> = before
-        .captured
-        .iter()
-        .map(|found| {
-            before
-                .lexed
-                .brackets
-                .iter()
-                .filter(|b| inside(b, &found.range))
-                .filter(|b| !found.captures.iter().any(|capture| inside(b, capture)))
-                .collect()
-        })
-        .collect();
+    let own = own_brackets(before);
     let commas: Vec<usize> = own
         .iter()
         .flatten()
@@ -380,7 +380,6 @@ fn commas_to_carry(before: &Before<'_>, after: &After<'_>) -> Result<Vec<Inserti
     if commas.is_empty() {
         return Ok(Vec::new());
     }
-    let ignored = ignored_commas(before.text, before.arena, &commas);
     let out_lexed = lex(after.text);
     let mut insertions = Vec::new();
     for (index, found) in before.captured.iter().enumerate() {
@@ -419,7 +418,10 @@ fn commas_to_carry(before: &Before<'_>, after: &After<'_>) -> Result<Vec<Inserti
             })
             .collect();
         for (i, bracket) in own[index].iter().enumerate() {
-            let Some(comma) = bracket.trailing_comma.filter(|c| ignored.contains(c)) else {
+            let Some(comma) = bracket
+                .trailing_comma
+                .filter(|c| ignored_by_matcher(before.arena, *c))
+            else {
                 continue;
             };
             let held = &file_held[i];
@@ -459,6 +461,23 @@ fn commas_to_carry(before: &Before<'_>, after: &After<'_>) -> Result<Vec<Inserti
         }
     }
     Ok(insertions)
+}
+
+/// Each match's own brackets: not inside any capture, whose brackets are the capture's.
+fn own_brackets<'a>(before: &Before<'a>) -> Vec<Vec<&'a Bracket>> {
+    before
+        .captured
+        .iter()
+        .map(|found| {
+            before
+                .lexed
+                .brackets
+                .iter()
+                .filter(|b| inside(b, &found.range))
+                .filter(|b| !found.captures.iter().any(|capture| inside(b, capture)))
+                .collect()
+        })
+        .collect()
 }
 
 /// Why a trailing comma before `close`, whose bracket holds `holding`, has no one bracket to go
@@ -513,33 +532,13 @@ struct Insertion {
     holding: String,
 }
 
-/// Which of `commas`, trailing commas in `text`, the pattern ignores: those the file parses the
-/// same without.  Tried all at once first, since that is the common case, then one by one.
-fn ignored_commas(text: &str, arena: &Arena<'_>, commas: &[usize]) -> HashSet<usize> {
-    let before = kinds(arena);
-    let without = |chosen: &[usize]| {
-        let mut sorted = chosen.to_vec();
-        sorted.sort_unstable();
-        let mut left = String::with_capacity(text.len());
-        let mut copied = 0;
-        for at in sorted {
-            left.push_str(&text[copied..at]);
-            copied = at + 1;
-        }
-        left.push_str(&text[copied..]);
-        parse_module(&left).is_ok_and(|parsed| kinds(&parsed) == before)
-    };
-    if without(commas) {
-        return commas.iter().copied().collect();
-    }
-    commas
-        .iter()
-        .copied()
-        .filter(|comma| without(&[*comma]))
-        .collect()
+/// Whether the comma at `at` is one the matcher ignores: the arena keeps no token for it.  A
+/// trailing comma is layout to the matcher, but a one-element tuple's is the tuple, and is kept.
+fn ignored_by_matcher(arena: &Arena<'_>, at: usize) -> bool {
+    arena.tokens_in(at..at + 1).is_empty()
 }
 
-/// The kind of every node in `arena`, in order: what a comma that changes nothing leaves alone.
+/// The kind of every node in `arena`, in order: what a carried comma must leave as it was.
 fn kinds(arena: &Arena<'_>) -> Vec<&'static str> {
     arena.nodes().map(|node| arena.kind(node).name()).collect()
 }
@@ -1005,14 +1004,8 @@ mod tests {
     fn a_comma_that_is_not_ignored_is_the_patterns_to_match() {
         let text = "x = (a,)\ny = f(a,)\n";
         let arena = parse_module(text).unwrap();
-        let commas = [
-            text.find("a,)").unwrap() + 1,
-            text.rfind("a,)").unwrap() + 1,
-        ];
-        assert_eq!(
-            ignored_commas(text, &arena, &commas),
-            HashSet::from([commas[1]])
-        );
+        assert!(!ignored_by_matcher(&arena, text.find("a,)").unwrap() + 1));
+        assert!(ignored_by_matcher(&arena, text.rfind("a,)").unwrap() + 1));
         // A one-element tuple's comma is the pattern's own, so the rewrite says what becomes of
         // it.
         assert_eq!(ok("f(($a,))", "g([$a])", "f((x,))\n"), "g([x])\n");
