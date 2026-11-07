@@ -243,14 +243,18 @@ the path or argument it concerns, and says what to do where there is something t
   matcher, put where the template's sites say (`quaffed_python::compile_rewrite`).  **What the user
   did not write is derived, never guessed**: the indentation of the template's later lines and of
   captured code moved to another depth, from the file's indent unit; the file's own line ending
-  for the template's line breaks; and a trailing comma the match had before its own closing
-  bracket, kept only where pattern and rewrite are both a call or a list, set or dict display
-  ending with its own bracket, and the result still parses as one.  **Anything else is refused**,
-  exit 9, naming the file and where - matches that overlap; a comment no capture writes back; an
-  interpolation that changes the token structure of the literal it is written into, found by
-  lexing the rewrite with the values and with a filler; and a capture that is no longer one node,
-  or a run of them, once the file is written, found by parsing the result - because each would
-  change something the script did not ask for.  A refusal is decided before anything is printed, as
+  for the template's line breaks; and the trailing commas a pattern ignores.  **What the pattern
+  ignored must survive or the edit is refused**, exit 9, naming the file and where: a comment no
+  capture writes back, and a trailing comma with no one bracket to go to.  A trailing comma is
+  one the file parses to the same tree without (`ignored_commas`); it is carried to the bracket
+  in the rewrite that holds the same holes as its own, brackets paired from the lexer's
+  (`quaffed_python::Lexed::brackets`), and refused where no one bracket does or where the result
+  would parse to a different tree.  **Also refused**: matches that overlap, and an interpolation
+  that changes the token structure of the literal it is written into, found by lexing the rewrite
+  with the values and with a filler, because each would change something the script did not ask
+  for.  **A capture that is no longer one node**, or a run of them, once the file is written, is
+  written as the template says and questioned in a note, since the template is what was asked
+  for.  A refusal is decided before anything is printed, as
   a file that cannot be parsed is.
 - **A file an earlier replace broke is refused as an edit** when a later structural statement
   needs it, naming the replaces that changed it, not as a file that cannot be parsed, since on

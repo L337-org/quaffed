@@ -1,0 +1,16 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "replace `f($a)` with `$a * 2` expect 1"
+---
+success: true
+exit_code: 0
+----- stdout -----
+calc.py:1:9-1:16: f(x + 1)
+
+----- stderr -----
+quaff: replaced 1 match in 1 file
+quaff: "calc.py": line 1, column 9: what $a captured, "x + 1", is not code of its own where the rewrite writes it - Python reads it together with what stands around it - so its meaning may have changed: if that is not what was meant, put brackets round the hole in the rewrite, as in ($a)

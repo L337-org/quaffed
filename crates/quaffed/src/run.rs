@@ -1723,6 +1723,9 @@ struct Searched {
     /// Files a structural replace cannot be made in as written, by the paths a message shows,
     /// with where and why.
     edits_refused: Vec<(PathBuf, String)>,
+    /// Places a structural replace was made as written but may have changed what the code means,
+    /// by the paths a message shows, with where and why.
+    questioned: Vec<(PathBuf, String)>,
     /// Every file a replace changed, with its bytes before and after, held until the run ends.
     changed: Vec<Changed>,
     /// For each structural pattern, the Python files an earlier replace left unparseable, though
@@ -1914,6 +1917,7 @@ fn search_files(
         unspelled: vec![Vec::new(); patterns.len()],
         unwritable: vec![Vec::new(); patterns.len()],
         edits_refused: Vec::new(),
+        questioned: Vec::new(),
         changed: Vec::new(),
         broken: vec![Vec::new(); patterns.len()],
         refused: Vec::new(),
@@ -2341,8 +2345,19 @@ impl Searched {
         }
         match replaced.outcome {
             Ok(None) => None,
-            Ok(Some(new_text)) => match source.encode(&new_text) {
-                Ok(bytes) => Some(bytes),
+            Ok(Some(edited)) => match source.encode(&edited.text) {
+                Ok(bytes) => {
+                    for questioned in edited.questioned {
+                        self.questioned.push((
+                            shown.to_owned(),
+                            format!(
+                                "line {}, column {}: {}",
+                                questioned.at.line, questioned.at.column, questioned.why
+                            ),
+                        ));
+                    }
+                    Some(bytes)
+                }
                 Err(unencodable) => {
                     self.unwritable[index].push((
                         shown.to_owned(),
@@ -2879,6 +2894,9 @@ fn structural_notes(searched: &Searched, evaluated: &[Searching]) -> Vec<String>
         .any(|s| matches!(s.pattern, Wanted::Structural { .. }))
     {
         return notes;
+    }
+    for (path, why) in &searched.questioned {
+        notes.push(format!("{path:?}: {why}"));
     }
     // With no Python in scope, the run's own message counts these instead.
     if searched.python > 0 && searched.not_applicable > 0 {

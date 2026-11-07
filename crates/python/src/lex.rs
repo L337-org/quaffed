@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Gavin Lucas
 
-//! What a rewrite needs to know of Python text that the arena leaves out: where its comments
-//! and multi-line strings are, the unit it indents by, and the kinds of its tokens.
+//! What a rewrite needs to know of Python text that the arena leaves out: where its comments,
+//! multi-line strings and brackets are, the unit it indents by, and the kinds of its tokens.
 //!
 //! Text is lexed as a module without regard to whether it parses, since a rewrite template is a
 //! fragment with holes in it, and a fragment is lexed only to compare it with itself.
@@ -24,6 +24,30 @@ pub struct Lexed {
     pub multi_line_strings: Vec<Range<usize>>,
     /// The whitespace the first indented block is indented by, if any block is.
     pub indent_unit: Option<String>,
+    /// Every pair of brackets, round, square or curly, in the order they open.  The braces that
+    /// open and close an f-string's or t-string's fields are not brackets but part of the string.
+    pub brackets: Vec<Bracket>,
+}
+
+/// One pair of brackets in Python text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bracket {
+    /// The byte offset of the opening bracket.
+    pub open: usize,
+    /// The byte offset of the closing bracket.
+    pub close: usize,
+    /// The byte offset of a comma that is the last token before the closing bracket, comments
+    /// and line breaks aside, if there is one.
+    pub trailing_comma: Option<usize>,
+}
+
+/// What a bracket's opening token is inside, for pairing it with its closing one.
+enum Open {
+    Bracket(usize),
+    /// An f-string or t-string, inside which a brace opens a field.
+    String,
+    /// A field of one, or a format spec's nested field.
+    Field,
 }
 
 /// `text` lexed for the parts a rewrite must handle with care.
@@ -31,9 +55,48 @@ pub struct Lexed {
 pub fn lex(text: &str) -> Lexed {
     let parsed = ruff_python_parser::parse_unchecked(text, ParseOptions::from(Mode::Module));
     let mut lexed = Lexed::default();
+    let mut open: Vec<Open> = Vec::new();
+    // The last token that is not layout, for a trailing comma.
+    let mut last: Option<(TokenKind, usize)> = None;
     for token in parsed.tokens() {
         let range = usize::from(token.start())..usize::from(token.end());
-        match token.kind() {
+        let kind = token.kind();
+        match kind {
+            TokenKind::Lpar | TokenKind::Lsqb => open.push(Open::Bracket(range.start)),
+            TokenKind::Lbrace => open.push(match open.last() {
+                Some(Open::String | Open::Field) => Open::Field,
+                _ => Open::Bracket(range.start),
+            }),
+            TokenKind::FStringStart | TokenKind::TStringStart => open.push(Open::String),
+            TokenKind::Rpar
+            | TokenKind::Rsqb
+            | TokenKind::Rbrace
+            | TokenKind::FStringEnd
+            | TokenKind::TStringEnd => {
+                if let Some(Open::Bracket(start)) = open.pop() {
+                    lexed.brackets.push(Bracket {
+                        open: start,
+                        close: range.start,
+                        trailing_comma: match last {
+                            Some((TokenKind::Comma, at)) => Some(at),
+                            _ => None,
+                        },
+                    });
+                }
+            }
+            _ => {}
+        }
+        if !matches!(
+            kind,
+            TokenKind::Comment
+                | TokenKind::NonLogicalNewline
+                | TokenKind::Newline
+                | TokenKind::Indent
+                | TokenKind::Dedent
+        ) {
+            last = Some((kind, range.start));
+        }
+        match kind {
             TokenKind::Comment => lexed.comments.push(range),
             TokenKind::String | TokenKind::FStringMiddle | TokenKind::TStringMiddle
                 if text[range.clone()].contains(['\n', '\r']) =>
@@ -55,6 +118,7 @@ pub fn lex(text: &str) -> Lexed {
             _ => {}
         }
     }
+    lexed.brackets.sort_unstable_by_key(|bracket| bracket.open);
     lexed
 }
 
@@ -119,6 +183,30 @@ mod tests {
         assert_eq!(token_kinds("'a x b'"), token_kinds("'a yy b'"));
         assert_ne!(token_kinds("'a x b'"), token_kinds("'a ' + y + ' b'"));
         assert_ne!(token_kinds("f'a x b'"), token_kinds("f'a {y} b'"));
+    }
+
+    #[test]
+    fn brackets_pair_with_their_trailing_commas_and_a_string_field_is_not_one() {
+        let text = "f(a, [b,  # c\n  ],\n  {d: e}, s'{x}', f'{g(h,)}')\n";
+        let found: Vec<(&str, Option<&str>)> = lex(text)
+            .brackets
+            .iter()
+            .map(|b| {
+                (
+                    &text[b.open..=b.close],
+                    b.trailing_comma.map(|at| &text[at..b.close]),
+                )
+            })
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (&text[1..text.len() - 1], None),
+                ("[b,  # c\n  ]", Some(",  # c\n  ")),
+                ("{d: e}", None),
+                ("(h,)", Some(",")),
+            ]
+        );
     }
 
     #[test]
