@@ -228,9 +228,9 @@ fn rewritten(
     })
 }
 
-/// Each capture in `out`, the file's new text parsed as `arena`, written where Python reads it with what surrounds
-/// it - `x + 1` into `$a * 2` - so that its meaning may have changed: each code site should still
-/// be code of its own, one node, or for a sequence a run of them.
+/// Each capture in `out`, the file's new text parsed as `arena`, written where Python reads it
+/// with what surrounds it - `x + 1` into `$a * 2` - so that its meaning may have changed: each
+/// code site should still be code of its own, one node, or for a sequence a run of them.
 fn questioned(
     text: &str,
     captured: &[Captured],
@@ -1006,6 +1006,26 @@ mod tests {
         let arena = parse_module(text).unwrap();
         assert!(!ignored_by_matcher(&arena, text.find("a,)").unwrap() + 1));
         assert!(ignored_by_matcher(&arena, text.rfind("a,)").unwrap() + 1));
+        // Every other kind of bracket the lexer lists: its trailing comma is layout to the
+        // matcher, and so to the edit.
+        let text = "l = [a,]\ns = {a,}\nd = {a: b,}\nv = x[a, b,]\nt = (a, b,)\n\
+                    from m import (a,)\nclass C(B,):\n    def f(self, a,):\n        pass\n\
+                    with (open(p), open(q),):\n    pass\nmatch v:\n    case [a,]:\n        \
+                    pass\ndef g[T,](): pass\n";
+        let arena = parse_module(text).unwrap();
+        let ending: Vec<_> = lex(text)
+            .brackets
+            .into_iter()
+            .filter_map(|b| b.trailing_comma.map(|comma| (comma, b)))
+            .collect();
+        assert_eq!(ending.len(), 11, "{ending:?}");
+        for (comma, bracket) in ending {
+            assert!(
+                ignored_by_matcher(&arena, comma),
+                "{:?}",
+                &text[bracket.open..=bracket.close]
+            );
+        }
         // A one-element tuple's comma is the pattern's own, so the rewrite says what becomes of
         // it.
         assert_eq!(ok("f(($a,))", "g([$a])", "f((x,))\n"), "g([x])\n");
