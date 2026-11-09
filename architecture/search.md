@@ -249,10 +249,10 @@ the path or argument it concerns, and says what to do where there is something t
   trailing comma the pattern ignores is one the arena keeps no token for, so the matcher and the
   edit agree on it (`ignored_by_matcher`); it is carried to the bracket in the rewrite that holds
   the same holes as its own, brackets paired from the lexer's (`quaffed_python::Lexed::brackets`),
-  goes with its bracket where the rewrite has none that does, and is refused where several could
-  or where the comma would be a token where it lands, as a tuple's is.  A bracket inside what a
-  hole matched is the hole's, so a replace's unnamed holes are given names no script can spell
-  (`name_every_hole`) and captured as named ones are.  **Also refused**: matches that overlap,
+  goes with its bracket where the rewrite has none that does, and is refused where the rewrite has
+  some but not as many as the match, or where the comma would be a token where it lands, as a
+  tuple's is.  A bracket inside what a hole matched is the hole's, so a replace's unnamed holes
+  are given names no script can spell (`name_every_hole`) and captured as named ones are.  **Also refused**: matches that overlap,
   and an interpolation that changes the token structure of the literal it is written into, found
   by lexing the rewrite with the values and with a filler, because each would change something
   the script did not ask for.  **A capture that is no longer one node**, or a run of them, once
