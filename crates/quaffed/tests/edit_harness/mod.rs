@@ -554,23 +554,18 @@ impl Judging<'_> {
                 None
             }
         };
-        let (files, project) =
-            if self.case.parsed_only {
-                let Some(parsed) = parsed_only(files, accepted.as_ref()) else {
-                    failures.push(self.failure(
-                    Invariant::Harness,
-                    false,
-                    None,
-                    "the case runs only over files that parse, but no oracle judged which do"
-                        .into(),
-                ));
-                    return failures;
-                };
-                let project = Scratch::new(&parsed);
-                (parsed, project)
-            } else {
-                (files.clone(), project)
+        let no_oracle = "the case runs only over files that parse, but no oracle judged which do";
+        let (files, project) = if self.case.parsed_only {
+            let Some(parsed) = parsed_only(files, accepted.as_ref()) else {
+                let failure = self.failure(Invariant::Harness, false, None, no_oracle.into());
+                failures.push(failure);
+                return failures;
             };
+            let project = Scratch::new(&parsed);
+            (parsed, project)
+        } else {
+            (files.clone(), project)
+        };
         let before = &files;
         let start = Applied {
             files: files.clone(),
