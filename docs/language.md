@@ -795,15 +795,18 @@ quaff: dry run: 2 matches in 1 file would be replaced; nothing was written
 ```
 
 **A rewrite is built from two sources only.**  A hole writes back the source it captured,
-exactly as written; everything else comes from the template, exactly as written, its comments
-included.  So the hole you choose decides what is kept: `$args...` keeps everything between the
-arguments it captured, comments and line breaks included, while `$a, $b` keep only the two
-arguments, with the template's `, ` between them.
+exactly as written, the brackets that only wrap it included; everything else comes from the
+template, exactly as written, its comments included.  Layout the template does not decide - line
+breaks and comments inside a bracket, where they mean nothing - is the file's: `$args...` keeps
+everything between the arguments it captured, and `$a, $b` keep the line break between the two
+arguments where the template's `, ` stands, but not when the rewrite reorders them.
 
 - **A name the pattern does not bind is an error**, exit 3, before any file is read: `$_`, `$...`,
   a typo, or a name the pattern spells as a sequence written as one node, or the other way round.
 - **In a string, an f-string's or t-string's literal part, or a comment**, `$name` and `${name}`
-  write the captured source text verbatim, quotes and all.  A name runs to the end of the
+  write the captured source text, quotes and all, as text: in a string, whatever it would
+  otherwise read as its end or as code - a quote, a backslash, a line break in a one-line string,
+  a brace in an f-string - is escaped, and a note says so.  A name runs to the end of the
   identifier, so `"$name_id"` is the name `name_id`; `"${name}_id"` separates them.  A `$`
   before anything but a name or a brace is text, as in `"costs $5"`, and a literal `$` before a
   name is written as Python writes it, `"\x24HOME"` or `'$' 'HOME'`:
@@ -848,6 +851,9 @@ arguments, with the template's `, ` between them.
   with `$x` expect 1`` over `wrap(a,)` leaves `a`.  A bracket a hole matched is the hole's, written
   back with its own comma or dropped with it, `$_` and `$...` included, and one the rewrite leaves
   empty has nothing for a comma to trail.
+- **Layout at a bracket's edges is the file's** where the template writes none there: a call laid
+  out one argument to a line stays so when it is renamed, and where the template writes layout of
+  its own at an edge, it stands.
 - **A comment at a bracket's edge goes with the bracket**: one just inside the opening bracket,
   before the first item, or after the last item and before the closing one, is carried to the
   rewrite's corresponding bracket as a trailing comma is, so rewriting
@@ -884,10 +890,9 @@ written.  A replace whose count does not hold says so first, exit 2, as any edit
   statement's header, before the first statement of its body, or before an `elif`, `else` or
   `except` is in no hole's reach, so an edit that spells such a header is refused wherever one has
   such a comment.
-- **An interpolation that changes the literal it is written into**: a value that closes the string,
-  or opens an f-string field, would change more than the literal's text.  So would a value
-  spanning lines in a one-line string; and a value Python does not allow, such as a non-ASCII one
-  in a bytes literal, leaves the file unparseable, which is refused as any such edit is.
+- **A value a literal cannot hold as text**: a raw string cannot escape its own quote, a comment
+  cannot hold a line break, and a bytes literal holds ASCII only, so writing such a value would
+  change more than the literal's text.
 
 **What may not mean what was meant is written, and questioned.**  A capture written where Python
 reads it together with what surrounds it is written as the template says, since that is what was
@@ -985,7 +990,7 @@ src/app.py:16:5-17:32: return lookup(request.args["id"], default=None,)
 | 3 | a usage error, a malformed script or pattern, an empty program, or a scope holding a double quote |
 | 5 | a statement or construct this build does not have |
 | 7 | an I/O error, naming the path and quoting the system's error; an `in` that names nothing there; or edits that could not be written, saying what was left as it was |
-| 9 | a structural search needs a Python file quaff cannot parse, an edit would break a Python file that parses, a file's encoding cannot write a replacement, or a structural replace cannot be made as written - its matches overlap outside each other's holes, it would drop a comment, a trailing comma has no one place to go, or it would change a literal's structure: the script or the file must change first |
+| 9 | a structural search needs a Python file quaff cannot parse, an edit would break a Python file that parses, a file's encoding cannot write a replacement, or a structural replace cannot be made as written - its matches overlap outside each other's holes, it would drop a comment, a trailing comma has no one place to go, or a literal cannot hold a value as text: the script or the file must change first |
 
 **A run that cannot give an answer - exit 3, 5, 7 or 9 - prints nothing on standard output**, so
 a partial answer never passes for a whole one.  The whole program is read and checked before any

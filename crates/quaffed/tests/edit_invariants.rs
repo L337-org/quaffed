@@ -277,6 +277,10 @@ const IDENTITIES: &[&str] = &[
     "isinstance($x, $t)",
     "self.assertEqual($args...)",
     "{$xs...}",
+    "[$xs...]",
+    "$x = $y",
+    "return $x",
+    "$f($args...)",
 ];
 
 /// Renames there and back: a pattern, the name in it renamed, the new name, and the pattern

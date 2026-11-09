@@ -19,7 +19,7 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
-use quaffed_python::{Lexed, ParseError, Rewrite, lex, parse_module, token_kinds};
+use quaffed_python::{Bracket, Lexed, ParseError, Rewrite, lex, parse_module, token_kinds};
 use quaffed_syntax::{Arena, Captured, NodeId, Pattern, find_captured, find_where_captured};
 
 use crate::search::{Match, Position};
@@ -164,7 +164,7 @@ fn nested(
     rewrite: &Rewrite,
 ) -> Result<Edited, Refused> {
     let at = |offset: usize| positions(text, &[offset])[&offset];
-    let captured = &whole_brackets(text, captured);
+    let captured = &whole_brackets(text, arena, captured);
     let depths = depths(captured).map_err(|(later, earlier)| {
         let earlier = at(captured[earlier].range.start);
         Refused {
@@ -245,13 +245,64 @@ fn nested(
     })
 }
 
-/// `captured` with each capture widened over any bracket it holds one end of.  A sequence
-/// hole captures from its first node's start to its last's end, and a node's range leaves out
-/// brackets that only wrap it, so a stretch ending in `(name == '_')` would hold the opening
-/// bracket but not the closing one: written back, it would not be code.  Only such wrapping
-/// brackets can be cut, since every other bracket belongs to a node.
-fn whole_brackets(text: &str, captured: &[Captured]) -> Vec<Captured> {
-    let brackets = lex(text).brackets;
+/// `captured` with each capture widened to the whole of the code it stands for.  A node's range
+/// leaves out the brackets that only wrap it, which the matcher ignores, so `$y` over
+/// `(a +\n b)` would capture `a +\n b` and write it back without them, and a sequence hole,
+/// from its first node's start to its last's end, would cut such brackets in half.  So each
+/// capture takes in any bracket it holds one end of, and then any brackets that wrap it with
+/// nothing but layout between: what the pattern ignored survives with what it wraps.  A bracket
+/// some node spans - a call's arguments, a tuple, a list - is that node's, never only a
+/// wrapping.
+fn whole_brackets(text: &str, arena: &Arena<'_>, captured: &[Captured]) -> Vec<Captured> {
+    let lexed = lex(text);
+    let nodes: HashSet<(usize, usize)> = arena
+        .nodes()
+        .map(|node| {
+            let range = arena.range(node);
+            (range.start, range.end)
+        })
+        .collect();
+    let wrapping =
+        |b: &&Bracket| text.as_bytes()[b.open] == b'(' && !nodes.contains(&(b.open, b.close + 1));
+    let layout = |range: Range<usize>| {
+        let mut at = range.start;
+        loop {
+            let rest = &text[at..range.end];
+            at += rest.len() - rest.trim_start().len();
+            match lexed
+                .comments
+                .iter()
+                .find(|c| c.start == at && c.end <= range.end)
+            {
+                Some(comment) => at = comment.end,
+                None => return at == range.end,
+            }
+        }
+    };
+    let widened = |within: &Range<usize>, capture: &Range<usize>| {
+        let mut capture = capture.clone();
+        if capture.is_empty() {
+            return capture;
+        }
+        loop {
+            let inside = |b: &Bracket| within.start <= b.open && b.close < within.end;
+            let cut = lexed
+                .brackets
+                .iter()
+                .find(|b| inside(b) && capture.contains(&b.open) != capture.contains(&b.close));
+            let wraps = lexed.brackets.iter().filter(wrapping).find(|b| {
+                inside(b)
+                    && b.open < capture.start
+                    && capture.end <= b.close
+                    && layout(b.open + 1..capture.start)
+                    && layout(capture.end..b.close)
+            });
+            match cut.or(wraps) {
+                Some(b) => capture = capture.start.min(b.open)..capture.end.max(b.close + 1),
+                None => return capture,
+            }
+        }
+    };
     captured
         .iter()
         .map(|found| Captured {
@@ -259,21 +310,7 @@ fn whole_brackets(text: &str, captured: &[Captured]) -> Vec<Captured> {
             captures: found
                 .captures
                 .iter()
-                .map(|capture| {
-                    let mut capture = capture.clone();
-                    loop {
-                        let cut = brackets.iter().find(|b| {
-                            let open = capture.contains(&b.open);
-                            let close = capture.contains(&b.close);
-                            open != close
-                                && found.range.start <= b.open
-                                && b.close < found.range.end
-                        });
-                        let Some(cut) = cut else { break };
-                        capture = capture.start.min(cut.open)..capture.end.max(cut.close + 1);
-                    }
-                    capture
-                })
+                .map(|capture| widened(&found.range, capture))
                 .collect(),
         })
         .collect()
@@ -382,17 +419,12 @@ fn rewritten(
     // the whole file is written.
     let mut written: Vec<Range<usize>> = Vec::with_capacity(captured.len());
     let mut written_sites: Vec<WrittenSite> = Vec::new();
+    // Values escaped to stay text in a string, at their match's start, to be questioned.
+    let mut escapes: Vec<(usize, String)> = Vec::new();
     for (index, found) in captured.iter().enumerate() {
-        if let Some(comment) = lexed.comments.iter().find(|comment| {
-            found.range.start <= comment.start
-                && comment.end <= found.range.end
-                && !edges.contains(comment)
-                && !found
-                    .captures
-                    .iter()
-                    .take(rewrite_names(rewrite, names))
-                    .any(|capture| capture.start <= comment.start && comment.end <= capture.end)
-        }) {
+        let rendered =
+            render(text, found, names, rewrite, &lexed).map_err(|why| (found.range.start, why))?;
+        if let Some(comment) = dropped_comment(&lexed, found, &edges, &rendered, rewrite, names) {
             return Err((
                 comment.start,
                 format!(
@@ -403,11 +435,12 @@ fn rewritten(
                 ),
             ));
         }
-        let (rendered, sites) =
-            render(text, found, names, rewrite, &lexed).map_err(|why| (found.range.start, why))?;
+        for name in &rendered.escaped {
+            escapes.push((found.range.start, escaped_note(text, found, names, name)));
+        }
         out.push_str(&text[copied..found.range.start]);
         let base = out.len();
-        for (range, sequence, name) in sites {
+        for (range, sequence, name) in rendered.code {
             written_sites.push(WrittenSite {
                 range: base + range.start..base + range.end,
                 found: index,
@@ -415,7 +448,7 @@ fn rewritten(
                 name,
             });
         }
-        out.push_str(&rendered);
+        out.push_str(&rendered.text);
         written.push(base..out.len());
         copied = found.range.end;
     }
@@ -432,7 +465,7 @@ fn rewritten(
         return Ok(Level {
             edits: edits(&written),
             text: out,
-            questioned: Vec::new(),
+            questioned: escapes,
         });
     };
     let after = After {
@@ -446,17 +479,65 @@ fn rewritten(
             let arena =
                 parse_module(&carried.text).expect("layout is carried only where it parses");
             Level {
-                questioned: questioned(captured, &carried.text, &arena, &carried.sites),
+                questioned: [
+                    escapes,
+                    questioned(captured, &carried.text, &arena, &carried.sites),
+                ]
+                .concat(),
                 edits: edits(&carried.written),
                 text: carried.text,
             }
         }
         None => Level {
-            questioned: questioned(captured, &out, &out_arena, &written_sites),
+            questioned: [
+                escapes,
+                questioned(captured, &out, &out_arena, &written_sites),
+            ]
+            .concat(),
             edits: edits(&written),
             text: out,
         },
     })
+}
+
+/// The first comment in `found` that the rewrite drops: in no capture it writes back, not at
+/// the edge of one of the match's own brackets, carried with it, and not in layout `rendered`
+/// carried between two holes.
+fn dropped_comment<'a>(
+    lexed: &'a Lexed,
+    found: &Captured,
+    edges: &[Range<usize>],
+    rendered: &Rendered,
+    rewrite: &Rewrite,
+    names: &[&str],
+) -> Option<&'a Range<usize>> {
+    let within = |outer: &Range<usize>, comment: &Range<usize>| {
+        outer.start <= comment.start && comment.end <= outer.end
+    };
+    lexed.comments.iter().find(|comment| {
+        within(&found.range, comment)
+            && !edges.contains(comment)
+            && !rendered.carried.iter().any(|gap| within(gap, comment))
+            && !found
+                .captures
+                .iter()
+                .take(rewrite_names(rewrite, names))
+                .any(|capture| within(capture, comment))
+    })
+}
+
+/// What a question says of `name`'s value in `found`, escaped to stay text in a string.
+fn escaped_note(text: &str, found: &Captured, names: &[&str], name: &str) -> String {
+    let index = names
+        .iter()
+        .position(|n| *n == name)
+        .expect("every site's name was asked for");
+    format!(
+        "what ${name} captured, {:?}, holds what the string it is written into would read as its \
+         end or as code - a quote, a backslash, a line break, or a brace in an f-string - so it \
+         was escaped, and the string holds the text as captured",
+        &text[found.captures[index].clone()]
+    )
 }
 
 /// Each capture in `out`, the file's new text parsed as `arena`, written where Python reads it
@@ -470,9 +551,30 @@ fn questioned(
     sites: &[WrittenSite],
 ) -> Vec<(usize, String)> {
     let code = CodeIndex::of(arena);
+    let lexed = lex(out);
+    // A capture that took the brackets wrapping it stands whole if what they wrap does, layout
+    // inside them aside.
+    let unwrapped = |range: &Range<usize>| {
+        let mut range = range.clone();
+        while let Some(b) = lexed
+            .brackets
+            .iter()
+            .find(|b| b.open == range.start && b.close + 1 == range.end)
+        {
+            let start = layout::forward_over_layout(out, b.open + 1, b.close, &lexed.comments);
+            let end = back_over_layout(out, start, b.close, &lexed.comments);
+            range = start..end;
+        }
+        range
+    };
     sites
         .iter()
-        .filter(|site| !(code.whole(&site.range) || (site.sequence && code.run(&site.range))))
+        .filter(|site| {
+            let range = unwrapped(&site.range);
+            !(code.whole(&site.range)
+                || code.whole(&range)
+                || (site.sequence && code.run(&site.range)))
+        })
         .map(|site| {
             (
                 captured[site.found].range.start,
@@ -543,89 +645,36 @@ impl CodeIndex {
 }
 
 /// The rewrite of one match: the template indented, and its line breaks spelled, for where the
-/// match stands, each site written with what its name captured; and where each code site was
-/// written in it, with whether it is a sequence.  An interpolation that changes the token
-/// structure of the literal it is written into is refused, with why.
+/// match stands, each site written with what its name captured; where each code site was
+/// written in it; the file's layout carried between two holes; and the names whose values were
+/// escaped to stay text in a string.
+///
+/// Where the template writes two holes next to each other inside a bracket, with only layout and
+/// the same code between them as the file has between their captures, the file's layout stands
+/// there: inside a bracket a line break means nothing, so it is kept as written.  A value written
+/// into a string is escaped as the string needs to hold it as text; one that cannot be, or that
+/// still changes the literal's token structure, is refused, with why.
 fn render(
     text: &str,
     found: &Captured,
     names: &[&str],
     rewrite: &Rewrite,
     lexed: &Lexed,
-) -> Result<(String, Vec<CodeSite>), String> {
-    let template = rewrite.text();
-    let stem = marker_stem(template, text);
-    let marker = |i: usize| format!("{stem}{i}_");
-    // The template with each site a marker that lexes as a name, so that its own strings and
-    // indentation can be read, and each site found again once it is indented.
-    let mut with_markers = String::with_capacity(template.len());
-    let mut copied = 0;
-    for (i, site) in rewrite.sites().iter().enumerate() {
-        with_markers.push_str(&template[copied..site.written.start]);
-        with_markers.push_str(&marker(i));
-        copied = site.written.end;
-    }
-    with_markers.push_str(&template[copied..]);
-    let indented = indent_template(
-        &with_markers,
-        &line_indent(text, found.range.start),
-        line_ending(text, found.range.start),
+) -> Result<Rendered, String> {
+    let job = Job {
+        text,
+        found,
+        names,
+        rewrite,
         lexed,
-    );
-    // Each site's marker, in the order the indented template holds them.
-    let mut at: Vec<(usize, usize)> = (0..rewrite.sites().len())
-        .map(|i| {
-            let place = indented
-                .find(&marker(i))
-                .expect("each marker is written once");
-            (place, i)
-        })
-        .collect();
-    at.sort_unstable();
-    let capture = |name: &str| -> Range<usize> {
-        let index = names
-            .iter()
-            .position(|n| *n == name)
-            .expect("every site's name was asked for");
-        found.captures[index].clone()
     };
-    let fill = |filler: Option<&str>| -> (String, Vec<CodeSite>) {
-        let mut out = String::with_capacity(indented.len());
-        let mut code = Vec::new();
-        let mut copied = 0;
-        for &(place, i) in &at {
-            let site = &rewrite.sites()[i];
-            out.push_str(&indented[copied..place]);
-            let range = capture(&site.name);
-            let value = if site.in_literal {
-                filler.map_or_else(|| text[range].to_owned(), str::to_owned)
-            } else {
-                // On the template's first line, the line is the file's, up to the match.
-                let base = if out.contains(['\n', '\r']) {
-                    line_indent(&out, out.len())
-                } else {
-                    line_indent(text, found.range.start)
-                };
-                moved(text, &range, &base, lexed)
-            };
-            if !site.in_literal {
-                let sequence = site.written.len() > site.name.len() + 1
-                    && rewrite.text()[site.written.clone()].ends_with("...");
-                code.push((
-                    out.len()..out.len() + value.len(),
-                    sequence,
-                    site.name.clone(),
-                ));
-            }
-            out.push_str(&value);
-            copied = place + marker(i).len();
-        }
-        out.push_str(&indented[copied..]);
-        (out, code)
-    };
-    let (written, code) = fill(None);
+    let marked = job.marked();
+    let gaps = job.gaps(&marked);
+    let mut escaped = Vec::new();
+    let (written, code) = job.fill(&marked, &gaps, None, &mut escaped);
     if rewrite.sites().iter().any(|site| site.in_literal)
-        && token_kinds(&written) != token_kinds(&fill(Some("x")).0)
+        && token_kinds(&written)
+            != token_kinds(&job.fill(&marked, &gaps, Some("x"), &mut escaped).0)
     {
         let interpolated: Vec<String> = rewrite
             .sites()
@@ -634,13 +683,232 @@ fn render(
             .map(|site| format!("${}", site.name))
             .collect();
         return Err(format!(
-            "writing what {} captured here into the literal changes its structure - a value \
-             closes the string, or opens an f-string field - so the edit would change more \
-             than the literal's text: narrow the pattern so that such values do not match",
+            "writing what {} captured here into the literal changes its structure, and the \
+             literal cannot hold it as text - a raw string holding its own quote, a line break \
+             in a one-line comment or raw string, or other than ASCII in bytes - so the edit \
+             would change more than the literal's text: narrow the pattern so that such values \
+             do not match",
             interpolated.join(" and ")
         ));
     }
-    Ok((written, code))
+    Ok(Rendered {
+        text: written,
+        code,
+        carried: gaps.into_iter().flatten().collect(),
+        escaped,
+    })
+}
+
+/// One match to render, with what rendering it reads.
+struct Job<'a> {
+    text: &'a str,
+    found: &'a Captured,
+    names: &'a [&'a str],
+    rewrite: &'a Rewrite,
+    lexed: &'a Lexed,
+}
+
+/// The template with each site a marker that lexes as a name, indented for where the match
+/// stands, so that its own strings, brackets and indentation can be read, and each site found
+/// again: its text and lexing, each site's marker, and where each marker stands, in order.
+struct Marked {
+    indented: String,
+    own: Lexed,
+    markers: Vec<String>,
+    at: Vec<(usize, usize)>,
+}
+
+impl Job<'_> {
+    /// What the site named `name` captured.
+    fn capture(&self, name: &str) -> Range<usize> {
+        let index = self
+            .names
+            .iter()
+            .position(|n| *n == name)
+            .expect("every site's name was asked for");
+        self.found.captures[index].clone()
+    }
+
+    fn marked(&self) -> Marked {
+        let template = self.rewrite.text();
+        let stem = marker_stem(template, self.text);
+        let markers: Vec<String> = (0..self.rewrite.sites().len())
+            .map(|i| format!("{stem}{i}_"))
+            .collect();
+        let mut with_markers = String::with_capacity(template.len());
+        let mut copied = 0;
+        for (site, marker) in self.rewrite.sites().iter().zip(&markers) {
+            with_markers.push_str(&template[copied..site.written.start]);
+            with_markers.push_str(marker);
+            copied = site.written.end;
+        }
+        with_markers.push_str(&template[copied..]);
+        let indented = indent_template(
+            &with_markers,
+            &line_indent(self.text, self.found.range.start),
+            line_ending(self.text, self.found.range.start),
+            self.lexed,
+        );
+        let mut at: Vec<(usize, usize)> = markers
+            .iter()
+            .enumerate()
+            .map(|(i, marker)| {
+                let place = indented.find(marker).expect("each marker is written once");
+                (place, i)
+            })
+            .collect();
+        at.sort_unstable();
+        Marked {
+            own: lex(&indented),
+            indented,
+            markers,
+            at,
+        }
+    }
+
+    /// For each site in order, the file's layout to write before it in place of the template's:
+    /// where the site and the one before it are both code, next to each other inside a bracket
+    /// in the template and in the file, with the same code between them.
+    fn gaps(&self, marked: &Marked) -> Vec<Option<Range<usize>>> {
+        let sites = self.rewrite.sites();
+        let in_bracket = |brackets: &[Bracket], gap: &Range<usize>| {
+            brackets
+                .iter()
+                .any(|b| b.open < gap.start && gap.end <= b.close)
+        };
+        marked
+            .at
+            .iter()
+            .enumerate()
+            .map(|(k, &(place, i))| {
+                let &(before, j) = marked.at.get(k.checked_sub(1)?)?;
+                let (one, other) = (&sites[j], &sites[i]);
+                if one.in_literal || other.in_literal {
+                    return None;
+                }
+                let template_gap = before + marked.markers[j].len()..place;
+                let (a, b) = (self.capture(&one.name), self.capture(&other.name));
+                if a.end > b.start {
+                    return None;
+                }
+                let file_gap = a.end..b.start;
+                let between_others = self
+                    .found
+                    .captures
+                    .iter()
+                    .any(|c| !c.is_empty() && c.start < file_gap.end && file_gap.start < c.end);
+                let template_comment = marked
+                    .own
+                    .comments
+                    .iter()
+                    .any(|c| template_gap.start <= c.start && c.end <= template_gap.end);
+                let same_code = code_of(&marked.indented[template_gap.clone()], &[])
+                    == code_of(
+                        &self.text[file_gap.clone()],
+                        &comments_in(self.lexed, &file_gap),
+                    );
+                (!between_others
+                    && !template_comment
+                    && same_code
+                    && in_bracket(&marked.own.brackets, &template_gap)
+                    && in_bracket(&self.lexed.brackets, &file_gap))
+                .then_some(file_gap)
+            })
+            .collect()
+    }
+
+    /// The template filled: each code site with its capture, moved to its depth, each literal
+    /// site with `filler` if given, or else its capture escaped as its string needs, naming each
+    /// escaped value's site in `escaped`; with where each code site was written.
+    fn fill(
+        &self,
+        marked: &Marked,
+        gaps: &[Option<Range<usize>>],
+        filler: Option<&str>,
+        escaped: &mut Vec<String>,
+    ) -> (String, Vec<CodeSite>) {
+        let mut out = String::with_capacity(marked.indented.len());
+        let mut code = Vec::new();
+        let mut copied = 0;
+        for (k, &(place, i)) in marked.at.iter().enumerate() {
+            let site = &self.rewrite.sites()[i];
+            match &gaps[k] {
+                Some(gap) => out.push_str(&self.text[gap.clone()]),
+                None => out.push_str(&marked.indented[copied..place]),
+            }
+            let range = self.capture(&site.name);
+            let value = if !site.in_literal {
+                // On the template's first line, the line is the file's, up to the match.
+                let base = if out.contains(['\n', '\r']) {
+                    line_indent(&out, out.len())
+                } else {
+                    line_indent(self.text, self.found.range.start)
+                };
+                moved(self.text, &range, &base, self.lexed)
+            } else if let Some(filler) = filler {
+                filler.to_owned()
+            } else {
+                let value = &self.text[range];
+                let part = marked
+                    .own
+                    .strings
+                    .iter()
+                    .find(|part| part.range.start <= place && place < part.range.end);
+                match part.and_then(|part| quaffed_python::escaped(value, part)) {
+                    Some(text) => {
+                        if text != value && !escaped.contains(&site.name) {
+                            escaped.push(site.name.clone());
+                        }
+                        text
+                    }
+                    // A comment, or a string that cannot hold it as text: written as it is, for
+                    // the structure check to refuse if it changes the literal.
+                    None => value.to_owned(),
+                }
+            };
+            if !site.in_literal {
+                let sequence = site.written.len() > site.name.len() + 1
+                    && self.rewrite.text()[site.written.clone()].ends_with("...");
+                code.push((
+                    out.len()..out.len() + value.len(),
+                    sequence,
+                    site.name.clone(),
+                ));
+            }
+            out.push_str(&value);
+            copied = place + marked.markers[i].len();
+        }
+        out.push_str(&marked.indented[copied..]);
+        (out, code)
+    }
+}
+
+/// One match's rewrite, as [`render`] writes it.
+struct Rendered {
+    text: String,
+    code: Vec<CodeSite>,
+    /// The file's layout between holes, written in the template's place.
+    carried: Vec<Range<usize>>,
+    /// The names whose values were escaped to stay text in a string.
+    escaped: Vec<String>,
+}
+
+/// The comments of `lexed` inside `range`.
+fn comments_in(lexed: &Lexed, range: &Range<usize>) -> Vec<Range<usize>> {
+    lexed
+        .comments
+        .iter()
+        .filter(|c| range.start <= c.start && c.end <= range.end)
+        .map(|c| c.start - range.start..c.end - range.start)
+        .collect()
+}
+
+/// `gap`'s code: its text without whitespace or `comments`, which are offsets into it.
+fn code_of(gap: &str, comments: &[Range<usize>]) -> String {
+    gap.char_indices()
+        .filter(|(at, c)| !c.is_whitespace() && !comments.iter().any(|r| r.contains(at)))
+        .map(|(_, c)| c)
+        .collect()
 }
 
 /// Where a code site was written in a rewrite, whether it is a sequence, and the name it writes.
@@ -881,6 +1149,23 @@ mod tests {
     }
 
     #[test]
+    fn a_capture_takes_the_brackets_that_only_wrap_it() {
+        let text = "data = (\n    # header\n    b\"PK\"\n    + size\n)\n";
+        let done = written("$x = $y", "$x = $y", text);
+        assert_eq!((done.text.as_str(), done.questioned.len()), (text, 0));
+        // So it keeps its meaning where the rewrite writes it, with nothing to question.
+        let done = written("f($a)", "$a * 2", "y = f((x + 1))\n");
+        assert_eq!(done.text, "y = (x + 1) * 2\n");
+        assert_eq!(done.questioned, []);
+        assert_eq!(
+            ok("$f($x)", "$f($x)", "(lambda y: y)(2)\n"),
+            "(lambda y: y)(2)\n"
+        );
+        // A call's own brackets are the call's, not a wrapping of its argument.
+        assert_eq!(ok("f($a)", "g($a)", "f(x)\n"), "g(x)\n");
+    }
+
+    #[test]
     fn a_sequence_ending_in_wrapping_brackets_takes_both() {
         let text = "self.assertEqual(f(x), (name == '_'))\n";
         assert_eq!(
@@ -943,7 +1228,7 @@ mod tests {
     fn a_trailing_comma_inside_the_match_is_kept() {
         assert_eq!(
             ok("f($a, $b)", "g($a, $b)", "f(\n    x,\n    y,\n)\n"),
-            "g(x, y,)\n"
+            "g(\n    x,\n    y,\n)\n"
         );
         // And left alone where the rewrite already has one, or where there was none.
         assert_eq!(ok("f($a, $b)", "g($a, $b,)", "f(x, y,)\n"), "g(x, y,)\n");
@@ -954,17 +1239,17 @@ mod tests {
     fn a_trailing_comma_is_carried_to_the_bracket_holding_the_same_holes() {
         assert_eq!(
             ok("f($a, g($b))", "h($a, k($b))", "r = f(x, g(\n    y,\n))\n"),
-            "r = h(x, k(y,))\n"
+            "r = h(x, k(\n    y,\n))\n"
         );
         // In any order.
         assert_eq!(
             ok("f($a, $b)", "f($b, $a)", "f(\n    x,\n    y,\n)\n"),
-            "f(y, x,)\n"
+            "f(\n    y, x,\n)\n"
         );
         // A hole the rewrite drops is not counted, so the call still holds what it did.
         assert_eq!(
             ok("f($a, $b)", "f($a)", "f(\n    x,\n    y,\n)\n"),
-            "f(x,)\n"
+            "f(\n    x,\n)\n"
         );
         // Brackets holding no hole correspond by their order.
         assert_eq!(
@@ -1055,7 +1340,7 @@ mod tests {
                 "f(\n    x,\n    dict(\n        k=1,\n    ),\n)\n"
             ),
             // The call's own comma is carried; the one inside `dict(...)` went with it.
-            "g(x,)\n"
+            "g(\n    x,\n)\n"
         );
     }
 
@@ -1197,15 +1482,15 @@ mod tests {
         // Before the first item, and after the last; layout with no comment is the template's.
         assert_eq!(
             ok("f($a)", "g($a)", "f(  # first\n    x\n)\n"),
-            "g(  # first\n    x)\n"
+            "g(  # first\n    x\n)\n"
         );
         assert_eq!(
             ok("f($a)", "g($a)", "f(\n    x  # last\n)\n"),
-            "g(x  # last\n)\n"
+            "g(\n    x  # last\n)\n"
         );
         assert_eq!(
             ok("f($a)", "g($a)", "f(\n    x,  # last\n)\n"),
-            "g(x,  # last\n)\n"
+            "g(\n    x,  # last\n)\n"
         );
         // So rewriting a call to itself changes nothing.
         let text = "self.assertEqual(  # inputs are iterators\n    fmean(a),\n    fmean(b))\n";
@@ -1232,8 +1517,48 @@ mod tests {
     }
 
     #[test]
+    fn layout_at_a_brackets_edge_is_the_files_where_the_template_writes_none() {
+        let text = "self.assertEqual(\n    a,\n    b\n)\n";
+        assert_eq!(
+            ok(
+                "self.assertEqual($args...)",
+                "self.assertEqual($args...)",
+                text
+            ),
+            text
+        );
+        assert_eq!(
+            ok("self.assertEqual($args...)", "check($args...)", text),
+            "check(\n    a,\n    b\n)\n"
+        );
+        // Where the template writes layout of its own there, it stands.
+        assert_eq!(ok("f($a)", "g( $a )", "f(\n    x\n)\n"), "g( x )\n");
+    }
+
+    #[test]
+    fn layout_between_two_holes_is_the_files_where_the_code_between_is_the_same() {
+        // Inside a bracket a line break means nothing, so the file's stands, with its comment.
+        assert_eq!(
+            ok(
+                "isinstance($x, $t)",
+                "is_a($x, $t)",
+                "isinstance(x,\n           T)\n"
+            ),
+            "is_a(x,\n           T)\n"
+        );
+        assert_eq!(
+            ok("f($x, $y)", "g($x, $y)", "f(a,  # why\n  b)\n"),
+            "g(a,  # why\n  b)\n"
+        );
+        // Reordered, there is no layout of the file's between them, so the template's stands.
+        assert_eq!(ok("f($x, $y)", "g($y, $x)", "f(a,\n  b)\n"), "g(b, a)\n");
+        // Nor where the code between differs.
+        assert_eq!(ok("f($x, $y)", "g($x + $y)", "f(a,\n  b)\n"), "g(a + b)\n");
+    }
+
+    #[test]
     fn a_comment_no_capture_writes_back_is_refused() {
-        let why = replaced("f($x, $y)", "g($x, $y)", "f(a,  # why\n  b)\n")
+        let why = replaced("f($x, $y)", "g($y, $x)", "f(a,  # why\n  b)\n")
             .expect_err("a dropped comment");
         assert!(why.starts_with("1:7: the comment \"# why\""), "{why}");
         // In a capture that is not written back, it would be dropped too.
@@ -1246,20 +1571,40 @@ mod tests {
     }
 
     #[test]
-    fn a_value_spanning_lines_in_a_one_line_string_is_refused() {
-        let why =
-            replaced("f($v)", "\"pre $v\"", "f([1,\n   2])\n").expect_err("a value spanning lines");
-        assert!(why.contains("changes its structure"), "{why}");
+    fn a_value_written_into_a_string_is_escaped_to_stay_text_and_questioned() {
+        let done = written("f($v)", "\"pre $v\"", "f(\"\" + y + \"\")\n");
+        assert_eq!(done.text, "\"pre \\\"\\\" + y + \\\"\\\"\"\n");
+        let [questioned] = done.questioned.as_slice() else {
+            panic!("{:?}", done.questioned);
+        };
+        assert!(
+            questioned
+                .why
+                .starts_with("what $v captured, \"\\\"\\\" + y + \\\"\\\"\", holds"),
+            "{}",
+            questioned.why
+        );
+        // A line break in a one-line string, and braces in an f-string.
+        assert_eq!(
+            ok("f($v)", "\"pre $v\"", "f([1,\n   2])\n"),
+            "\"pre [1,\\n   2]\"\n"
+        );
+        assert_eq!(
+            ok("f($v)", "f\"value: $v\"", "f({y})\n"),
+            "f\"value: {{y}}\"\n"
+        );
+        // Text that needs nothing escaped is written as it is, and questioned for nothing.
+        let done = written("f($v)", "\"pre $v\"", "f('abc')\n");
+        assert_eq!(
+            (done.text.as_str(), done.questioned.len()),
+            ("\"pre 'abc'\"\n", 0)
+        );
     }
 
     #[test]
-    fn an_interpolation_that_changes_a_literals_structure_is_refused() {
-        // Into an f-string, a value with braces would open a field.
-        let why = replaced("f($v)", "f\"value: $v\"", "f({y})\n").expect_err("a field opened");
+    fn a_value_a_string_cannot_hold_as_text_is_refused() {
+        // A raw string cannot escape its own quote.
+        let why = replaced("f($v)", "r\"pre $v\"", "f(\"a\")\n").expect_err("a raw string");
         assert!(why.contains("changes its structure"), "{why}");
-        // A value with the string's quote would close it.
-        assert!(replaced("f($v)", "\"pre $v\"", "f(\"\" + y + \"\")\n").is_err());
-        // One with the other quote is only text.
-        assert_eq!(ok("f($v)", "\"pre $v\"", "f('abc')\n"), "\"pre 'abc'\"\n");
     }
 }

@@ -244,30 +244,33 @@ the path or argument it concerns, and says what to do where there is something t
   file is encoded (`python::Source::encode`), which gives a file's own bytes back exactly, so every
   byte outside the matches is kept.  A character the encoding cannot hold is refused as for a
   textual replace.  Each match is written over with its rewrite: what each hole captured, from the
-  matcher, put where the template's sites say (`quaffed_python::compile_rewrite`).  **What the user
+  matcher, put where the template's sites say (`quaffed_python::compile_rewrite`), each capture
+  widened over brackets that only wrap it (`whole_brackets`); layout inside a bracket is the file's
+  where the template writes none, at a bracket's edges (`rewrite/layout.rs`) and between two holes
+  written next to each other over the same code (`Job::gaps`); and a value written into a string is
+  escaped as Python's literal needs (`quaffed_python::escaped`), and questioned.  **What the user
   did not write is derived, never guessed**: the indentation of the template's later lines and of
   captured code moved to another depth, from the file's indent unit; the file's own line ending for
   the template's line breaks; and the trailing commas a pattern ignores.  **What the pattern ignored
   must survive or the edit is refused**, exit 9, naming the file and where: a comment no capture
-  writes back, unless it stands at the edge of one of the match's own brackets and is carried
-  with it, and a trailing comma whose place in the rewrite cannot be told.  Both are carried in
-  `src/rewrite/layout.rs`.  A trailing comma the
-  pattern ignores is one the arena keeps no token for, so the matcher and the edit agree on it
-  (`ignored_by_matcher`); it is carried to the bracket in the rewrite that holds the same holes as
-  its own, brackets paired from the lexer's (`quaffed_python::Lexed::brackets`), goes with its
-  bracket where the rewrite has none that does, and is refused where the rewrite has some but a
-  different number from the match, or where the comma would be a token where it lands, as a tuple's
-  is.  A bracket inside what a hole matched is the hole's, so a replace's unnamed holes are given
-  names no script can spell (`name_every_hole`) and captured as named ones are.  **Matches nested
-  in one another's holes are rewritten in levels**, the most deeply nested first, each level an
-  ordinary rewrite of the text the one before left, with every place a message names mapped back
-  to the file as it was (`nested`).  **Also refused**: matches that overlap outside each other's
-  holes, and an interpolation that changes the token structure of the literal it is
-  written into, found by lexing the rewrite with the values and with a filler, because each would
-  change something the script did not ask for.  **A capture that is no longer one node**, or a run
-  of them, once the file is written, is written as the template says and questioned in a note, since
-  the template is what was asked for.  A refusal is decided in the silent first pass, once its
-  replace's count holds.
+  writes back, unless it stands at the edge of one of the match's own brackets and is carried with
+  it, and a trailing comma whose place in the rewrite cannot be told.  Both are carried in
+  `src/rewrite/layout.rs`.  A trailing comma the pattern ignores is one the arena keeps no token
+  for, so the matcher and the edit agree on it (`ignored_by_matcher`); it is carried to the bracket
+  in the rewrite that holds the same holes as its own, brackets paired from the lexer's
+  (`quaffed_python::Lexed::brackets`), goes with its bracket where the rewrite has none that does,
+  and is refused where the rewrite has some but a different number from the match, or where the
+  comma would be a token where it lands, as a tuple's is.  A bracket inside what a hole matched is
+  the hole's, so a replace's unnamed holes are given names no script can spell (`name_every_hole`)
+  and captured as named ones are.  **Matches nested in one another's holes are rewritten in
+  levels**, the most deeply nested first, each level an ordinary rewrite of the text the one before
+  left, with every place a message names mapped back to the file as it was (`nested`).  **Also
+  refused**: matches that overlap outside each other's holes, and an interpolation that changes the
+  token structure of the literal it is written into, found by lexing the rewrite with the values and
+  with a filler, because each would change something the script did not ask for.  **A capture that
+  is no longer one node**, or a run of them, once the file is written, is written as the template
+  says and questioned in a note, since the template is what was asked for.  A refusal is decided in
+  the silent first pass, once its replace's count holds.
 - **A file an earlier replace broke is refused as an edit** when a later structural statement
   needs it, naming the replaces that changed it, not as a file that cannot be parsed, since on
   disk it parses.

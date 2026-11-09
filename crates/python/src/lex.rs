@@ -27,6 +27,82 @@ pub struct Lexed {
     /// Every pair of brackets, round, square or curly, in the order they open.  The braces that
     /// open and close an f-string's or t-string's fields are not brackets but part of the string.
     pub brackets: Vec<Bracket>,
+    /// Every part of a string whose text is the string's own - a plain string, or an f-string's
+    /// or t-string's literal text between fields - with how its literal is written, in order.
+    pub strings: Vec<StringPart>,
+}
+
+/// One part of a string literal and how the literal is written, which decides how text can be
+/// written into it as text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StringPart {
+    /// Its byte range: a plain string's whole token, prefix and quotes included, or the literal
+    /// text of an f-string or t-string between its fields.
+    pub range: Range<usize>,
+    /// Whether the literal is raw, its backslashes text rather than escapes.
+    pub raw: bool,
+    /// Whether it is a bytes literal, which holds ASCII only.
+    pub bytes: bool,
+    /// Whether it is an f-string or t-string, in which a brace opens a field.
+    pub formatted: bool,
+    /// Its quotes: one quote character, or three.
+    pub quote: String,
+}
+
+/// `value` written into `part` so that the literal holds it as text: in a string that is not
+/// raw, each backslash and quote character escaped, and line breaks too unless the quotes are
+/// triple; each brace doubled in an f-string or t-string.  `None` where the literal cannot hold
+/// it as text: a raw string holding its own quote character or a line break it cannot, or
+/// ending in a backslash, and a bytes literal holding anything but ASCII.
+#[must_use]
+pub fn escaped(value: &str, part: &StringPart) -> Option<String> {
+    let quote = part.quote.chars().next()?;
+    let triple = part.quote.len() == 3;
+    if part.bytes && !value.is_ascii() {
+        return None;
+    }
+    if part.raw
+        && (value.contains(quote)
+            || value.ends_with('\\')
+            || (!triple && value.contains(['\n', '\r'])))
+    {
+        return None;
+    }
+    let mut out = String::with_capacity(value.len());
+    for c in value.chars() {
+        match c {
+            '\\' if !part.raw => out.push_str("\\\\"),
+            c if c == quote && !part.raw => {
+                out.push('\\');
+                out.push(c);
+            }
+            '\n' if !triple => out.push_str("\\n"),
+            '\r' if !triple => out.push_str("\\r"),
+            '{' | '}' if part.formatted => {
+                out.push(c);
+                out.push(c);
+            }
+            c => out.push(c),
+        }
+    }
+    Some(out)
+}
+
+/// The prefix and quotes a string, f-string or t-string opens with, from the text of its first
+/// token: the letters, then one quote character or three.
+fn quoting(opening: &str) -> (String, String) {
+    let prefix: String = opening
+        .chars()
+        .take_while(char::is_ascii_alphabetic)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    let rest = &opening[prefix.len()..];
+    let quote = if rest.starts_with("'''") || rest.starts_with("\"\"\"") {
+        rest[..3].to_owned()
+    } else {
+        rest[..1.min(rest.len())].to_owned()
+    };
+    (prefix, quote)
 }
 
 /// One pair of brackets in Python text.
@@ -57,6 +133,8 @@ pub fn lex(text: &str) -> Lexed {
     let parsed = ruff_python_parser::parse_unchecked(text, ParseOptions::from(Mode::Module));
     let mut lexed = Lexed::default();
     let mut open: Vec<Open> = Vec::new();
+    // How each f-string or t-string still open was opened, innermost last.
+    let mut formatted: Vec<(String, String)> = Vec::new();
     // The last token that is not layout, for a trailing comma.
     let mut last: Option<(TokenKind, usize)> = None;
     for token in parsed.tokens() {
@@ -102,6 +180,36 @@ pub fn lex(text: &str) -> Lexed {
                 | TokenKind::Dedent
         ) {
             last = Some((kind, range.start));
+        }
+        match kind {
+            TokenKind::FStringStart | TokenKind::TStringStart => {
+                formatted.push(quoting(&text[range.clone()]));
+            }
+            TokenKind::FStringEnd | TokenKind::TStringEnd => {
+                formatted.pop();
+            }
+            TokenKind::String => {
+                let (prefix, quote) = quoting(&text[range.clone()]);
+                lexed.strings.push(StringPart {
+                    range: range.clone(),
+                    raw: prefix.contains('r'),
+                    bytes: prefix.contains('b'),
+                    formatted: false,
+                    quote,
+                });
+            }
+            TokenKind::FStringMiddle | TokenKind::TStringMiddle => {
+                if let Some((prefix, quote)) = formatted.last() {
+                    lexed.strings.push(StringPart {
+                        range: range.clone(),
+                        raw: prefix.contains('r'),
+                        bytes: false,
+                        formatted: true,
+                        quote: quote.clone(),
+                    });
+                }
+            }
+            _ => {}
         }
         match kind {
             TokenKind::Comment => lexed.comments.push(range),
@@ -215,6 +323,46 @@ mod tests {
                 ("{i: 1,}", Some(",")),
             ]
         );
+    }
+
+    #[test]
+    fn a_value_is_escaped_as_each_kind_of_string_needs() {
+        let text = "a = 'x'\nb = r\"\"\"y\"\"\"\nc = f'{z}w'\nd = b'v'\n";
+        let parts = lex(text).strings;
+        let shown: Vec<(&str, bool, bool, bool, &str)> = parts
+            .iter()
+            .map(|p| {
+                (
+                    &text[p.range.clone()],
+                    p.raw,
+                    p.bytes,
+                    p.formatted,
+                    p.quote.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("'x'", false, false, false, "'"),
+                ("r\"\"\"y\"\"\"", true, false, false, "\"\"\""),
+                ("w", false, false, true, "'"),
+                ("b'v'", false, true, false, "'"),
+            ]
+        );
+        let value = "it's {a}\\ \"b\"\n";
+        assert_eq!(
+            escaped(value, &parts[0]).as_deref(),
+            Some("it\\'s {a}\\\\ \"b\"\\n")
+        );
+        assert_eq!(escaped(value, &parts[1]), None);
+        assert_eq!(escaped("say \"hi\"", &parts[1]), None);
+        assert_eq!(escaped("say 'hi'", &parts[1]).as_deref(), Some("say 'hi'"));
+        assert_eq!(
+            escaped(value, &parts[2]).as_deref(),
+            Some("it\\'s {{a}}\\\\ \"b\"\\n")
+        );
+        assert_eq!(escaped("caf\u{e9}", &parts[3]), None);
     }
 
     #[test]

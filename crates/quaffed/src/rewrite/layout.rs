@@ -68,11 +68,21 @@ struct Edges {
     comma: Option<usize>,
     leading: Option<Range<usize>>,
     trailing: Option<Range<usize>>,
+    /// Whether each edge holds a comment, which must be carried, where layout alone is carried
+    /// only into an edge the template left empty.
+    leading_comment: bool,
+    trailing_comment: bool,
 }
 
 impl Edges {
     fn is_empty(&self) -> bool {
         self.comma.is_none() && self.leading.is_none() && self.trailing.is_none()
+    }
+
+    /// Whether anything at these edges refuses the edit when it cannot be placed: a comma or a
+    /// comment, never layout alone, which the template's then replaces.
+    fn must_be_placed(&self) -> bool {
+        self.comma.is_some() || self.leading_comment || self.trailing_comment
     }
 }
 
@@ -162,7 +172,14 @@ pub(super) fn carry(
         let mut moved = offset;
         for edit in &edits {
             let Range { start, end } = edit.range;
-            if start < offset && end <= offset {
+            // Text inserted at a leading edge stands before what starts there; at a trailing
+            // edge, after what ends there.
+            let before = if start == end {
+                start < offset || (edit.leading && start == offset)
+            } else {
+                start < offset && end <= offset
+            };
+            if before {
                 moved = moved + edit.text.len() - (end - start);
             }
         }
@@ -192,6 +209,8 @@ pub(super) fn carry(
 struct Edit {
     range: Range<usize>,
     text: String,
+    /// Whether it is at a bracket's leading edge, before the first item.
+    leading: bool,
     comma: Option<usize>,
     at: usize,
     what: &'static str,
@@ -276,6 +295,9 @@ fn edits(before: &Before<'_>, after: &After<'_>) -> Result<Vec<Edit>, LayoutRefu
                 continue;
             }
             if counterparts.len() != same {
+                if !edges.must_be_placed() {
+                    continue;
+                }
                 return Err(carrying.no_one_place(counterparts.len(), same));
             }
             let nth = file_held[..i].iter().filter(|h| *h == held).count();
@@ -378,44 +400,53 @@ impl Carrying<'_> {
             )
         };
         let empty = first == partner.close;
-        if let Some(leading) = &self.edges.leading {
-            if template_comment(inner..first) {
-                return Err(refuse(leading.start));
-            }
-            // Into a bracket the rewrite leaves empty, the trailing layout follows the leading.
-            let mut carried = text[leading.clone()].to_owned();
-            if empty && let Some(trailing) = &self.edges.trailing {
-                carried.push_str(&text[trailing.clone()]);
-            }
-            edits.push(self.edit(inner..first, carried, None, leading.start, "comment"));
-        }
+        let edges = self.edges;
         if empty {
-            if self.edges.leading.is_none()
-                && let Some(trailing) = &self.edges.trailing
-            {
-                edits.push(self.edit(
-                    inner..first,
-                    text[trailing.clone()].to_owned(),
-                    None,
-                    trailing.start,
-                    "comment",
-                ));
+            // A bracket the rewrite leaves empty takes the comments at both edges, one after the
+            // other, and has nothing for a comma to trail.
+            let mut carried = String::new();
+            let mut at = None;
+            for (gap, comment) in [
+                (&edges.leading, edges.leading_comment),
+                (&edges.trailing, edges.trailing_comment),
+            ] {
+                if let (Some(gap), true) = (gap, comment) {
+                    at.get_or_insert(gap.start);
+                    carried.push_str(&text[gap.clone()]);
+                }
             }
-            // A bracket the rewrite leaves empty has nothing for a comma to trail.
+            if let Some(at) = at {
+                if template_comment(inner..first) {
+                    return Err(refuse(at));
+                }
+                edits.push(self.edit(inner..first, carried, None, at, "comment"));
+            }
             return Ok(edits);
         }
+        if let Some(leading) = &edges.leading {
+            if edges.leading_comment && template_comment(inner..first) {
+                return Err(refuse(leading.start));
+            }
+            if edges.leading_comment || first == inner {
+                let carried = text[leading.clone()].to_owned();
+                edits.push(self.edit(inner..first, carried, None, leading.start, "comment"));
+            }
+        }
         let has_comma = partner.trailing_comma.is_some();
-        let comma = self.edges.comma.filter(|_| !has_comma);
-        match (&self.edges.trailing, comma) {
+        let comma = edges.comma.filter(|_| !has_comma);
+        // After the rewrite's last item, or after its own comma if it has one, which is code to
+        // `back_over_layout`.
+        let trailing = edges
+            .trailing
+            .as_ref()
+            .filter(|_| edges.trailing_comment || last == partner.close);
+        match (trailing, comma) {
             (None, None) => {}
             (None, Some(comma)) => {
                 edits.push(self.edit(last..last, ",".into(), Some(comma), comma, "trailing comma"));
             }
             (Some(trailing), comma) => {
-                // After the rewrite's last item, or after its own comma if it has one, which is
-                // code to `back_over_layout`.
-                let from = last;
-                if template_comment(from..partner.close) {
+                if edges.trailing_comment && template_comment(last..partner.close) {
                     return Err(refuse(trailing.start));
                 }
                 let mut carried = String::new();
@@ -429,10 +460,16 @@ impl Carrying<'_> {
                     "comment"
                 };
                 let at = comma.unwrap_or(trailing.start);
-                edits.push(self.edit(from..partner.close, carried, comma, at, what));
+                edits.push(self.edit(last..partner.close, carried, comma, at, what));
             }
         }
         Ok(edits)
+    }
+
+    /// Whether `range` is at the leading edge of the bracket it is in: it starts just inside an
+    /// opening bracket.
+    fn leading_edge(&self, range: &Range<usize>) -> bool {
+        range.start > 0 && matches!(self.out.as_bytes()[range.start - 1], b'(' | b'[' | b'{')
     }
 
     fn edit(
@@ -444,6 +481,7 @@ impl Carrying<'_> {
         what: &'static str,
     ) -> Edit {
         Edit {
+            leading: self.leading_edge(&range),
             range,
             text,
             comma,
@@ -457,8 +495,8 @@ impl Carrying<'_> {
 
 /// The layout at `bracket`'s edges in the old text.  The leading edge runs from just inside the
 /// opening bracket to the first item, and the trailing edge from the last item, or the trailing
-/// comma after it, to the closing bracket; each is kept only where it holds a comment.  An
-/// empty bracket has a leading edge only.
+/// comma after it, to the closing bracket; each is kept where it holds anything.  An empty
+/// bracket has a leading edge only.
 fn edges(before: &Before<'_>, bracket: &Bracket) -> Edges {
     let text = before.text;
     let comments = &before.lexed.comments;
@@ -472,7 +510,7 @@ fn edges(before: &Before<'_>, bracket: &Bracket) -> Edges {
     let comma = bracket
         .trailing_comma
         .filter(|c| ignored_by_matcher(before.arena, *c));
-    let leading = Some(inner..first).filter(|gap| holds_comment(gap));
+    let leading = Some(inner..first).filter(|gap| !gap.is_empty());
     let trailing = if first == bracket.close {
         None
     } else {
@@ -480,10 +518,12 @@ fn edges(before: &Before<'_>, bracket: &Bracket) -> Edges {
             Some(comma) => comma + 1,
             None => back_over_layout(text, inner, bracket.close, comments),
         };
-        Some(last..bracket.close).filter(|gap| holds_comment(gap))
+        Some(last..bracket.close).filter(|gap| !gap.is_empty())
     };
     Edges {
         comma,
+        leading_comment: leading.as_ref().is_some_and(holds_comment),
+        trailing_comment: trailing.as_ref().is_some_and(holds_comment),
         leading,
         trailing,
     }
@@ -491,7 +531,12 @@ fn edges(before: &Before<'_>, bracket: &Bracket) -> Edges {
 
 /// Forward from `at` in `text`, no further than `ceiling`, over whitespace and comments: where
 /// the code after them starts.
-fn forward_over_layout(text: &str, at: usize, ceiling: usize, comments: &[Range<usize>]) -> usize {
+pub(super) fn forward_over_layout(
+    text: &str,
+    at: usize,
+    ceiling: usize,
+    comments: &[Range<usize>],
+) -> usize {
     let mut at = at;
     loop {
         let rest = &text[at..ceiling];

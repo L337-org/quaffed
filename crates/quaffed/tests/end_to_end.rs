@@ -1351,7 +1351,7 @@ fn a_structural_replace_keeps_a_trailing_comma_and_derives_indentation() {
          replace `with $m:\n    $body...` with `$body...` expect 1",
     ]));
     project.assert_changed(&[
-        ("a.py", b"x = f(1)\ny = h(three, two,)\n"),
+        ("a.py", b"x = f(1)\ny = h(\n    three, two,\n)\n"),
         ("b.py", b"if c:\n    a()\n    b()\n"),
     ]);
 }
@@ -1381,7 +1381,7 @@ fn a_structural_replace_takes_a_where() {
         "-e",
         "replace `f($a, $b)` with `h($a)` where $a matches \"two\" expect 1",
     ]));
-    project.assert_changed(&[("a.py", b"x = f(1)\ny = h(two,)\n")]);
+    project.assert_changed(&[("a.py", b"x = f(1)\ny = h(\n    two,\n)\n")]);
 }
 
 #[test]
@@ -1415,20 +1415,31 @@ fn structural_matches_overlapping_outside_each_others_holes_exit_9_naming_both()
 #[test]
 fn a_structural_replace_that_would_drop_a_comment_exits_9_naming_it() {
     let project = Project::new(&[(".git/HEAD", ""), ("a.py", "f(a,  # why\n  b)\n")]);
+    // Reordered, the comment between the two has no place.
     assert_quaff_snapshot!(
-        project.quaff(&["-e", "replace `f($x, $y)` with `g($x, $y)` expect 1",])
+        project.quaff(&["-e", "replace `f($x, $y)` with `g($y, $x)` expect 1",])
     );
     project.assert_unchanged();
-    // A sequence hole captures it, and writes it back.
-    assert_quaff_snapshot!(project.quaff(&["-e", "replace `f($xs...)` with `g($xs...)` expect 1"]));
+    // In order, it stands with the layout between them.
+    assert_quaff_snapshot!(project.quaff(&["-e", "replace `f($x, $y)` with `g($x, $y)` expect 1"]));
     project.assert_changed(&[("a.py", b"g(a,  # why\n  b)\n")]);
 }
 
 #[test]
-fn an_interpolation_that_changes_a_literal_exits_9() {
+fn a_value_written_into_a_string_is_escaped_and_questioned() {
     let project = Project::new(&[(".git/HEAD", ""), ("a.py", "f({y})\n")]);
     assert_quaff_snapshot!(
         project.quaff(&["-e", "replace `f($v)` with `f\"value: $v\"` expect 1",])
+    );
+    project.assert_changed(&[("a.py", b"f\"value: {{y}}\"\n")]);
+}
+
+#[test]
+fn a_value_a_string_cannot_hold_as_text_exits_9() {
+    let project = Project::new(&[(".git/HEAD", ""), ("a.py", "f(\"a\")\n")]);
+    // A raw string cannot escape its own quote.
+    assert_quaff_snapshot!(
+        project.quaff(&["-e", "replace `f($v)` with `r\"value: $v\"` expect 1",])
     );
     project.assert_unchanged();
 }
@@ -1471,7 +1482,7 @@ fn a_trailing_comma_inside_a_match_is_carried_to_the_rewrites_bracket() {
     assert_quaff_snapshot!(
         project.quaff(&["-e", "replace `f($a, g($b))` with `h($a, k($b))` expect 1"])
     );
-    project.assert_changed(&[("a.py", b"r = h(x, k(y,))\n")]);
+    project.assert_changed(&[("a.py", b"r = h(x, k(\n    y,\n))\n")]);
 }
 
 #[test]
