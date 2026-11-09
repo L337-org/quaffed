@@ -819,7 +819,9 @@ arguments, with the template's `, ` between them.
   `${name|upper}` is refused as a value filter this build does not have, exit 5.
 - **Indentation is derived, never written.**  A template's later lines take the indentation of the
   line the match starts on, in the file's own indent unit; captured code moved to another depth
-  is shifted with it, except the lines of a multi-line string, which are part of its value.  So
+  is shifted with it, except the lines of a multi-line string, which are part of its value, and
+  lines inside a bracket that opened before the capture, whose indentation says nothing of
+  depth: a call's arguments one to a line keep theirs when the call is rewritten round them.  So
   unwrapping a block is a replace:
 
   ```
@@ -846,14 +848,22 @@ arguments, with the template's `, ` between them.
   with `$x` expect 1`` over `wrap(a,)` leaves `a`.  A bracket a hole matched is the hole's, written
   back with its own comma or dropped with it, `$_` and `$...` included, and one the rewrite leaves
   empty has nothing for a comma to trail.
+- **A comment at a bracket's edge goes with the bracket**: one just inside the opening bracket,
+  before the first item, or after the last item and before the closing one, is carried to the
+  rewrite's corresponding bracket as a trailing comma is, so rewriting
+  `self.assertEqual(  # inputs are iterators` to itself changes nothing.  A comment is content,
+  so where the rewrite deletes its bracket, or writes a comment of its own at the same edge, the
+  edit is refused.
+- **A match inside another's hole is rewritten first**, and the hole writes back the rewritten
+  code: ``replace `f($x)` with `g($x)` expect 2`` over `f(f(1))` leaves `g(g(1))`, and unwrapping
+  `with` blocks unwraps nested ones too.
 
 **What cannot be done as written is refused**, exit 9, naming the file and where, and nothing is
 written.  A replace whose count does not hold says so first, exit 2, as any edit does:
 
-- **Matches that overlap**: `f($x)` over `f(f(1))` is two matches, one inside the other, and a
-  run of statements tried from every start can overlap the next; rewriting either would change
-  the other, so a replace of them is refused, naming both.  Narrow the pattern so that its matches
-  cannot overlap.
+- **Matches that overlap outside each other's holes**: a run of statements tried from every start
+  can overlap the next, and rewriting either would change the other, so a replace of them is
+  refused, naming both.  Narrow the pattern so that its matches cannot overlap.
 - **A trailing comma with no one place to go**: where the rewrite has some brackets holding the same
   holes as the comma's, but a different number from the match, more or fewer, so which one it
   belongs to is not known, or where the comma would change what the code means there, as in a
@@ -975,7 +985,7 @@ src/app.py:16:5-17:32: return lookup(request.args["id"], default=None,)
 | 3 | a usage error, a malformed script or pattern, an empty program, or a scope holding a double quote |
 | 5 | a statement or construct this build does not have |
 | 7 | an I/O error, naming the path and quoting the system's error; an `in` that names nothing there; or edits that could not be written, saying what was left as it was |
-| 9 | a structural search needs a Python file quaff cannot parse, an edit would break a Python file that parses, a file's encoding cannot write a replacement, or a structural replace cannot be made as written - its matches overlap, it would drop a comment, a trailing comma has no one place to go, or it would change a literal's structure: the script or the file must change first |
+| 9 | a structural search needs a Python file quaff cannot parse, an edit would break a Python file that parses, a file's encoding cannot write a replacement, or a structural replace cannot be made as written - its matches overlap outside each other's holes, it would drop a comment, a trailing comma has no one place to go, or it would change a literal's structure: the script or the file must change first |
 
 **A run that cannot give an answer - exit 3, 5, 7 or 9 - prints nothing on standard output**, so
 a partial answer never passes for a whole one.  The whole program is read and checked before any
@@ -1028,13 +1038,14 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
   an answer about the files it can.
 - **Structural matches inside matches are each reported**, so `f($x)` over `f(f(1))` is two
   matches.
-- **A structural replace of matches that overlap is refused**, exit 9, though a `find` of the
-  same pattern counts them, since rewriting one changes the other: matches inside matches, and
-  runs of statements that share some.
+- **A structural replace rewrites a match inside another's hole first**, but refuses, exit 9,
+  matches that overlap otherwise, such as runs of statements that share some, though a `find` of
+  the same pattern counts them, since rewriting one would change the other.
 - **A rewrite drops what no hole captures**, layout and the template's spelling replacing it, but
-  never a comment or a trailing comma: a comment in no capture refuses the edit, and a trailing
-  comma is carried to the rewrite's matching bracket or refuses it.  A sequence hole captures
-  everything between its first node and its last.
+  never a comment or a trailing comma: one at a bracket's edge is carried to the rewrite's matching
+  bracket, a comma goes with a bracket the rewrite deletes, and any other comment in no capture
+  refuses the edit.  A sequence hole captures everything between its first node and its last,
+  and the whole of any bracket that only wraps one of them.
 - **A trailing comma and a semicolon between statements are layout**, so `f($a, $b)` matches a
   call a formatter has split over lines and ended with a comma.
 - **Implicitly concatenated plain strings are joined, but f-strings are not**: `"abc"` matches

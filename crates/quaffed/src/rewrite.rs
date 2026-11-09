@@ -19,11 +19,15 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
-use quaffed_python::{Bracket, Lexed, Rewrite, lex, parse_module, token_kinds};
+use quaffed_python::{Lexed, ParseError, Rewrite, lex, parse_module, token_kinds};
 use quaffed_syntax::{Arena, Captured, NodeId, Pattern, find_captured, find_where_captured};
 
 use crate::search::{Match, Position};
+
+mod layout;
+
 use crate::structural::{Found, Unparsed, Where, last_char, positions, unparsed};
+use layout::{After, Before, WrittenSite};
 
 /// What replacing a pattern in one file found and did.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,39 +145,237 @@ pub fn replace(
     let outcome = if captured.is_empty() {
         Ok(None)
     } else {
-        rewritten(text, &arena, &captured, &names, rewrite).map(Some)
+        nested(text, &arena, &captured, &names, rewrite).map(Some)
     };
     Ok(Replaced { found, outcome })
 }
 
 /// `text`, parsed as `arena`, with every match in `captured` written over, each capture in the
-/// order of `names`.
-fn rewritten(
+/// order of `names`.  A match inside what another's hole captured is rewritten first, so that
+/// the hole writes back the rewritten code: the matches are rewritten in levels, the most deeply
+/// nested first, each level an ordinary rewrite of the text the one before left.  Matches that
+/// overlap without one standing inside the other's capture cannot both be rewritten, and refuse
+/// the edit.  Every place a refusal or a question names is where it was in `text`.
+fn nested(
     text: &str,
     arena: &Arena<'_>,
     captured: &[Captured],
     names: &[&str],
     rewrite: &Rewrite,
 ) -> Result<Edited, Refused> {
-    let refused = |at: usize, why: String| Refused {
-        at: positions(text, &[at])[&at],
-        why,
-    };
-    for pair in captured.windows(2) {
-        if pair[1].range.start < pair[0].range.end {
-            let earlier = positions(text, &[pair[0].range.start])[&pair[0].range.start];
-            return Err(refused(
-                pair[1].range.start,
-                format!(
-                    "this match overlaps the one at line {}, column {}, so rewriting one would \
-                     change or remove the other: narrow the pattern so that its matches cannot \
-                     overlap",
-                    earlier.line, earlier.column
-                ),
-            ));
+    let at = |offset: usize| positions(text, &[offset])[&offset];
+    let captured = &whole_brackets(text, captured);
+    let depths = depths(captured).map_err(|(later, earlier)| {
+        let earlier = at(captured[earlier].range.start);
+        Refused {
+            at: at(captured[later].range.start),
+            why: format!(
+                "this match overlaps the one at line {}, column {}, though it stands in none of \
+                 that one's holes, so rewriting one would change or remove the other: narrow the \
+                 pattern so that its matches cannot overlap",
+                earlier.line, earlier.column
+            ),
         }
+    })?;
+    let deepest = depths.iter().copied().max().unwrap_or(0);
+    let mut current = text.to_owned();
+    let mut maps: Vec<Vec<(Range<usize>, Range<usize>)>> = Vec::new();
+    let mut questioned = Vec::new();
+    for depth in (0..=deepest).rev() {
+        let level: Vec<Captured> = captured
+            .iter()
+            .zip(&depths)
+            .filter(|(_, d)| **d == depth)
+            .map(|(found, _)| Captured {
+                range: forward(&maps, found.range.start)..forward(&maps, found.range.end),
+                captures: found
+                    .captures
+                    .iter()
+                    .map(|c| forward(&maps, c.start)..forward(&maps, c.end))
+                    .collect(),
+            })
+            .collect::<Vec<_>>();
+        let mut level = level;
+        level.sort_by_key(|found| found.range.start);
+        let parsed;
+        let level_arena = if maps.is_empty() {
+            arena
+        } else {
+            match parse_module(&current) {
+                Ok(arena) => {
+                    parsed = arena;
+                    &parsed
+                }
+                Err(err) => {
+                    // Named where the parse failed, mapped back to the file as it was, since the
+                    // text between levels is never seen.
+                    let (offset, message) = match err {
+                        ParseError::Invalid { message, offset } => (offset, message),
+                        ParseError::TooLong(err) => (level[0].range.start, err.to_string()),
+                    };
+                    return Err(Refused {
+                        at: at(backward(&maps, offset)),
+                        why: format!(
+                            "once the matches inside another match here are rewritten, the code \
+                             no longer parses, so the outer one cannot be rewritten round them: \
+                             {message}"
+                        ),
+                    });
+                }
+            }
+        };
+        let done =
+            rewritten(&current, level_arena, &level, names, rewrite).map_err(|(offset, why)| {
+                Refused {
+                    at: at(backward(&maps, offset)),
+                    why,
+                }
+            })?;
+        questioned.extend(done.questioned.into_iter().map(|(offset, why)| Questioned {
+            at: at(backward(&maps, offset)),
+            why,
+        }));
+        maps.push(done.edits);
+        current = done.text;
     }
+    questioned.sort_by_key(|q| (q.at.line, q.at.column));
+    Ok(Edited {
+        text: current,
+        questioned,
+    })
+}
+
+/// `captured` with each capture widened over any bracket it holds one end of.  A sequence
+/// hole captures from its first node's start to its last's end, and a node's range leaves out
+/// brackets that only wrap it, so a stretch ending in `(name == '_')` would hold the opening
+/// bracket but not the closing one: written back, it would not be code.  Only such wrapping
+/// brackets can be cut, since every other bracket belongs to a node.
+fn whole_brackets(text: &str, captured: &[Captured]) -> Vec<Captured> {
+    let brackets = lex(text).brackets;
+    captured
+        .iter()
+        .map(|found| Captured {
+            range: found.range.clone(),
+            captures: found
+                .captures
+                .iter()
+                .map(|capture| {
+                    let mut capture = capture.clone();
+                    loop {
+                        let cut = brackets.iter().find(|b| {
+                            let open = capture.contains(&b.open);
+                            let close = capture.contains(&b.close);
+                            open != close
+                                && found.range.start <= b.open
+                                && b.close < found.range.end
+                        });
+                        let Some(cut) = cut else { break };
+                        capture = capture.start.min(cut.open)..capture.end.max(cut.close + 1);
+                    }
+                    capture
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+/// How deeply each match stands inside the others' captures, or the two matches, later and
+/// earlier, that overlap without one standing inside a capture of the other.
+fn depths(captured: &[Captured]) -> Result<Vec<usize>, (usize, usize)> {
+    let mut depths = vec![0; captured.len()];
+    // Outermost first where matches start together, as `f(x)` and `f(x).g()` can.
+    let mut order: Vec<usize> = (0..captured.len()).collect();
+    order.sort_by_key(|&i| {
+        (
+            captured[i].range.start,
+            std::cmp::Reverse(captured[i].range.end),
+        )
+    });
+    // The matches still open where each one starts, outermost first.
+    let mut open: Vec<usize> = Vec::new();
+    for j in order {
+        let found = &captured[j];
+        while open
+            .last()
+            .is_some_and(|&i| captured[i].range.end <= found.range.start)
+        {
+            open.pop();
+        }
+        if let Some(&i) = open.last() {
+            let held = captured[i]
+                .captures
+                .iter()
+                .any(|c| c.start <= found.range.start && found.range.end <= c.end);
+            if !held {
+                return Err((j, i));
+            }
+            depths[j] = open.len();
+        }
+        open.push(j);
+    }
+    Ok(depths)
+}
+
+/// Where `offset` of the text before the levels in `maps` stands after them.  Each level maps
+/// what it rewrote, an old range, to what it wrote, a new one; an offset at or after an old
+/// range's end moves with the text after it.
+fn forward(maps: &[Vec<(Range<usize>, Range<usize>)>], offset: usize) -> usize {
+    maps.iter().fold(offset, |offset, level| {
+        let mut moved = offset;
+        for (old, new) in level {
+            if old.end <= offset {
+                moved = moved + new.len() - old.len();
+            }
+        }
+        moved
+    })
+}
+
+/// Where `offset` of the text after the levels in `maps` stood before them: inside what a level
+/// wrote, where that match started.
+fn backward(maps: &[Vec<(Range<usize>, Range<usize>)>], offset: usize) -> usize {
+    maps.iter().rev().fold(offset, |offset, level| {
+        let mut moved = offset;
+        for (old, new) in level {
+            if new.start <= offset && offset < new.end {
+                return old.start;
+            }
+            if new.end <= offset {
+                moved = moved + old.len() - new.len();
+            }
+        }
+        moved
+    })
+}
+
+/// One level's rewrite: the new text; each match's old range in the text it was given and the
+/// range it was written to in the new; and what was questioned, at offsets of the old text.
+struct Level {
+    text: String,
+    edits: Vec<(Range<usize>, Range<usize>)>,
+    questioned: Vec<(usize, String)>,
+}
+
+/// `text`, parsed as `arena`, with every match in `captured`, none overlapping, written over,
+/// each capture in the order of `names`; or why not, at an offset of `text`.
+fn rewritten(
+    text: &str,
+    arena: &Arena<'_>,
+    captured: &[Captured],
+    names: &[&str],
+    rewrite: &Rewrite,
+) -> Result<Level, (usize, String)> {
     let lexed = lex(text);
+    let before = Before {
+        text,
+        arena,
+        lexed: &lexed,
+        captured,
+        names,
+    };
+    // A comment at the edge of one of the match's own brackets is carried with it, or refused,
+    // once the rewrite is written; any other the rewrite does not write back is refused here.
+    let edges = layout::edge_comments(&before);
     let mut out = String::with_capacity(text.len());
     let mut copied = 0;
     // Where each match's rewrite, and each code site in it, was written in `out`: checked once
@@ -184,13 +386,14 @@ fn rewritten(
         if let Some(comment) = lexed.comments.iter().find(|comment| {
             found.range.start <= comment.start
                 && comment.end <= found.range.end
+                && !edges.contains(comment)
                 && !found
                     .captures
                     .iter()
                     .take(rewrite_names(rewrite, names))
                     .any(|capture| capture.start <= comment.start && comment.end <= capture.end)
         }) {
-            return Err(refused(
+            return Err((
                 comment.start,
                 format!(
                     "the comment {:?} is in the match but in no capture the rewrite writes back, \
@@ -200,8 +403,8 @@ fn rewritten(
                 ),
             ));
         }
-        let (rendered, sites) = render(text, found, names, rewrite, &lexed)
-            .map_err(|why| refused(found.range.start, why))?;
+        let (rendered, sites) =
+            render(text, found, names, rewrite, &lexed).map_err(|why| (found.range.start, why))?;
         out.push_str(&text[copied..found.range.start]);
         let base = out.len();
         for (range, sequence, name) in sites {
@@ -217,19 +420,20 @@ fn rewritten(
         copied = found.range.end;
     }
     out.push_str(&text[copied..]);
+    let edits = |written: &[Range<usize>]| -> Vec<(Range<usize>, Range<usize>)> {
+        captured
+            .iter()
+            .zip(written)
+            .map(|(found, new)| (found.range.clone(), new.clone()))
+            .collect()
+    };
     // A file that no longer parses is left to the parse check, which refuses it.
     let Ok(out_arena) = parse_module(&out) else {
-        return Ok(Edited {
+        return Ok(Level {
+            edits: edits(&written),
             text: out,
             questioned: Vec::new(),
         });
-    };
-    let before = Before {
-        text,
-        arena,
-        lexed: &lexed,
-        captured,
-        names,
     };
     let after = After {
         text: &out,
@@ -237,40 +441,42 @@ fn rewritten(
         written: &written,
         sites: &written_sites,
     };
-    let carried = carry_trailing_commas(&before, &after).map_err(|(at, why)| refused(at, why))?;
-    let (out, questioned) = if let Some((carried, sites)) = carried {
-        let arena = parse_module(&carried).expect("a comma is carried only where it parses");
-        let questioned = questioned(text, captured, &carried, &arena, &sites);
-        (carried, questioned)
-    } else {
-        let questioned = questioned(text, captured, &out, &out_arena, &written_sites);
-        (out, questioned)
-    };
-    Ok(Edited {
-        text: out,
-        questioned,
+    Ok(match layout::carry(&before, &after)? {
+        Some(carried) => {
+            let arena =
+                parse_module(&carried.text).expect("layout is carried only where it parses");
+            Level {
+                questioned: questioned(captured, &carried.text, &arena, &carried.sites),
+                edits: edits(&carried.written),
+                text: carried.text,
+            }
+        }
+        None => Level {
+            questioned: questioned(captured, &out, &out_arena, &written_sites),
+            edits: edits(&written),
+            text: out,
+        },
     })
 }
 
 /// Each capture in `out`, the file's new text parsed as `arena`, written where Python reads it
 /// with what surrounds it - `x + 1` into `$a * 2` - so that its meaning may have changed: each
-/// code site should still be code of its own, one node, or for a sequence a run of them.
+/// code site should still be code of its own, one node, or for a sequence a run of them.  Each
+/// is named at its match's start in the text the matches were found in.
 fn questioned(
-    text: &str,
     captured: &[Captured],
     out: &str,
     arena: &Arena<'_>,
     sites: &[WrittenSite],
-) -> Vec<Questioned> {
+) -> Vec<(usize, String)> {
     let code = CodeIndex::of(arena);
     sites
         .iter()
         .filter(|site| !(code.whole(&site.range) || (site.sequence && code.run(&site.range))))
         .map(|site| {
-            let at = captured[site.found].range.start;
-            Questioned {
-                at: positions(text, &[at])[&at],
-                why: format!(
+            (
+                captured[site.found].range.start,
+                format!(
                     "what ${} captured, {:?}, is not code of its own where the rewrite writes \
                      it - Python reads it together with what stands around it - so its meaning \
                      may have changed: if that is not what was meant, put brackets round the \
@@ -279,28 +485,9 @@ fn questioned(
                     &out[site.range.clone()],
                     site.name
                 ),
-            }
+            )
         })
         .collect()
-}
-
-/// The file as it was: its text, tree and lexing, each match with what it captured, and the
-/// names the captures are in the order of.
-struct Before<'a> {
-    text: &'a str,
-    arena: &'a Arena<'a>,
-    lexed: &'a Lexed,
-    captured: &'a [Captured],
-    names: &'a [&'a str],
-}
-
-/// The file once each match is rewritten, before any trailing comma is carried: its text and
-/// tree, where each match's rewrite was written, and each code site in it.
-struct After<'a> {
-    text: &'a str,
-    arena: &'a Arena<'a>,
-    written: &'a [Range<usize>],
-    sites: &'a [WrittenSite],
 }
 
 /// How many of `names` the rewrite writes: they come first, the pattern's other names after.
@@ -309,269 +496,6 @@ fn rewrite_names(rewrite: &Rewrite, names: &[&str]) -> usize {
         .iter()
         .take_while(|name| rewrite.sites().iter().any(|site| site.name == **name))
         .count()
-}
-
-/// Where a code site was written in the file's new text, the match it belongs to, whether it is
-/// a sequence, and the name it writes.
-#[derive(Debug, Clone)]
-struct WrittenSite {
-    range: Range<usize>,
-    found: usize,
-    sequence: bool,
-    name: String,
-}
-
-/// The new text with each trailing comma a match had inside a bracket of the pattern's own
-/// carried to the bracket in the rewrite that corresponds to it, and the code sites moved to
-/// suit; `None` if there were none to carry.  A comma that would change what the code means
-/// there refuses the edit, with where it is in the old text and why.
-fn carry_trailing_commas(
-    before: &Before<'_>,
-    after: &After<'_>,
-) -> Result<Option<(String, Vec<WrittenSite>)>, CommaRefused> {
-    let mut insertions = commas_to_carry(before, after)?;
-    if insertions.is_empty() {
-        return Ok(None);
-    }
-    insertions.sort_unstable_by_key(|insertion| insertion.at);
-    let out = after.text;
-    let with = |chosen: &[&Insertion]| {
-        let mut carried = String::with_capacity(out.len() + chosen.len());
-        let mut copied = 0;
-        for &&Insertion { at, .. } in chosen {
-            carried.push_str(&out[copied..at]);
-            carried.push(',');
-            copied = at;
-        }
-        carried.push_str(&out[copied..]);
-        carried
-    };
-    let all: Vec<&Insertion> = insertions.iter().collect();
-    let carried = with(&all);
-    // A carried comma must be one the matcher ignores where it lands: not a token of the new
-    // tree, as a tuple's comma is.  Only where the result does not parse at all is each tried
-    // alone, to name the one at fault.
-    let culprit = match parse_module(&carried) {
-        Ok(parsed) => insertions
-            .iter()
-            .enumerate()
-            .find(|(i, insertion)| !ignored_by_matcher(&parsed, insertion.at + i))
-            .map(|(_, insertion)| insertion)
-            .or_else(|| (kinds(&parsed) != kinds(after.arena)).then(|| &insertions[0])),
-        Err(_) => Some(
-            insertions
-                .iter()
-                .find(|insertion| parse_module(&with(&[*insertion])).is_err())
-                .unwrap_or(&insertions[0]),
-        ),
-    };
-    if let Some(culprit) = culprit {
-        return Err((
-            culprit.comma,
-            format!(
-                "the trailing comma before {:?} is in the match but no capture holds it, and in \
-                 the rewrite's bracket holding {} it would change what the code means, so it can \
-                 be neither kept nor dropped: narrow the pattern so that it does not match here, \
-                 or take the comma out first",
-                culprit.close, culprit.holding
-            ),
-        ));
-    }
-    let shifted = |offset: usize| offset + insertions.iter().filter(|i| i.at < offset).count();
-    let sites = after
-        .sites
-        .iter()
-        .map(|site| WrittenSite {
-            range: shifted(site.range.start)..shifted(site.range.end),
-            ..site.clone()
-        })
-        .collect();
-    Ok(Some((carried, sites)))
-}
-
-/// Where in the new text each trailing comma the pattern ignored goes: before the closing bracket
-/// of the rewrite's bracket that corresponds to the comma's.  Brackets correspond when they hold
-/// the same holes written as code, in any order, and are as many on each side; brackets holding
-/// none correspond by their order.  A comma whose bracket has no counterpart at all goes with
-/// the bracket the rewrite deleted; one whose bracket has some, but a different number from the
-/// match, more or fewer, cannot be placed, and refuses the edit, with where it is in the old text
-/// and why.
-fn commas_to_carry(before: &Before<'_>, after: &After<'_>) -> Result<Vec<Insertion>, CommaRefused> {
-    let own = own_brackets(before);
-    let commas: Vec<usize> = own
-        .iter()
-        .flatten()
-        .filter_map(|b| b.trailing_comma)
-        .collect();
-    if commas.is_empty() {
-        return Ok(Vec::new());
-    }
-    let out_lexed = lex(after.text);
-    let mut insertions = Vec::new();
-    for (index, found) in before.captured.iter().enumerate() {
-        let sites: Vec<&WrittenSite> = after
-            .sites
-            .iter()
-            .filter(|site| site.found == index)
-            .collect();
-        let mut captures: Vec<(usize, &str)> = before
-            .names
-            .iter()
-            .zip(&found.captures)
-            .filter(|(name, _)| sites.iter().any(|site| site.name == **name))
-            .map(|(name, capture)| (capture.start, *name))
-            .collect();
-        captures.sort_unstable();
-        let rewrite_brackets: Vec<&Bracket> = out_lexed
-            .brackets
-            .iter()
-            .filter(|b| inside(b, &after.written[index]))
-            .filter(|b| !sites.iter().any(|site| inside(b, &site.range)))
-            .collect();
-        let file_held: Vec<Vec<&str>> = own[index]
-            .iter()
-            .map(|b| held_in(b, captures.iter().copied()))
-            .collect();
-        let rewrite_held: Vec<Vec<&str>> = rewrite_brackets
-            .iter()
-            .map(|b| {
-                held_in(
-                    b,
-                    sites
-                        .iter()
-                        .map(|site| (site.range.start, site.name.as_str())),
-                )
-            })
-            .collect();
-        for (i, bracket) in own[index].iter().enumerate() {
-            let Some(comma) = bracket
-                .trailing_comma
-                .filter(|c| ignored_by_matcher(before.arena, *c))
-            else {
-                continue;
-            };
-            let held = &file_held[i];
-            let same: Vec<usize> = (0..own[index].len())
-                .filter(|j| file_held[*j] == *held)
-                .collect();
-            let counterparts: Vec<&Bracket> = rewrite_brackets
-                .iter()
-                .zip(&rewrite_held)
-                .filter(|(_, h)| *h == held)
-                .map(|(b, _)| *b)
-                .collect();
-            let holding = holding(held);
-            let close = &before.text[bracket.close..=bracket.close];
-            // No bracket in the rewrite holds what this one did: the rewrite deleted or split it,
-            // and a comma asking for its contents one to a line goes with it.
-            if counterparts.is_empty() {
-                continue;
-            }
-            if counterparts.len() != same.len() {
-                return Err((
-                    comma,
-                    no_counterpart(close, &holding, counterparts.len(), same.len()),
-                ));
-            }
-            let partner = counterparts[same.iter().position(|j| *j == i).expect("one of them")];
-            let at = back_over_layout(
-                after.text,
-                partner.open + 1,
-                partner.close,
-                &out_lexed.comments,
-            );
-            // A bracket the rewrite leaves empty has nothing for a comma to trail.
-            if partner.trailing_comma.is_none() && at > partner.open + 1 {
-                insertions.push(Insertion {
-                    at,
-                    comma,
-                    close: close.to_owned(),
-                    holding,
-                });
-            }
-        }
-    }
-    Ok(insertions)
-}
-
-/// Each match's own brackets: not inside any capture, whose brackets are the capture's.
-fn own_brackets<'a>(before: &Before<'a>) -> Vec<Vec<&'a Bracket>> {
-    before
-        .captured
-        .iter()
-        .map(|found| {
-            before
-                .lexed
-                .brackets
-                .iter()
-                .filter(|b| inside(b, &found.range))
-                .filter(|b| !found.captures.iter().any(|capture| inside(b, capture)))
-                .collect()
-        })
-        .collect()
-}
-
-/// Why a trailing comma before `close`, whose bracket holds `holding`, has no one bracket to go
-/// to: the rewrite has `found` brackets holding the same, where the match has `wanted`.
-fn no_counterpart(close: &str, holding: &str, found: usize, wanted: usize) -> String {
-    format!(
-        "the trailing comma before {close:?} is in the match but no capture holds it, and the \
-         rewrite has {found} bracket{} holding {holding} where the match has {wanted}, so it \
-         cannot be told where the comma belongs, and dropping it would change more than was \
-         asked: narrow the pattern so that it does not match here, or take the comma out first",
-        if found == 1 { "" } else { "s" },
-    )
-}
-
-/// Whether `bracket` stands wholly inside `range`.
-fn inside(bracket: &Bracket, range: &Range<usize>) -> bool {
-    range.start <= bracket.open && bracket.close < range.end
-}
-
-/// The holes a bracket holds, as a message names them.
-fn holding(held: &[&str]) -> String {
-    if held.is_empty() {
-        return "no hole".to_owned();
-    }
-    let held: Vec<String> = held.iter().map(|name| format!("${name}")).collect();
-    held.join(", ")
-}
-
-/// The names of the holes `at`, each with where it starts, that `bracket` holds, each once and
-/// sorted: a rewrite may reorder what a bracket holds, as `f($b, $a)` does, and it is still the
-/// same bracket.
-fn held_in<'a>(bracket: &Bracket, at: impl IntoIterator<Item = (usize, &'a str)>) -> Vec<&'a str> {
-    let mut held: Vec<&str> = Vec::new();
-    for (start, name) in at {
-        if bracket.open < start && start <= bracket.close && !held.contains(&name) {
-            held.push(name);
-        }
-    }
-    held.sort_unstable();
-    held
-}
-
-/// Why a trailing comma refuses an edit: where it is in the old text, and why.
-type CommaRefused = (usize, String);
-
-/// A trailing comma to carry: where in the new text, where it was in the old, the bracket it
-/// stood before, and the holes that bracket holds, as a message names them.
-struct Insertion {
-    at: usize,
-    comma: usize,
-    close: String,
-    holding: String,
-}
-
-/// Whether the comma at `at` is one the matcher ignores: the arena keeps no token for it.  A
-/// trailing comma is layout to the matcher, but a one-element tuple's is the tuple, and is kept.
-fn ignored_by_matcher(arena: &Arena<'_>, at: usize) -> bool {
-    arena.tokens_in(at..at + 1).is_empty()
-}
-
-/// The kind of every node in `arena`, in order: what a carried comma must leave as it was.
-fn kinds(arena: &Arena<'_>) -> Vec<&'static str> {
-    arena.nodes().map(|node| arena.kind(node).name()).collect()
 }
 
 /// Where a parsed file's code stands, gathered in one walk so that each written site is looked up
@@ -812,7 +736,10 @@ fn in_unit(leading: &str, from: Option<&str>, to: Option<&str>) -> String {
 
 /// The code `range` of `text` captured, moved to a line indented by `base`: each later line
 /// that is indented at least as far as the line the capture starts on is shifted by the change,
-/// unless it starts inside a multi-line string, whose value it is part of.
+/// unless it starts inside a multi-line string, whose value it is part of, or inside a bracket
+/// that opened before the capture.  Such a line continues code the capture is only part of, so
+/// its indentation says nothing of depth, and it is left as written: a call's arguments one to
+/// a line keep their indentation when the call is rewritten round them.
 fn moved(text: &str, range: &Range<usize>, base: &str, lexed: &Lexed) -> String {
     let value = &text[range.clone()];
     if !value.contains(['\n', '\r']) {
@@ -826,8 +753,13 @@ fn moved(text: &str, range: &Range<usize>, base: &str, lexed: &Lexed) -> String 
             .multi_line_strings
             .iter()
             .any(|s| s.start < at && at < s.end);
+        let continues = lexed
+            .brackets
+            .iter()
+            .take_while(|b| b.open < range.start)
+            .any(|b| at <= b.close);
         match line.strip_prefix(old.as_str()) {
-            Some(rest) if i > 0 && !in_string => {
+            Some(rest) if i > 0 && !in_string && !continues => {
                 out.push_str(base);
                 out.push_str(rest);
             }
@@ -887,6 +819,7 @@ fn lines_with_starts(text: &str) -> Vec<(usize, &str)> {
 
 #[cfg(test)]
 mod tests {
+    use super::layout::ignored_by_matcher;
     use super::*;
     use quaffed_python::{compile_pattern, compile_rewrite};
 
@@ -944,6 +877,24 @@ mod tests {
                 "log(\"x=%s y=%s\", x,  # the old one\n    y)\n"
             ),
             "logger.info(\"x=%s y=%s\", x,  # the old one\n    y)\n"
+        );
+    }
+
+    #[test]
+    fn a_sequence_ending_in_wrapping_brackets_takes_both() {
+        let text = "self.assertEqual(f(x), (name == '_'))\n";
+        assert_eq!(
+            ok(
+                "self.assertEqual($args...)",
+                "self.assertEqual($args...)",
+                text
+            ),
+            text
+        );
+        let text = "self.assertEqual((a), b)\n";
+        assert_eq!(
+            ok("self.assertEqual($args...)", "check($args...)", text),
+            "check((a), b)\n"
         );
     }
 
@@ -1198,18 +1149,86 @@ mod tests {
     }
 
     #[test]
-    fn overlapping_matches_are_refused_naming_both() {
-        let why = replaced("f($x)", "g($x)", "f(f(1))\n").expect_err("overlapping matches");
-        assert!(
-            why.starts_with("1:3: this match overlaps the one at line 1, column 1"),
-            "{why}"
+    fn a_match_inside_anothers_hole_is_rewritten_first() {
+        // Two matches starting together, the outer holding the inner in its callee.
+        assert_eq!(ok("$f($x)", "$f($x)", "a(b)(c)\n"), "a(b)(c)\n");
+        assert_eq!(
+            ok("$f($x)", "call($f, $x)", "a(b)(c)\n"),
+            "call(call(a, b), c)\n"
         );
+        // An outer call with two arguments is no match of `f($x)`; the calls in it are.
+        assert_eq!(ok("f($x)", "g($x)", "f(f(1))\n"), "g(g(1))\n");
+        assert_eq!(
+            ok("f($x)", "g($x)", "y = f(f(f(1)), f(2))\n"),
+            "y = f(g(g(1)), g(2))\n"
+        );
+        // A block unwrapped round one already unwrapped moves out again.
+        assert_eq!(
+            ok(
+                "with $m:\n    $body...",
+                "$body...",
+                "def f():\n    with a:\n        with b:\n            x()\n        y()\n"
+            ),
+            "def f():\n    x()\n    y()\n"
+        );
+        // What the inner rewrite questions is named where it was.
+        let done = written("f($a)", "$a * 2", "y = f(f(x + 1))\n");
+        assert_eq!(done.text, "y = x + 1 * 2 * 2\n");
+        let at: Vec<(usize, usize)> = done
+            .questioned
+            .iter()
+            .map(|q| (q.at.line, q.at.column))
+            .collect();
+        assert_eq!(at, [(1, 5), (1, 7)], "{:?}", done.questioned);
+    }
+
+    #[test]
+    fn matches_that_overlap_outside_each_others_holes_are_refused() {
         // Runs of statements tried from every start overlap without one being inside the other.
         let why = replaced("a()\na()", "b()", "a()\na()\na()\n").expect_err("overlapping runs");
         assert!(
             why.starts_with("2:1: this match overlaps the one at line 1, column 1"),
             "{why}"
         );
+    }
+
+    #[test]
+    fn a_comment_at_a_brackets_edge_goes_with_the_bracket() {
+        // Before the first item, and after the last; layout with no comment is the template's.
+        assert_eq!(
+            ok("f($a)", "g($a)", "f(  # first\n    x\n)\n"),
+            "g(  # first\n    x)\n"
+        );
+        assert_eq!(
+            ok("f($a)", "g($a)", "f(\n    x  # last\n)\n"),
+            "g(x  # last\n)\n"
+        );
+        assert_eq!(
+            ok("f($a)", "g($a)", "f(\n    x,  # last\n)\n"),
+            "g(x,  # last\n)\n"
+        );
+        // So rewriting a call to itself changes nothing.
+        let text = "self.assertEqual(  # inputs are iterators\n    fmean(a),\n    fmean(b))\n";
+        assert_eq!(
+            ok(
+                "self.assertEqual($args...)",
+                "self.assertEqual($args...)",
+                text
+            ),
+            text
+        );
+        // A bracket the rewrite deletes cannot take a comment with it.
+        let why = replaced("wrap($x)", "$x", "y = wrap(  # note\n    a\n)\n")
+            .expect_err("a comment with nowhere to go");
+        assert!(
+            why.starts_with("1:12: the comment \"# note\" is in the match"),
+            "{why}"
+        );
+        assert!(why.contains("is not in the rewrite"), "{why}");
+        // Nor meet one the template wrote at the same edge.
+        let why = replaced("f($a)", "g(  # mine\n    $a)", "f(  # theirs\n    x\n)\n")
+            .expect_err("two comments at one edge");
+        assert!(why.contains("which stands first cannot be told"), "{why}");
     }
 
     #[test]

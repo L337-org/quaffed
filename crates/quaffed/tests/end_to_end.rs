@@ -1396,12 +1396,19 @@ fn a_rewrite_naming_what_the_pattern_does_not_bind_is_refused_where_it_was_writt
 }
 
 #[test]
-fn overlapping_structural_matches_exit_9_naming_both() {
+fn a_structural_match_inside_anothers_hole_is_rewritten_first() {
     let project = Project::new(&[(".git/HEAD", ""), ("a.py", "f(f(1))\n")]);
     assert_quaff_snapshot!(project.quaff(&["-e", "replace `f($x)` with `g($x)` expect 2"]));
+    project.assert_changed(&[("a.py", b"g(g(1))\n")]);
+}
+
+#[test]
+fn structural_matches_overlapping_outside_each_others_holes_exit_9_naming_both() {
+    let project = Project::new(&[(".git/HEAD", ""), ("a.py", "a()\na()\na()\n")]);
+    assert_quaff_snapshot!(project.quaff(&["-e", "replace `a()\na()` with `b()` expect 2"]));
     project.assert_unchanged();
     // A count that does not hold is told first, as for any edit: the answer, exit 2.
-    assert_quaff_snapshot!(project.quaff(&["-e", "replace `f($x)` with `g($x)` expect 3"]));
+    assert_quaff_snapshot!(project.quaff(&["-e", "replace `a()\na()` with `b()` expect 3"]));
     project.assert_unchanged();
 }
 
