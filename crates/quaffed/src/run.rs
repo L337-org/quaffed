@@ -459,13 +459,6 @@ pub fn run(
             files: searched.unparsed.clone(),
         });
     }
-    // So is a structural replace that cannot be made as written: its count would be the number
-    // of edits it did not make.
-    if !searched.edits_refused.is_empty() {
-        return Err(Failure::EditRefused {
-            files: searched.edits_refused.clone(),
-        });
-    }
     let (outcome, evaluation) = conclude(&searched, &steps, &built, dry_run, out)?;
 
     // Notes are best effort: a run that cannot write to standard error has nowhere to say so.
@@ -1725,9 +1718,10 @@ struct Searched {
     /// paths a message shows, with the encoding as `CPython` names its codec, the text it cannot
     /// write, and whether it spells that text more than one way rather than not at all.
     unwritable: Vec<Vec<(PathBuf, &'static str, String, bool)>>,
-    /// Files a structural replace cannot be made in as written, by the paths a message shows,
-    /// with where and why.
-    edits_refused: Vec<(PathBuf, String)>,
+    /// For each structural replace, the files it cannot be made in as written, by the paths a
+    /// message shows, with where and why: refused once its count holds, as an edit its files'
+    /// encodings cannot write is, so that a count that does not hold is told first.
+    edits_refused: Vec<Vec<(PathBuf, String)>>,
     /// For each structural replace, the places it was made as written but may have changed what
     /// the code means, by the paths a message shows, with where and why: noted only for the
     /// statements the run reached.
@@ -1922,7 +1916,7 @@ fn search_files(
         possible: vec![Vec::new(); patterns.len()],
         unspelled: vec![Vec::new(); patterns.len()],
         unwritable: vec![Vec::new(); patterns.len()],
-        edits_refused: Vec::new(),
+        edits_refused: vec![Vec::new(); patterns.len()],
         questioned: vec![Vec::new(); patterns.len()],
         changed: Vec::new(),
         broken: vec![Vec::new(); patterns.len()],
@@ -2375,7 +2369,7 @@ impl Searched {
                 }
             },
             Err(refused) => {
-                self.edits_refused.push((
+                self.edits_refused[index].push((
                     shown.to_owned(),
                     format!(
                         "line {}, column {}: {}",
@@ -2641,20 +2635,7 @@ impl<'s> Evaluation<'s> {
                         self.notes = failed;
                         return Ok(Outcome::AssertionFailed);
                     }
-                    let unwritable = &self.searched.unwritable[index];
-                    if !unwritable.is_empty() {
-                        return Err(Failure::Unwritable {
-                            files: unwritable
-                                .iter()
-                                .map(|(path, encoding, text, ambiguous)| Unwritable {
-                                    path: path.clone(),
-                                    encoding,
-                                    text: text.clone(),
-                                    ambiguous: *ambiguous,
-                                })
-                                .collect(),
-                        });
-                    }
+                    self.refuse_edits_of(index)?;
                     self.replaced += usize::try_from(found).unwrap_or(usize::MAX);
                     self.replaced_in.extend(
                         self.searched.matches[index]
@@ -2669,6 +2650,32 @@ impl<'s> Evaluation<'s> {
         } else {
             Outcome::NothingFound
         })
+    }
+
+    /// Refuses the run if the replace at `index`, whose count holds, cannot be made: a file's
+    /// encoding cannot write its replacement, or a structural replace cannot be made as written.
+    fn refuse_edits_of(&self, index: usize) -> Result<(), Failure> {
+        let unwritable = &self.searched.unwritable[index];
+        if !unwritable.is_empty() {
+            return Err(Failure::Unwritable {
+                files: unwritable
+                    .iter()
+                    .map(|(path, encoding, text, ambiguous)| Unwritable {
+                        path: path.clone(),
+                        encoding,
+                        text: text.clone(),
+                        ambiguous: *ambiguous,
+                    })
+                    .collect(),
+            });
+        }
+        let refused = &self.searched.edits_refused[index];
+        if !refused.is_empty() {
+            return Err(Failure::EditRefused {
+                files: refused.clone(),
+            });
+        }
+        Ok(())
     }
 
     /// Refuses the run if the next `patterns` patterns need a Python file an earlier replace

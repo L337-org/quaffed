@@ -1400,6 +1400,9 @@ fn overlapping_structural_matches_exit_9_naming_both() {
     let project = Project::new(&[(".git/HEAD", ""), ("a.py", "f(f(1))\n")]);
     assert_quaff_snapshot!(project.quaff(&["-e", "replace `f($x)` with `g($x)` expect 2"]));
     project.assert_unchanged();
+    // A count that does not hold is told first, as for any edit: the answer, exit 2.
+    assert_quaff_snapshot!(project.quaff(&["-e", "replace `f($x)` with `g($x)` expect 3"]));
+    project.assert_unchanged();
 }
 
 #[test]

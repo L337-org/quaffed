@@ -848,7 +848,7 @@ arguments, with the template's `, ` between them.
   empty has nothing for a comma to trail.
 
 **What cannot be done as written is refused**, exit 9, naming the file and where, and nothing is
-written:
+written.  A replace whose count does not hold says so first, exit 2, as any edit does:
 
 - **Matches that overlap**: `f($x)` over `f(f(1))` is two matches, one inside the other, and a
   run of statements tried from every start can overlap the next; rewriting either would change
@@ -975,7 +975,7 @@ src/app.py:16:5-17:32: return lookup(request.args["id"], default=None,)
 | 3 | a usage error, a malformed script or pattern, an empty program, or a scope holding a double quote |
 | 5 | a statement or construct this build does not have |
 | 7 | an I/O error, naming the path and quoting the system's error; an `in` that names nothing there; or edits that could not be written, saying what was left as it was |
-| 9 | a structural search needs a Python file quaff cannot parse, an edit would break a Python file that parses, a file's encoding cannot write a replacement, or a structural replace cannot be made as written - its matches overlap, it would drop a comment, or it would change a literal's structure: the script or the file must change first |
+| 9 | a structural search needs a Python file quaff cannot parse, an edit would break a Python file that parses, a file's encoding cannot write a replacement, or a structural replace cannot be made as written - its matches overlap, it would drop a comment, a trailing comma has no one place to go, or it would change a literal's structure: the script or the file must change first |
 
 **A run that cannot give an answer - exit 3, 5, 7 or 9 - prints nothing on standard output**, so
 a partial answer never passes for a whole one.  The whole program is read and checked before any
