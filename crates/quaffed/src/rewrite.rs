@@ -1009,6 +1009,11 @@ mod tests {
             ok("f($a, $b)", "f($b, $a)", "f(\n    x,\n    y,\n)\n"),
             "f(y, x,)\n"
         );
+        // A hole the rewrite drops is not counted, so the call still holds what it did.
+        assert_eq!(
+            ok("f($a, $b)", "f($a)", "f(\n    x,\n    y,\n)\n"),
+            "f(x,)\n"
+        );
         // Brackets holding no hole correspond by their order.
         assert_eq!(
             ok("f($a, [1, 2])", "g([1, 2], $a)", "f(x, [1, 2,])\n"),
