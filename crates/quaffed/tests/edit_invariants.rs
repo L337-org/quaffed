@@ -26,7 +26,8 @@ mod edit_harness;
 use std::path::{Path, PathBuf};
 
 use edit_harness::{
-    Binary, Case, Files, Judge, Language, Oracle, Outcome, check, is_python, read_tree,
+    Binary, Case, Files, Judge, Language, Oracle, Outcome, Quaff, Run, Scratch, check, differing,
+    is_python, read_tree,
 };
 
 /// Every registered case.  A case gives a `find` and the edit whose matches it counts, both
@@ -126,9 +127,18 @@ const CASES: &[Case] = &[
     },
     Case {
         operation: "replace",
-        exercises: "matches that overlap",
-        find: "find `$f($x)`",
-        edit: "replace `$f($x)` with `$f($x)`",
+        exercises: "a match inside another's hole, rewritten first",
+        find: "find `len($a)`",
+        edit: "replace `len($a)` with `size($a)`",
+        languages: &["Python"],
+        outcome: Outcome::Edits,
+        parsed_only: true,
+    },
+    Case {
+        operation: "replace",
+        exercises: "matches that overlap outside each other's holes",
+        find: "find `$x = $y\n$z = $w`",
+        edit: "replace `$x = $y\n$z = $w` with `$x = $y\n$z = $w`",
         languages: &["Python"],
         outcome: Outcome::Refused("this match overlaps"),
         parsed_only: true,
@@ -257,4 +267,245 @@ fn every_registered_operation_keeps_the_invariants_over_the_corpus() {
             .collect::<Vec<_>>()
             .join("\n")
     );
+}
+
+/// Structural rewrites that must change nothing: each pattern written back as itself.  Every
+/// capture, carried comma and comment, and derived indentation comes back as it was, so any
+/// change, or any refusal, is a fault in what the rewrite derives.
+const IDENTITIES: &[&str] = &[
+    "print($a)",
+    "isinstance($x, $t)",
+    "self.assertEqual($args...)",
+    "{$xs...}",
+];
+
+/// Renames there and back: a pattern, the name in it renamed, the new name, and the pattern
+/// renamed.  The way there must keep every file's meaning, the tree `CPython` reads differing only
+/// by the name, and the way back must restore every byte.
+const ROUND_TRIPS: &[(&str, &str, &str, &str)] = &[
+    (
+        "print($a)",
+        "print",
+        "quaff_round_trip",
+        "quaff_round_trip($a)",
+    ),
+    (
+        "self.assertEqual($args...)",
+        "assertEqual",
+        "quaff_round_trip",
+        "self.quaff_round_trip($args...)",
+    ),
+];
+
+/// Reads, from standard input, lines of a file's path before an edit and after it, a tab
+/// between, and prints each pair whose trees differ once `argv[2]` is read as `argv[1]`, a tab,
+/// and how.  The tree is `CPython`'s own, so this judges meaning without quaff's parser.
+const SAME_TREE: &str = r#"
+import ast, sys
+was, now = sys.argv[1], sys.argv[2]
+class Back(ast.NodeTransformer):
+    def visit_Name(self, node):
+        if node.id == now:
+            node.id = was
+        return node
+    def visit_Attribute(self, node):
+        self.generic_visit(node)
+        if node.attr == now:
+            node.attr = was
+        return node
+for line in sys.stdin.read().splitlines():
+    before, after = line.split("\t")
+    with open(before, "rb") as f:
+        old = ast.dump(ast.parse(f.read()))
+    with open(after, "rb") as f:
+        new = ast.dump(Back().visit(ast.parse(f.read())))
+    if old != new:
+        print(f"{after}\tits tree differs from the file's before the edit")
+"#;
+
+/// The pairs of files, `(before, after)`, whose trees differ with `now` read as `was`, by
+/// `python`, with why.
+fn different_trees(
+    python: &Path,
+    was: &str,
+    now: &str,
+    pairs: &[(PathBuf, PathBuf)],
+) -> Result<Vec<String>, String> {
+    use std::fmt::Write as _;
+    use std::io::Write as _;
+    let mut child = std::process::Command::new(python)
+        .args(["-c", SAME_TREE, was, now])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("running {}: {err}", python.display()))?;
+    let mut input = String::new();
+    for (before, after) in pairs {
+        let _ = writeln!(input, "{}\t{}", before.display(), after.display());
+    }
+    child
+        .stdin
+        .take()
+        .expect("piped")
+        .write_all(input.as_bytes())
+        .map_err(|err| format!("writing to {}: {err}", python.display()))?;
+    let output = child
+        .wait_with_output()
+        .map_err(|err| format!("waiting for {}: {err}", python.display()))?;
+    if !output.status.success() {
+        return Err(format!(
+            "comparing trees with {} exited with {}: {}",
+            python.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_owned)
+        .collect())
+}
+
+/// What `script` did to a fresh copy of `files`: the run, the files after it, and the copy.
+fn applied(files: &Files, script: &str) -> (Run, Files, Scratch) {
+    let project = Scratch::new(files);
+    let run = Binary.run(&project.dir, script);
+    let after = project.files();
+    (run, after, project)
+}
+
+/// The identities, renames there and back, and tree comparisons over `files`, each a Python
+/// file `python` parses, with every failure said.
+fn fidelity(files: &Files, python: &Path) -> Vec<String> {
+    let mut failures = Vec::new();
+    for pattern in IDENTITIES {
+        let (found, _, _) = applied(files, &format!("find `{pattern}`"));
+        if found.code != Some(0) {
+            failures.push(format!(
+                "identity `{pattern}`: the find matched nothing or failed, so nothing was checked: \
+                 {}",
+                found.stderr.trim()
+            ));
+            continue;
+        }
+        let (run, after, _) = applied(
+            files,
+            &format!("replace `{pattern}` with `{pattern}` expect any"),
+        );
+        if run.code != Some(0) {
+            failures.push(format!(
+                "identity `{pattern}` exited {:?}: {}",
+                run.code,
+                run.stderr.trim()
+            ));
+        }
+        for path in differing(files, &after) {
+            failures.push(format!("identity `{pattern}` changed {path}"));
+        }
+    }
+    for (pattern, was, name, renamed) in ROUND_TRIPS {
+        let (there, after, project) = applied(
+            files,
+            &format!("replace `{pattern}` with `{renamed}` expect any"),
+        );
+        let changed = differing(files, &after);
+        if there.code != Some(0) || changed.is_empty() {
+            failures.push(format!(
+                "renaming `{pattern}` to `{renamed}` exited {:?} changing {} files: {}",
+                there.code,
+                changed.len(),
+                there.stderr.trim()
+            ));
+            continue;
+        }
+        let originals = Scratch::new(files);
+        let pairs: Vec<(PathBuf, PathBuf)> = changed
+            .iter()
+            .map(|path| (originals.dir.join(path), project.dir.join(path)))
+            .collect();
+        match different_trees(python, was, name, &pairs) {
+            Ok(different) => failures.extend(
+                different
+                    .into_iter()
+                    .map(|why| format!("renaming `{pattern}` to `{renamed}`: {why}")),
+            ),
+            Err(why) => failures.push(why),
+        }
+        let back = Binary.run(
+            &project.dir,
+            &format!("replace `{renamed}` with `{pattern}` expect any"),
+        );
+        let restored = project.files();
+        if back.code != Some(0) {
+            failures.push(format!(
+                "renaming `{renamed}` back to `{pattern}` exited {:?}: {}",
+                back.code,
+                back.stderr.trim()
+            ));
+        }
+        for path in differing(files, &restored) {
+            failures.push(format!(
+                "renaming `{pattern}` to `{renamed}` and back left {path} changed"
+            ));
+        }
+    }
+    failures
+}
+
+#[test]
+#[ignore = "needs the fetched real-world corpus and the oracle's Python; the Real-world corpus CI job runs it"]
+fn structural_rewrites_keep_what_they_should_over_the_corpus() {
+    let python =
+        PathBuf::from(std::env::var_os(PYTHON_ORACLE).unwrap_or_else(|| {
+            panic!("{PYTHON_ORACLE} is not set; set it to the oracle's Python")
+        }));
+    let oracle = Oracle {
+        program: python.clone(),
+        args: vec![workspace_root().join("scripts/oracle-python").into()],
+    };
+    let python_files: Files = corpus()
+        .into_iter()
+        .filter(|(path, _)| is_python(path))
+        .collect();
+    let judged = Scratch::new(&python_files);
+    let refused = oracle
+        .refused(&judged.dir, &python_files.keys().collect::<Vec<_>>())
+        .unwrap_or_else(|why| panic!("{why}"));
+    let parsed: Files = python_files
+        .into_iter()
+        .filter(|(path, _)| !refused.contains_key(path))
+        .collect();
+    let failures = fidelity(&parsed, &python);
+    assert!(
+        failures.is_empty(),
+        "{} failure(s):\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+#[test]
+fn the_tree_comparison_tells_a_rename_from_a_change_of_meaning() {
+    let before = Scratch::new(&Files::from([(
+        "a.py".to_owned(),
+        b"print(x + 1)\nself.assertEqual(a, b)\n".to_vec(),
+    )]));
+    let renamed = Scratch::new(&Files::from([(
+        "a.py".to_owned(),
+        b"quaff_round_trip(x + 1)\nself.assertEqual(a, b)\n".to_vec(),
+    )]));
+    let changed = Scratch::new(&Files::from([(
+        "a.py".to_owned(),
+        b"quaff_round_trip(x) + 1\nself.assertEqual(a, b)\n".to_vec(),
+    )]));
+    let python = Path::new("python3");
+    let pair = |after: &Scratch| vec![(before.dir.join("a.py"), after.dir.join("a.py"))];
+    assert_eq!(
+        different_trees(python, "print", "quaff_round_trip", &pair(&renamed)),
+        Ok(vec![])
+    );
+    let different =
+        different_trees(python, "print", "quaff_round_trip", &pair(&changed)).expect("compared");
+    assert_eq!(different.len(), 1, "{different:?}");
 }

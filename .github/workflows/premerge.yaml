@@ -393,10 +393,26 @@ jobs:
           QUAFFED_PYTHON_ORACLE: ${{ steps.python.outputs.python-path }}
         run: |
           set -o pipefail
-          cargo test --locked --release -p quaffed --test edit_invariants -- --ignored --nocapture 2>&1 \
+          cargo test --locked --release -p quaffed --test edit_invariants -- --ignored --nocapture \
+            --exact every_registered_operation_keeps_the_invariants_over_the_corpus 2>&1 \
             | tee "$RUNNER_TEMP/edit-invariants.log"
           if ! grep -q '^test result: ok\. 1 passed;' "$RUNNER_TEMP/edit-invariants.log"; then
             echo "::error::the edit-invariant harness did not run exactly one test" >&2
+            exit 1
+          fi
+
+      - name: Structural rewrites keep what they should over the corpus
+        # Identities that must change nothing, and renames there and back that must keep every
+        # tree CPython reads and then every byte.  As above, exactly one test must run.
+        env:
+          QUAFFED_PYTHON_ORACLE: ${{ steps.python.outputs.python-path }}
+        run: |
+          set -o pipefail
+          cargo test --locked --release -p quaffed --test edit_invariants -- --ignored --nocapture \
+            --exact structural_rewrites_keep_what_they_should_over_the_corpus 2>&1 \
+            | tee "$RUNNER_TEMP/rewrite-fidelity.log"
+          if ! grep -q '^test result: ok\. 1 passed;' "$RUNNER_TEMP/rewrite-fidelity.log"; then
+            echo "::error::the structural rewrite checks did not run exactly one test" >&2
             exit 1
           fi
 
