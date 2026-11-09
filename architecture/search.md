@@ -237,28 +237,28 @@ the path or argument it concerns, and says what to do where there is something t
   flush goes once decided.  `src/write.rs` is the only file besides `src/contents.rs` that
   opens a project's files, and only to write; `contents_containment.rs` holds both.
 - **A structural replace edits a Python file's decoded text** and encodes the result back as the
-  file is encoded (`python::Source::encode`), which gives a file's own bytes back exactly, so
-  every byte outside the matches is kept.  A character the encoding cannot hold is refused as for a
+  file is encoded (`python::Source::encode`), which gives a file's own bytes back exactly, so every
+  byte outside the matches is kept.  A character the encoding cannot hold is refused as for a
   textual replace.  Each match is written over with its rewrite: what each hole captured, from the
   matcher, put where the template's sites say (`quaffed_python::compile_rewrite`).  **What the user
   did not write is derived, never guessed**: the indentation of the template's later lines and of
-  captured code moved to another depth, from the file's indent unit; the file's own line ending
-  for the template's line breaks; and the trailing commas a pattern ignores.  **What the pattern
-  ignored must survive or the edit is refused**, exit 9, naming the file and where: a comment no
-  capture writes back, and a trailing comma with more than one bracket it could go to.  A
-  trailing comma the pattern ignores is one the arena keeps no token for, so the matcher and the
-  edit agree on it (`ignored_by_matcher`); it is carried to the bracket in the rewrite that holds
-  the same holes as its own, brackets paired from the lexer's (`quaffed_python::Lexed::brackets`),
-  goes with its bracket where the rewrite has none that does, and is refused where the rewrite has
-  some but not as many as the match, or where the comma would be a token where it lands, as a
-  tuple's is.  A bracket inside what a hole matched is the hole's, so a replace's unnamed holes
-  are given names no script can spell (`name_every_hole`) and captured as named ones are.  **Also refused**: matches that overlap,
-  and an interpolation that changes the token structure of the literal it is written into, found
-  by lexing the rewrite with the values and with a filler, because each would change something
-  the script did not ask for.  **A capture that is no longer one node**, or a run of them, once
-  the file is written, is written as the template says and questioned in a note, since the
-  template is what was asked for.  A refusal is decided before anything is printed, as a file
-  that cannot be parsed is.
+  captured code moved to another depth, from the file's indent unit; the file's own line ending for
+  the template's line breaks; and the trailing commas a pattern ignores.  **What the pattern ignored
+  must survive or the edit is refused**, exit 9, naming the file and where: a comment no capture
+  writes back, and a trailing comma whose place in the rewrite cannot be told.  A trailing comma the
+  pattern ignores is one the arena keeps no token for, so the matcher and the edit agree on it
+  (`ignored_by_matcher`); it is carried to the bracket in the rewrite that holds the same holes as
+  its own, brackets paired from the lexer's (`quaffed_python::Lexed::brackets`), goes with its
+  bracket where the rewrite has none that does, and is refused where the rewrite has some but not as
+  many as the match, or where the comma would be a token where it lands, as a tuple's is.  A bracket
+  inside what a hole matched is the hole's, so a replace's unnamed holes are given names no script
+  can spell (`name_every_hole`) and captured as named ones are.  **Also refused**: matches that
+  overlap, and an interpolation that changes the token structure of the literal it is written into,
+  found by lexing the rewrite with the values and with a filler, because each would change something
+  the script did not ask for.  **A capture that is no longer one node**, or a run of them, once the
+  file is written, is written as the template says and questioned in a note, since the template is
+  what was asked for.  A refusal is decided before anything is printed, as a file that cannot be
+  parsed is.
 - **A file an earlier replace broke is refused as an edit** when a later structural statement
   needs it, naming the replaces that changed it, not as a file that cannot be parsed, since on
   disk it parses.
