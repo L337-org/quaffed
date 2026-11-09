@@ -65,8 +65,10 @@ ROOT = Path(__file__).resolve().parent.parent
 # startup searches a project with nothing in it, so what it costs is quaff starting up; search
 # is a search of the whole synthetic corpus; scope names a directory in it, so the walk is
 # narrowed to a scope as it goes down; edit replaces text across the corpus, so its Python files
-# are also parsed before and after, and every file changed is written.  A scenario that edits
-# runs on a fresh copy each time, since each run changes it.
+# are also parsed before and after, and every file changed is written; rewrite is a structural
+# replace across it, so each Python file is also matched with captures, and each it changes
+# rewritten, lexed and parsed again.  A scenario that edits runs on a fresh copy each time, since
+# each run changes it.
 SCENARIOS = {
     "startup": {"project": "empty", "args": ["TODO"], "exit": 1},
     "search": {"project": "corpus", "args": ["def"], "exit": 0},
@@ -74,6 +76,12 @@ SCENARIOS = {
     "edit": {
         "project": "edited",
         "args": ["-e", 'replace string "def " with "def  " expect any'],
+        "exit": 0,
+        "fresh": True,
+    },
+    "rewrite": {
+        "project": "edited",
+        "args": ["-e", "replace `print($a)` with `log($a)` expect any"],
         "exit": 0,
         "fresh": True,
     },
