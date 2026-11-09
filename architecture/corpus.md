@@ -137,7 +137,8 @@ case, over each language it names, `find` gives the count `N`, and then:
   lines.  What replaced a match is not judged here; the end-to-end tests do that.
 - **Determinism**: two runs give the same exit, output and files.
 - **Still parses**: the language's oracle accepts after the edit every file it accepted before; a
-  case marked `Refused` must exit 9 and write nothing.
+  case marked `Refused` must exit 9, write nothing, and say the words the case gives, so that a
+  refusal for some other reason does not pass for the one it exercises.
 - **Idempotency**: the edit is applied again to its own output and judged by the same rules,
   against a `find` on that output.  It may change things again; it must change only the new
   matches.
@@ -147,9 +148,9 @@ and logs how long it took, so that a new language or case adds its own time rath
 lengthening the others', and the slowest is named in the log.
 
 **It fails rather than passes** when nothing is registered, a language has no files, a file is
-claimed by no language or by more than one, a case matches or edits nothing, a structural language's
-oracle cannot run, or the corpus holds a `.gitattributes` or `.editorconfig`, whose encodings the
-harness does not read.
+claimed by no language or by more than one, a case matches or edits nothing, a structural
+language's oracle cannot run, a `parsed_only` case names a language with no oracle, or the corpus
+holds a `.gitattributes` or `.editorconfig`, whose encodings the harness does not read.
 
 **The harness is tested before it is trusted**: `tests/edit_harness/tests.rs` checks its parts on
 small inputs, and runs each check against a `quaff` broken on purpose in one way, in the ordinary
@@ -173,7 +174,8 @@ the path as given, a tab, and its reason.  It exits 0 only once it has judged ev
    `parsed_only`, so that it runs over only the files the oracle accepts: a structural search
    refuses a run with a file it cannot parse, and the corpus holds some on purpose.
 2. Cover what could go wrong on the operation's own output, such as a replacement that holds its
-   own match, and an edit quaff must refuse, marked `Outcome::Refused`.
+   own match, and an edit quaff must refuse, marked `Outcome::Refused` with words from the
+   refusal it exercises.
 3. Run the corpus run.  A failure names the case, the language, the invariant and the file.
 
 ### Checklist: adding a language

@@ -50,8 +50,9 @@ pub enum Outcome {
     /// It edits, and every invariant is checked, on its own output again too.
     Edits,
     /// It cannot be made as written - it would leave a file unparseable, say, or rewrite matches
-    /// that overlap - so quaff refuses it with exit 9 and writes nothing.
-    Refused,
+    /// that overlap - so quaff refuses it with exit 9 and writes nothing, saying why in words
+    /// that hold this text: a refusal for another reason does not exercise what the case does.
+    Refused(&'static str),
 }
 
 /// A language the corpus holds.
@@ -494,6 +495,18 @@ fn concurrently<J: Sync>(jobs: &[J], judge: impl Fn(&J) -> Vec<Failure> + Sync) 
         .collect()
 }
 
+/// The files of `files` the oracle `accepted`, or `None` if no oracle judged them.
+fn parsed_only(files: &Files, accepted: Option<&BTreeSet<String>>) -> Option<Files> {
+    let accepted = accepted?;
+    Some(
+        files
+            .iter()
+            .filter(|(path, _)| accepted.contains(*path))
+            .map(|(path, bytes)| (path.clone(), bytes.clone()))
+            .collect(),
+    )
+}
+
 /// One case, judged over one language's files.
 struct Judging<'a> {
     case: &'a Case,
@@ -543,7 +556,7 @@ impl Judging<'_> {
         };
         let (files, project) =
             if self.case.parsed_only {
-                let Some(accepted) = &accepted else {
+                let Some(parsed) = parsed_only(files, accepted.as_ref()) else {
                     failures.push(self.failure(
                     Invariant::Harness,
                     false,
@@ -553,11 +566,6 @@ impl Judging<'_> {
                 ));
                     return failures;
                 };
-                let parsed: Files = files
-                    .iter()
-                    .filter(|(path, _)| accepted.contains(*path))
-                    .map(|(path, bytes)| (path.clone(), bytes.clone()))
-                    .collect();
                 let project = Scratch::new(&parsed);
                 (parsed, project)
             } else {
@@ -614,8 +622,8 @@ impl Judging<'_> {
         let edited = applied.files();
         self.determinism(&start.files, &script, (&run, &edited), again, failures);
 
-        if self.case.outcome == Outcome::Refused && !again {
-            self.refusal(&start.files, (&run, &edited), failures);
+        if let (Outcome::Refused(why), false) = (self.case.outcome, again) {
+            self.refusal(why, &start.files, (&run, &edited), failures);
             return None;
         }
         if run.code != Some(0) {
@@ -740,8 +748,14 @@ impl Judging<'_> {
         }
     }
 
-    /// An edit that would leave files unparseable exited 9 and wrote nothing.
-    fn refusal(&self, files: &Files, applied: (&Run, &Files), failures: &mut Vec<Failure>) {
+    /// An edit that cannot be made as written exited 9, saying `why`, and wrote nothing.
+    fn refusal(
+        &self,
+        why: &str,
+        files: &Files,
+        applied: (&Run, &Files),
+        failures: &mut Vec<Failure>,
+    ) {
         let (run, edited) = applied;
         if run.code != Some(9) {
             failures.push(self.failure(
@@ -749,8 +763,19 @@ impl Judging<'_> {
                 false,
                 None,
                 format!(
-                    "an edit leaving files unparseable exited {:?}, not 9: {}",
+                    "an edit that cannot be made as written exited {:?}, not 9: {}",
                     run.code,
+                    run.stderr.trim()
+                ),
+            ));
+        } else if !run.stderr.contains(why) {
+            failures.push(self.failure(
+                Invariant::StillParses,
+                false,
+                None,
+                format!(
+                    "the edit was refused, but not saying {why:?}, so not for what the case \
+                     exercises: {}",
                     run.stderr.trim()
                 ),
             ));

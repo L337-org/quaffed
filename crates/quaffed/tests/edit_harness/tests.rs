@@ -463,8 +463,7 @@ fn the_real_quaff_keeps_every_invariant_on_a_small_project() {
         find: r#"find "def ""#,
         edit: r#"replace string "def " with "def def ""#,
         languages: &["Python"],
-        outcome: Outcome::Refused,
-        parsed_only: false,
+        outcome: Outcome::Refused("unparseable"),
         ..WORD
     };
     let own_match = Case {
@@ -524,9 +523,12 @@ fn a_parsed_only_case_runs_over_just_the_files_the_oracle_accepts() {
         languages: &["text"],
         ..STRUCTURAL
     };
+    let failures = check(&[text], &languages(&python), &corpus, &Binary);
     assert!(
-        broken(&check(&[text], &languages(&python), &corpus, &Binary))
-            .contains(&(Invariant::Harness, false))
+        failures
+            .iter()
+            .any(|failure| failure.what.contains("no oracle judged which do")),
+        "{failures:?}"
     );
 }
 
@@ -658,8 +660,7 @@ fn not_refusing_an_edit_that_breaks_files_breaks_still_parses() {
         find: r#"find "def ""#,
         edit: r#"replace string "def " with "def def ""#,
         languages: &["Python"],
-        outcome: Outcome::Refused,
-        parsed_only: false,
+        outcome: Outcome::Refused("unparseable"),
         ..WORD
     };
     let quaff = Broken(|project: &Path, script: &str, run: &mut Run| {
@@ -676,6 +677,31 @@ fn not_refusing_an_edit_that_breaks_files_breaks_still_parses() {
     );
     let said: Vec<Option<&str>> = failures.iter().map(|f| f.file.as_deref()).collect();
     assert_eq!(said, vec![None, Some("a.py")], "{failures:#?}");
+}
+
+#[test]
+fn a_refusal_for_another_reason_breaks_still_parses() {
+    let python = Python::new();
+    let refused = Case {
+        exercises: "an edit breaking files that parsed",
+        find: r#"find "def ""#,
+        edit: r#"replace string "def " with "def def ""#,
+        languages: &["Python"],
+        outcome: Outcome::Refused("this match overlaps"),
+        ..WORD
+    };
+    let failures = check(&[refused], &languages(&python), &project(), &Binary);
+    assert_eq!(
+        broken(&failures),
+        vec![(Invariant::StillParses, false)],
+        "{failures:#?}"
+    );
+    assert!(
+        failures[0]
+            .what
+            .contains("not saying \"this match overlaps\""),
+        "{failures:#?}"
+    );
 }
 
 /// The real `quaff`, but writing outside its matches when the project it edits already holds

@@ -83,7 +83,7 @@ const CASES: &[Case] = &[
         find: r#"find "def ""#,
         edit: r#"replace string "def " with "def def ""#,
         languages: &["Python"],
-        outcome: Outcome::Refused,
+        outcome: Outcome::Refused("unparseable"),
         parsed_only: false,
     },
     // A structural replace runs only over files that parse: it refuses a run with any it cannot,
@@ -130,7 +130,7 @@ const CASES: &[Case] = &[
         find: "find `$f($x)`",
         edit: "replace `$f($x)` with `$f($x)`",
         languages: &["Python"],
-        outcome: Outcome::Refused,
+        outcome: Outcome::Refused("this match overlaps"),
         parsed_only: true,
     },
     Case {
@@ -139,7 +139,7 @@ const CASES: &[Case] = &[
         find: "find `if __name__ == \"__main__\":\n    $body...`",
         edit: "replace `if __name__ == \"__main__\":\n    $body...` with `$body...`",
         languages: &["Python"],
-        outcome: Outcome::Refused,
+        outcome: Outcome::Refused("in no capture the rewrite writes back"),
         parsed_only: true,
     },
 ];
