@@ -61,6 +61,29 @@ pub struct Refused {
     pub why: String,
 }
 
+/// What an unnamed hole is called once [`name_every_hole`] names it: `#` cannot start a name a
+/// script spells, so it cannot meet one.
+const UNNAMED: &str = "#";
+
+/// `pattern` with each unnamed hole, `$_` or `$...`, given a name of its own that no script can
+/// spell, so that what it matched is captured as a named hole's is.  A rewrite cannot write it
+/// back, but it still needs to know where it was: a bracket inside what `$_` matched is the
+/// hole's, dropped with it, not one the pattern spelled.  Each name is used once, so it compares
+/// nothing and matches exactly what the unnamed hole did.
+#[must_use]
+pub fn name_every_hole(pattern: &Pattern) -> Pattern {
+    let holes = pattern
+        .holes()
+        .enumerate()
+        .map(|(i, (node, hole))| {
+            let mut hole = hole.clone();
+            hole.name.get_or_insert_with(|| format!("{UNNAMED}{i}"));
+            (node, hole)
+        })
+        .collect();
+    Pattern::new(pattern.arena().clone(), holes)
+}
+
 /// Every match of `pattern` in `text`, a Python file's decoded text, kept by `filter` where there
 /// is one, each written over with `rewrite`.
 ///
@@ -76,7 +99,8 @@ pub fn replace(
     let arena = parse_module(text).map_err(|err| unparsed(text, err))?;
     // Every name the pattern binds is captured, not only those the rewrite writes: what a hole
     // matched is the hole's, written back or dropped as the rewrite says, and only what stands
-    // outside every hole is the pattern's own.
+    // outside every hole is the pattern's own.  An unnamed hole is captured only once
+    // [`name_every_hole`] has named it.
     let mut names: Vec<&str> = Vec::new();
     let pattern_names = pattern.holes().filter_map(|(_, hole)| hole.name.as_deref());
     for name in rewrite
@@ -368,8 +392,9 @@ fn carry_trailing_commas(
 /// Where in the new text each trailing comma the pattern ignored goes: before the closing bracket
 /// of the rewrite's bracket that corresponds to the comma's.  Brackets correspond when they hold
 /// the same holes written as code, in any order, and are as many on each side; brackets holding
-/// none correspond by their order.  A comma whose bracket has no one counterpart refuses the
-/// edit, with where it is in the old text and why.
+/// none correspond by their order.  A comma whose bracket has no counterpart at all goes with
+/// the bracket the rewrite deleted; one whose bracket could correspond to more than one refuses
+/// the edit, with where it is in the old text and why.
 fn commas_to_carry(before: &Before<'_>, after: &After<'_>) -> Result<Vec<Insertion>, CommaRefused> {
     let own = own_brackets(before);
     let commas: Vec<usize> = own
@@ -436,6 +461,11 @@ fn commas_to_carry(before: &Before<'_>, after: &After<'_>) -> Result<Vec<Inserti
                 .collect();
             let holding = holding(held);
             let close = &before.text[bracket.close..=bracket.close];
+            // No bracket in the rewrite holds what this one did: the rewrite deleted or split it,
+            // and a comma asking for its contents one to a line goes with it.
+            if counterparts.is_empty() {
+                continue;
+            }
             if counterparts.len() != same.len() {
                 return Err((
                     comma,
@@ -863,6 +893,8 @@ mod tests {
     fn edited(pattern: &str, with: &str, text: &str) -> Result<Option<Edited>, String> {
         let pattern = compile_pattern(pattern).expect("the pattern compiles");
         let rewrite = compile_rewrite(with, &pattern).expect("the rewrite compiles");
+        // As a run does: once the rewrite is compiled.
+        let pattern = name_every_hole(&pattern);
         replace(text, &pattern, None, &rewrite)
             .expect("the text parses")
             .outcome
@@ -1032,28 +1064,57 @@ mod tests {
     }
 
     #[test]
-    fn a_trailing_comma_with_no_one_counterpart_is_refused() {
-        // The rewrite holds `$b` in no bracket of its own.
-        let why = replaced("f($a, g($b))", "h(k($a, $b))", "f(x, g(\n    y,\n))\n")
-            .expect_err("no counterpart");
-        assert!(
-            why.starts_with("2:6: the trailing comma before \")\" is in the match"),
-            "{why}"
-        );
-        assert!(
-            why.contains("has 0 brackets holding $b where the match has 1"),
-            "{why}"
-        );
-        // Nor where the bracket is gone.
-        assert!(
-            replaced(
+    fn a_trailing_comma_goes_with_a_bracket_the_rewrite_deletes() {
+        // Unwrapping a call deletes its brackets, and the comma that asked for its contents one
+        // to a line goes with them.
+        assert_eq!(ok("wrap($x)", "$x", "y = wrap(\n    a,\n)\n"), "y = a\n");
+        // So does one split into two, and one only a dropped hole held.
+        assert_eq!(
+            ok(
                 "grid[$i, $j]",
                 "grid[$i][$j]",
                 "v = grid[\n    i,\n    j,\n]\n"
-            )
-            .is_err()
+            ),
+            "v = grid[i][j]\n"
         );
-        assert!(replaced("[$a, $b]", "$b", "v = [x, d[k],]\n").is_err());
+        assert_eq!(ok("[$a, $b]", "$b", "v = [x, d[k],]\n"), "v = d[k]\n");
+        assert_eq!(
+            ok("f($a, g($b))", "h(k($a, $b))", "f(x, g(\n    y,\n))\n"),
+            "h(k(x, y))\n"
+        );
+    }
+
+    #[test]
+    fn a_bracket_an_unnamed_hole_matched_is_the_holes() {
+        // Dropped with what `$_` or `$...` matched, as a named hole's would be.
+        assert_eq!(ok("f($_, $x)", "g($x)", "f([a,], b)\n"), "g(b)\n");
+        // Not the pattern's, so not carried to a bracket of the rewrite's own that holds no hole
+        // either.
+        assert_eq!(ok("f($_, $x)", "g($x, [0])", "f([a,], b)\n"), "g(b, [0])\n");
+        assert_eq!(
+            ok(
+                "f($a, $...)",
+                "g($a)",
+                "f(\n    x,\n    dict(\n        k=1,\n    ),\n)\n"
+            ),
+            // The call's own comma is carried; the one inside `dict(...)` went with it.
+            "g(x,)\n"
+        );
+    }
+
+    #[test]
+    fn a_trailing_comma_that_could_go_to_more_than_one_bracket_is_refused() {
+        // Two brackets in the rewrite hold no hole, where the match has one.
+        let why = replaced("f([1], $a)", "g([1], [2], $a)", "f([1,], x)\n")
+            .expect_err("more than one counterpart");
+        assert!(
+            why.starts_with("1:5: the trailing comma before \"]\" is in the match"),
+            "{why}"
+        );
+        assert!(
+            why.contains("has 2 brackets holding no hole where the match has 1"),
+            "{why}"
+        );
     }
 
     #[test]

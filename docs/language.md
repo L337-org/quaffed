@@ -835,14 +835,18 @@ arguments, with the template's `, ` between them.
 - **Line breaks are the file's own**: each line break the template writes is spelled as the
   file's line ending where the match stands, as `$^` writes one in a textual replace, except one
   inside a string, which is part of its value.
-- **A trailing comma survives the edit.**  A pattern matches a bracket whether or not it ends
+- **A trailing comma survives the edit, or goes with its bracket.**  A pattern matches a bracket
+  whether or not it ends
   with a comma, so the template cannot say what becomes of one, and a formatter reads it as
   asking for one item to a line.  It is carried to the bracket in the rewrite that holds the same
   holes, in any order: ``replace `log($msg, $a, $b)` with `log($msg, $b, $a)` expect 1`` over
   `save` above leaves `log("saving %s to %s", path, data,)`, and
   ``replace `f($a, g($b))` with `h($a, k($b))` expect 1`` over `f(x, g(y,))` leaves
-  `h(x, k(y,))`.  Brackets holding no hole correspond by their order.  A bracket a capture wrote
-  back keeps its own comma, and one the rewrite leaves empty has nothing for a comma to trail.
+  `h(x, k(y,))`.  Brackets holding no hole correspond by their order.  Where the rewrite has no
+  bracket holding what the comma's did, it deleted or split that bracket, and the comma goes with
+  it: ``replace `wrap($x)` with `$x` expect 1`` over `wrap(a,)` leaves `a`.  A bracket a hole
+  matched is the hole's, written back with its own comma or dropped with it, `$_` and `$...`
+  included, and one the rewrite leaves empty has nothing for a comma to trail.
 
 **What cannot be done as written is refused**, exit 9, naming the file and where, and nothing is
 written:
@@ -851,12 +855,12 @@ written:
   run of statements tried from every start can overlap the next; rewriting either would change
   the other, so a replace of them is refused, naming both.  Narrow the pattern so that its matches
   cannot overlap.
-- **A trailing comma with nowhere to go**: where the rewrite has no one bracket holding the
-  same holes as the comma's, as when it drops or splits that bracket, or where the comma would
-  change what the code means there, as in a bracketed expression, where it would make a tuple.
-  ``replace `max($a, $b)` with `($a if $a > $b else $b)` expect 1`` over a call to `max` that
-  ends `y,` is refused.  Narrow the pattern so that it does not match there, or take the comma
-  out first.
+- **A trailing comma with no one place to go**: where the rewrite has more brackets holding the
+  same holes as the comma's than the match has, so which one it belongs to is not known, or
+  where the comma would change what the code means there, as in a bracketed expression, where it
+  would make a tuple.  ``replace `max($a, $b)` with `($a if $a > $b else $b)` expect 1`` over a
+  call to `max` that ends `y,` is refused.  Narrow the pattern so that it does not match there,
+  or take the comma out first.
 - **A comment in no capture the rewrite writes back**, which the edit would drop:
 
   ```

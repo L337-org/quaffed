@@ -505,7 +505,7 @@ fn compile(
 ) -> Result<(Vec<Pattern>, Vec<Rewrite>), Failure> {
     // Every structural pattern is compiled before any file is read, so one that cannot be
     // compiled stops the run before it looks at anything.
-    let compiled: Vec<Pattern> = structural
+    let mut compiled: Vec<Pattern> = structural
         .iter()
         .map(|(written, span)| {
             compile_pattern(written).map_err(|err| Failure::Script {
@@ -540,6 +540,11 @@ fn compile(
             })
         })
         .collect::<Result<_, _>>()?;
+    // A replace's unnamed holes are named once its rewrite is compiled, which reports `$_` in a
+    // rewrite as the unnamed hole it is, so that each match says where they matched too.
+    for (_, _, compiled_at) in planned_rewrites {
+        compiled[*compiled_at] = rewrite::name_every_hole(&compiled[*compiled_at]);
+    }
     Ok((compiled, rewrites))
 }
 

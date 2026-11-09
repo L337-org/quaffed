@@ -1449,6 +1449,13 @@ fn brackets_in_the_rewrite_keep_a_capture_one_piece_of_code() {
 }
 
 #[test]
+fn a_trailing_comma_goes_with_a_bracket_the_rewrite_deletes() {
+    let project = Project::new(&[(".git/HEAD", ""), ("a.py", "y = wrap(\n    a,\n)\n")]);
+    assert_quaff_snapshot!(project.quaff(&["-e", "replace `wrap($x)` with `$x` expect 1"]));
+    project.assert_changed(&[("a.py", b"y = a\n")]);
+}
+
+#[test]
 fn a_trailing_comma_inside_a_match_is_carried_to_the_rewrites_bracket() {
     let project = Project::new(&[(".git/HEAD", ""), ("a.py", "r = f(x, g(\n    y,\n))\n")]);
     assert_quaff_snapshot!(
@@ -1466,10 +1473,11 @@ fn a_trailing_comma_with_nowhere_to_go_exits_9() {
         "replace `max($a, $b)` with `($a if $a > $b else $b)` expect 1"
     ]));
     project.assert_unchanged();
-    // No bracket in the rewrite holds what the call's did.
-    assert_quaff_snapshot!(
-        project.quaff(&["-e", "replace `max($a, $b)` with `[$a][$b]` expect 1"])
-    );
+    // Three brackets in the rewrite hold what the call's did, so which one is not known.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "replace `max($a, $b)` with `max([$a, $b], [$b, $a])` expect 1"
+    ]));
     project.assert_unchanged();
 }
 
