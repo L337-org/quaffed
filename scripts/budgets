@@ -81,7 +81,7 @@ SCENARIOS = {
     },
     "rewrite": {
         "project": "edited",
-        "args": ["-e", "replace `print($a)` with `log($a)` expect any"],
+        "args": ["-e", "replace `$x = $y` with `$x = ($y)` expect any"],
         "exit": 0,
         "fresh": True,
     },

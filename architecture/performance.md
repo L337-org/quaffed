@@ -64,6 +64,16 @@ cargo build --locked --profile profiling --target x86_64-unknown-linux-musl --bi
 scripts/budgets target/x86_64-unknown-linux-musl/profiling/quaff --repeat 3
 ```
 
+### Checklist: adding a scenario
+
+1. Add it to `SCENARIOS` in `scripts/budgets`, with the project it runs in, its arguments and
+   the exit a correct run gives, and say what it measures in the comment above.  An edit runs on
+   a fresh copy each time, so give it `"fresh": True`.
+2. Add its table to `budgets.toml` with every budget, provisionally: the job refuses to measure a
+   scenario with no table, and reports nothing to set the limits from.
+3. Push, and set each limit to the job summary's *Limit to set*, saying in the pull request
+   description what was measured and why it is what the scenario should cost.
+
 ### Checklist: changing a limit
 
 A limit changes only in the pull request that moves it, and only once the new behaviour is
