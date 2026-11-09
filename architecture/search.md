@@ -219,10 +219,14 @@ the path or argument it concerns, and says what to do where there is something t
 - **Edits are held in memory to the end of the run**, with every changed file's original bytes,
   so an edit holds every file it changes until then.
 - **The outcome is decided before anything is printed or written.**  A silent first pass over the
-  results finds whether every count holds and whether any file's encoding cannot write a
-  replacement; then every changed Python file that parsed must still parse; then the files are
-  written, unless `--dry-run`; and only then are the results printed.  So a run refused with exit
-  7 or 9 prints nothing and writes nothing.
+  results finds, statement by statement, whether each count holds, and for a replace whose count
+  holds, whether any file's encoding cannot write its replacement and whether a structural
+  replace cannot be made as written; then every changed Python file that parsed must still
+  parse; then the files are written, unless `--dry-run`; and only then are the results printed.
+  So a count that does not hold is told first, exit 2, whatever else is wrong with the edit, and
+  a run refused with exit 7 or 9 prints nothing and writes nothing.  Only a Python file that
+  cannot be parsed refuses the run before any count, since a structural count over it cannot be
+  trusted.
 - **Only a file of known encoding is edited**, its replacement spelled in that encoding, a line
   break as the file's own line ending (`search::replace`).  A file of unknown encoding is reported
   as in a search and never touched, so a replace counts what the same `find` counts.
@@ -257,8 +261,8 @@ the path or argument it concerns, and says what to do where there is something t
   written into, found by lexing the rewrite with the values and with a filler, because each would
   change something the script did not ask for.  **A capture that is no longer one node**, or a run
   of them, once the file is written, is written as the template says and questioned in a note, since
-  the template is what was asked for.  A refusal is decided before anything is printed, as a file
-  that cannot be parsed is.
+  the template is what was asked for.  A refusal is decided in the silent first pass, once its
+  replace's count holds.
 - **A file an earlier replace broke is refused as an edit** when a later structural statement
   needs it, naming the replaces that changed it, not as a file that cannot be parsed, since on
   disk it parses.
