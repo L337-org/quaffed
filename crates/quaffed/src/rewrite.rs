@@ -393,8 +393,9 @@ fn carry_trailing_commas(
 /// of the rewrite's bracket that corresponds to the comma's.  Brackets correspond when they hold
 /// the same holes written as code, in any order, and are as many on each side; brackets holding
 /// none correspond by their order.  A comma whose bracket has no counterpart at all goes with
-/// the bracket the rewrite deleted; one whose bracket has some, but not as many as the match
-/// has, cannot be placed, and refuses the edit, with where it is in the old text and why.
+/// the bracket the rewrite deleted; one whose bracket has some, but a different number from the
+/// match, more or fewer, cannot be placed, and refuses the edit, with where it is in the old text
+/// and why.
 fn commas_to_carry(before: &Before<'_>, after: &After<'_>) -> Result<Vec<Insertion>, CommaRefused> {
     let own = own_brackets(before);
     let commas: Vec<usize> = own

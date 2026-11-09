@@ -855,11 +855,11 @@ written:
   the other, so a replace of them is refused, naming both.  Narrow the pattern so that its matches
   cannot overlap.
 - **A trailing comma with no one place to go**: where the rewrite has some brackets holding the same
-  holes as the comma's, but not as many as the match has, so which one it belongs to is not known,
-  or where the comma would change what the code means there, as in a bracketed expression, where it
-  would make a tuple.  ``replace `max($a, $b)` with `($a if $a > $b else $b)` expect 1`` over a call
-  to `max` that ends `y,` is refused.  Narrow the pattern so that it does not match there, or take
-  the comma out first.
+  holes as the comma's, but a different number from the match, more or fewer, so which one it
+  belongs to is not known, or where the comma would change what the code means there, as in a
+  bracketed expression, where it would make a tuple.  ``replace `max($a, $b)` with
+  `($a if $a > $b else $b)` expect 1`` over a call to `max` that ends `y,` is refused.  Narrow the
+  pattern so that it does not match there, or take the comma out first.
 - **A comment in no capture the rewrite writes back**, which the edit would drop:
 
   ```
