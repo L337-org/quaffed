@@ -12,21 +12,21 @@
 
 [startup]
 instructions = 251_700
-peak_memory_kib = 5_800
+peak_memory_kib = 6_500
 paths_opened = 1
 bytes_read = 0
 paths_written = 0
 
 [search]
 instructions = 1_034_200
-peak_memory_kib = 5_800
+peak_memory_kib = 6_500
 paths_opened = 17
 bytes_read = 5_951
 paths_written = 0
 
 [scope]
 instructions = 866_900
-peak_memory_kib = 5_800
+peak_memory_kib = 6_500
 paths_opened = 12
 bytes_read = 5_523
 paths_written = 0
