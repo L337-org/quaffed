@@ -1,4 +1,6 @@
-//! Instruction counts of the Python front end and the matcher, over the synthetic corpus only.
+//! Instruction counts of the Python front end and the matcher, over the synthetic corpus only,
+//! with what a structural replace adds to them: matching with captures, compiling a rewrite
+//! template, and lexing a file for what a rewrite must handle with care.
 //!
 //! Run under gungraun's runner and Valgrind's Callgrind, Linux only: `cargo bench -p
 //! quaffed-python --bench front_end`.  `scripts/benchmarks` counts one tree's, and
@@ -23,8 +25,10 @@ use std::hint::black_box;
 use common::{GROUPS, Mode, group_files};
 use gungraun::prelude::*;
 use quaffed_encoding::python::Source;
-use quaffed_python::{compile_pattern, parse_expression, parse_ipython, parse_module};
-use quaffed_syntax::{Arena, Pattern, find};
+use quaffed_python::{
+    Rewrite, compile_pattern, compile_rewrite, lex, parse_expression, parse_ipython, parse_module,
+};
+use quaffed_syntax::{Arena, Pattern, find, find_captured};
 use ruff_python_parser::ParseOptions;
 
 /// Every file of the synthetic corpus, decoded as quaff decodes it, with how it is parsed.
@@ -118,9 +122,74 @@ fn compiling(pattern: &str) -> Pattern {
         .unwrap_or_else(|err| panic!("compiling the benchmark's pattern {pattern:?}: {err}"))
 }
 
+/// `pattern` compiled with `kept`, the names whose captures a replace asks for, and every file of
+/// the corpus parsed into an arena to search.
+fn capturing(
+    pattern: &str,
+    kept: &'static [&'static str],
+) -> (Pattern, &'static [&'static str], Vec<Arena<'static>>) {
+    let (pattern, arenas) = searching(pattern);
+    (pattern, kept, arenas)
+}
+
+// One pattern searched for in every file as a replace searches, asking for what its holes
+// captured: a node each, and a sequence.
+#[library_benchmark]
+#[bench::single_holes(capturing("isinstance($x, $t)", &["x", "t"]))]
+#[bench::a_named_sequence(capturing("self.assertEqual($args...)", &["args"]))]
+fn matching_with_captures(
+    capturing: (Pattern, &'static [&'static str], Vec<Arena<'static>>),
+) -> (Pattern, &'static [&'static str], Vec<Arena<'static>>) {
+    let (pattern, kept, arenas) = &capturing;
+    for arena in arenas {
+        black_box(find_captured(black_box(pattern), black_box(arena), kept));
+    }
+    capturing
+}
+
+/// `pattern` compiled, to compile `template` against.
+fn rewriting(pattern: &str, template: &'static str) -> (Pattern, &'static str) {
+    let pattern = compile_pattern(pattern)
+        .unwrap_or_else(|err| panic!("compiling the benchmark's pattern {pattern:?}: {err}"));
+    (pattern, template)
+}
+
+// A rewrite template compiled against its pattern: holes in code, and in a string and a comment.
+#[library_benchmark]
+#[bench::holes_reordered(rewriting("isinstance($x, $t)", "instance_of($t, $x)"))]
+#[bench::holes_in_literals(rewriting(
+    "def $f(): $body...",
+    "def $f():  # was $f\n    \"\"\"TODO: document $f.\"\"\"\n    $body..."
+))]
+fn compiling_rewrite(rewriting: (Pattern, &'static str)) -> (Pattern, Rewrite) {
+    let (pattern, template) = rewriting;
+    let rewrite = compile_rewrite(black_box(template), black_box(&pattern))
+        .unwrap_or_else(|err| panic!("compiling the benchmark's rewrite {template:?}: {err}"));
+    (pattern, rewrite)
+}
+
+// Every file lexed for its comments, multi-line strings, brackets and indent unit, as a replace
+// lexes each file it rewrites.
+#[library_benchmark]
+#[bench::synthetic(corpus())]
+fn lexing(files: Vec<(Mode, String)>) -> Vec<(Mode, String)> {
+    for (_, text) in &files {
+        black_box(lex(black_box(text)));
+    }
+    files
+}
+
 library_benchmark_group!(
     name = front_end,
-    benchmarks = [ruff_parse, parse_into_arena, compiling, matching]
+    benchmarks = [
+        ruff_parse,
+        parse_into_arena,
+        compiling,
+        matching,
+        matching_with_captures,
+        compiling_rewrite,
+        lexing
+    ]
 );
 
 main!(library_benchmark_groups = front_end);

@@ -413,6 +413,7 @@ const WORD: Case = Case {
     edit: r#"replace string "the" with "THE""#,
     languages: &["Python", "text"],
     outcome: Outcome::Edits,
+    parsed_only: false,
 };
 
 /// The real `quaff`, with what it did changed afterwards by `breaks`, given the project, the
@@ -462,7 +463,7 @@ fn the_real_quaff_keeps_every_invariant_on_a_small_project() {
         find: r#"find "def ""#,
         edit: r#"replace string "def " with "def def ""#,
         languages: &["Python"],
-        outcome: Outcome::Refused,
+        outcome: Outcome::Refused("unparseable"),
         ..WORD
     };
     let own_match = Case {
@@ -477,6 +478,58 @@ fn the_real_quaff_keeps_every_invariant_on_a_small_project() {
         &Binary,
     );
     assert_eq!(failures, vec![]);
+}
+
+#[test]
+fn a_parsed_only_case_runs_over_just_the_files_the_oracle_accepts() {
+    const STRUCTURAL: Case = Case {
+        operation: "replace",
+        exercises: "captures written back",
+        find: "find `f()`",
+        edit: "replace `f()` with `g()`",
+        languages: &["Python"],
+        outcome: Outcome::Edits,
+        parsed_only: true,
+    };
+    let python = Python::new();
+    let mut corpus = project();
+    corpus.insert("broken.py".into(), b"def (:\n".to_vec());
+    let mut corpus_with_call = corpus.clone();
+    corpus_with_call.insert("c.py".into(), b"f()\n".to_vec());
+    assert_eq!(
+        check(
+            &[STRUCTURAL],
+            &languages(&python),
+            &corpus_with_call,
+            &Binary
+        ),
+        vec![]
+    );
+    // Over every file, the one that does not parse refuses even the `find`, naming it.
+    let everything = Case {
+        parsed_only: false,
+        ..STRUCTURAL
+    };
+    let failures = check(
+        &[everything],
+        &languages(&python),
+        &corpus_with_call,
+        &Binary,
+    );
+    assert_eq!(broken(&failures), [(Invariant::Harness, false)]);
+    assert!(failures[0].what.contains("\"broken.py\""), "{failures:?}");
+    // A language with no oracle cannot say which files parse.
+    let text = Case {
+        languages: &["text"],
+        ..STRUCTURAL
+    };
+    let failures = check(&[text], &languages(&python), &corpus, &Binary);
+    assert!(
+        failures
+            .iter()
+            .any(|failure| failure.what.contains("no oracle judged which do")),
+        "{failures:?}"
+    );
 }
 
 #[test]
@@ -607,7 +660,7 @@ fn not_refusing_an_edit_that_breaks_files_breaks_still_parses() {
         find: r#"find "def ""#,
         edit: r#"replace string "def " with "def def ""#,
         languages: &["Python"],
-        outcome: Outcome::Refused,
+        outcome: Outcome::Refused("unparseable"),
         ..WORD
     };
     let quaff = Broken(|project: &Path, script: &str, run: &mut Run| {
@@ -624,6 +677,31 @@ fn not_refusing_an_edit_that_breaks_files_breaks_still_parses() {
     );
     let said: Vec<Option<&str>> = failures.iter().map(|f| f.file.as_deref()).collect();
     assert_eq!(said, vec![None, Some("a.py")], "{failures:#?}");
+}
+
+#[test]
+fn a_refusal_for_another_reason_breaks_still_parses() {
+    let python = Python::new();
+    let refused = Case {
+        exercises: "an edit breaking files that parsed",
+        find: r#"find "def ""#,
+        edit: r#"replace string "def " with "def def ""#,
+        languages: &["Python"],
+        outcome: Outcome::Refused("this match overlaps"),
+        ..WORD
+    };
+    let failures = check(&[refused], &languages(&python), &project(), &Binary);
+    assert_eq!(
+        broken(&failures),
+        vec![(Invariant::StillParses, false)],
+        "{failures:#?}"
+    );
+    assert!(
+        failures[0]
+            .what
+            .contains("not saying \"this match overlaps\""),
+        "{failures:#?}"
+    );
 }
 
 /// The real `quaff`, but writing outside its matches when the project it edits already holds
