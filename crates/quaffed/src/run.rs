@@ -505,7 +505,7 @@ fn compile(
 ) -> Result<(Vec<Pattern>, Vec<Rewrite>), Failure> {
     // Every structural pattern is compiled before any file is read, so one that cannot be
     // compiled stops the run before it looks at anything.
-    let compiled: Vec<Pattern> = structural
+    let mut compiled: Vec<Pattern> = structural
         .iter()
         .map(|(written, span)| {
             compile_pattern(written).map_err(|err| Failure::Script {
@@ -540,6 +540,11 @@ fn compile(
             })
         })
         .collect::<Result<_, _>>()?;
+    // A replace's unnamed holes are named once its rewrite is compiled, which reports `$_` in a
+    // rewrite as the unnamed hole it is, so that each match says where they matched too.
+    for (_, _, compiled_at) in planned_rewrites {
+        compiled[*compiled_at] = rewrite::name_every_hole(&compiled[*compiled_at]);
+    }
     Ok((compiled, rewrites))
 }
 
@@ -1723,6 +1728,10 @@ struct Searched {
     /// Files a structural replace cannot be made in as written, by the paths a message shows,
     /// with where and why.
     edits_refused: Vec<(PathBuf, String)>,
+    /// For each structural replace, the places it was made as written but may have changed what
+    /// the code means, by the paths a message shows, with where and why: noted only for the
+    /// statements the run reached.
+    questioned: Vec<Vec<(PathBuf, String)>>,
     /// Every file a replace changed, with its bytes before and after, held until the run ends.
     changed: Vec<Changed>,
     /// For each structural pattern, the Python files an earlier replace left unparseable, though
@@ -1914,6 +1923,7 @@ fn search_files(
         unspelled: vec![Vec::new(); patterns.len()],
         unwritable: vec![Vec::new(); patterns.len()],
         edits_refused: Vec::new(),
+        questioned: vec![Vec::new(); patterns.len()],
         changed: Vec::new(),
         broken: vec![Vec::new(); patterns.len()],
         refused: Vec::new(),
@@ -2341,8 +2351,19 @@ impl Searched {
         }
         match replaced.outcome {
             Ok(None) => None,
-            Ok(Some(new_text)) => match source.encode(&new_text) {
-                Ok(bytes) => Some(bytes),
+            Ok(Some(edited)) => match source.encode(&edited.text) {
+                Ok(bytes) => {
+                    for questioned in edited.questioned {
+                        self.questioned[index].push((
+                            shown.to_owned(),
+                            format!(
+                                "line {}, column {}: {}",
+                                questioned.at.line, questioned.at.column, questioned.why
+                            ),
+                        ));
+                    }
+                    Some(bytes)
+                }
                 Err(unencodable) => {
                     self.unwritable[index].push((
                         shown.to_owned(),
@@ -2879,6 +2900,9 @@ fn structural_notes(searched: &Searched, evaluated: &[Searching]) -> Vec<String>
         .any(|s| matches!(s.pattern, Wanted::Structural { .. }))
     {
         return notes;
+    }
+    for (path, why) in searched.questioned[..evaluated.len()].iter().flatten() {
+        notes.push(format!("{path:?}: {why}"));
     }
     // With no Python in scope, the run's own message counts these instead.
     if searched.python > 0 && searched.not_applicable > 0 {

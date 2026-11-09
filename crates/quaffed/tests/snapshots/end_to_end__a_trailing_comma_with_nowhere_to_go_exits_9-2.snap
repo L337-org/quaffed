@@ -1,0 +1,15 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "replace `max($a, $b)` with `max([$a, $b], [$b, $a])` expect 1"
+---
+success: false
+exit_code: 9
+----- stdout -----
+
+----- stderr -----
+quaff: refused: the replace cannot be made as written in 1 file, so nothing was written:
+  "a.py": line 3, column 6: the trailing comma before ")" is in the match but no capture holds it, and the rewrite has 3 brackets holding $a, $b where the match has 1, so it cannot be told where the comma belongs, and dropping it would change more than was asked: narrow the pattern so that it does not match here, or take the comma out first

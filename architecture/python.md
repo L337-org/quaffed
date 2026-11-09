@@ -16,8 +16,9 @@ Ruff warns "will have frequent breaking changes", is absorbed here and reaches n
 - **`compile_rewrite`**: a structural `replace`'s rewrite template checked against its pattern,
   under *Rewrites*.
 - **`lex`** and **`token_kinds`**: what a rewrite needs of Python text that the arena leaves out -
-  its comments, its multi-line strings, its indent unit, and the kinds of its tokens - from Ruff's
-  lexer, so that the engine never names a token kind (`src/lex.rs`).
+  its comments, its multi-line strings, its brackets with their trailing commas, its indent unit,
+  and the kinds of its tokens - from Ruff's lexer, so that the engine never names a token kind
+  (`src/lex.rs`).
 - **`kinds_in_module`**, **`kinds_in_expression`**, **`kinds_in_ipython`** and **`all_kinds`**:
   the kinds an arena holds, and every kind the pinned Ruff knows, which the synthetic corpus's
   coverage check reads.

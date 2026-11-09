@@ -1424,17 +1424,61 @@ fn an_interpolation_that_changes_a_literal_exits_9() {
 }
 
 #[test]
-fn a_capture_python_would_read_with_its_surroundings_exits_9() {
-    let project = Project::new(&[(".git/HEAD", ""), ("a.py", "y = f(x + 1)\n")]);
+fn a_capture_python_would_read_with_its_surroundings_is_written_and_questioned() {
+    let project = Project::new(&[(".git/HEAD", ""), ("calc.py", "total = f(x + 1)\n")]);
     assert_quaff_snapshot!(project.quaff(&["-e", "replace `f($a)` with `$a * 2` expect 1"]));
+    project.assert_changed(&[("calc.py", b"total = x + 1 * 2\n")]);
+}
+
+#[test]
+fn a_replace_the_run_never_reached_is_not_questioned() {
+    let project = Project::new(&[(".git/HEAD", ""), ("calc.py", "total = f(x + 1)\n")]);
+    // The failed assertion ends the run before the replace, so nothing is said of it.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "find `f($a)` expect 0\nreplace `f($a)` with `$a * 2` expect 1",
+    ]));
     project.assert_unchanged();
-    // Brackets in the rewrite keep it one piece of code.
-    let output = project
-        .quaff(&["-e", "replace `f($a)` with `($a) * 2` expect 1"])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(0));
-    project.assert_changed(&[("a.py", b"y = (x + 1) * 2\n")]);
+}
+
+#[test]
+fn brackets_in_the_rewrite_keep_a_capture_one_piece_of_code() {
+    let project = Project::new(&[(".git/HEAD", ""), ("calc.py", "total = f(x + 1)\n")]);
+    assert_quaff_snapshot!(project.quaff(&["-e", "replace `f($a)` with `($a) * 2` expect 1"]));
+    project.assert_changed(&[("calc.py", b"total = (x + 1) * 2\n")]);
+}
+
+#[test]
+fn a_trailing_comma_goes_with_a_bracket_the_rewrite_deletes() {
+    let project = Project::new(&[(".git/HEAD", ""), ("a.py", "y = wrap(\n    a,\n)\n")]);
+    assert_quaff_snapshot!(project.quaff(&["-e", "replace `wrap($x)` with `$x` expect 1"]));
+    project.assert_changed(&[("a.py", b"y = a\n")]);
+}
+
+#[test]
+fn a_trailing_comma_inside_a_match_is_carried_to_the_rewrites_bracket() {
+    let project = Project::new(&[(".git/HEAD", ""), ("a.py", "r = f(x, g(\n    y,\n))\n")]);
+    assert_quaff_snapshot!(
+        project.quaff(&["-e", "replace `f($a, g($b))` with `h($a, k($b))` expect 1"])
+    );
+    project.assert_changed(&[("a.py", b"r = h(x, k(y,))\n")]);
+}
+
+#[test]
+fn a_trailing_comma_with_nowhere_to_go_exits_9() {
+    let project = Project::new(&[(".git/HEAD", ""), ("a.py", "m = max(\n    x,\n    y,\n)\n")]);
+    // A comma in the bracketed expression would make a tuple.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "replace `max($a, $b)` with `($a if $a > $b else $b)` expect 1"
+    ]));
+    project.assert_unchanged();
+    // Three brackets in the rewrite hold what the call's did, so which one is not known.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "replace `max($a, $b)` with `max([$a, $b], [$b, $a])` expect 1"
+    ]));
+    project.assert_unchanged();
 }
 
 #[test]

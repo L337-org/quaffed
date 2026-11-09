@@ -835,13 +835,17 @@ arguments, with the template's `, ` between them.
 - **Line breaks are the file's own**: each line break the template writes is spelled as the
   file's line ending where the match stands, as `$^` writes one in a textual replace, except one
   inside a string, which is part of its value.
-- **A trailing comma before the match's own closing bracket is kept**, where the pattern and the
-  rewrite are both a call, or a list, set or dict display, and the rewrite ends with its own
-  bracket and does not say otherwise, since a formatter reads the comma as asking for one item to
-  a line.  It is never added anywhere else - a bracketed expression, a subscript, or a bracket a
-  capture wrote back - where it would change what the code means:
-  ``replace `log($msg, $a, $b)` with `log($msg, $b, $a)` expect 1`` over `save` above leaves
-  `log("saving %s to %s", path, data,)`.
+- **A trailing comma survives the edit, or goes with its bracket.**  A pattern matches a bracket
+  whether or not it ends with a comma, so the template cannot say what becomes of one, and a
+  formatter reads it as asking for one item to a line.  It is carried to the bracket in the rewrite
+  that holds the same holes, in any order: ``replace `log($msg, $a, $b)` with `log($msg, $b, $a)`
+  expect 1`` over `save` above leaves `log("saving %s to %s", path, data,)`, and ``replace
+  `f($a, g($b))` with `h($a, k($b))` expect 1`` over `f(x, g(y,))` leaves `h(x, k(y,))`.  Brackets
+  holding no hole correspond by their order.  Where the rewrite has no bracket holding what the
+  comma's did, it deleted or split that bracket, and the comma goes with it: ``replace `wrap($x)`
+  with `$x` expect 1`` over `wrap(a,)` leaves `a`.  A bracket a hole matched is the hole's, written
+  back with its own comma or dropped with it, `$_` and `$...` included, and one the rewrite leaves
+  empty has nothing for a comma to trail.
 
 **What cannot be done as written is refused**, exit 9, naming the file and where, and nothing is
 written:
@@ -850,10 +854,12 @@ written:
   run of statements tried from every start can overlap the next; rewriting either would change
   the other, so a replace of them is refused, naming both.  Narrow the pattern so that its matches
   cannot overlap.
-- **A capture Python would read with what surrounds it**: ``replace `f($a)` with `$a * 2` ``
-  over `f(x + 1)` would write `x + 1 * 2`, and `return wrap($x)` over `return a, b` would call
-  `wrap` with two arguments, so each is refused.  Put brackets round the hole in the rewrite,
-  `($a) * 2`, and it is written as one piece of code.
+- **A trailing comma with no one place to go**: where the rewrite has some brackets holding the same
+  holes as the comma's, but a different number from the match, more or fewer, so which one it
+  belongs to is not known, or where the comma would change what the code means there, as in a
+  bracketed expression, where it would make a tuple.  ``replace `max($a, $b)` with
+  `($a if $a > $b else $b)` expect 1`` over a call to `max` that ends `y,` is refused.  Narrow the
+  pattern so that it does not match there, or take the comma out first.
 - **A comment in no capture the rewrite writes back**, which the edit would drop:
 
   ```
@@ -872,6 +878,24 @@ written:
   or opens an f-string field, would change more than the literal's text.  So would a value
   spanning lines in a one-line string; and a value Python does not allow, such as a non-ASCII one
   in a bytes literal, leaves the file unparseable, which is refused as any such edit is.
+
+**What may not mean what was meant is written, and questioned.**  A capture written where Python
+reads it together with what surrounds it is written as the template says, since that is what was
+asked for, and a note names the file, where, and the capture:
+
+```
+$ quaff -e 'replace `f($a)` with `$a * 2` expect 1'
+calc.py:1:9-1:16: f(x + 1)
+quaff: replaced 1 match in 1 file
+quaff: "calc.py": line 1, column 9: what $a captured, "x + 1", is not code of its own where the rewrite writes it - Python reads it together with what stands around it - so its meaning may have changed: if that is not what was meant, put brackets round the hole in the rewrite, as in ($a)
+[exit 0]
+```
+
+where `calc.py` holds `total = f(x + 1)`: it now holds `total = x + 1 * 2`, which Python reads as
+`x + (1 * 2)`.  If that is not what was meant, a further replace can put it right; put brackets
+round the hole in the rewrite, `($a) * 2`, and it is written as one piece of code.
+`return wrap($x)` over `return a, b` is questioned the same way, since it calls `wrap` with two
+arguments.
 
 ## What is searched
 
@@ -1008,8 +1032,9 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
   same pattern counts them, since rewriting one changes the other: matches inside matches, and
   runs of statements that share some.
 - **A rewrite drops what no hole captures**, layout and the template's spelling replacing it, but
-  never a comment: one in no capture refuses the edit.  A sequence hole captures everything between
-  its first node and its last.
+  never a comment or a trailing comma: a comment in no capture refuses the edit, and a trailing
+  comma is carried to the rewrite's matching bracket or refuses it.  A sequence hole captures
+  everything between its first node and its last.
 - **A trailing comma and a semicolon between statements are layout**, so `f($a, $b)` matches a
   call a formatter has split over lines and ended with a comma.
 - **Implicitly concatenated plain strings are joined, but f-strings are not**: `"abc"` matches

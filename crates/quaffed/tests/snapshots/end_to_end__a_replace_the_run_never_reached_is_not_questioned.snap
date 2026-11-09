@@ -1,0 +1,15 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "find `f($a)` expect 0\nreplace `f($a)` with `$a * 2` expect 1"
+---
+success: false
+exit_code: 2
+----- stdout -----
+calc.py:1:9-1:16: f(x + 1)
+
+----- stderr -----
+quaff: -e expression 1, at character 1: expected exactly 0 matches of `f($a)`, found 1
