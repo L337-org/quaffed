@@ -38,6 +38,10 @@ pub struct Case {
     pub languages: &'static [&'static str],
     /// What quaff should make of it.
     pub outcome: Outcome,
+    /// Whether it runs only over the files the language's oracle accepts.  A structural search
+    /// refuses a run with a file in scope it cannot parse, by design, so a structural case over
+    /// a corpus holding deliberately broken files would only ever be refused.
+    pub parsed_only: bool,
 }
 
 /// What quaff should make of a case.
@@ -45,7 +49,8 @@ pub struct Case {
 pub enum Outcome {
     /// It edits, and every invariant is checked, on its own output again too.
     Edits,
-    /// It would leave a file unparseable, so quaff refuses it with exit 9 and writes nothing.
+    /// It cannot be made as written - it would leave a file unparseable, say, or rewrite matches
+    /// that overlap - so quaff refuses it with exit 9 and writes nothing.
     Refused,
 }
 
@@ -536,12 +541,34 @@ impl Judging<'_> {
                 None
             }
         };
+        let (files, project) =
+            if self.case.parsed_only {
+                let Some(accepted) = &accepted else {
+                    failures.push(self.failure(
+                    Invariant::Harness,
+                    false,
+                    None,
+                    "the case runs only over files that parse, but no oracle judged which do"
+                        .into(),
+                ));
+                    return failures;
+                };
+                let parsed: Files = files
+                    .iter()
+                    .filter(|(path, _)| accepted.contains(*path))
+                    .map(|(path, bytes)| (path.clone(), bytes.clone()))
+                    .collect();
+                let project = Scratch::new(&parsed);
+                (parsed, project)
+            } else {
+                (files.clone(), project)
+            };
+        let before = &files;
         let start = Applied {
             files: files.clone(),
             accepted,
             project,
         };
-        let before = files;
         if let Some(edited) = self.apply(start, false, &mut failures) {
             if edited.files == *before {
                 failures.push(self.failure(

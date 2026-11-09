@@ -39,6 +39,7 @@ const CASES: &[Case] = &[
         edit: r#"replace string "the" with "THE""#,
         languages: &["Python", "text"],
         outcome: Outcome::Edits,
+        parsed_only: false,
     },
     Case {
         operation: "replace string",
@@ -47,6 +48,7 @@ const CASES: &[Case] = &[
         edit: r#"replace string "the" with "thethe""#,
         languages: &["Python", "text"],
         outcome: Outcome::Edits,
+        parsed_only: false,
     },
     Case {
         operation: "replace string",
@@ -55,6 +57,7 @@ const CASES: &[Case] = &[
         edit: r##"replace string ^"# " with "#  ""##,
         languages: &["Python", "text"],
         outcome: Outcome::Edits,
+        parsed_only: false,
     },
     Case {
         operation: "replace string",
@@ -63,6 +66,7 @@ const CASES: &[Case] = &[
         edit: r#"replace string "the " with "the" $^ """#,
         languages: &["text"],
         outcome: Outcome::Edits,
+        parsed_only: false,
     },
     Case {
         operation: "replace string",
@@ -71,6 +75,7 @@ const CASES: &[Case] = &[
         edit: r#"replace string "." $^ "" with ";" $^ """#,
         languages: &["text"],
         outcome: Outcome::Edits,
+        parsed_only: false,
     },
     Case {
         operation: "replace string",
@@ -79,6 +84,63 @@ const CASES: &[Case] = &[
         edit: r#"replace string "def " with "def def ""#,
         languages: &["Python"],
         outcome: Outcome::Refused,
+        parsed_only: false,
+    },
+    // A structural replace runs only over files that parse: it refuses a run with any it cannot,
+    // by design, and the corpus holds some on purpose.
+    Case {
+        operation: "replace",
+        exercises: "captures written back",
+        find: "find `print($a)`",
+        edit: "replace `print($a)` with `log($a)`",
+        languages: &["Python"],
+        outcome: Outcome::Edits,
+        parsed_only: true,
+    },
+    Case {
+        operation: "replace",
+        exercises: "holes reordered, trailing commas carried",
+        find: "find `isinstance($x, $t)`",
+        edit: "replace `isinstance($x, $t)` with `instance_of($t, $x)`",
+        languages: &["Python"],
+        outcome: Outcome::Edits,
+        parsed_only: true,
+    },
+    Case {
+        operation: "replace",
+        exercises: "a replacement holding its own match",
+        find: "find `isinstance($x, $t)`",
+        edit: "replace `isinstance($x, $t)` with `isinstance($x, ($t))`",
+        languages: &["Python"],
+        outcome: Outcome::Edits,
+        parsed_only: true,
+    },
+    Case {
+        operation: "replace",
+        exercises: "a template over several lines, indented where each match stands",
+        find: "find `print($a)`",
+        edit: "replace `print($a)` with `log(\n    $a\n)`",
+        languages: &["Python"],
+        outcome: Outcome::Edits,
+        parsed_only: true,
+    },
+    Case {
+        operation: "replace",
+        exercises: "matches that overlap",
+        find: "find `$f($x)`",
+        edit: "replace `$f($x)` with `$f($x)`",
+        languages: &["Python"],
+        outcome: Outcome::Refused,
+        parsed_only: true,
+    },
+    Case {
+        operation: "replace",
+        exercises: "a comment no capture holds",
+        find: "find `if __name__ == \"__main__\":\n    $body...`",
+        edit: "replace `if __name__ == \"__main__\":\n    $body...` with `$body...`",
+        languages: &["Python"],
+        outcome: Outcome::Refused,
+        parsed_only: true,
     },
 ];
 

@@ -169,7 +169,9 @@ the path as given, a tab, and its reason.  It exits 0 only once it has judged ev
 ### Checklist: registering an operation
 
 1. Add one or more `Case`s to `CASES` in `edit_invariants.rs`: a `find` and the edit whose matches
-   it counts, neither with `expect`, and the languages to run over.
+   it counts, neither with `expect`, and the languages to run over.  A structural case sets
+   `parsed_only`, so that it runs over only the files the oracle accepts: a structural search
+   refuses a run with a file it cannot parse, and the corpus holds some on purpose.
 2. Cover what could go wrong on the operation's own output, such as a replacement that holds its
    own match, and an edit quaff must refuse, marked `Outcome::Refused`.
 3. Run the corpus run.  A failure names the case, the language, the invariant and the file.
