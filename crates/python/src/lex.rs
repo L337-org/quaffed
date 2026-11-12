@@ -27,6 +27,10 @@ pub struct Lexed {
     /// Every pair of brackets, round, square or curly, in the order they open.  The braces that
     /// open and close an f-string's or t-string's fields are not brackets but part of the string.
     pub brackets: Vec<Bracket>,
+    /// Where each logical line starts: the first token of the text, and the first after each
+    /// logical line ends, in order.  A line continued inside a bracket or after a backslash is
+    /// not one, so its indentation says nothing of depth.
+    pub logical_starts: Vec<usize>,
     /// Every part of a string whose text is the string's own - a plain string, or an f-string's
     /// or t-string's literal text between fields - with how its literal is written, in order.
     pub strings: Vec<StringPart>,
@@ -88,6 +92,47 @@ pub fn escaped(value: &str, part: &StringPart) -> Option<String> {
     Some(out)
 }
 
+/// Records the token `kind` at `range` of `text` if it is part of a string, with how its literal
+/// is written; `formatted` holds how each f-string or t-string still open was opened.
+fn string_part(
+    lexed: &mut Lexed,
+    formatted: &mut Vec<(String, String)>,
+    text: &str,
+    kind: TokenKind,
+    range: &Range<usize>,
+) {
+    match kind {
+        TokenKind::FStringStart | TokenKind::TStringStart => {
+            formatted.push(quoting(&text[range.clone()]));
+        }
+        TokenKind::FStringEnd | TokenKind::TStringEnd => {
+            formatted.pop();
+        }
+        TokenKind::String => {
+            let (prefix, quote) = quoting(&text[range.clone()]);
+            lexed.strings.push(StringPart {
+                range: range.clone(),
+                raw: prefix.contains('r'),
+                bytes: prefix.contains('b'),
+                formatted: false,
+                quote,
+            });
+        }
+        TokenKind::FStringMiddle | TokenKind::TStringMiddle => {
+            if let Some((prefix, quote)) = formatted.last() {
+                lexed.strings.push(StringPart {
+                    range: range.clone(),
+                    raw: prefix.contains('r'),
+                    bytes: false,
+                    formatted: true,
+                    quote: quote.clone(),
+                });
+            }
+        }
+        _ => {}
+    }
+}
+
 /// The prefix and quotes a string, f-string or t-string opens with, from the text of its first
 /// token: the letters, then one quote character or three.
 fn quoting(opening: &str) -> (String, String) {
@@ -135,6 +180,8 @@ pub fn lex(text: &str) -> Lexed {
     let mut open: Vec<Open> = Vec::new();
     // How each f-string or t-string still open was opened, innermost last.
     let mut formatted: Vec<(String, String)> = Vec::new();
+    // Whether the next token that is not layout starts a logical line.
+    let mut line_start = true;
     // The last token that is not layout, for a trailing comma.
     let mut last: Option<(TokenKind, usize)> = None;
     for token in parsed.tokens() {
@@ -178,39 +225,18 @@ pub fn lex(text: &str) -> Lexed {
                 | TokenKind::Newline
                 | TokenKind::Indent
                 | TokenKind::Dedent
+                | TokenKind::EndOfFile
         ) {
             last = Some((kind, range.start));
+            if line_start {
+                lexed.logical_starts.push(range.start);
+                line_start = false;
+            }
         }
-        match kind {
-            TokenKind::FStringStart | TokenKind::TStringStart => {
-                formatted.push(quoting(&text[range.clone()]));
-            }
-            TokenKind::FStringEnd | TokenKind::TStringEnd => {
-                formatted.pop();
-            }
-            TokenKind::String => {
-                let (prefix, quote) = quoting(&text[range.clone()]);
-                lexed.strings.push(StringPart {
-                    range: range.clone(),
-                    raw: prefix.contains('r'),
-                    bytes: prefix.contains('b'),
-                    formatted: false,
-                    quote,
-                });
-            }
-            TokenKind::FStringMiddle | TokenKind::TStringMiddle => {
-                if let Some((prefix, quote)) = formatted.last() {
-                    lexed.strings.push(StringPart {
-                        range: range.clone(),
-                        raw: prefix.contains('r'),
-                        bytes: false,
-                        formatted: true,
-                        quote: quote.clone(),
-                    });
-                }
-            }
-            _ => {}
+        if kind == TokenKind::Newline {
+            line_start = true;
         }
+        string_part(&mut lexed, &mut formatted, text, kind, &range);
         match kind {
             TokenKind::Comment => lexed.comments.push(range),
             TokenKind::String | TokenKind::FStringMiddle | TokenKind::TStringMiddle
@@ -363,6 +389,17 @@ mod tests {
             Some("it\\'s {{a}}\\\\ \"b\"\\n")
         );
         assert_eq!(escaped("caf\u{e9}", &parts[3]), None);
+    }
+
+    #[test]
+    fn a_logical_line_starts_its_first_token_and_a_continued_one_does_not() {
+        let text = "x = \\\n    [1,\n     2]\nif y:\n    z()\n";
+        let starts: Vec<&str> = lex(text)
+            .logical_starts
+            .iter()
+            .map(|&at| &text[at..=at])
+            .collect();
+        assert_eq!(starts, ["x", "i", "z"]);
     }
 
     #[test]

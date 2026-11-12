@@ -821,11 +821,11 @@ arguments where the template's `, ` stands, but not when the rewrite reorders th
   leaves `warn("old_name is deprecated")`.  Inside braces only a bound name may stand, so
   `${name|upper}` is refused as a value filter this build does not have, exit 5.
 - **Indentation is derived, never written.**  A template's later lines take the indentation of the
-  line the match starts on, in the file's own indent unit; captured code moved to another depth
-  is shifted with it, except the lines of a multi-line string, which are part of its value, and
-  lines inside a bracket that opened before the capture, whose indentation says nothing of
-  depth: a call's arguments one to a line keep theirs when the call is rewritten round them.  So
-  unwrapping a block is a replace:
+  line the match starts on, in the file's own indent unit; captured statements moved to another
+  depth are shifted with them, except the lines of a multi-line string, which are part of its
+  value.  A captured value that continues a line, inside a bracket or after a backslash, keeps
+  its lines as written, since their indentation says nothing of depth: a call's arguments one to
+  a line keep theirs when the call is rewritten round them.  So unwrapping a block is a replace:
 
   ```
   $ quaff -e 'replace `with lock:

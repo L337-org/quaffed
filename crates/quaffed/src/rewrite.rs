@@ -1002,15 +1002,18 @@ fn in_unit(leading: &str, from: Option<&str>, to: Option<&str>) -> String {
     format!("{}{rest}", to.repeat(levels))
 }
 
-/// The code `range` of `text` captured, moved to a line indented by `base`: each later line
-/// that is indented at least as far as the line the capture starts on is shifted by the change,
-/// unless it starts inside a multi-line string, whose value it is part of, or inside a bracket
-/// that opened before the capture.  Such a line continues code the capture is only part of, so
-/// its indentation says nothing of depth, and it is left as written: a call's arguments one to
-/// a line keep their indentation when the call is rewritten round them.
+/// The code `range` of `text` captured, moved to a line indented by `base`.  Only code that
+/// starts a logical line - a statement, or a run of them - has a depth: each later line indented
+/// at least as far as its first is shifted by the change, unless it starts inside a multi-line
+/// string, whose value it is part of, or inside a bracket that opened before the capture.  Any
+/// other capture continues a line, inside a bracket or after a backslash, so its indentation
+/// says nothing of depth and it is written back as it was: a call's arguments one to a line, or
+/// a value on the line after `x = \`, keep their layout wherever the rewrite puts them.
 fn moved(text: &str, range: &Range<usize>, base: &str, lexed: &Lexed) -> String {
     let value = &text[range.clone()];
-    if !value.contains(['\n', '\r']) {
+    // Only code that starts a logical line has a depth to move to: a value continued from the
+    // line before, inside a bracket or after a backslash, keeps its lines as written.
+    if !value.contains(['\n', '\r']) || lexed.logical_starts.binary_search(&range.start).is_err() {
         return value.to_owned();
     }
     let old = line_indent(text, range.start);
@@ -1514,6 +1517,19 @@ mod tests {
         let why = replaced("f($a)", "g(  # mine\n    $a)", "f(  # theirs\n    x\n)\n")
             .expect_err("two comments at one edge");
         assert!(why.contains("which stands first cannot be told"), "{why}");
+    }
+
+    #[test]
+    fn a_value_continued_from_the_line_before_keeps_its_lines() {
+        // After a backslash the value's indentation says nothing of depth, so where the
+        // template writes it on the line of `=`, its later lines stay as they were.
+        let text = "expected = \\\n    [('a', 'b')] + \\\n    more\n";
+        assert_eq!(
+            ok("$x = $y", "$x = $y", text),
+            "expected = [('a', 'b')] + \\\n    more\n"
+        );
+        let text = "x = \\\n    [1,\n     2]\n";
+        assert_eq!(ok("$x = $y", "$x = $y", text), "x = [1,\n     2]\n");
     }
 
     #[test]

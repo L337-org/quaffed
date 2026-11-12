@@ -269,9 +269,11 @@ fn every_registered_operation_keeps_the_invariants_over_the_corpus() {
     );
 }
 
-/// Structural rewrites that must change nothing: each pattern written back as itself.  Every
-/// capture, carried comma and comment, and derived indentation comes back as it was, so any
-/// change, or any refusal, is a fault in what the rewrite derives.
+/// Structural rewrites that must change nothing but spacing the template spells: each pattern
+/// written back as itself.  Every capture, carried comma and comment, and all layout inside
+/// brackets comes back as it was, so any other change, or any refusal, is a fault in what the
+/// rewrite derives.  Spacing outside brackets round the tokens a template writes is the
+/// template's, so `print (x)` may come back `print(x)`, and `p=x` as `p = x`.
 const IDENTITIES: &[&str] = &[
     "print($a)",
     "isinstance($x, $t)",
@@ -285,7 +287,7 @@ const IDENTITIES: &[&str] = &[
 
 /// Renames there and back: a pattern, the name in it renamed, the new name, and the pattern
 /// renamed.  The way there must keep every file's meaning, the tree `CPython` reads differing only
-/// by the name, and the way back must restore every byte.
+/// by the name, and the way back must restore every file but for spacing the template spells.
 const ROUND_TRIPS: &[(&str, &str, &str, &str)] = &[
     (
         "print($a)",
@@ -327,6 +329,61 @@ for line in sys.stdin.read().splitlines():
         print(f"{after}\tits tree differs from the file's before the edit")
 "#;
 
+/// Reads pairs of files as [`SAME_TREE`] does, and prints each pair that differs by more than
+/// spacing a template spells, a tab, and where.  The two must hold the same tokens, as `CPython`'s
+/// tokenizer reads them, comments and the line breaks inside brackets included; and inside
+/// brackets, where layout is the file's, the same line breaks and the same indentation after
+/// each.  Spacing within a line is the template's round the tokens it writes, even inside a
+/// bracket, as in `f (x)` written in an argument list.
+/// A file with a lone carriage return is compared by its tokens alone, since where its lines
+/// start is not worth deciding here.
+const SAME_LAYOUT: &str = r#"
+import io, re, sys, tokenize
+def read(path):
+    with open(path, "rb") as f:
+        data = f.read()
+    encoding, _ = tokenize.detect_encoding(io.BytesIO(data).readline)
+    text = data.decode(encoding)
+    tokens = list(tokenize.generate_tokens(io.StringIO(text).readline))
+    starts, at = [], 0
+    for line in re.findall(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+$", text):
+        starts.append(at)
+        at += len(line)
+    def offset(position):
+        row, column = position
+        return starts[row - 1] + column if row <= len(starts) else len(text)
+    gaps, depth, last, after_break = [], 0, 0, False
+    for token in tokens:
+        gap = text[last:offset(token.start)]
+        # A line break inside brackets is a token of its own, so its layout is the indentation
+        # of the line after it: spacing within a line is the template's.
+        gaps.append(gap if depth > 0 and after_break else None)
+        after_break = token.type == tokenize.NL
+        last = offset(token.end)
+        if token.type == tokenize.OP and token.string in "([{":
+            depth += 1
+        elif token.type == tokenize.OP and token.string in ")]}":
+            depth -= 1
+    lone = re.search(r"\r(?!\n)", text) is not None
+    return [(t.type, t.string) for t in tokens], gaps, lone, tokens
+for line in sys.stdin.read().splitlines():
+    before, after = line.split("\t")
+    try:
+        old, old_gaps, old_lone, _ = read(before)
+        new, new_gaps, new_lone, tokens = read(after)
+    except (tokenize.TokenError, SyntaxError) as err:
+        print(f"{after}\tit could not be tokenized: {err}")
+        continue
+    if old != new:
+        at = next((i for i, (a, b) in enumerate(zip(old, new)) if a != b), min(len(old), len(new)))
+        row = tokens[min(at, len(tokens) - 1)].start[0]
+        print(f"{after}\tits tokens differ from the file's before the edit, at line {row}")
+    elif not (old_lone or new_lone) and old_gaps != new_gaps:
+        at = next(i for i, (a, b) in enumerate(zip(old_gaps, new_gaps)) if a != b)
+        row = tokens[at].start[0]
+        print(f"{after}\tits layout inside brackets differs from the file's before the edit, at line {row}")
+"#;
+
 /// The pairs of files, `(before, after)`, whose trees differ with `now` read as `was`, by
 /// `python`, with why.
 fn different_trees(
@@ -335,10 +392,31 @@ fn different_trees(
     now: &str,
     pairs: &[(PathBuf, PathBuf)],
 ) -> Result<Vec<String>, String> {
+    compared(python, SAME_TREE, &[was, now], pairs)
+}
+
+/// The pairs of files, `(before, after)`, that differ by more than spacing a template spells,
+/// by `python`, with why.
+fn different_layout(python: &Path, pairs: &[(PathBuf, PathBuf)]) -> Result<Vec<String>, String> {
+    compared(python, SAME_LAYOUT, &[], pairs)
+}
+
+/// What `script`, run by `python` with `args`, prints of `pairs`, given one to a line on its
+/// standard input: a line for each pair it faults.
+fn compared(
+    python: &Path,
+    script: &str,
+    args: &[&str],
+    pairs: &[(PathBuf, PathBuf)],
+) -> Result<Vec<String>, String> {
     use std::fmt::Write as _;
     use std::io::Write as _;
+    if pairs.is_empty() {
+        return Ok(Vec::new());
+    }
     let mut child = std::process::Command::new(python)
-        .args(["-c", SAME_TREE, was, now])
+        .args(["-c", script])
+        .args(args)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -359,7 +437,7 @@ fn different_trees(
         .map_err(|err| format!("waiting for {}: {err}", python.display()))?;
     if !output.status.success() {
         return Err(format!(
-            "comparing trees with {} exited with {}: {}",
+            "comparing files with {} exited with {}: {}",
             python.display(),
             output.status,
             String::from_utf8_lossy(&output.stderr).trim()
@@ -383,6 +461,13 @@ fn applied(files: &Files, script: &str) -> (Run, Files, Scratch) {
 /// file `python` parses, with every failure said.
 fn fidelity(files: &Files, python: &Path) -> Vec<String> {
     let mut failures = Vec::new();
+    let originals = Scratch::new(files);
+    let pairs = |changed: &[String], project: &Scratch| -> Vec<(PathBuf, PathBuf)> {
+        changed
+            .iter()
+            .map(|path| (originals.dir.join(path), project.dir.join(path)))
+            .collect()
+    };
     for pattern in IDENTITIES {
         let (found, _, _) = applied(files, &format!("find `{pattern}`"));
         if found.code != Some(0) {
@@ -393,7 +478,7 @@ fn fidelity(files: &Files, python: &Path) -> Vec<String> {
             ));
             continue;
         }
-        let (run, after, _) = applied(
+        let (run, after, project) = applied(
             files,
             &format!("replace `{pattern}` with `{pattern}` expect any"),
         );
@@ -404,8 +489,13 @@ fn fidelity(files: &Files, python: &Path) -> Vec<String> {
                 run.stderr.trim()
             ));
         }
-        for path in differing(files, &after) {
-            failures.push(format!("identity `{pattern}` changed {path}"));
+        match different_layout(python, &pairs(&differing(files, &after), &project)) {
+            Ok(different) => failures.extend(
+                different
+                    .into_iter()
+                    .map(|why| format!("identity `{pattern}`: {why}")),
+            ),
+            Err(why) => failures.push(why),
         }
     }
     for (pattern, was, name, renamed) in ROUND_TRIPS {
@@ -423,12 +513,7 @@ fn fidelity(files: &Files, python: &Path) -> Vec<String> {
             ));
             continue;
         }
-        let originals = Scratch::new(files);
-        let pairs: Vec<(PathBuf, PathBuf)> = changed
-            .iter()
-            .map(|path| (originals.dir.join(path), project.dir.join(path)))
-            .collect();
-        match different_trees(python, was, name, &pairs) {
+        match different_trees(python, was, name, &pairs(&changed, &project)) {
             Ok(different) => failures.extend(
                 different
                     .into_iter()
@@ -448,10 +533,13 @@ fn fidelity(files: &Files, python: &Path) -> Vec<String> {
                 back.stderr.trim()
             ));
         }
-        for path in differing(files, &restored) {
-            failures.push(format!(
-                "renaming `{pattern}` to `{renamed}` and back left {path} changed"
-            ));
+        match different_layout(python, &pairs(&differing(files, &restored), &project)) {
+            Ok(different) => failures.extend(
+                different
+                    .into_iter()
+                    .map(|why| format!("renaming `{pattern}` to `{renamed}` and back: {why}")),
+            ),
+            Err(why) => failures.push(why),
         }
     }
     failures
@@ -512,4 +600,31 @@ fn the_tree_comparison_tells_a_rename_from_a_change_of_meaning() {
     let different =
         different_trees(python, "print", "quaff_round_trip", &pair(&changed)).expect("compared");
     assert_eq!(different.len(), 1, "{different:?}");
+}
+
+#[test]
+fn the_layout_comparison_allows_only_spacing_outside_brackets() {
+    let file = |text: &str| {
+        Scratch::new(&Files::from([(
+            "a.py".to_owned(),
+            text.as_bytes().to_vec(),
+        )]))
+    };
+    let before = file("print (x,  # why\n      y)\np=1\nq = \\\n    2\n");
+    let spaced = file("print(x,  # why\n      y)\np = 1\nq = 2\n");
+    let joined = file("print (x,  # why\n  y)\np=1\nq = \\\n    2\n");
+    let dropped = file("print (x,\n      y)\np=1\nq = \\\n    2\n");
+    let python = Path::new("python3");
+    let pair = |after: &Scratch| vec![(before.dir.join("a.py"), after.dir.join("a.py"))];
+    assert_eq!(different_layout(python, &pair(&spaced)), Ok(vec![]));
+    let inside = different_layout(python, &pair(&joined)).expect("compared");
+    assert!(
+        matches!(inside.as_slice(), [why] if why.contains("layout inside brackets differs")),
+        "{inside:?}"
+    );
+    let comment = different_layout(python, &pair(&dropped)).expect("compared");
+    assert!(
+        matches!(comment.as_slice(), [why] if why.contains("tokens differ")),
+        "{comment:?}"
+    );
 }
