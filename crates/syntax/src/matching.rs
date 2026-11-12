@@ -1615,6 +1615,12 @@ impl<'p, 't> Matcher<'p, 't> {
     /// those: a name only kept, and a name compared only inside the node, are left unbound.  The
     /// node is matched again with the way's bindings, and only those names are taken from it, so
     /// that nothing the rest is matched with changes.
+    ///
+    /// A name compared, first used inside the node and bound by the way to a node, must be bound
+    /// to that very node when the node is matched again: compared only by code, it could bind an
+    /// earlier node with equal code, and the names kept would then be the captures of another
+    /// way.  So it is pinned there, as [`Asked::again`] pins a tested name, and the node is
+    /// matched again by plain backtracking.
     fn keep_within(&self, wanted: NodeId, node: NodeId, bindings: &mut Bindings) {
         // A name used more than once inside the node is listed once for each use.
         let mut kept: Vec<usize> = self
@@ -1628,13 +1634,63 @@ impl<'p, 't> Matcher<'p, 't> {
             return;
         }
         let mut again = bindings.clone();
+        let firsts = self.first_used_within(wanted, bindings);
+        let found = if firsts.is_empty() {
+            self.node(wanted, node, &mut again)
+        } else {
+            let mut pins = self.pins.borrow().clone();
+            pins.resize(again.len(), None);
+            for &(slot, bound) in &firsts {
+                again[slot] = None;
+                pins[slot] = Some(bound);
+            }
+            // As for [`Asked::again`]: what was worked out without these pins would not hold
+            // with them, nor theirs for the search, so it is forgotten before and after.
+            let remember = self.remember.replace(false);
+            let outer = self.pins.replace(pins);
+            self.start();
+            self.next_node();
+            let found = self.node(wanted, node, &mut again);
+            *self.pins.borrow_mut() = outer;
+            self.remember.set(remember);
+            self.start();
+            self.next_node();
+            found
+        };
         assert!(
-            self.node(wanted, node, &mut again),
+            found,
             "a node matches again with a way it was found to bind"
         );
         for slot in kept {
             bindings[slot].clone_from(&again[slot]);
         }
+    }
+
+    /// Each slot compared whose name is first used inside `wanted`, with the node `bindings` bind
+    /// it to there, where it is bound to one node.
+    fn first_used_within(&self, wanted: NodeId, bindings: &Bindings) -> Vec<(usize, NodeId)> {
+        let outer = self.shape.range(wanted);
+        let mut firsts = Vec::new();
+        let mut seen = Vec::new();
+        // Holes come in pre-order, so each name's first is the first met.
+        for (hole_node, hole) in self.pattern.holes() {
+            let Some(slot) = self.slot(hole) else {
+                continue;
+            };
+            if seen.contains(&slot) {
+                continue;
+            }
+            seen.push(slot);
+            let range = self.shape.range(hole_node);
+            if self.compared[slot]
+                && outer.start <= range.start
+                && range.end <= outer.end
+                && let Some(Bound::Node(bound)) = &bindings[slot]
+            {
+                firsts.push((slot, *bound));
+            }
+        }
+        firsts
     }
 
     /// The slot of `hole`'s name if the name is compared, not only kept: the only slots that
@@ -4480,6 +4536,25 @@ mod trees {
             })
             .collect();
         assert_eq!(texts, [["x", "x"]]);
+    }
+
+    #[test]
+    fn a_where_over_a_run_captures_the_way_it_accepted_inside_a_node() {
+        // Found by the property below.  `$a` is tested, and the way the `where` accepts binds it
+        // to the fourth `x`; matched again by code alone, it bound the second, an equal `x`, and
+        // `$p...` and `$q...` were kept from that other way, overlapping `$a`.
+        let compiled = pattern("$b (g $p... $a $q...)");
+        let (built, _) = build("[(g x) [x] x [x (g x x) x x (g x x x x x)]]");
+        let mut placed = |nodes: &[NodeId]| built.range(nodes[0]).start % 3 == 1;
+        let check = capture_check(&compiled, &built, &["a"], Some(&mut placed));
+        assert_eq!(check.holds(), Ok(()));
+        let texts: Vec<Vec<std::ops::Range<usize>>> = check
+            .fast
+            .iter()
+            .map(|found| found.captures.clone())
+            .collect();
+        // `$a`, `$b`, `$p...` and `$q...`, in that order.
+        assert_eq!(texts, [[22..23, 14..15, 16..21, 24..25]]);
     }
 
     #[test]
