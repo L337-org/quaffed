@@ -14,6 +14,9 @@
 //! the contents one to a line, goes with it, but a comment is content and refuses the edit.
 //! Where it has some, but not the same number, which one is meant cannot be told, and the edit
 //! is refused.
+//!
+//! Its tests are `rewrite`'s, which drive a whole rewrite, since what is carried can only be
+//! judged in the text it lands in.
 
 use std::ops::Range;
 
@@ -163,7 +166,7 @@ pub(super) fn carry(
                 "the {} before {:?} is in the match but no capture holds it, and in the \
                  rewrite's bracket holding {} it would change what the code means, so it can be \
                  neither kept nor dropped: narrow the pattern so that it does not match here, or \
-                 take the comma out first",
+                 take it out first",
                 culprit.what, culprit.close, culprit.holding
             ),
         ));

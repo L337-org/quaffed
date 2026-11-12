@@ -178,8 +178,9 @@ accepts:
   the name, judged by `CPython`'s own `ast` rather than quaff's parser.
 - **There and back**: renaming back must restore each file as identity does.
 
-The **Real-world corpus** job runs it in a step of its own.  A pattern that should survive being
-rewritten to itself belongs in `IDENTITIES`; a failure names the pattern, the file and the line.
+A pattern that should survive being rewritten to itself belongs in `IDENTITIES`.  A failure names
+the pattern or the rename, and the file, with the line where the tokens or the layout first
+differ.
 
 ### Checklist: registering an operation
 

@@ -4,13 +4,14 @@
 //! A structural `replace` in one Python file's text: each match written over with its rewrite.
 //!
 //! A rewrite is built from two sources only.  A hole writes back the source its name captured,
-//! exactly as written; everything else comes from the template, exactly as written.  What is
-//! derived rather than written: the indentation of a template's later lines and of captured code
-//! moved to another depth, the file's own line ending for the template's line breaks, and the
-//! trailing commas a pattern matches whether or not they are there.  A pattern ignores comments
-//! and trailing commas, so a template cannot say what becomes of them: each must survive the
-//! edit, or the edit is refused.  So is one that rewrites overlapping matches, or changes a
-//! literal's structure by interpolating into it; nothing in the file is changed.
+//! with the brackets that only wrap it; everything else comes from the template, exactly as
+//! written.  What is derived rather than written: the indentation of a template's later lines and
+//! of captured statements moved to another depth, the file's own line ending for the template's
+//! line breaks, and the layout a pattern ignores - trailing commas, comments, and line breaks
+//! inside brackets, which survive the edit or refuse it.  A match inside another's hole is
+//! rewritten first, in levels; matches that overlap otherwise are refused.  A value written into
+//! a string is escaped so that the string holds it as text, and questioned; one the literal
+//! cannot hold is refused.  A refused edit changes nothing in the file.
 //!
 //! A capture written where Python reads it together with what surrounds it - `x + 1` into
 //! `$a * 2` - is written as the template says, and the edit is questioned rather than refused:
@@ -19,7 +20,9 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
-use quaffed_python::{Bracket, Lexed, ParseError, Rewrite, lex, parse_module, token_kinds};
+use quaffed_python::{
+    Bracket, Lexed, ParseError, Rewrite, code_tokens, lex, parse_module, token_kinds,
+};
 use quaffed_syntax::{Arena, Captured, NodeId, Pattern, find_captured, find_where_captured};
 
 use crate::search::{Match, Position};
@@ -547,7 +550,8 @@ fn escaped_note(text: &str, found: &Captured, names: &[&str], name: &str) -> Str
     format!(
         "what ${name} captured, {:?}, holds what the string it is written into would read as its \
          end or as code - a quote, a backslash, a line break, or a brace in an f-string - so it \
-         was escaped, and the string holds the text as captured",
+         was escaped, and the string holds the text as captured: if the code was meant to run, \
+         write the hole outside the string in the rewrite",
         &text[found.captures[index].clone()]
     )
 }
@@ -683,10 +687,10 @@ fn render(
     let marked = job.marked();
     let gaps = job.gaps(&marked);
     let mut escaped = Vec::new();
-    let (written, code) = job.fill(&marked, &gaps, None, &mut escaped);
+    let (written, code) = job.fill(&marked, &gaps, None, &mut escaped)?;
     if rewrite.sites().iter().any(|site| site.in_literal)
         && token_kinds(&written)
-            != token_kinds(&job.fill(&marked, &gaps, Some("x"), &mut escaped).0)
+            != token_kinds(&job.fill(&marked, &gaps, Some("x"), &mut escaped)?.0)
     {
         let interpolated: Vec<String> = rewrite
             .sites()
@@ -695,11 +699,9 @@ fn render(
             .map(|site| format!("${}", site.name))
             .collect();
         return Err(format!(
-            "writing what {} captured here into the literal changes its structure, and the \
-             literal cannot hold it as text - a raw string holding its own quote, a line break \
-             in a one-line comment or raw string, or other than ASCII in bytes - so the edit \
-             would change more than the literal's text: narrow the pattern so that such values \
-             do not match",
+            "writing what {} captured here into a comment would end it - a line break - so \
+             what follows would be read as code: narrow the pattern so that such values do not \
+             match",
             interpolated.join(" and ")
         ));
     }
@@ -814,11 +816,9 @@ impl Job<'_> {
                     .comments
                     .iter()
                     .any(|c| template_gap.start <= c.start && c.end <= template_gap.end);
-                let same_code = code_of(&marked.indented[template_gap.clone()], &[])
-                    == code_of(
-                        &self.text[file_gap.clone()],
-                        &comments_in(self.lexed, &file_gap),
-                    );
+                // Token by token, so that whitespace inside a string the template changes counts.
+                let same_code = code_tokens(&marked.indented[template_gap.clone()])
+                    == code_tokens(&self.text[file_gap.clone()]);
                 (!between_others
                     && !template_comment
                     && same_code
@@ -838,7 +838,7 @@ impl Job<'_> {
         gaps: &[Option<Range<usize>>],
         filler: Option<&str>,
         escaped: &mut Vec<String>,
-    ) -> (String, Vec<CodeSite>) {
+    ) -> Result<(String, Vec<CodeSite>), String> {
         let mut out = String::with_capacity(marked.indented.len());
         let mut code = Vec::new();
         let mut copied = 0;
@@ -866,15 +866,25 @@ impl Job<'_> {
                     .strings
                     .iter()
                     .find(|part| part.range.start <= place && place < part.range.end);
-                match part.and_then(|part| quaffed_python::escaped(value, part)) {
-                    Some(text) => {
+                match part.map(|part| quaffed_python::escaped(value, part)) {
+                    Some(Some(text)) => {
                         if text != value && !escaped.contains(&site.name) {
                             escaped.push(site.name.clone());
                         }
                         text
                     }
-                    // A comment, or a string that cannot hold it as text: written as it is, for
-                    // the structure check to refuse if it changes the literal.
+                    Some(None) => {
+                        return Err(format!(
+                            "what ${} captured, {value:?}, cannot be written into the string \
+                             as text - a raw string cannot escape its own quote, a backslash \
+                             before its closing quote or a line break on one line, and bytes \
+                             hold ASCII only - so the edit would change more than the string's \
+                             text: narrow the pattern so that such values do not match",
+                            site.name
+                        ));
+                    }
+                    // A comment: written as it is, for the structure check to refuse if it
+                    // ends the comment.
                     None => value.to_owned(),
                 }
             };
@@ -891,7 +901,7 @@ impl Job<'_> {
             copied = place + marked.markers[i].len();
         }
         out.push_str(&marked.indented[copied..]);
-        (out, code)
+        Ok((out, code))
     }
 }
 
@@ -903,24 +913,6 @@ struct Rendered {
     carried: Vec<Range<usize>>,
     /// The names whose values were escaped to stay text in a string.
     escaped: Vec<String>,
-}
-
-/// The comments of `lexed` inside `range`.
-fn comments_in(lexed: &Lexed, range: &Range<usize>) -> Vec<Range<usize>> {
-    lexed
-        .comments
-        .iter()
-        .filter(|c| range.start <= c.start && c.end <= range.end)
-        .map(|c| c.start - range.start..c.end - range.start)
-        .collect()
-}
-
-/// `gap`'s code: its text without whitespace or `comments`, which are offsets into it.
-fn code_of(gap: &str, comments: &[Range<usize>]) -> String {
-    gap.char_indices()
-        .filter(|(at, c)| !c.is_whitespace() && !comments.iter().any(|r| r.contains(at)))
-        .map(|(_, c)| c)
-        .collect()
 }
 
 /// Where a code site was written in a rewrite, whether it is a sequence, and the name it writes.
@@ -1582,6 +1574,15 @@ mod tests {
         assert_eq!(ok("f($x, $y)", "g($y, $x)", "f(a,\n  b)\n"), "g(b, a)\n");
         // Nor where the code between differs.
         assert_eq!(ok("f($x, $y)", "g($x + $y)", "f(a,\n  b)\n"), "g(a + b)\n");
+        // Whitespace inside a string between them is code, not layout: the template's stands.
+        assert_eq!(
+            ok(
+                "fmt($a, \"%s:%s\", $b)",
+                "fmt($a, \"%s: %s\", $b)",
+                "fmt(x, \"%s:%s\", y)\n"
+            ),
+            "fmt(x, \"%s: %s\", y)\n"
+        );
     }
 
     #[test]
@@ -1633,6 +1634,27 @@ mod tests {
     fn a_value_a_string_cannot_hold_as_text_is_refused() {
         // A raw string cannot escape its own quote.
         let why = replaced("f($v)", "r\"pre $v\"", "f(\"a\")\n").expect_err("a raw string");
-        assert!(why.contains("changes its structure"), "{why}");
+        assert!(
+            why.starts_with(
+                "1:1: what $v captured, \"\\\"a\\\"\", cannot be written into the string"
+            ),
+            "{why}"
+        );
+        // Nor can bytes hold other than ASCII.
+        let why = replaced("f($v)", "b\"key-$v\"", "f(caf\u{e9})\n").expect_err("bytes");
+        assert!(why.contains("cannot be written into the string"), "{why}");
+        // A line break would end a comment.
+        let why = replaced("f($v)", "g()  # was $v", "f([1,\n   2])\n").expect_err("a comment");
+        assert!(why.contains("into a comment would end it"), "{why}");
+    }
+
+    #[test]
+    fn code_that_no_longer_parses_between_levels_is_refused_where_it_was() {
+        // The inner match's rewrite, `lambda 2: 0`, is not code the outer one can stand round.
+        let why = replaced("f($x)", "lambda $x: 0", "y = f(f(2))\n").expect_err("between levels");
+        assert!(
+            why.starts_with("1:7: once the matches inside another match here are rewritten"),
+            "{why}"
+        );
     }
 }

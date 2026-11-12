@@ -1442,6 +1442,10 @@ fn a_value_a_string_cannot_hold_as_text_exits_9() {
         project.quaff(&["-e", "replace `f($v)` with `r\"value: $v\"` expect 1",])
     );
     project.assert_unchanged();
+    // Nor can bytes hold other than ASCII.
+    let project = Project::new(&[(".git/HEAD", ""), ("a.py", "f(caf\u{e9})\n")]);
+    assert_quaff_snapshot!(project.quaff(&["-e", "replace `f($v)` with `b\"$v\"` expect 1"]));
+    project.assert_unchanged();
 }
 
 #[test]
@@ -1504,10 +1508,9 @@ fn a_trailing_comma_with_nowhere_to_go_exits_9() {
 
 #[test]
 fn a_structural_replace_that_would_break_a_file_exits_9() {
-    let project = Project::new(&[(".git/HEAD", ""), ("a.py", "f(caf\u{e9})\n")]);
-    // A non-ASCII value in a bytes literal is not Python: the literal's structure is unchanged,
-    // so it is the parse that refuses it.
-    assert_quaff_snapshot!(project.quaff(&["-e", "replace `f($v)` with `b\"$v\"` expect 1"]));
+    let project = Project::new(&[(".git/HEAD", ""), ("a.py", "f(1)\n")]);
+    // `1 = 1` is not Python, so the parse of the result refuses it.
+    assert_quaff_snapshot!(project.quaff(&["-e", "replace `f($v)` with `$v = 1` expect 1"]));
     project.assert_unchanged();
 }
 

@@ -270,10 +270,11 @@ fn every_registered_operation_keeps_the_invariants_over_the_corpus() {
 }
 
 /// Structural rewrites that must change nothing but spacing the template spells: each pattern
-/// written back as itself.  Every capture, carried comma and comment, and all layout inside
-/// brackets comes back as it was, so any other change, or any refusal, is a fault in what the
-/// rewrite derives.  Spacing outside brackets round the tokens a template writes is the
-/// template's, so `print (x)` may come back `print(x)`, and `p=x` as `p = x`.
+/// written back as itself.  Every token comes back, comments included, and inside brackets every
+/// line break and the indentation after it, so any other change, or any refusal, is a fault in
+/// what the rewrite derives.  Spacing within a line round the tokens a template writes is the
+/// template's, so `print (x)` may come back `print(x)`, `p=x` as `p = x`, and `f(a,b)` as
+/// `f(a, b)`.
 const IDENTITIES: &[&str] = &[
     "print($a)",
     "isinstance($x, $t)",
@@ -603,7 +604,7 @@ fn the_tree_comparison_tells_a_rename_from_a_change_of_meaning() {
 }
 
 #[test]
-fn the_layout_comparison_allows_only_spacing_outside_brackets() {
+fn the_layout_comparison_allows_only_spacing_within_a_line() {
     let file = |text: &str| {
         Scratch::new(&Files::from([(
             "a.py".to_owned(),
@@ -612,11 +613,14 @@ fn the_layout_comparison_allows_only_spacing_outside_brackets() {
     };
     let before = file("print (x,  # why\n      y)\np=1\nq = \\\n    2\n");
     let spaced = file("print(x,  # why\n      y)\np = 1\nq = 2\n");
+    let within = file("print (x , # why\n      y )\np=1\nq = \\\n    2\n");
     let joined = file("print (x,  # why\n  y)\np=1\nq = \\\n    2\n");
     let dropped = file("print (x,\n      y)\np=1\nq = \\\n    2\n");
     let python = Path::new("python3");
     let pair = |after: &Scratch| vec![(before.dir.join("a.py"), after.dir.join("a.py"))];
     assert_eq!(different_layout(python, &pair(&spaced)), Ok(vec![]));
+    // Inside a bracket too, spacing within a line is the template's.
+    assert_eq!(different_layout(python, &pair(&within)), Ok(vec![]));
     let inside = different_layout(python, &pair(&joined)).expect("compared");
     assert!(
         matches!(inside.as_slice(), [why] if why.contains("layout inside brackets differs")),

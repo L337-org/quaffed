@@ -263,6 +263,30 @@ pub fn lex(text: &str) -> Lexed {
     lexed
 }
 
+/// The text of each token of code in `text`, lexed as a module: every token but comments, line
+/// breaks and indentation.  Two fragments with the same tokens differ only by layout, and a
+/// string's whitespace is part of its token, so it counts.
+#[must_use]
+pub fn code_tokens(text: &str) -> Vec<&str> {
+    let parsed = ruff_python_parser::parse_unchecked(text, ParseOptions::from(Mode::Module));
+    parsed
+        .tokens()
+        .iter()
+        .filter(|token| {
+            !matches!(
+                token.kind(),
+                TokenKind::Comment
+                    | TokenKind::NonLogicalNewline
+                    | TokenKind::Newline
+                    | TokenKind::Indent
+                    | TokenKind::Dedent
+                    | TokenKind::EndOfFile
+            )
+        })
+        .map(|token| &text[usize::from(token.start())..usize::from(token.end())])
+        .collect()
+}
+
 /// The kind of each token in `text`, lexed as a module, without layout: what a value written into
 /// a literal must leave as it was, so that it cannot close the literal or open a field in it.
 #[must_use]
@@ -400,6 +424,16 @@ mod tests {
             .map(|&at| &text[at..=at])
             .collect();
         assert_eq!(starts, ["x", "i", "z"]);
+    }
+
+    #[test]
+    fn code_tokens_leave_out_layout_but_not_a_strings_whitespace() {
+        assert_eq!(code_tokens(", \"%s:%s\",  # c\n"), [",", "\"%s:%s\"", ","]);
+        assert_ne!(
+            code_tokens(", \"%s: %s\", "),
+            code_tokens(",\n    \"%s:%s\", ")
+        );
+        assert_eq!(code_tokens(",\n    "), code_tokens(", "));
     }
 
     #[test]

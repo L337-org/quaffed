@@ -402,8 +402,9 @@ jobs:
           fi
 
       - name: Structural rewrites keep what they should over the corpus
-        # Identities that must change nothing, and renames there and back that must keep every
-        # tree CPython reads and then every byte.  As above, exactly one test must run.
+        # Identities that must change nothing but spacing the template spells, and renames there
+        # and back that must keep every tree CPython reads and then every file as identities do.
+        # As above, exactly one test must run.
         env:
           QUAFFED_PYTHON_ORACLE: ${{ steps.python.outputs.python-path }}
         run: |

@@ -16,7 +16,7 @@ mod pattern;
 mod rewrite;
 
 pub use kinds::all_kinds;
-pub use lex::{Bracket, Lexed, StringPart, escaped, lex, token_kinds};
+pub use lex::{Bracket, Lexed, StringPart, code_tokens, escaped, lex, token_kinds};
 pub use parse::{
     PYTHON, ParseError, kinds_in_expression, kinds_in_ipython, kinds_in_module, parse_expression,
     parse_ipython, parse_module,
