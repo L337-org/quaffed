@@ -39,7 +39,7 @@ bytes_read = 5_951
 paths_written = 6
 
 [rewrite]
-instructions = 10_121_200
+instructions = 11_615_400
 peak_memory_kib = 10_100
 paths_opened = 17
 bytes_read = 5_951
