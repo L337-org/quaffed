@@ -816,14 +816,17 @@ impl Job<'_> {
                     .comments
                     .iter()
                     .any(|c| template_gap.start <= c.start && c.end <= template_gap.end);
-                // Token by token, so that whitespace inside a string the template changes counts.
-                let same_code = code_tokens(&marked.indented[template_gap.clone()])
-                    == code_tokens(&self.text[file_gap.clone()]);
+                // The code is compared last, token by token, so that whitespace inside a string the
+                // template changes counts, and only where the cheaper checks have passed.
+                let same_code = || {
+                    code_tokens(&marked.indented[template_gap.clone()])
+                        == code_tokens(&self.text[file_gap.clone()])
+                };
                 (!between_others
                     && !template_comment
-                    && same_code
                     && in_bracket(&marked.own.brackets, &template_gap)
-                    && in_bracket(&self.lexed.brackets, &file_gap))
+                    && in_bracket(&self.lexed.brackets, &file_gap)
+                    && same_code())
                 .then_some(file_gap)
             })
             .collect()
