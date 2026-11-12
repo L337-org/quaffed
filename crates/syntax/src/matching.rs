@@ -478,6 +478,8 @@ struct CaptureCheck {
     fast_work: usize,
     /// The matches and captures found by backtracking alone.
     slow: Vec<Captured>,
+    /// The work that took.
+    slow_work: usize,
     /// Whether any name is compared - used more than once, or tested - so that a node may be
     /// matched by its ways of binding it, and matched again to record what it captured.
     compared: bool,
@@ -487,8 +489,10 @@ struct CaptureCheck {
 impl CaptureCheck {
     /// What asking for captures must leave alone and give: the same captures however the search
     /// runs, the same matches as without them, each capture inside its match and none
-    /// overlapping another, since holes never nest; and the same work where no name is compared,
-    /// and otherwise at most one more match of a node per match found, held here to double.
+    /// overlapping another, since holes never nest; and the same work where no name is compared.
+    /// Where one is, a match is matched again to record its captures, by plain backtracking, so
+    /// the work is held to the search without captures plus what backtracking alone took, which
+    /// includes every such match.
     fn holds(&self) -> Result<(), String> {
         if self.fast != self.slow {
             return Err(format!(
@@ -513,14 +517,18 @@ impl CaptureCheck {
             }
         }
         let work_holds = if self.compared {
-            self.fast_work <= 2 * self.plain_work
+            self.fast_work <= self.plain_work + self.slow_work
         } else {
             self.fast_work == self.plain_work
         };
         if !work_holds {
             return Err(format!(
-                "work {} with captures, {} without",
-                self.fast_work, self.plain_work
+                "work {} with captures, {} without, {} backtracking alone, over {} matches: {:?}",
+                self.fast_work,
+                self.plain_work,
+                self.slow_work,
+                self.fast.len(),
+                self.fast
             ));
         }
         Ok(())
@@ -549,13 +557,14 @@ fn capture_check(
     };
     let (plain, plain_work) = search(true, &[], accept.as_deref_mut());
     let (fast, fast_work) = search(true, &kept, accept.as_deref_mut());
-    let (slow, _) = search(false, &kept, accept);
+    let (slow, slow_work) = search(false, &kept, accept);
     CaptureCheck {
         plain: plain.into_iter().map(|found| found.range).collect(),
         plain_work,
         fast,
         fast_work,
         slow,
+        slow_work,
         compared,
     }
 }
