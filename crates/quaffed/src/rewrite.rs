@@ -164,7 +164,9 @@ fn nested(
     rewrite: &Rewrite,
 ) -> Result<Edited, Refused> {
     let at = |offset: usize| positions(text, &[offset])[&offset];
-    let captured = &whole_brackets(text, arena, captured);
+    // Lexed once for the first level, which widening the captures reads too.
+    let first_lexed = lex(text);
+    let captured = &whole_brackets(text, arena, &first_lexed, captured);
     let depths = depths(captured).map_err(|(later, earlier)| {
         let earlier = at(captured[earlier].range.start);
         Refused {
@@ -224,13 +226,19 @@ fn nested(
                 }
             }
         };
-        let done =
-            rewritten(&current, level_arena, &level, names, rewrite).map_err(|(offset, why)| {
-                Refused {
-                    at: at(backward(&maps, offset)),
-                    why,
-                }
-            })?;
+        let later_lexed;
+        let level_lexed = if maps.is_empty() {
+            &first_lexed
+        } else {
+            later_lexed = lex(&current);
+            &later_lexed
+        };
+        let done = rewritten(&current, level_arena, level_lexed, &level, names, rewrite).map_err(
+            |(offset, why)| Refused {
+                at: at(backward(&maps, offset)),
+                why,
+            },
+        )?;
         questioned.extend(done.questioned.into_iter().map(|(offset, why)| Questioned {
             at: at(backward(&maps, offset)),
             why,
@@ -253,8 +261,12 @@ fn nested(
 /// nothing but layout between: what the pattern ignored survives with what it wraps.  A bracket
 /// some node spans - a call's arguments, a tuple, a list - is that node's, never only a
 /// wrapping.
-fn whole_brackets(text: &str, arena: &Arena<'_>, captured: &[Captured]) -> Vec<Captured> {
-    let lexed = lex(text);
+fn whole_brackets(
+    text: &str,
+    arena: &Arena<'_>,
+    lexed: &Lexed,
+    captured: &[Captured],
+) -> Vec<Captured> {
     let nodes: HashSet<(usize, usize)> = arena
         .nodes()
         .map(|node| {
@@ -398,15 +410,15 @@ struct Level {
 fn rewritten(
     text: &str,
     arena: &Arena<'_>,
+    lexed: &Lexed,
     captured: &[Captured],
     names: &[&str],
     rewrite: &Rewrite,
 ) -> Result<Level, (usize, String)> {
-    let lexed = lex(text);
     let before = Before {
         text,
         arena,
-        lexed: &lexed,
+        lexed,
         captured,
         names,
     };
@@ -423,8 +435,8 @@ fn rewritten(
     let mut escapes: Vec<(usize, String)> = Vec::new();
     for (index, found) in captured.iter().enumerate() {
         let rendered =
-            render(text, found, names, rewrite, &lexed).map_err(|why| (found.range.start, why))?;
-        if let Some(comment) = dropped_comment(&lexed, found, &edges, &rendered, rewrite, names) {
+            render(text, found, names, rewrite, lexed).map_err(|why| (found.range.start, why))?;
+        if let Some(comment) = dropped_comment(lexed, found, &edges, &rendered, rewrite, names) {
             return Err((
                 comment.start,
                 format!(
