@@ -188,6 +188,7 @@ The format is in `docs/language.md`, _Output_.  The rules behind it:
 | 2 | an assertion failed |
 | 3 | a usage error, a malformed script, a program with no statements, an edit with no `expect`, or a command-line scope holding a double quote |
 | 5 | a statement or construct this build does not have: outside the MVP, or in it and not built |
+| 6 | a file to be edited changed after it was read, or was removed or renamed, naming it; nothing is written |
 | 7 | an I/O error, naming the path and quoting the system's error; an `in` that names nothing there; for edits that could not be written, saying what was left |
 | 9 | the script or a file must change first: a structural search needs a Python file quaff cannot parse, naming each and how to leave it out; an edit would break a Python file that parsed; a file's encoding cannot write a replacement; or a structural replace cannot be made as written |
 
@@ -202,7 +203,7 @@ those it can, and a `find` and an edit with the same `expect` count the same mat
 an error anywhere does not run.  A construct that parses but is not built exits 5, named, where
 it was written.
 
-**A run that cannot give an answer - exit 3, 5, 7 or 9 - prints nothing on standard output**, so
+**A run that cannot give an answer - exit 3, 5, 6, 7 or 9 - prints nothing on standard output**, so
 a partial answer never passes for a whole one.  Every message says what was being done, quotes
 the path or argument it concerns, and says what to do where there is something to do
 (`src/run.rs`).
@@ -225,7 +226,7 @@ the path or argument it concerns, and says what to do where there is something t
   replace cannot be made as written; then every changed Python file that parsed must still
   parse; then the files are written, unless `--dry-run`; and only then are the results printed.
   So a count that does not hold is told first, exit 2, whatever else is wrong with the edit, and
-  a run refused with exit 7 or 9 prints nothing and writes nothing.  Only a Python file that
+  a run refused with exit 6, 7 or 9 prints nothing and writes nothing.  Only a Python file that
   cannot be parsed refuses the run before any count, since a structural count over it cannot be
   trusted.
 - **Only a file of known encoding is edited**, its replacement spelled in that encoding, a line

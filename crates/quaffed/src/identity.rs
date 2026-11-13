@@ -100,7 +100,7 @@ mod platform {
     }
 }
 
-/// Every system that is not Unix, Windows among them: no stamp yet, so every file is vouched for
+/// Every system that is not Unix, Windows among them: no stamp, so every file is vouched for
 /// and written without its bytes being compared.  A file that is no longer there, or no longer a
 /// file, is still refused, since that is seen from whether its metadata can be read.
 #[cfg(not(unix))]

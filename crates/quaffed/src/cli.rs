@@ -38,8 +38,8 @@ pub struct Options {
 }
 
 /// What a test can ask of a debug build, from options only a debug build has, so that a release
-/// build refuses each as unknown and has no field here.  None is in the help.  The end-to-end
-/// section of `architecture/testing.md` says when to use one and how to add another.
+/// build refuses each as unknown and has no field here.  None is in the help.  The pausing section
+/// of `architecture/testing.md` says when to use one and how to add another.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Hooks {
     /// `--debug-pause-before-write PATH`: create a file at `PATH` once every file is read and the

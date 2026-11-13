@@ -257,6 +257,20 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn a_file_read_long_after_its_last_change_is_not_read_again_when_unchanged() {
+        let (dir, file) = one_file("settled-read", b"x = 1\n");
+        // Past the racy window, so the identity the read records is trusted.
+        std::thread::sleep(std::time::Duration::from_millis(2100));
+        let bytes = Contents::default().read(&file).unwrap();
+        DISK_READS.with(|reads| reads.borrow_mut().clear());
+        let check = unchanged(&file, bytes.identity(), &bytes).unwrap();
+        let reads = disk_reads_of(&file);
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!((check, reads), (Check::Unchanged, 0));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn a_same_size_edit_with_its_modification_time_restored_is_seen() {
         let (dir, file) = one_file("restored", b"x = 1\n");
         let identity = settled(&file);
