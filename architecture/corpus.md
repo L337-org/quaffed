@@ -167,6 +167,21 @@ QUAFFED_PYTHON_ORACLE=$(which python3.X) \
 the path as given, a tab, and its reason.  It exits 0 only once it has judged every file.
 `scripts/oracle-python` is Python's, run with the oracle's Python.
 
+**Structural rewrites are also held to what they should keep**, in a second corpus test,
+`structural_rewrites_keep_what_they_should_over_the_corpus`, over the Python files the oracle
+accepts:
+
+- **Identity**: each pattern in `IDENTITIES` rewritten to itself must keep every token, comments
+  included, and inside brackets every line break and the indentation after it.  Spacing within a
+  line round the tokens a template writes is the template's, so it is not compared.
+- **Meaning**: each rename in `ROUND_TRIPS` must leave the tree `CPython` reads unchanged but for
+  the name, judged by `CPython`'s own `ast` rather than quaff's parser.
+- **There and back**: renaming back must restore each file as identity does.
+
+A pattern that should survive being rewritten to itself belongs in `IDENTITIES`.  A failure names
+the pattern or the rename, and the file, with the line where the tokens or the layout first
+differ.
+
 ### Checklist: registering an operation
 
 1. Add one or more `Case`s to `CASES` in `edit_invariants.rs`: a `find` and the edit whose matches

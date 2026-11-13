@@ -1037,12 +1037,14 @@ fn walk(
     }
 }
 
-/// The bytes each span covers in `bytes`.
+/// The bytes the spans cover in `bytes`, joined where they overlap: a structural match inside
+/// another's hole is reported as well as the one round it, and the two are rewritten as one.
 ///
 /// # Errors
 ///
-/// If a span's first or last character is not in the file, or the spans are not in order and
-/// apart: `find` placed them, so either is a fault the harness must report, not guess past.
+/// If a span's first or last character is not in the file, or a span starts before the one
+/// reported before it: `find` placed them, so either is a fault the harness must report, not
+/// guess past.
 pub fn byte_ranges(
     bytes: &[u8],
     encoding: Encoding,
@@ -1067,13 +1069,16 @@ pub fn byte_ranges(
             })
         };
         let range = place(span.start)?.0..place(span.end)?.1;
-        if range.start >= range.end || ranges.last().is_some_and(|last| last.end > range.start) {
+        if range.start >= range.end || ranges.last().is_some_and(|last| last.start > range.start) {
             return Err(format!(
-                "find reported matches out of order or overlapping, at line {}, column {}",
+                "find reported matches out of order, at line {}, column {}",
                 span.start.line, span.start.column
             ));
         }
-        ranges.push(range);
+        match ranges.last_mut() {
+            Some(last) if last.end > range.start => last.end = last.end.max(range.end),
+            _ => ranges.push(range),
+        }
     }
     Ok(ranges)
 }

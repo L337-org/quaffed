@@ -27,6 +27,127 @@ pub struct Lexed {
     /// Every pair of brackets, round, square or curly, in the order they open.  The braces that
     /// open and close an f-string's or t-string's fields are not brackets but part of the string.
     pub brackets: Vec<Bracket>,
+    /// Where each logical line starts: the first token of the text, and the first after each
+    /// logical line ends, in order.  A line continued inside a bracket or after a backslash is
+    /// not one, so its indentation says nothing of depth.
+    pub logical_starts: Vec<usize>,
+    /// Every part of a string whose text is the string's own - a plain string, or an f-string's
+    /// or t-string's literal text between fields - with how its literal is written, in order.
+    pub strings: Vec<StringPart>,
+}
+
+/// One part of a string literal and how the literal is written, which decides how text can be
+/// written into it as text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StringPart {
+    /// Its byte range: a plain string's whole token, prefix and quotes included, or the literal
+    /// text of an f-string or t-string between its fields.
+    pub range: Range<usize>,
+    /// Whether the literal is raw, its backslashes text rather than escapes.
+    pub raw: bool,
+    /// Whether it is a bytes literal, which holds ASCII only.
+    pub bytes: bool,
+    /// Whether it is an f-string or t-string, in which a brace opens a field.
+    pub formatted: bool,
+    /// Its quotes: one quote character, or three.
+    pub quote: String,
+}
+
+/// `value` written into `part` so that the literal holds it as text: in a string that is not
+/// raw, each backslash and quote character escaped, and line breaks too unless the quotes are
+/// triple; each brace doubled in an f-string or t-string.  `None` where the literal cannot hold
+/// it as text: a raw string holding its own quote character or a line break it cannot, or
+/// ending in a backslash, and a bytes literal holding anything but ASCII.
+#[must_use]
+pub fn escaped(value: &str, part: &StringPart) -> Option<String> {
+    let quote = part.quote.chars().next()?;
+    let triple = part.quote.len() == 3;
+    if part.bytes && !value.is_ascii() {
+        return None;
+    }
+    if part.raw
+        && (value.contains(quote)
+            || value.ends_with('\\')
+            || (!triple && value.contains(['\n', '\r'])))
+    {
+        return None;
+    }
+    let mut out = String::with_capacity(value.len());
+    for c in value.chars() {
+        match c {
+            '\\' if !part.raw => out.push_str("\\\\"),
+            c if c == quote && !part.raw => {
+                out.push('\\');
+                out.push(c);
+            }
+            '\n' if !triple => out.push_str("\\n"),
+            '\r' if !triple => out.push_str("\\r"),
+            '{' | '}' if part.formatted => {
+                out.push(c);
+                out.push(c);
+            }
+            c => out.push(c),
+        }
+    }
+    Some(out)
+}
+
+/// Records the token `kind` at `range` of `text` if it is part of a string, with how its literal
+/// is written; `formatted` holds how each f-string or t-string still open was opened.
+fn string_part(
+    lexed: &mut Lexed,
+    formatted: &mut Vec<(String, String)>,
+    text: &str,
+    kind: TokenKind,
+    range: &Range<usize>,
+) {
+    match kind {
+        TokenKind::FStringStart | TokenKind::TStringStart => {
+            formatted.push(quoting(&text[range.clone()]));
+        }
+        TokenKind::FStringEnd | TokenKind::TStringEnd => {
+            formatted.pop();
+        }
+        TokenKind::String => {
+            let (prefix, quote) = quoting(&text[range.clone()]);
+            lexed.strings.push(StringPart {
+                range: range.clone(),
+                raw: prefix.contains('r'),
+                bytes: prefix.contains('b'),
+                formatted: false,
+                quote,
+            });
+        }
+        TokenKind::FStringMiddle | TokenKind::TStringMiddle => {
+            if let Some((prefix, quote)) = formatted.last() {
+                lexed.strings.push(StringPart {
+                    range: range.clone(),
+                    raw: prefix.contains('r'),
+                    bytes: false,
+                    formatted: true,
+                    quote: quote.clone(),
+                });
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The prefix and quotes a string, f-string or t-string opens with, from the text of its first
+/// token: the letters, then one quote character or three.
+fn quoting(opening: &str) -> (String, String) {
+    let prefix: String = opening
+        .chars()
+        .take_while(char::is_ascii_alphabetic)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    let rest = &opening[prefix.len()..];
+    let quote = if rest.starts_with("'''") || rest.starts_with("\"\"\"") {
+        rest[..3].to_owned()
+    } else {
+        rest[..1.min(rest.len())].to_owned()
+    };
+    (prefix, quote)
 }
 
 /// One pair of brackets in Python text.
@@ -57,6 +178,10 @@ pub fn lex(text: &str) -> Lexed {
     let parsed = ruff_python_parser::parse_unchecked(text, ParseOptions::from(Mode::Module));
     let mut lexed = Lexed::default();
     let mut open: Vec<Open> = Vec::new();
+    // How each f-string or t-string still open was opened, innermost last.
+    let mut formatted: Vec<(String, String)> = Vec::new();
+    // Whether the next token that is not layout starts a logical line.
+    let mut line_start = true;
     // The last token that is not layout, for a trailing comma.
     let mut last: Option<(TokenKind, usize)> = None;
     for token in parsed.tokens() {
@@ -100,9 +225,18 @@ pub fn lex(text: &str) -> Lexed {
                 | TokenKind::Newline
                 | TokenKind::Indent
                 | TokenKind::Dedent
+                | TokenKind::EndOfFile
         ) {
             last = Some((kind, range.start));
+            if line_start {
+                lexed.logical_starts.push(range.start);
+                line_start = false;
+            }
         }
+        if kind == TokenKind::Newline {
+            line_start = true;
+        }
+        string_part(&mut lexed, &mut formatted, text, kind, &range);
         match kind {
             TokenKind::Comment => lexed.comments.push(range),
             TokenKind::String | TokenKind::FStringMiddle | TokenKind::TStringMiddle
@@ -127,6 +261,30 @@ pub fn lex(text: &str) -> Lexed {
     }
     lexed.brackets.sort_unstable_by_key(|bracket| bracket.open);
     lexed
+}
+
+/// The text of each token of code in `text`, lexed as a module: every token but comments, line
+/// breaks and indentation.  Two fragments with the same tokens differ only by layout, and a
+/// string's whitespace is part of its token, so it counts.
+#[must_use]
+pub fn code_tokens(text: &str) -> Vec<&str> {
+    let parsed = ruff_python_parser::parse_unchecked(text, ParseOptions::from(Mode::Module));
+    parsed
+        .tokens()
+        .iter()
+        .filter(|token| {
+            !matches!(
+                token.kind(),
+                TokenKind::Comment
+                    | TokenKind::NonLogicalNewline
+                    | TokenKind::Newline
+                    | TokenKind::Indent
+                    | TokenKind::Dedent
+                    | TokenKind::EndOfFile
+            )
+        })
+        .map(|token| &text[usize::from(token.start())..usize::from(token.end())])
+        .collect()
 }
 
 /// The kind of each token in `text`, lexed as a module, without layout: what a value written into
@@ -215,6 +373,67 @@ mod tests {
                 ("{i: 1,}", Some(",")),
             ]
         );
+    }
+
+    #[test]
+    fn a_value_is_escaped_as_each_kind_of_string_needs() {
+        let text = "a = 'x'\nb = r\"\"\"y\"\"\"\nc = f'{z}w'\nd = b'v'\n";
+        let parts = lex(text).strings;
+        let shown: Vec<(&str, bool, bool, bool, &str)> = parts
+            .iter()
+            .map(|p| {
+                (
+                    &text[p.range.clone()],
+                    p.raw,
+                    p.bytes,
+                    p.formatted,
+                    p.quote.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("'x'", false, false, false, "'"),
+                ("r\"\"\"y\"\"\"", true, false, false, "\"\"\""),
+                ("w", false, false, true, "'"),
+                ("b'v'", false, true, false, "'"),
+            ]
+        );
+        let value = "it's {a}\\ \"b\"\n";
+        assert_eq!(
+            escaped(value, &parts[0]).as_deref(),
+            Some("it\\'s {a}\\\\ \"b\"\\n")
+        );
+        assert_eq!(escaped(value, &parts[1]), None);
+        assert_eq!(escaped("say \"hi\"", &parts[1]), None);
+        assert_eq!(escaped("say 'hi'", &parts[1]).as_deref(), Some("say 'hi'"));
+        assert_eq!(
+            escaped(value, &parts[2]).as_deref(),
+            Some("it\\'s {{a}}\\\\ \"b\"\\n")
+        );
+        assert_eq!(escaped("caf\u{e9}", &parts[3]), None);
+    }
+
+    #[test]
+    fn a_logical_line_starts_its_first_token_and_a_continued_one_does_not() {
+        let text = "x = \\\n    [1,\n     2]\nif y:\n    z()\n";
+        let starts: Vec<&str> = lex(text)
+            .logical_starts
+            .iter()
+            .map(|&at| &text[at..=at])
+            .collect();
+        assert_eq!(starts, ["x", "i", "z"]);
+    }
+
+    #[test]
+    fn code_tokens_leave_out_layout_but_not_a_strings_whitespace() {
+        assert_eq!(code_tokens(", \"%s:%s\",  # c\n"), [",", "\"%s:%s\"", ","]);
+        assert_ne!(
+            code_tokens(", \"%s: %s\", "),
+            code_tokens(",\n    \"%s:%s\", ")
+        );
+        assert_eq!(code_tokens(",\n    "), code_tokens(", "));
     }
 
     #[test]

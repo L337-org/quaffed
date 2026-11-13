@@ -15,10 +15,13 @@ Ruff warns "will have frequent breaking changes", is absorbed here and reaches n
 - **`compile_pattern`**: a structural pattern compiled into a `Pattern`, below.
 - **`compile_rewrite`**: a structural `replace`'s rewrite template checked against its pattern,
   under *Rewrites*.
-- **`lex`** and **`token_kinds`**: what a rewrite needs of Python text that the arena leaves out -
-  its comments, its multi-line strings, its brackets with their trailing commas, its indent unit,
-  and the kinds of its tokens - from Ruff's lexer, so that the engine never names a token kind
-  (`src/lex.rs`).
+- **`lex`**, **`token_kinds`** and **`code_tokens`**: what a rewrite needs of Python text that
+  the arena leaves out - its comments, its multi-line strings, its brackets with their trailing
+  commas, its indent unit, where its logical lines start, its string parts with how each literal
+  is written (`StringPart`), the kinds of its tokens and the text of its code tokens - from
+  Ruff's lexer, so that the engine never names a token kind (`src/lex.rs`).
+- **`escaped`**: a value written into a string part so that the literal holds it as text, or
+  `None` where it cannot, as Python's string syntax decides (`src/lex.rs`).
 - **`kinds_in_module`**, **`kinds_in_expression`**, **`kinds_in_ipython`** and **`all_kinds`**:
   the kinds an arena holds, and every kind the pinned Ruff knows, which the synthetic corpus's
   coverage check reads.

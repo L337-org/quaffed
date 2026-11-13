@@ -99,19 +99,32 @@ fn a_column_counts_characters_not_bytes() {
 }
 
 #[test]
-fn a_span_outside_the_file_or_out_of_order_is_a_fault_of_find() {
+fn a_span_outside_the_file_or_out_of_order_is_a_fault_of_find_and_overlaps_are_joined() {
     let outside = byte_ranges(b"ab\n", Encoding::Utf8, 0, &[span((3, 1), (3, 1))]);
     assert_eq!(
         outside,
         Err("find reported a match at line 3, column 1, which is not in the file".into())
     );
-    let overlapping = byte_ranges(
+    let out_of_order = byte_ranges(
         b"abc",
         Encoding::Utf8,
         0,
-        &[span((1, 1), (1, 2)), span((1, 2), (1, 3))],
+        &[span((1, 2), (1, 3)), span((1, 1), (1, 1))],
     );
-    assert!(overlapping.is_err_and(|why| why.contains("overlapping")));
+    assert!(out_of_order.is_err_and(|why| why.contains("out of order")));
+    // A match inside another, or overlapping the next, is joined with it.
+    let nested = byte_ranges(
+        b"abcd",
+        Encoding::Utf8,
+        0,
+        &[
+            span((1, 1), (1, 3)),
+            span((1, 2), (1, 2)),
+            span((1, 3), (1, 4)),
+        ],
+    );
+    let joined: Vec<Range<usize>> = std::iter::once(0..4).collect();
+    assert_eq!(nested, Ok(joined));
 }
 
 #[test]

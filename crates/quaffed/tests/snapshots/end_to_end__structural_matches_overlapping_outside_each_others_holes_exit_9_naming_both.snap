@@ -1,0 +1,15 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "replace `a()\na()` with `b()` expect 2"
+---
+success: false
+exit_code: 9
+----- stdout -----
+
+----- stderr -----
+quaff: refused: the replace cannot be made as written in 1 file, so nothing was written:
+  "a.py": line 2, column 1: this match overlaps the one at line 1, column 1, though it stands in none of that one's holes, so rewriting one would change or remove the other: narrow the pattern so that its matches cannot overlap

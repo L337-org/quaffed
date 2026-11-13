@@ -1,0 +1,16 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "replace `f($v)` with `f\"value: $v\"` expect 1"
+---
+success: true
+exit_code: 0
+----- stdout -----
+a.py:1:1-1:6: f({y})
+
+----- stderr -----
+quaff: replaced 1 match in 1 file
+quaff: "a.py": line 1, column 1: what $v captured, "{y}", holds what the string it is written into would read as its end or as code - a quote, a backslash, a line break, or a brace in an f-string - so it was escaped, and the string holds the text as captured: if the code was meant to run, write the hole outside the string in the rewrite
