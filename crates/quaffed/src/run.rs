@@ -41,8 +41,7 @@ use crate::write;
 /// caller for a different action.
 #[derive(Debug)]
 pub enum Failure {
-    /// The command line cannot be acted on: fix it.  Exit 3, or 5 for an output this build does
-    /// not have.
+    /// The command line cannot be acted on: fix it.  Exit as [`UsageError::exit_code`] says.
     Usage(UsageError),
     /// A script that must be fixed: malformed, or breaking a rule every program keeps.  Exit 3.
     Script {

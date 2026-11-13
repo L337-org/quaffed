@@ -104,8 +104,7 @@ impl fmt::Display for Source {
     }
 }
 
-/// A command line `quaff` cannot act on.  Every one exits 3 but [`UsageError::NoSuchOutput`],
-/// which exits 5; [`UsageError::exit_code`] says which.
+/// A command line `quaff` cannot act on.  [`UsageError::exit_code`] says how each exits.
 #[derive(Debug, PartialEq, Eq)]
 pub enum UsageError {
     /// No arguments at all.
@@ -241,23 +240,13 @@ where
             .into_iter()
             .find(|(short, long)| name == *long || (inline.is_none() && name == *short));
         if let Some(option) = option {
-            let value = match inline {
-                Some(value) => OsString::from(value),
-                None => args
-                    .next()
-                    .ok_or_else(|| UsageError::MissingValue(name.to_owned()))?,
-            };
+            let value = value_of(name, inline, &mut args)?;
             sources.push(source(option, value, &sources)?);
             continue;
         }
         #[cfg(debug_assertions)]
         if name == PAUSE_BEFORE_WRITE {
-            let value = match inline {
-                Some(value) => OsString::from(value),
-                None => args
-                    .next()
-                    .ok_or_else(|| UsageError::MissingValue(name.to_owned()))?,
-            };
+            let value = value_of(name, inline, &mut args)?;
             pause_before_write = Some(PathBuf::from(value));
             continue;
         }
@@ -266,13 +255,8 @@ where
             "-h" | "--help" if inline.is_none() => return Ok(Invocation::Help),
             "--version" if inline.is_none() => return Ok(Invocation::Version),
             "--dry-run" if inline.is_none() => dry_run = true,
-            "--output" | "-o" if name == "--output" || inline.is_none() => {
-                let value = match inline {
-                    Some(value) => OsString::from(value),
-                    None => args
-                        .next()
-                        .ok_or_else(|| UsageError::MissingValue(name.to_owned()))?,
-                };
+            "--output" | "-o" => {
+                let value = value_of(name, inline, &mut args)?;
                 // Text is the only rendering, so there is nothing to record.
                 if value != "text" {
                     return Err(UsageError::NoSuchOutput(
@@ -308,6 +292,20 @@ where
             },
         },
     })
+}
+
+/// The value of the option `name`: `inline`, given after `=`, or else the next argument.
+fn value_of(
+    name: &str,
+    inline: Option<&str>,
+    args: &mut impl Iterator<Item = OsString>,
+) -> Result<OsString, UsageError> {
+    match inline {
+        Some(value) => Ok(OsString::from(value)),
+        None => args
+            .next()
+            .ok_or_else(|| UsageError::MissingValue(name.to_owned())),
+    }
 }
 
 /// The source the option `(short, long)` gives with `value`, after the `sources` before it.

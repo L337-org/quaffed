@@ -38,7 +38,7 @@ A script is statements separated by newlines or ;, with # comments.  The stateme
 and each takes, in this order, `in`, `where` and `expect`, each at most once:
 
   in "PATH"            look only at this path, or glob: wildcards go outside the quotes, as
-                       in "src/"**".py"; a glob matches the whole path as printed
+                       in "src/"**".py"; a glob matches the whole path
   where TEST           keep a match only if TEST holds: FILE or a $name, then `matches` or
                        `contains`, then quoted text, a glob or a `PATTERN`; join tests with
                        `and`, and turn one round with `not`.  There is no `or`.  FILE is the
@@ -151,6 +151,9 @@ Scripts from a file or standard input:
       runs the lint, which holds
   $ echo 'find "TODO" expect 2' | quaff -f -
       the script from standard input
+
+The version:
+
   $ quaff --version
       quaff and its version
 

@@ -140,8 +140,8 @@ option.
 - **`--` ends the options**, so text starting with a dash can be searched for: `quaff -- -v`.
 - **`quaff` with no arguments** prints the help to standard error and exits 3.
 - **The help teaches by example**: every form and statement has one, run from the root of a
-  small project it shows.  `--help` and `--version` end the reading of the command line: what
-  comes before them must still be valid, and nothing after them is read, so `quaff TODO --help`
+  small project it shows.  `--help` and `--version` end the reading of the options: nothing
+  after them is read, but the options before them must be well formed, so `quaff TODO --help`
   prints the help and `quaff --frob --help` is an unknown option.
 - **`-o text` is the output described under [Output](#output)**, and the default.  Any other
   output is one this build does not have, exit 5:

@@ -3,9 +3,9 @@
 
 //! `quaff`, the command-line entry point.
 //!
-//! It runs textual and structural search, `quaff TEXT`, `-s TEXT` and `-p PATTERN`, and scripts
-//! from `-e` and `-f` of `find`, `replace` and `delete` statements.  `architecture/search.md` and
-//! `architecture/script.md` describe its design, and `src/help.rs` is the help.
+//! It reads the command line, runs what it asks for, and exits with the run's status.  What it can
+//! be asked is in the help, `src/help.rs`; `architecture/search.md` and `architecture/script.md`
+//! describe its design.
 
 mod cli;
 mod contents;
