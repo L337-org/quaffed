@@ -55,7 +55,9 @@ A `Pattern` is a snippet compiled into an arena of its own, with some nodes mark
 each with the name it binds, if any, and whether it stands for one node or a sequence - so the
 matcher reads a pattern with the same walks as a file.  Compiling one is the language's job,
 because how a hole survives a parser differs between languages (`python.md` for Python).  A
-pattern owns its text (`Arena::into_owned`).
+pattern owns its text (`Arena::into_owned`).  A node no text parses to on its own, such as a
+decorator, is parsed inside the code it needs and lifted out of it (`Arena::lifted`): the lifted
+nodes become the root's only children, in one list, with their subtrees, tokens and values.
 
 ## Matching
 

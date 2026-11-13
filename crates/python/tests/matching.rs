@@ -629,3 +629,29 @@ fn a_string_after_a_sequence_stands_only_where_its_content_does() {
     let source = "f(1, \"x\")\nf(1, \"y\")\n";
     assert_eq!(matches("f($..., \"x\")", source), ["f(1, \"x\")"]);
 }
+
+#[test]
+fn a_decorator_alone_matches_any_decorator_of_its_shape() {
+    let source = "@cache\n@retry(3)  # why\ndef f():\n    pass\n\nclass A:\n    @retry(n=1)\n    def g(self):\n        pass\n";
+    assert_eq!(matches("@cache", source), ["@cache"]);
+    assert_eq!(matches("@retry($n)", source), ["@retry(3)", "@retry(n=1)"]);
+    assert_eq!(matches("@$d", source).len(), 3);
+    // Not the decorated definition's other parts, nor a call that is not a decorator.
+    assert_eq!(matches("@f", source), none());
+    assert_eq!(matches("@cache", "cache\n"), none());
+}
+
+#[test]
+fn several_decorators_alone_are_refused_and_an_error_is_the_patterns_own() {
+    assert_eq!(
+        compile_pattern("@a\n@b").unwrap_err(),
+        PatternError::SeveralDecorators
+    );
+    // A pattern that is not Python however it is read reports its own error, not one about
+    // the definition added after a decorator.
+    let err = compile_pattern("@").unwrap_err();
+    assert!(matches!(err, PatternError::Invalid { .. }), "{err:?}");
+    assert_eq!(err.offset(), Some(1));
+    let err = compile_pattern("@a\nx = 1").unwrap_err();
+    assert!(matches!(err, PatternError::Invalid { .. }), "{err:?}");
+}

@@ -1,0 +1,15 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "delete `@retry($n)` expect 1"
+---
+success: true
+exit_code: 0
+----- stdout -----
+a.py:1:1-1:9: @retry(3)
+
+----- stderr -----
+quaff: deleted 1 match in 1 file

@@ -42,6 +42,10 @@ pub struct Case {
     /// refuses a run with a file in scope it cannot parse, by design, so a structural case over
     /// a corpus holding deliberately broken files would only ever be refused.
     pub parsed_only: bool,
+    /// Whether the edit deletes, and so may take what a deletion leaves behind next to each
+    /// match as well as the match: see [`deletion_reach`].  Minimal diff is then judged by bytes
+    /// outside that reach alone, since a comma taken from the line before changes that line.
+    pub deletes: bool,
 }
 
 /// What quaff should make of a case.
@@ -630,9 +634,13 @@ impl Judging<'_> {
             ));
             return None;
         }
-        for (path, (invariant, what)) in
-            minimal_diff(&start.files, &matches, &edited, self.case.parsed_only)
-        {
+        for (path, (invariant, what)) in minimal_diff(
+            &start.files,
+            &matches,
+            &edited,
+            self.case.parsed_only,
+            self.case.deletes,
+        ) {
             failures.push(self.failure(invariant, again, Some(&path), what));
         }
         let accepted = self.still_parses(
@@ -851,13 +859,15 @@ pub fn differing(before: &Files, after: &Files) -> Vec<String> {
 }
 
 /// Every way `edited` changed `before` outside the `matches` `find` reported: by bytes, and by
-/// whole lines.  Overlapping matches are joined where they may `nest`, as a structural match
+/// whole lines; or, where the edit `deletes`, by bytes outside what a deletion may take next to
+/// each match alone.  Overlapping matches are joined where they may `nest`, as a structural match
 /// inside another's hole does, and are otherwise a fault of `find`.
 pub fn minimal_diff(
     before: &Files,
     matches: &BTreeMap<String, Vec<Span>>,
     edited: &Files,
     nest: bool,
+    deletes: bool,
 ) -> Vec<(String, (Invariant, String))> {
     let mut found = Vec::new();
     for path in differing(before, edited) {
@@ -899,6 +909,13 @@ pub fn minimal_diff(
                                 .into(),
                         ),
                     )),
+                    Ok(ranges) if deletes => {
+                        let reach = deletion_reach(original, &ranges);
+                        if let Err(why) = deletion_survives(original, &reach, after) {
+                            found.push((path.clone(), (Invariant::MinimalDiff, why)));
+                        }
+                        continue;
+                    }
                     Ok(ranges) => {
                         if let Err(why) = outside_survives(original, &ranges, after) {
                             found.push((path.clone(), (Invariant::MinimalDiff, why)));
@@ -914,6 +931,90 @@ pub fn minimal_diff(
         }
     }
     found
+}
+
+/// Each of `ranges` in `bytes` widened over what deleting it may take as well: the brackets that
+/// only wrap it, then whitespace and a comma or a semicolon on either side, the indentation and
+/// any blank lines before it, and after it a comment to the end of its line, the line break, and
+/// any lines after that are blank or are comments indented into a block.  This is looser than
+/// what quaff takes, one separator, but holds a deletion to the code next to each match: anything
+/// beyond it changed fails minimal diff.  Ranges that come to overlap are joined.
+pub fn deletion_reach(bytes: &[u8], ranges: &[Range<usize>]) -> Vec<Range<usize>> {
+    let space = |b: u8| b == b' ' || b == b'\t';
+    let white = |b: u8| b.is_ascii_whitespace();
+    let back = |mut at: usize, take: &dyn Fn(u8) -> bool| {
+        while at > 0 && take(bytes[at - 1]) {
+            at -= 1;
+        }
+        at
+    };
+    let forth = |mut at: usize, take: &dyn Fn(u8) -> bool| {
+        while at < bytes.len() && take(bytes[at]) {
+            at += 1;
+        }
+        at
+    };
+    let mut reach: Vec<Range<usize>> = Vec::with_capacity(ranges.len());
+    for range in ranges {
+        let (mut start, mut end) = (range.start, range.end);
+        loop {
+            let (open, close) = (back(start, &white), forth(end, &white));
+            if open > 0 && bytes[open - 1] == b'(' && close < bytes.len() && bytes[close] == b')' {
+                (start, end) = (open - 1, close + 1);
+            } else {
+                break;
+            }
+        }
+        let open = back(start, &white);
+        start = if open > 0 && matches!(bytes[open - 1], b',' | b';') {
+            back(open - 1, &space)
+        } else {
+            back(start, &space)
+        };
+        // At the start of a line, the blank lines before it too.
+        if start == 0 || bytes[start - 1] == b'\n' {
+            while start > 0 {
+                let previous = bytes[..start - 1]
+                    .iter()
+                    .rposition(|&b| b == b'\n')
+                    .map_or(0, |at| at + 1);
+                if !bytes[previous..start].iter().all(u8::is_ascii_whitespace) {
+                    break;
+                }
+                start = previous;
+            }
+        }
+        let close = forth(end, &white);
+        if close < bytes.len() && matches!(bytes[close], b',' | b';') {
+            end = close + 1;
+        }
+        end = forth(end, &space);
+        if end < bytes.len() && bytes[end] == b'#' {
+            end = forth(end, &|b| b != b'\n' && b != b'\r');
+        }
+        if end < bytes.len() && bytes[end] == b'\r' {
+            end += 1;
+        }
+        if end < bytes.len() && bytes[end] == b'\n' {
+            end += 1;
+            // Then whole lines that are blank, or comments indented into a block.
+            loop {
+                let line_end = forth(end, &|b| b != b'\n');
+                let line = &bytes[end..line_end];
+                let text = line.trim_ascii_start();
+                let indented = text.len() < line.len();
+                if line_end == bytes.len() || !(text.is_empty() || indented && text[0] == b'#') {
+                    break;
+                }
+                end = line_end + 1;
+            }
+        }
+        match reach.last_mut() {
+            Some(last) if last.end >= start => last.end = last.end.max(end),
+            _ => reach.push(start..end),
+        }
+    }
+    reach
 }
 
 /// A place in a file as `find` reports it: a line, and a column counting characters, from 1.
@@ -1123,6 +1224,71 @@ pub fn line_ranges(
         }
     }
     ranges
+}
+
+/// Whether `edited` keeps every byte of `original` outside `inside`, the reach of each deletion,
+/// in order, as [`outside_survives`] judges it, but allowing a comma written where none was: a
+/// deletion that leaves a tuple one item writes the comma that keeps it a tuple after that item,
+/// outside the reach of the match it deleted.  Each stretch between two reaches is looked for no
+/// further on than the reach before it is long, since only what that reach allowed but quaff did
+/// not take can stand before it.  Any other byte that is not where it was fails.
+///
+/// # Errors
+///
+/// Says which text outside the reaches did not survive, and where it was in `original`.
+pub fn deletion_survives(
+    original: &[u8],
+    inside: &[Range<usize>],
+    edited: &[u8],
+) -> Result<(), String> {
+    if outside_survives(original, inside, edited).is_ok() {
+        return Ok(());
+    }
+    // Where `needle` ends if it stands at `from` in `edited`, skipping a comma `needle` lacks
+    // only where a one-item tuple's would stand: just before a closing bracket or a line break.
+    let ends = |from: usize, needle: &[u8]| {
+        let (mut i, mut j) = (0, from);
+        while i < needle.len() {
+            match edited.get(j) {
+                Some(&b) if b == needle[i] => (i, j) = (i + 1, j + 1),
+                Some(b',') if matches!(needle[i], b')' | b']' | b'\n' | b'\r') => j += 1,
+                _ => return None,
+            }
+        }
+        Some(j)
+    };
+    let line = |offset: usize| memchr::memchr_iter(b'\n', &original[..offset]).count() + 1;
+    // Each stretch outside the reaches, with the reach before it, or none for the first: what
+    // the stretch may follow in `edited` is part of that reach that quaff did not take.
+    let mut stretches = Vec::with_capacity(inside.len() + 1);
+    let (mut from, mut reach) = (0, 0..0);
+    for range in inside {
+        stretches.push((from..range.start, reach));
+        (from, reach) = (range.end, range.clone());
+    }
+    stretches.push((from..original.len(), reach));
+    let count = stretches.len();
+    let mut position = 0;
+    for (index, (stretch, reach)) in stretches.into_iter().enumerate() {
+        let text = &original[stretch.clone()];
+        let last = index + 1 == count;
+        let left = &original[reach.clone()];
+        let found = (position..=(position + reach.len()).min(edited.len()))
+            .filter(|&start| {
+                start == position || memchr::memmem::find(left, &edited[position..start]).is_some()
+            })
+            .find_map(|start| ends(start, text).filter(|&end| !last || end == edited.len()));
+        let Some(end) = found else {
+            return Err(format!(
+                "the text from byte {} (line {}) to byte {} is not in the edited file in order",
+                stretch.start,
+                line(stretch.start),
+                stretch.end
+            ));
+        };
+        position = end;
+    }
+    Ok(())
 }
 
 /// Whether `edited` keeps every byte of `original` outside `inside`, in order: it must start

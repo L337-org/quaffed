@@ -17,6 +17,7 @@
 //! `$a * 2` - is written as the template says, and the edit is questioned rather than refused:
 //! the template is what was asked for, and a question can be answered by a further edit.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
@@ -270,54 +271,7 @@ fn whole_brackets(
     lexed: &Lexed,
     captured: &[Captured],
 ) -> Vec<Captured> {
-    let nodes: HashSet<(usize, usize)> = arena
-        .nodes()
-        .map(|node| {
-            let range = arena.range(node);
-            (range.start, range.end)
-        })
-        .collect();
-    let wrapping =
-        |b: &&Bracket| text.as_bytes()[b.open] == b'(' && !nodes.contains(&(b.open, b.close + 1));
-    let layout = |range: Range<usize>| {
-        let mut at = range.start;
-        loop {
-            let rest = &text[at..range.end];
-            at += rest.len() - rest.trim_start().len();
-            match lexed
-                .comments
-                .iter()
-                .find(|c| c.start == at && c.end <= range.end)
-            {
-                Some(comment) => at = comment.end,
-                None => return at == range.end,
-            }
-        }
-    };
-    let widened = |within: &Range<usize>, capture: &Range<usize>| {
-        let mut capture = capture.clone();
-        if capture.is_empty() {
-            return capture;
-        }
-        loop {
-            let inside = |b: &Bracket| within.start <= b.open && b.close < within.end;
-            let cut = lexed
-                .brackets
-                .iter()
-                .find(|b| inside(b) && capture.contains(&b.open) != capture.contains(&b.close));
-            let wraps = lexed.brackets.iter().filter(wrapping).find(|b| {
-                inside(b)
-                    && b.open < capture.start
-                    && capture.end <= b.close
-                    && layout(b.open + 1..capture.start)
-                    && layout(capture.end..b.close)
-            });
-            match cut.or(wraps) {
-                Some(b) => capture = capture.start.min(b.open)..capture.end.max(b.close + 1),
-                None => return capture,
-            }
-        }
-    };
+    let wrapping = Wrapping::new(text, arena, lexed);
     captured
         .iter()
         .map(|found| Captured {
@@ -325,10 +279,120 @@ fn whole_brackets(
             captures: found
                 .captures
                 .iter()
-                .map(|capture| widened(&found.range, capture))
+                .map(|capture| wrapping.widened(&found.range, capture))
                 .collect(),
         })
         .collect()
+}
+
+/// What widens a stretch of code to the whole of what it stands for: the brackets it holds one
+/// end of, and those that only wrap it.
+struct Wrapping<'a> {
+    text: &'a str,
+    lexed: &'a Lexed,
+    /// Every node's range, as `(start, end)`: a bracket some node spans is that node's.
+    nodes: HashSet<(usize, usize)>,
+    /// For each bracket, by its place in `lexed.brackets`, the one it stands directly inside.
+    outer: Vec<Option<usize>>,
+}
+
+impl<'a> Wrapping<'a> {
+    fn new(text: &'a str, arena: &Arena<'_>, lexed: &'a Lexed) -> Self {
+        let nodes = arena
+            .nodes()
+            .map(|node| {
+                let range = arena.range(node);
+                (range.start, range.end)
+            })
+            .collect();
+        // Brackets nest, and are in the order they open, so the one each stands inside is the
+        // nearest before it still open.
+        let mut outer = Vec::with_capacity(lexed.brackets.len());
+        let mut open: Vec<usize> = Vec::new();
+        for (index, bracket) in lexed.brackets.iter().enumerate() {
+            while open
+                .last()
+                .is_some_and(|&last| lexed.brackets[last].close < bracket.open)
+            {
+                open.pop();
+            }
+            outer.push(open.last().copied());
+            open.push(index);
+        }
+        Wrapping {
+            text,
+            lexed,
+            nodes,
+            outer,
+        }
+    }
+
+    /// The brackets that hold `at`, from either end inclusive, innermost first: found from the
+    /// last to open at or before it, through the brackets each stands inside, so that only
+    /// those around `at` are looked at.
+    fn around(&self, at: usize) -> impl Iterator<Item = &Bracket> {
+        let brackets = &self.lexed.brackets;
+        let last = brackets.partition_point(|b| b.open <= at).checked_sub(1);
+        std::iter::successors(last, |&index| self.outer[index])
+            .map(|index| &brackets[index])
+            .filter(move |b| at <= b.close)
+    }
+
+    /// Whether `range` holds only whitespace and comments.
+    fn layout(&self, range: Range<usize>) -> bool {
+        let mut at = range.start;
+        loop {
+            let rest = &self.text[at..range.end];
+            at += rest.len() - rest.trim_start().len();
+            let comments = &self.lexed.comments;
+            let index = comments.partition_point(|c| c.start < at);
+            match comments
+                .get(index)
+                .filter(|c| c.start == at && c.end <= range.end)
+            {
+                Some(comment) => at = comment.end,
+                None => return at == range.end,
+            }
+        }
+    }
+
+    /// `capture` taking in any bracket inside `within` it holds one end of, and then any that
+    /// wrap it with nothing but layout between.
+    fn widened(&self, within: &Range<usize>, capture: &Range<usize>) -> Range<usize> {
+        let mut capture = capture.clone();
+        if capture.is_empty() {
+            return capture;
+        }
+        let wrapping = |b: &&Bracket| {
+            self.text.as_bytes()[b.open] == b'(' && !self.nodes.contains(&(b.open, b.close + 1))
+        };
+        loop {
+            let inside = |b: &Bracket| within.start <= b.open && b.close < within.end;
+            // A bracket with one end in the capture, or wrapping it, holds its first or its last
+            // byte, so only the brackets around those two are looked at, in the order they open.
+            let mut near: Vec<&Bracket> = self
+                .around(capture.start)
+                .chain(self.around(capture.end - 1))
+                .collect();
+            near.sort_unstable_by_key(|b| b.open);
+            near.dedup_by_key(|b| b.open);
+            let cut = near
+                .iter()
+                .copied()
+                .find(|b| inside(b) && capture.contains(&b.open) != capture.contains(&b.close));
+            let wraps = near.iter().copied().filter(wrapping).find(|b| {
+                inside(b)
+                    && b.open < capture.start
+                    && capture.end <= b.close
+                    && self.layout(b.open + 1..capture.start)
+                    && self.layout(capture.end..b.close)
+            });
+            match cut.or(wraps) {
+                Some(b) => capture = capture.start.min(b.open)..capture.end.max(b.close + 1),
+                None => return capture,
+            }
+        }
+    }
 }
 
 /// How deeply each match stands inside the others' captures, or the two matches, later and
@@ -418,6 +482,9 @@ fn rewritten(
     names: &[&str],
     rewrite: &Rewrite,
 ) -> Result<Level, (usize, String)> {
+    if !rewrite.has_code() {
+        return deleted(text, arena, lexed, captured, names, rewrite);
+    }
     let before = Before {
         text,
         arena,
@@ -513,6 +580,459 @@ fn rewritten(
             text: out,
         },
     })
+}
+
+/// `text`, parsed as `arena`, with every match in `captured`, none overlapping, deleted by a
+/// rewrite with no code: each written over with the rewrite's comment, if it has one, or with
+/// nothing.
+///
+/// A rewrite with no code leaves nothing to say where the code around a match goes, so the
+/// match takes what would otherwise be left as debris: a statement or a list item alone on its
+/// lines takes those lines whole, its trailing comment and line break with them, unless the
+/// rewrite writes a comment there; otherwise the match takes one separator - a comma or a
+/// semicolon - its parent holds next to it, the one after it unless that one is a trailing comma
+/// and there is one before it.  A comma is taken across line breaks, since it separates the item
+/// from its neighbour wherever they fall; a semicolon only from the match's own line.  Everything inside the match goes with it, comments included,
+/// since they describe code that is gone.  A comment the rewrite writes may not have code after
+/// it on its line, which it would swallow.  A result that does not parse is left to the parse
+/// check, which refuses it.
+fn deleted(
+    text: &str,
+    arena: &Arena<'_>,
+    lexed: &Lexed,
+    captured: &[Captured],
+    names: &[&str],
+    rewrite: &Rewrite,
+) -> Result<Level, (usize, String)> {
+    let wrapping = Wrapping::new(text, arena, lexed);
+    let parents: HashMap<NodeId, NodeId> = arena
+        .nodes()
+        .flat_map(|node| arena.children(node).map(move |child| (child, node)))
+        .collect();
+    let children = RefCell::new(HashMap::new());
+    let mut taken: Vec<Range<usize>> = Vec::with_capacity(captured.len());
+    let mut separated: Vec<bool> = Vec::with_capacity(captured.len());
+    let mut writes: Vec<String> = Vec::with_capacity(captured.len());
+    let mut escapes: Vec<(usize, String)> = Vec::new();
+    for found in captured {
+        let rendered =
+            render(text, found, names, rewrite, lexed).map_err(|why| (found.range.start, why))?;
+        for name in &rendered.escaped {
+            escapes.push((found.range.start, escaped_note(text, found, names, name)));
+        }
+        let comment = !rendered.text.trim().is_empty();
+        let deletion = Deletion {
+            text,
+            arena,
+            wrapping: &wrapping,
+            taken: &taken,
+            parents: &parents,
+            children: &children,
+        };
+        let (range, took) = deletion.range(&found.range, !comment);
+        // A match that takes neither its lines nor a separator leaves a hole where it stood.
+        // A statement, or an item of a list, a tuple, or a call's or definition's own, can
+        // simply be gone; anywhere else what is left can parse and mean something else -
+        // `x = debug + a` becomes `x =  + a`, `return debug` becomes `return` - so it is refused.
+        if !took {
+            let matched = wrapping.widened(&(0..text.len()), &found.range);
+            let parent = deletion.parent(&matched);
+            // Every statement kind's name starts `Stmt`, as Ruff names them and
+            // `quaffed_python`'s kind list keeps them: its test holds the list to Ruff's enum.
+            let statement = arena
+                .nodes_within(matched.clone())
+                .next()
+                .is_some_and(|node| arena.kind(node).name().starts_with("Stmt"));
+            if !statement && !ITEMS.contains(&arena.kind(parent).name()) {
+                return Err((
+                    found.range.start,
+                    "removing this match would leave what holds it without it - an operator, a \
+                     call, a subscript, a slice, or a return, yield or raise - which may still \
+                     parse but would mean something else: remove the whole of what holds it, \
+                     or narrow the pattern so that it does not match here"
+                        .to_owned(),
+                ));
+            }
+        }
+        // The last of a run of list items, each of which took the separator after it, has none
+        // left to take, so the run takes the one before it, if its parent holds one.
+        if !took {
+            let mut first = taken.len();
+            while first > 0 && taken[first - 1].end == range.start && separated[first - 1] {
+                first -= 1;
+            }
+            if first < taken.len() {
+                let floor = first.checked_sub(1).map_or(0, |before| taken[before].end);
+                if let Some(start) =
+                    deletion.before(&found.range, taken[first].start, floor, !comment)
+                {
+                    taken[first].start = start;
+                }
+            }
+        }
+        separated.push(took);
+        if comment {
+            let rest = &text[range.end..line_end(text, range.end)];
+            let rest = rest.trim();
+            if !rest.is_empty() && !rest.starts_with('#') {
+                return Err((
+                    found.range.start,
+                    format!(
+                        "the rewrite is a comment, and {rest:?} follows the match on its line, so \
+                         the comment would swallow that code: narrow the pattern so that it does \
+                         not match here, or delete the match instead"
+                    ),
+                ));
+            }
+        }
+        taken.push(range);
+        writes.push(if comment {
+            rendered.text
+        } else {
+            String::new()
+        });
+    }
+    // A match taking its whole line may start before an earlier one on that line ends; the
+    // earlier one then takes in the start of the line, and the later one starts where it ends,
+    // so that each is written once and the line goes whole.
+    for index in (1..taken.len()).rev() {
+        if taken[index].start < taken[index - 1].end {
+            taken[index - 1].start = taken[index - 1].start.min(taken[index].start);
+            taken[index].start = taken[index - 1].end.min(taken[index].end);
+        }
+    }
+    // A tuple left with one item and no comma after it would be that item alone, bracketed or
+    // not, so the comma that keeps it a tuple is written after it.
+    let mut parts: Vec<(Range<usize>, String)> = taken.into_iter().zip(writes).collect();
+    for at in one_item_tuples(text, arena, &wrapping, &parents, captured, &parts) {
+        let index = parts.partition_point(|(range, _)| range.start < at);
+        parts.insert(index, (at..at, ",".to_owned()));
+    }
+    Ok(Level {
+        questioned: escapes,
+        ..level(text, &parts)
+    })
+}
+
+/// `text` with each of `parts` written over its range, which are in order and do not overlap, and
+/// each range's old and new place; nothing questioned.
+fn level(text: &str, parts: &[(Range<usize>, String)]) -> Level {
+    let mut out = String::with_capacity(text.len());
+    let mut copied = 0;
+    let mut edits = Vec::with_capacity(parts.len());
+    for (range, written) in parts {
+        out.push_str(&text[copied..range.start]);
+        let base = out.len();
+        out.push_str(written);
+        edits.push((range.clone(), base..out.len()));
+        copied = range.end;
+    }
+    out.push_str(&text[copied..]);
+    Level {
+        text: out,
+        edits,
+        questioned: Vec::new(),
+    }
+}
+
+/// Where to write a comma so that each tuple the deletions in `parts` leave with one item stays a
+/// tuple: after that item, unless a comma after it survives.  A tuple left with none is left to
+/// the parse check where it has no brackets, and is the empty tuple where it has.
+fn one_item_tuples(
+    text: &str,
+    arena: &Arena<'_>,
+    wrapping: &Wrapping<'_>,
+    parents: &HashMap<NodeId, NodeId>,
+    captured: &[Captured],
+    parts: &[(Range<usize>, String)],
+) -> Vec<usize> {
+    let whole = 0..text.len();
+    // `parts` are in order and do not overlap, so the one that could hold `at` is found by search.
+    let holding = |at: usize| {
+        let index = parts.partition_point(|(range, _)| range.start <= at);
+        index
+            .checked_sub(1)
+            .map(|index| &parts[index].0)
+            .filter(|range| range.contains(&at))
+    };
+    let gone = |at: usize| holding(at).is_some();
+    let deletion = Deletion {
+        text,
+        arena,
+        wrapping,
+        taken: &[],
+        parents,
+        children: &RefCell::new(HashMap::new()),
+    };
+    let mut tuples: Vec<NodeId> = captured
+        .iter()
+        .map(|found| deletion.parent(&wrapping.widened(&whole, &found.range)))
+        .filter(|&parent| arena.kind(parent).name() == "ExprTuple")
+        .collect();
+    tuples.sort_unstable_by_key(|tuple| arena.range(*tuple).start);
+    tuples.dedup();
+    let mut commas = Vec::new();
+    for tuple in tuples {
+        let items: Vec<Range<usize>> = arena
+            .children(tuple)
+            .map(|item| wrapping.widened(&whole, &arena.range(item)))
+            .collect();
+        let left: Vec<&Range<usize>> = items.iter().filter(|item| !gone(item.start)).collect();
+        let ([item], true) = (&left[..], items.len() > 1) else {
+            continue;
+        };
+        // The next byte after the item that is neither whitespace nor deleted.
+        let mut next = Some(item.end).filter(|&at| at < text.len());
+        while let Some(at) = next {
+            next = match holding(at) {
+                Some(range) => Some(range.end),
+                None if text.as_bytes()[at].is_ascii_whitespace() => Some(at + 1),
+                None => break,
+            }
+            .filter(|&at| at < text.len());
+        }
+        if next.is_none_or(|at| text.as_bytes()[at] != b',') {
+            commas.push(item.end);
+        }
+    }
+    commas
+}
+
+/// The kinds whose children are items that a deletion taking no separator may simply leave out:
+/// `[debug]` is `[]`, `f(debug)` is `f()`, `class A(debug)` is `class A()`.  A set is not one,
+/// since `{}` is a dict.  Each is Ruff's name for the node kind, as `quaffed_python`'s kind list
+/// gives it; a parameter is left out because no pattern of its own matches one.
+const ITEMS: &[&str] = &["ExprList", "ExprTuple", "Arguments"];
+
+/// Where the line holding `offset` ends: its line break, or the end of `text`.
+fn line_end(text: &str, offset: usize) -> usize {
+    text[offset..]
+        .find('\n')
+        .map_or(text.len(), |at| offset + at)
+}
+
+/// What one match of a rewrite with no code takes from the file, given what the matches before
+/// it in the same file took.
+struct Deletion<'a, 'text> {
+    text: &'a str,
+    arena: &'a Arena<'text>,
+    wrapping: &'a Wrapping<'a>,
+    /// What the matches before took, in order.
+    taken: &'a [Range<usize>],
+    /// Each node's parent.
+    parents: &'a HashMap<NodeId, NodeId>,
+    /// The ranges of each parent's children, in order, as [`holds`](Deletion::holds) needs them.
+    children: &'a RefCell<HashMap<NodeId, Vec<Range<usize>>>>,
+}
+
+impl Deletion<'_, '_> {
+    /// What deleting `found` takes: the match with the brackets that only wrap it, and its whole
+    /// lines where `whole_lines` and it stands alone on them, or else one separator its parent
+    /// holds next to it; and whether it took either.  `whole_lines` is false for a comment
+    /// written in place of the match, which keeps its line and so may take no comma from
+    /// another; [`before`](Deletion::before) calls the same choice `across_lines`.
+    fn range(&self, found: &Range<usize>, whole_lines: bool) -> (Range<usize>, bool) {
+        let text = self.text;
+        let matched = self.wrapping.widened(&(0..text.len()), found);
+        let floor = self.taken.last().map_or(0, |taken| taken.end);
+        let parent = self.parent(&matched);
+        // The separator after the match, if its parent holds one there: on the same line for a
+        // semicolon, and for a comma anywhere before the next code where `whole_lines`, since it
+        // separates the item from its neighbour wherever the line breaks fall.  A comment
+        // written in place of the item takes none from another line, which it would join.
+        let after = {
+            let rest = &text[matched.end..];
+            let at = matched.end + rest.len() - rest.trim_start().len();
+            (at < text.len()
+                && self.separator(parent, at)
+                && (text.as_bytes()[at] == b',' && whole_lines
+                    || !text[matched.end..at].contains('\n')))
+            .then_some(at)
+        };
+        let line_start = text[..matched.start].rfind('\n').map_or(0, |at| at + 1);
+        let end = line_end(text, matched.end);
+        // A match whose comma starts the next line is not alone on its lines: taking them would
+        // leave that comma with nothing before it.
+        if whole_lines && after.is_none_or(|at| at < end) {
+            let rest = text[after.map_or(matched.end, |at| at + 1)..end].trim();
+            let alone_after = rest.is_empty() || rest.starts_with('#');
+            // Only the matches taken last can reach back onto this line: their ends only grow.
+            let near: Vec<&Range<usize>> = self
+                .taken
+                .iter()
+                .rev()
+                .take_while(|taken| taken.end > line_start)
+                .collect();
+            let alone_before = (line_start..matched.start).all(|at| {
+                text.as_bytes()[at].is_ascii_whitespace()
+                    || near.iter().any(|taken| taken.contains(&at))
+            });
+            if alone_before && alone_after {
+                let lines = line_start..(end + 1).min(text.len());
+                return (self.whole_lines(lines), true);
+            }
+        }
+        let before = self.before(found, matched.start, floor, whole_lines);
+        let trailing_comma = after.is_some_and(|at| {
+            text.as_bytes()[at] == b','
+                && matches!(
+                    text[at + 1..].trim_start().as_bytes().first(),
+                    Some(b')' | b']' | b'}')
+                )
+        });
+        match (after, before) {
+            // A comment written in place of the item stands before the trailing comma, which
+            // ends its line; otherwise the item takes the comma before it, keeping the trailing
+            // one as the list's layout.
+            (Some(_), Some(start)) if trailing_comma && whole_lines => (start..matched.end, true),
+            (Some(at), _) => {
+                // The spaces after a separator go with it while code follows on the line.
+                let rest = &text[at + 1..];
+                let spaces = rest.len() - rest.trim_start_matches([' ', '\t']).len();
+                let spaces = match rest[spaces..].chars().next() {
+                    None | Some('\n' | '\r' | '#') => 0,
+                    Some(_) => spaces,
+                };
+                (matched.start..at + 1 + spaces, true)
+            }
+            (None, Some(start)) => (start..matched.end, true),
+            (None, None) => (matched, false),
+        }
+    }
+
+    /// Where deleting from `start` back to the separator before it would start, if the parent of
+    /// `found` holds a separator there after `floor`, which earlier matches took up to: on the
+    /// same line for a semicolon, and for a comma unless `across_lines`.  The spaces before the
+    /// separator go with it.
+    fn before(
+        &self,
+        found: &Range<usize>,
+        start: usize,
+        floor: usize,
+        across_lines: bool,
+    ) -> Option<usize> {
+        let text = self.text;
+        let parent = self.parent(&self.wrapping.widened(&(0..text.len()), found));
+        let floor = floor.min(start);
+        let at = floor + text[floor..start].trim_end().len();
+        // A comma in a comment is no separator, and one with a comment between it and the match
+        // is not taken, since the comment would go with it.
+        let separator = at.checked_sub(1).filter(|&at| {
+            at >= floor
+                && !self.in_comment(at)
+                && self.separator(parent, at)
+                && (text.as_bytes()[at] == b',' && across_lines || !text[at..start].contains('\n'))
+        })?;
+        Some(floor + text[floor..separator].trim_end_matches([' ', '\t']).len())
+    }
+
+    /// Whether `at` lies inside a comment.
+    fn in_comment(&self, at: usize) -> bool {
+        let comments = &self.wrapping.lexed.comments;
+        let index = comments.partition_point(|comment| comment.start <= at);
+        index > 0 && comments[index - 1].contains(&at)
+    }
+
+    /// Whether `at` is a comma or a semicolon `parent` holds between its children.
+    fn separator(&self, parent: NodeId, at: usize) -> bool {
+        matches!(self.text.as_bytes()[at], b',' | b';') && self.holds(parent, at)
+    }
+
+    /// `lines`, the whole lines a match stands alone on, with what goes with them: the comment
+    /// lines after a block the match ends with, indented into it, which describe code that is
+    /// gone; and the blank lines either side that would otherwise be left as a gap of their own.
+    /// Between code, where blank lines stand both before and after, the narrower run goes, so the
+    /// wider gap is left; at the start or the end of the file, the blank lines at that edge go.
+    fn whole_lines(&self, lines: Range<usize>) -> Range<usize> {
+        let text = self.text;
+        let indent = |at: usize| {
+            let line = &text[at..line_end(text, at)];
+            line.len() - line.trim_start_matches([' ', '\t']).len()
+        };
+        let blank = |at: usize| text[at..line_end(text, at)].trim().is_empty();
+        let next_line = |at: usize| (line_end(text, at) + 1).min(text.len());
+        let mut end = lines.end;
+        // The lines without their final line break, which a last line may not have.
+        let body = text[lines.clone()].trim_end_matches(['\n', '\r']);
+        let last_line = lines.start + body.rfind('\n').map_or(0, |at| at + 1);
+        let base = indent(lines.start);
+        if indent(last_line) > base {
+            let mut at = end;
+            while at < text.len() {
+                let line = text[at..line_end(text, at)].trim_start();
+                if line.starts_with('#') && indent(at) > base {
+                    end = next_line(at);
+                } else if !line.is_empty() {
+                    break;
+                }
+                at = next_line(at);
+            }
+        }
+        // The blank lines either side: those before, back to where the line before them
+        // starts, and those after, to where the line after them starts.
+        let mut start = lines.start;
+        let mut before = 0;
+        while start > 0 {
+            let previous = text[..start - 1].rfind('\n').map_or(0, |at| at + 1);
+            if !blank(previous) {
+                break;
+            }
+            (start, before) = (previous, before + 1);
+        }
+        let (mut past, mut after) = (end, 0);
+        while past < text.len() && blank(past) {
+            (past, after) = (next_line(past), after + 1);
+        }
+        // At the start or the end of the file, the blank lines at that edge go too, so that none
+        // are left there.  Between code, the gap that is left is the wider of the two, so that the
+        // file's own spacing stands: deleting a class's last method leaves the class's gap.
+        if start == 0 || past == text.len() {
+            start..past
+        } else if before > 0 && after > 0 && before < after {
+            start..end
+        } else if before > 0 && after > 0 {
+            lines.start..past
+        } else {
+            lines.start..end
+        }
+    }
+
+    /// The deepest node whose range holds `range` and is wider than it: from the first node
+    /// inside `range`, found by search, up through the parents until one reaches beyond it.
+    fn parent(&self, range: &Range<usize>) -> NodeId {
+        let arena = self.arena;
+        let Some(mut node) = arena.nodes_within(range.clone()).next() else {
+            return arena.root();
+        };
+        while let Some(&parent) = self.parents.get(&node) {
+            node = parent;
+            let held = arena.range(node);
+            if held.start < range.start || range.end < held.end {
+                break;
+            }
+        }
+        node
+    }
+
+    /// Whether `at` is a separator `parent` holds between its children: inside its range and
+    /// inside none of theirs.
+    fn holds(&self, parent: NodeId, at: usize) -> bool {
+        let arena = self.arena;
+        let range = arena.range(parent);
+        if !(range.start <= at && at < range.end || parent == arena.root()) {
+            return false;
+        }
+        // Each parent's children's ranges, gathered once and in order, so `at` is found among
+        // them by search.
+        let mut children = self.children.borrow_mut();
+        let ranges = children
+            .entry(parent)
+            .or_insert_with(|| arena.children(parent).map(|c| arena.range(c)).collect());
+        let index = ranges.partition_point(|child| child.start <= at);
+        !index
+            .checked_sub(1)
+            .is_some_and(|index| ranges[index].contains(&at))
+    }
 }
 
 /// The first comment in `found` that the rewrite drops: in no capture it writes back, not at
@@ -1131,6 +1651,221 @@ mod tests {
         replaced(pattern, with, text)
             .unwrap_or_else(|why| panic!("{why}"))
             .expect("something matched")
+    }
+
+    /// `text` with every match of `pattern` deleted, by a rewrite with no code.
+    fn deleted(pattern: &str, text: &str) -> String {
+        ok(pattern, "", text)
+    }
+
+    #[test]
+    fn a_statement_alone_on_its_line_takes_the_line_and_its_comment() {
+        assert_eq!(
+            deleted(
+                "print($x)",
+                "import os\nprint(1)  # noqa\nx = 2\nif x:\n    print(x)\n    y = 3\n"
+            ),
+            "import os\nx = 2\nif x:\n    y = 3\n"
+        );
+        // Its own line ending, whatever it is; the line around it is left as it was.
+        assert_eq!(
+            deleted("import os", "a()\nimport os\r\nimport sys\r\n"),
+            "a()\nimport sys\r\n"
+        );
+    }
+
+    #[test]
+    fn everything_inside_a_deleted_node_goes_with_it_but_not_the_comments_around_it() {
+        assert_eq!(
+            deleted(
+                "if $c:\n    $b...\nelse:\n    $e...",
+                "# above\nif x:  # head\n    a()\n    # inner\nelse:\n    b()  # tail\n# below\nz()\n"
+            ),
+            "# above\n# below\nz()\n"
+        );
+    }
+
+    #[test]
+    fn a_deleted_block_takes_the_comments_indented_into_it_after_its_last_line() {
+        assert_eq!(
+            deleted(
+                "if $c:\n    $b...",
+                "if x:\n    a()\n\n    # trailing\nz()\n"
+            ),
+            "z()\n"
+        );
+        // One at the block's own depth or less is not the block's.
+        assert_eq!(
+            deleted("if $c:\n    $b...", "if x:\n    a()\n# keep\nz()\n"),
+            "# keep\nz()\n"
+        );
+    }
+
+    #[test]
+    fn a_deletion_with_blank_lines_either_side_takes_those_after_it() {
+        let text = "def f():\n    pass\n\n\ndef g():\n    pass\n\n\ndef h():\n    pass\n";
+        assert_eq!(
+            deleted("def g():\n    pass", text),
+            "def f():\n    pass\n\n\ndef h():\n    pass\n"
+        );
+        // At the start of the file, or its end, the blank lines at that edge go too.
+        assert_eq!(
+            deleted("def f():\n    pass", text),
+            "def g():\n    pass\n\n\ndef h():\n    pass\n"
+        );
+        assert_eq!(
+            deleted("def h():\n    pass", text),
+            "def f():\n    pass\n\n\ndef g():\n    pass\n"
+        );
+        // Between code, the wider gap is left: a class's last method leaves the class's two.
+        assert_eq!(
+            deleted(
+                "def g(self):\n    pass",
+                "class A:\n    def f(self):\n        pass\n\n    def g(self):\n        pass\n\n\nx = 1\n"
+            ),
+            "class A:\n    def f(self):\n        pass\n\n\nx = 1\n"
+        );
+        // With blank lines on one side only, they stay.
+        assert_eq!(deleted("b()", "a()\n\nb()\nc()\n"), "a()\n\nc()\n");
+    }
+
+    #[test]
+    fn a_decorator_takes_its_line() {
+        assert_eq!(
+            deleted(
+                "@retry($n)",
+                "class A:\n    @retry(3)  # why\n    @cache\n    def f(self):\n        pass\n"
+            ),
+            "class A:\n    @cache\n    def f(self):\n        pass\n"
+        );
+    }
+
+    #[test]
+    fn a_statement_sharing_its_line_takes_its_semicolon() {
+        assert_eq!(deleted("a = 1", "a = 1; b = 2\n"), "b = 2\n");
+        // The comment stays with the line, which stays.
+        assert_eq!(deleted("b = 2", "a = 1; b = 2  # why\n"), "a = 1  # why\n");
+        // Every statement on a line deleted takes the line, indentation and all.
+        assert_eq!(
+            deleted("$x = $y", "if t:\n    a = 1; b = 2\n    c()\n"),
+            "if t:\n    c()\n"
+        );
+    }
+
+    #[test]
+    fn a_list_item_takes_one_comma_and_never_another_nodes() {
+        assert_eq!(deleted("debug", "f(a, debug)\n"), "f(a)\n");
+        assert_eq!(deleted("debug", "f(debug, a)\n"), "f(a)\n");
+        // A comma across a line break, before or after.
+        assert_eq!(deleted("debug", "f(a,\n  debug)\n"), "f(a)\n");
+        assert_eq!(deleted("debug", "f(debug\n  , a)\n"), "f(a)\n");
+        assert_eq!(
+            deleted("debug", "f(\n    debug\n    , a)\n"),
+            "f(\n    a)\n"
+        );
+        // A trailing comma stays as the list's layout.
+        assert_eq!(deleted("debug", "x = [a, debug,]\n"), "x = [a,]\n");
+        // Alone on its line, the item takes the line.
+        assert_eq!(
+            deleted("debug", "f(\n    a,\n    debug,  # remove\n)\n"),
+            "f(\n    a,\n)\n"
+        );
+        // Runs of items, each taking one.
+        assert_eq!(deleted("debug", "f(debug, debug)\n"), "f()\n");
+        assert_eq!(deleted("debug", "f(debug, a, debug, debug)\n"), "f(a)\n");
+        // With the brackets that only wrap it.
+        assert_eq!(deleted("debug", "f(a, (debug))\n"), "f(a)\n");
+        // A comma in a comment is no separator, and the comment line stays.
+        assert_eq!(
+            deleted(
+                "\"debug\"",
+                "x = [\n    \"a\",\n    # \"b\",\n    \"debug\"]\n"
+            ),
+            "x = [\n    \"a\",\n    # \"b\",\n    ]\n"
+        );
+        // A last line with no line break, ending in a character of more than one byte.
+        assert_eq!(deleted("$x = $y", "a()\nx = caf\u{e9}"), "a()\n");
+        // A tuple left with one item stays a tuple.
+        assert_eq!(deleted("\"skip\"", "x = [(t, \"skip\")]\n"), "x = [(t,)]\n");
+        assert_eq!(deleted("\"skip\"", "x = [(\"skip\", t)]\n"), "x = [(t,)]\n");
+        assert_eq!(deleted("b", "x = a, b\nd[a, b]\n"), "x = a,\nd[a,]\n");
+        assert_eq!(
+            deleted("b", "x = (\n    a,\n    b\n)\n"),
+            "x = (\n    a,\n)\n"
+        );
+        assert_eq!(
+            deleted("a", "x = (\n    a,\n    b\n)\n"),
+            "x = (\n    b,\n)\n"
+        );
+        assert_eq!(deleted("b", "x = (a, b, c)\n"), "x = (a, c)\n");
+        // A list left with one item is still a list, so it needs no comma.
+        assert_eq!(deleted("b", "x = [a, b]\n"), "x = [a]\n");
+        // Anywhere but a statement or an item, a match that takes nothing is refused, since what
+        // is left may parse and mean something else.
+        for text in [
+            "x = debug + a\n",
+            "x = a - debug\n",
+            "f(debug * args)\n",
+            "x = not debug\n",
+            "x = a and debug or b\n",
+            "x = a < debug\n",
+            "x = debug(1)\n",
+            "x = debug[0]\n",
+            "x = a[1:debug]\n",
+            "x = {debug}\n",
+            "def f():\n    return debug\n",
+            "def f():\n    yield debug\n",
+            "try:\n    pass\nexcept E:\n    raise debug\n",
+        ] {
+            let refused = replaced("debug", "", text).unwrap_err();
+            assert!(
+                refused.contains("mean something else"),
+                "{text:?}: {refused}"
+            );
+        }
+        // An item, the only one, simply goes.
+        assert_eq!(
+            deleted(
+                "debug",
+                "f(debug)\nx = [debug]\nclass A(debug):\n    pass\n"
+            ),
+            "f()\nx = []\nclass A():\n    pass\n"
+        );
+        // A comma the parent does not hold is never taken: this one is the call's, not the sum's,
+        // so the match takes nothing, and is refused.  Taking the comma would have left
+        // `g(a + c)`, which parses.
+        assert!(
+            replaced("b", "", "g(a + b, c)\n")
+                .unwrap_err()
+                .contains("mean something else")
+        );
+    }
+
+    #[test]
+    fn a_comment_rewrite_stands_in_place_of_the_code() {
+        assert_eq!(
+            ok(
+                "print($x)",
+                "# print($x)",
+                "def f():\n    print(x)  # why\n    return\n"
+            ),
+            "def f():\n    # print(x)  # why\n    return\n"
+        );
+        assert_eq!(
+            ok("debug", "# debug", "f(\n    a,\n    debug,\n)\n"),
+            "f(\n    a,\n    # debug\n)\n"
+        );
+        // It takes no comma from another line, which would join it to that line.
+        assert_eq!(
+            ok("debug", "# debug", "f(\n    a,\n    debug\n)\n"),
+            "f(\n    a,\n    # debug\n)\n"
+        );
+        // Where code follows on the line, the comment would swallow it.
+        let refused = replaced("print($x)", "# print($x)", "print(x); y = 1\n").unwrap_err();
+        assert!(
+            refused.starts_with("1:1: the rewrite is a comment"),
+            "{refused}"
+        );
     }
 
     #[test]

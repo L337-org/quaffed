@@ -111,13 +111,14 @@ character.
 ## Running a script
 
 The command line (`crates/quaffed/src/run.rs`) parses every source into one `Program`, runs the
-checker, then refuses anything this build cannot yet run - `delete`, and a structural `replace`
-whose rewrite has no code - each exit 5 at where it was written.  It compiles every backticked
-pattern, and every rewrite against its pattern, so one that is not a pattern, or a rewrite that
-names what its pattern does not bind, is exit 3 there too.  Only then does it look at
-a file.  Every file is read once, and taken through the statements in order, so a statement sees
-the edits before it; the statements are then evaluated in order over the results.  Editing,
-output, notes, assertion failures and exit codes are in `search.md`.
+checker, then refuses anything this build cannot yet run, each exit 5 at where it was written.
+`delete` is planned as a structural `replace` whose rewrite is empty, with no behaviour of its
+own (`replacing`).  It compiles every backticked pattern, and every rewrite against its pattern,
+so one that is not a pattern, or a rewrite that names what its pattern does not bind, is exit 3
+there too.  Only then does it look at a file.  Every file is read once, and taken through the
+statements in order, so a statement sees the edits before it; the statements are then evaluated
+in order over the results.  Editing, output, notes, assertion failures and exit codes are in
+`search.md`.
 
 ## Properties
 

@@ -295,7 +295,7 @@ fn overlapping_matches_are_a_fault_of_find_unless_they_may_nest() {
     .into();
     let edited = files(&[("a.txt", b"h(h(x))\n")]);
     let invariants = |nest| -> Vec<Invariant> {
-        minimal_diff(&before, &matches, &edited, nest)
+        minimal_diff(&before, &matches, &edited, nest, false)
             .iter()
             .map(|(_, (invariant, _))| *invariant)
             .collect()
@@ -310,11 +310,11 @@ fn a_change_within_a_matched_line_is_seen_by_bytes_but_not_by_lines() {
     let matches: BTreeMap<String, Vec<Span>> =
         [("a.txt".to_owned(), vec![span((1, 5), (1, 7))])].into();
     let edited = files(&[("a.txt", b"ONE THE two\nthree\n")]);
-    let found = minimal_diff(&before, &matches, &edited, false);
+    let found = minimal_diff(&before, &matches, &edited, false, false);
     let invariants: Vec<Invariant> = found.iter().map(|(_, (invariant, _))| *invariant).collect();
     assert_eq!(invariants, vec![Invariant::MinimalDiff], "{found:?}");
     let edited = files(&[("a.txt", b"one THE two\nTHREE\n")]);
-    let found = minimal_diff(&before, &matches, &edited, false);
+    let found = minimal_diff(&before, &matches, &edited, false, false);
     let invariants: Vec<Invariant> = found.iter().map(|(_, (invariant, _))| *invariant).collect();
     assert_eq!(
         invariants,
@@ -324,10 +324,77 @@ fn a_change_within_a_matched_line_is_seen_by_bytes_but_not_by_lines() {
 }
 
 #[test]
+fn a_deletion_may_take_what_lies_next_to_its_matches_and_nothing_else() {
+    let before = files(&[("a.txt", b"one\nf(a,\n  debug)  # x\nthree\n")]);
+    let matches: BTreeMap<String, Vec<Span>> =
+        [("a.txt".to_owned(), vec![span((3, 3), (3, 7))])].into();
+    let invariants = |edited: &[u8]| -> Vec<Invariant> {
+        minimal_diff(&before, &matches, &files(&[("a.txt", edited)]), false, true)
+            .iter()
+            .map(|(_, (invariant, _))| *invariant)
+            .collect()
+    };
+    // The match took the comma before it, from the line before.
+    assert_eq!(
+        invariants(b"one\nf(a)  # x\nthree\n"),
+        Vec::<Invariant>::new()
+    );
+    // Nothing else may go: not the comment after the bracket, which is not the match's, nor
+    // anything on another line.
+    for edited in [
+        &b"one\nf(a)\nthree\n"[..],
+        b"onE\nf(a)  # x\nthree\n",
+        b"one\nf(a)  # x\nthreE\n",
+        b"one\nf(  # x\nthree\n",
+    ] {
+        assert_eq!(
+            invariants(edited),
+            vec![Invariant::MinimalDiff],
+            "{edited:?}"
+        );
+    }
+}
+
+#[test]
+fn a_deletion_may_take_its_lines_with_the_blank_and_block_comment_lines_after_them() {
+    let before = files(&[("a.py", b"if x:\n    a()\n\n    # gone\nz()\n")]);
+    let matches: BTreeMap<String, Vec<Span>> =
+        [("a.py".to_owned(), vec![span((1, 1), (2, 7))])].into();
+    let judged = |edited: &[u8]| {
+        minimal_diff(&before, &matches, &files(&[("a.py", edited)]), false, true).len()
+    };
+    assert_eq!(judged(b"z()\n"), 0);
+    // Not the next code.
+    assert_eq!(judged(b""), 1);
+}
+
+#[test]
+fn a_deletion_may_add_the_comma_that_keeps_a_tuple_a_tuple_and_nothing_else() {
+    // A second match in the file, whose reach a stretch could start inside.
+    let before = files(&[("a.py", b"x = (skip, t)\ny = f(a, debug)\n")]);
+    let matches: BTreeMap<String, Vec<Span>> = [(
+        "a.py".to_owned(),
+        vec![span((1, 6), (1, 9)), span((2, 10), (2, 14))],
+    )]
+    .into();
+    let judged = |edited: &[u8]| {
+        minimal_diff(&before, &matches, &files(&[("a.py", edited)]), false, true).len()
+    };
+    assert_eq!(judged(b"x = (t,)\ny = f(a)\n"), 0);
+    // What quaff left of a reach may stand before the next stretch, but nothing it never held.
+    assert_eq!(judged(b"x = (t,)\ny = f(a, )\n"), 0);
+    assert_eq!(judged(b"x = (t,)\ny = f(a XYZ)\n"), 1);
+    // A comma only where a one-item tuple's stands, and no other change.
+    assert_eq!(judged(b"x = (t,)\ny =, f(a)\n"), 1);
+    assert_eq!(judged(b"x = (u,)\ny = f(a)\n"), 1);
+    assert_eq!(judged(b"x = (t,);\ny = f(a)\n"), 1);
+}
+
+#[test]
 fn a_file_created_deleted_or_changed_without_a_match_breaks_minimal_diff() {
     let before = files(&[("a.txt", b"a"), ("b.txt", b"b")]);
     let edited = files(&[("a.txt", b"A"), ("c.txt", b"c")]);
-    let found = minimal_diff(&before, &BTreeMap::new(), &edited, false);
+    let found = minimal_diff(&before, &BTreeMap::new(), &edited, false, false);
     let said: Vec<(&str, &str)> = found
         .iter()
         .map(|(path, (_, what))| (path.as_str(), what.as_str()))
@@ -446,6 +513,7 @@ const WORD: Case = Case {
     languages: &["Python", "text"],
     outcome: Outcome::Edits,
     parsed_only: false,
+    deletes: false,
 };
 
 /// The real `quaff`, with what it did changed afterwards by `breaks`, given the project, the
@@ -522,6 +590,7 @@ fn a_parsed_only_case_runs_over_just_the_files_the_oracle_accepts() {
         languages: &["Python"],
         outcome: Outcome::Edits,
         parsed_only: true,
+        deletes: false,
     };
     let python = Python::new();
     let mut corpus = project();
@@ -540,6 +609,7 @@ fn a_parsed_only_case_runs_over_just_the_files_the_oracle_accepts() {
     // Over every file, the one that does not parse refuses even the `find`, naming it.
     let everything = Case {
         parsed_only: false,
+        deletes: false,
         ..STRUCTURAL
     };
     let failures = check(

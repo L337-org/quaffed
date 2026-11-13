@@ -134,7 +134,13 @@ case, over each language it names, `find` gives the count `N`, and then:
 - **Atomicity**: the edit expecting `N + 1` exits 2, every file byte-identical.
 - **Minimal diff**: the edit expecting `N` keeps every byte outside the matches `find` reported,
   in order, and, as a check that needs no column arithmetic, every line outside the matched
-  lines.  What replaced a match is not judged here; the end-to-end tests do that.
+  lines.  A case marked `deletes` is judged by bytes alone, outside what a deletion may take
+  next to each match (`deletion_reach`): the brackets that only wrap it, whitespace and a
+  separator either side, its indentation and the blank lines before it, and a comment, the line
+  break and blank or indented comment lines after it, allowing the comma written after the item
+  left in a one-item tuple (`deletion_survives`).  A comma taken from the line before changes
+  that line, so the check by lines does not apply.  What replaced a match is not judged here; the
+  end-to-end tests do that.
 - **Determinism**: two runs give the same exit, output and files.
 - **Still parses**: the language's oracle accepts after the edit every file it accepted before; a
   case marked `Refused` must exit 9, write nothing, and say the words the case gives, so that a
@@ -191,7 +197,10 @@ differ.
 2. Cover what could go wrong on the operation's own output, such as a replacement that holds its
    own match, and an edit quaff must refuse, marked `Outcome::Refused` with words from the
    refusal it exercises.
-3. Run the corpus run.  A failure names the case, the language, the invariant and the file.
+3. Set `deletes` only for an edit that deletes, taking its separator or its line as well as the
+   match.  Minimal diff is then judged by bytes outside what a deletion may take next to each
+   match.
+4. Run the corpus run.  A failure names the case, the language, the invariant and the file.
 
 ### Checklist: adding a language
 

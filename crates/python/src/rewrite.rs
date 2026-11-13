@@ -20,12 +20,13 @@ use std::ops::Range;
 
 use quaffed_syntax::{Hole, Pattern};
 use ruff_python_ast::token::TokenKind;
-use ruff_python_parser::ParseOptions;
+use ruff_python_parser::{Mode, ParseOptions};
 use ruff_text_size::Ranged;
 
 use crate::parse::ParseError;
 use crate::pattern::{
-    Claim, identifier_len, node_spanning, parse_either, placeholder_stem, substitute,
+    Claim, DECORATED, identifier_len, node_spanning, parse_as, parse_either, placeholder_stem,
+    substitute,
 };
 
 /// A compiled rewrite template: the template as written, and where in it each captured name is
@@ -34,6 +35,7 @@ use crate::pattern::{
 pub struct Rewrite {
     text: String,
     sites: Vec<Site>,
+    has_code: bool,
 }
 
 impl Rewrite {
@@ -47,6 +49,14 @@ impl Rewrite {
     #[must_use]
     pub fn sites(&self) -> &[Site] {
         &self.sites
+    }
+
+    /// Whether the template has code, rather than being empty or only whitespace and comments.
+    /// One with none deletes what matched, so the separator and the line around each match are
+    /// the caller's to remove, where nothing in the template says what becomes of them.
+    #[must_use]
+    pub fn has_code(&self) -> bool {
+        self.has_code
     }
 }
 
@@ -114,10 +124,6 @@ pub enum RewriteError {
         /// Where.
         offset: usize,
     },
-    /// The template has no code: it is empty, or only whitespace and comments.  Replacing what
-    /// matched with nothing, which would delete it, is not built; the caller reports it as a
-    /// construct this build does not have, so that it can be given that meaning later.
-    Empty,
     /// The template is longer than an arena's offsets reach.
     TooLong(quaffed_syntax::TooLong),
 }
@@ -133,7 +139,7 @@ impl RewriteError {
             | RewriteError::BindsNothing { offset, .. }
             | RewriteError::MixedHole { offset, .. }
             | RewriteError::InsideAName { offset, .. } => Some(*offset),
-            RewriteError::Empty | RewriteError::TooLong(_) => None,
+            RewriteError::TooLong(_) => None,
         }
     }
 }
@@ -178,10 +184,6 @@ impl fmt::Display for RewriteError {
                 "\"{spelled}\" stands inside a name Python reads as one, so it cannot be written \
                  back there: a hole can stand for a whole name, but not for part of one"
             ),
-            RewriteError::Empty => f.write_str(
-                "a rewrite with no code in it, only whitespace or comments, would delete what \
-                 matched, which this build cannot do yet",
-            ),
             RewriteError::TooLong(err) => err.fmt(f),
         }
     }
@@ -208,7 +210,8 @@ enum Spelling {
 /// Returns a [`RewriteError`] if the template is not Python, names something the pattern does
 /// not bind, writes `${` before anything but a bound name and `}`, uses `$_` or `$...`, writes a
 /// name as a sequence that the pattern binds to one node or the other way round,
-/// puts a hole inside a name, has no code, or is too long.  Nothing partial
+/// puts a hole inside a name, or is too long.  A template with no code - empty, or only
+/// whitespace and comments - compiles, and [`Rewrite::has_code`] says so.  Nothing partial
 /// is returned.
 ///
 /// # Panics
@@ -225,17 +228,27 @@ pub fn compile_rewrite(text: &str, pattern: &Pattern) -> Result<Rewrite, Rewrite
     let (claims, spellings) = claim(text)?;
     let stem = placeholder_stem(text);
     let substituted = substitute(text, &claims, |_| true, &stem);
-    let (mode, arena) = parse_either(&substituted.text).map_err(|err| match err {
+    // A template of decorators alone, as a pattern can be, is parsed with a definition after it
+    // to decorate; only its sites are read from the parse, and they lie before it.
+    let decorated = format!("{}{DECORATED}", substituted.text);
+    let either = match parse_either(&substituted.text) {
+        Ok((mode, arena)) => Ok((mode, arena, substituted.text.as_str())),
+        Err(err) if substituted.text.trim_start().starts_with('@') => {
+            parse_as(&decorated, Mode::Module)
+                .map(|arena| (Mode::Module, arena, decorated.as_str()))
+                .map_err(|_| err)
+        }
+        Err(err) => Err(err),
+    };
+    let (mode, arena, parsed_text) = either.map_err(|err| match err {
         ParseError::Invalid { message, offset } => RewriteError::Invalid {
             message,
             offset: substituted.written_offset(offset),
         },
         ParseError::TooLong(err) => RewriteError::TooLong(err),
     })?;
-    if arena.children(arena.root()).next().is_none() {
-        return Err(RewriteError::Empty);
-    }
-    let parsed = ruff_python_parser::parse(&substituted.text, ParseOptions::from(mode))
+    let has_code = arena.children(arena.root()).next().is_some();
+    let parsed = ruff_python_parser::parse(parsed_text, ParseOptions::from(mode))
         .expect("text the arena was built from parses again");
     let mut sites = Vec::new();
     for ((claim, spelling), placed) in claims.iter().zip(&spellings).zip(&substituted.placeholders)
@@ -275,6 +288,7 @@ pub fn compile_rewrite(text: &str, pattern: &Pattern) -> Result<Rewrite, Rewrite
     Ok(Rewrite {
         text: text.to_owned(),
         sites,
+        has_code,
     })
 }
 
@@ -668,9 +682,29 @@ mod tests {
     }
 
     #[test]
-    fn a_template_with_no_code_is_refused() {
-        assert_eq!(refused(""), RewriteError::Empty);
-        assert_eq!(refused("# only a comment"), RewriteError::Empty);
+    fn a_template_with_no_code_compiles_and_says_so() {
+        let pattern = compile_pattern("print($a)").expect("compiles");
+        for text in ["", "  ", "# only a comment", "# print($a)"] {
+            let rewrite = compile_rewrite(text, &pattern).expect(text);
+            assert!(!rewrite.has_code(), "{text:?}");
+        }
+        let commented = compile_rewrite("# print($a)", &pattern).expect("compiles");
+        assert_eq!(commented.sites().len(), 1);
+        assert!(commented.sites()[0].in_literal);
+        assert!(
+            compile_rewrite("pass", &pattern)
+                .expect("compiles")
+                .has_code()
+        );
+    }
+
+    #[test]
+    fn a_template_can_be_a_decorator_alone_as_a_pattern_can() {
+        let pattern = compile_pattern("@retry($n)").expect("compiles");
+        let rewrite = compile_rewrite("@backoff($n)", &pattern).expect("compiles");
+        assert!(rewrite.has_code());
+        assert_eq!(rewrite.sites().len(), 1);
+        assert!(!rewrite.sites()[0].in_literal);
     }
 
     #[test]

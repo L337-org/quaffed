@@ -67,8 +67,10 @@ ROOT = Path(__file__).resolve().parent.parent
 # narrowed to a scope as it goes down; edit replaces text across the corpus, so its Python files
 # are also parsed before and after, and every file changed is written; rewrite is a structural
 # replace across it, so each Python file is also matched with captures, and each it changes
-# rewritten, lexed and parsed again.  A scenario that edits runs on a fresh copy each time, since
-# each run changes it.
+# rewritten, lexed and parsed again; delete deletes every assignment across it, so each match's
+# separator or lines are worked out and each file it changes parsed again, which some then fail,
+# so it is refused, exit 9, with nothing written.  A scenario that edits runs on a fresh copy each
+# time, since each run changes it.
 SCENARIOS = {
     "startup": {"project": "empty", "args": ["TODO"], "exit": 1},
     "search": {"project": "corpus", "args": ["def"], "exit": 0},
@@ -83,6 +85,12 @@ SCENARIOS = {
         "project": "edited",
         "args": ["-e", "replace `$x = $y` with `$x = ($y)` expect any"],
         "exit": 0,
+        "fresh": True,
+    },
+    "delete": {
+        "project": "edited",
+        "args": ["-e", "delete `$x = $y` expect any"],
+        "exit": 9,
         "fresh": True,
     },
 }
