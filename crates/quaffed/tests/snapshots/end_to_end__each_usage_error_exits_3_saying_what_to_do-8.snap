@@ -3,11 +3,11 @@ source: crates/quaffed/tests/end_to_end.rs
 info:
   program: quaff
   args:
-    - "-e"
+    - "--file"
 ---
 success: false
 exit_code: 3
 ----- stdout -----
 
 ----- stderr -----
-quaff: "-e" needs a value: the statements to run
+quaff: "--file" needs a value: a script file, or - for standard input

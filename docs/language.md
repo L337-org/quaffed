@@ -105,7 +105,6 @@ is the one after that.
 - [Encodings](#encodings)
 - [Output](#output)
 - [Exit codes](#exit-codes)
-- [Not built yet](#not-built-yet)
 - [Peculiarities](#peculiarities)
 
 ## Running quaff
@@ -116,12 +115,15 @@ quaff -s TEXT [PATH]       the same, with TEXT given as an option
 quaff -p PATTERN [PATH]    search the project's Python files for code shaped like PATTERN
 quaff -e SCRIPT [PATH]     run the statements in SCRIPT
 quaff -f FILE [PATH]       run the script in FILE; -f - reads it from standard input
-quaff --dry-run ...        work out every edit and print it, but write nothing
+quaff --dry-run ...        print each match an edit would change, but write nothing
+quaff -o text ...          print matches as text, the only output this build has
 quaff -h, --help           the help
+quaff --version            the version
 ```
 
-Long forms: `--string`, `--pattern`, `--expression` and `--file`, each taking its value as the
-next argument or after `=`.  A short option never takes `=`: `-s=x` is an unknown option.
+Long forms: `--string`, `--pattern`, `--expression`, `--file` and `--output`, each taking its
+value as the next argument or after `=`.  A short option never takes `=`: `-s=x` is an unknown
+option.
 
 - **`-s`, `-p`, `-e` and `-f` can be repeated and mixed**, and run in the order given, as one
   program.
@@ -137,6 +139,18 @@ next argument or after `=`.  A short option never takes `=`: `-s=x` is an unknow
 
 - **`--` ends the options**, so text starting with a dash can be searched for: `quaff -- -v`.
 - **`quaff` with no arguments** prints the help to standard error and exits 3.
+- **The help teaches by example**: every form and statement has one, run from the root of a
+  small project it shows.  `--help` and `--version` end the reading of the options: nothing
+  after them is read, but the options before them must be well formed, so `quaff TODO --help`
+  prints the help and `quaff --frob --help` is an unknown option.
+- **`-o text` is the output described under [Output](#output)**, and the default.  Any other
+  output is one this build does not have, exit 5:
+
+  ```
+  $ quaff -o json TODO
+  quaff: the output "json" is not in this build, which has only -o text
+  [exit 5]
+  ```
 
 ### The project, and the scope
 
@@ -1174,7 +1188,7 @@ src/app.py:16:5-17:32: return lookup(request.args["id"], default=None,)
 | 1 | nothing was found, and there was no assertion; not an error |
 | 2 | an assertion failed |
 | 3 | a usage error, a malformed script or pattern, an empty program, or a scope holding a double quote |
-| 5 | a statement or construct this build does not have |
+| 5 | a statement or construct this build does not have, or an output other than `-o text` |
 | 6 | a file to be edited changed after quaff read it, or was removed or renamed, so nothing was written |
 | 7 | an I/O error, naming the path and quoting the system's error; an `in` that names nothing there; or edits that could not be written, saying what was left as it was |
 | 9 | a structural search needs a Python file quaff cannot parse, an edit would break a Python file that parses, a file's encoding cannot write a replacement, or a structural replace cannot be made as written - its matches overlap outside each other's holes, it would drop a comment, a trailing comma has no one place to go, a literal cannot hold a value as text, or a rewrite that is only a comment would swallow code after it on its line; or a delete would leave what holds a match without it: the script or the file must change first |
@@ -1183,11 +1197,6 @@ src/app.py:16:5-17:32: return lookup(request.args["id"], default=None,)
 a partial answer never passes for a whole one.  The whole program is read and checked before any
 file is looked at, so a script with an error anywhere does not run at all.
 
-## Not built yet
-
-The options `-o` and `--version` are refused as not built yet, with exit 3, rather than being
-ignored or treated as unknown.
-
 ## Peculiarities
 
 Edge cases and decisions that are easy to trip over, with the reason for each.
@@ -1195,6 +1204,9 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
 - **After a replace, positions are in the file as edited.**  A statement after a replace sees its
   edits, so the lines and columns it prints are where the text is after them, which is where it
   will be once written - but not where it is on disk, even with `--dry-run`.
+- **A structural statement with nothing in scope at all says only that no file has structural
+  support**, as where a `where` leaves out every file.  With text-tier files in scope it counts
+  them as not searched; with none, a count of none would say nothing, so it is left out.
 - **A file's encoding is decided once, from disk.**  A replace that edits an `.editorconfig` or a
   `.gitattributes` does not change how the other files are read or written in the same run.
 - **A file removed or renamed after quaff read it is a change, exit 6**, not an I/O error: what

@@ -333,15 +333,32 @@ fn asked_for_help_it_prints_help() {
 
 #[test]
 fn the_version_it_reports_is_the_workspace_version() {
-    let output = Project::new(PROJECT)
-        .quaff(&["--help"])
+    let project = Project::new(PROJECT);
+    assert_quaff_snapshot!(project.quaff(&["--version"]));
+    let help = project.quaff(&["--help"]).output().expect("running quaff");
+    let version = project
+        .quaff(&["--version"])
         .output()
         .expect("running quaff");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.starts_with(&format!("quaff {} ", env!("CARGO_PKG_VERSION"))),
-        "{stdout:?}"
-    );
+    let help = String::from_utf8_lossy(&help.stdout);
+    let version = String::from_utf8_lossy(&version.stdout);
+    let expected = format!("quaff {}", env!("CARGO_PKG_VERSION"));
+    assert_eq!(version, format!("{expected}\n"));
+    assert!(help.starts_with(&format!("{expected} ")), "{help:?}");
+    project.assert_unchanged();
+}
+
+#[test]
+fn output_text_is_what_quaff_prints_and_any_other_output_exits_5() {
+    let project = Project::new(PROJECT);
+    let plain = project.quaff(&["TODO"]).output().expect("running quaff");
+    let text = project
+        .quaff(&["-o", "text", "TODO"])
+        .output()
+        .expect("running quaff");
+    assert_eq!(plain, text, "-o text differs from the default");
+    assert_quaff_snapshot!(project.quaff(&["--output=json", "TODO"]));
+    project.assert_unchanged();
 }
 
 #[test]
@@ -968,7 +985,6 @@ fn each_usage_error_exits_3_saying_what_to_do() {
     assert_quaff_snapshot!(project.quaff(&["-s"]));
     assert_quaff_snapshot!(project.quaff(&["--frobnicate"]));
     assert_quaff_snapshot!(project.quaff(&["-p", ""]));
-    assert_quaff_snapshot!(project.quaff(&["--output=json"]));
     assert_quaff_snapshot!(project.quaff(&["-s", ""]));
     assert_quaff_snapshot!(project.quaff(&["--"]));
     assert_quaff_snapshot!(project.quaff(&["-e"]));
@@ -1981,6 +1997,11 @@ fn a_scope_with_no_python_says_so_rather_than_finding_nothing() {
         "-e",
         "find `handle_request($a, $b)` expect none",
         "README.md",
+    ]));
+    // With nothing in scope at all there are no text-tier files to count, so none are named.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "find `handle_request($a, $b)` where FILE contains \"no such path\" expect none",
     ]));
     project.assert_unchanged();
 }

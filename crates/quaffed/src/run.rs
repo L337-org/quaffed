@@ -41,7 +41,7 @@ use crate::write;
 /// caller for a different action.
 #[derive(Debug)]
 pub enum Failure {
-    /// The command line cannot be acted on: fix it.  Exit 3.
+    /// The command line cannot be acted on: fix it.  Exit as [`UsageError::exit_code`] says.
     Usage(UsageError),
     /// A script that must be fixed: malformed, or breaking a rule every program keeps.  Exit 3.
     Script {
@@ -151,10 +151,8 @@ impl Failure {
     /// The exit code this failure ends the run with.
     pub fn exit_code(&self) -> u8 {
         match self {
-            Failure::Usage(_)
-            | Failure::Script { .. }
-            | Failure::Empty { .. }
-            | Failure::QuotedScope { .. } => 3,
+            Failure::Usage(err) => err.exit_code(),
+            Failure::Script { .. } | Failure::Empty { .. } | Failure::QuotedScope { .. } => 3,
             Failure::Unknown { .. } => 5,
             Failure::NotThere { .. } | Failure::Io { .. } | Failure::Discovery(_) => 7,
             Failure::Write(err) => err.exit_code(),
@@ -2819,14 +2817,17 @@ impl<'s> Evaluation<'s> {
     fn nothing_applicable(&self, index: usize, pattern: Wanted) -> Option<String> {
         let searched = self.searched;
         match pattern {
-            Wanted::Structural { .. } if searched.python_for[index] == 0 => Some(format!(
-                "no file in scope has structural support; {} not searched",
-                count(
-                    searched.not_applicable_for[index],
-                    "text-tier file",
-                    "text-tier files"
-                )
-            )),
+            // With nothing in scope at all, as where a `where` leaves out every file, there are no
+            // text-tier files to count, and "0 not searched" would say nothing.
+            Wanted::Structural { .. } if searched.python_for[index] == 0 => {
+                Some(match searched.not_applicable_for[index] {
+                    0 => "no file in scope has structural support".to_string(),
+                    n => format!(
+                        "no file in scope has structural support; {} not searched",
+                        count(n, "text-tier file", "text-tier files")
+                    ),
+                })
+            }
             // Every Python file in scope is binary, which the binary count says.
             Wanted::Structural { .. } if searched.structural_for[index] == 0 => Some(format!(
                 "no Python file in scope could be searched; {} not searched",

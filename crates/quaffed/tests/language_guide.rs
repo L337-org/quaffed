@@ -11,10 +11,12 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
-use std::io::Read as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+mod shell;
+
+use shell::{Ran, run_quaff, split_command};
 
 /// The note every structural search over the whole project prints for `docs/notes.md`, which
 /// the guide leaves out of every example after the first.
@@ -413,112 +415,6 @@ fn read_examples(block: &Block, cwd: &str, with: &[Shown]) -> Result<Vec<Example
     Ok(examples)
 }
 
-/// Splits a command into words as a POSIX shell would, for the quoting the guide uses.
-///
-/// Returns `Ok(None)` when a quote is still open at the end, so the command continues on the
-/// next line, and an error for anything a shell would expand or treat specially, since the
-/// command is never given to a shell and so could not be checked as written.
-fn split_command(command: &str) -> Result<Option<Vec<String>>, String> {
-    let mut words = Vec::new();
-    let mut word: Option<String> = None;
-    let mut chars = command.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            ' ' | '\t' | '\n' => {
-                if let Some(done) = word.take() {
-                    words.push(done);
-                }
-            }
-            '\'' => {
-                let current = word.get_or_insert_with(String::new);
-                loop {
-                    match chars.next() {
-                        Some('\'') => break,
-                        Some(inner) => current.push(inner),
-                        None => return Ok(None),
-                    }
-                }
-            }
-            '"' => {
-                let current = word.get_or_insert_with(String::new);
-                loop {
-                    match chars.next() {
-                        Some('"') => break,
-                        Some('\\') => match chars.next() {
-                            Some(escaped @ ('$' | '`' | '"' | '\\')) => current.push(escaped),
-                            Some('\n') => {}
-                            Some(other) => {
-                                current.push('\\');
-                                current.push(other);
-                            }
-                            None => return Ok(None),
-                        },
-                        Some(special @ ('$' | '`')) => {
-                            return Err(format!(
-                                "the command has an unescaped {special:?} in double quotes, \
-                                 which a shell would expand"
-                            ));
-                        }
-                        Some(inner) => current.push(inner),
-                        None => return Ok(None),
-                    }
-                }
-            }
-            c if c.is_ascii_alphanumeric() || "-_./:=,@%+".contains(c) => {
-                word.get_or_insert_with(String::new).push(c);
-            }
-            other => {
-                return Err(format!(
-                    "the command has {other:?} outside quotes, which a shell would treat \
-                     specially, so it cannot be checked without one"
-                ));
-            }
-        }
-    }
-    if let Some(done) = word {
-        words.push(done);
-    }
-    Ok(Some(words))
-}
-
-/// What one run of `quaff` printed, both streams as one, and how it exited.
-struct Ran {
-    output: String,
-    exit: Option<i32>,
-}
-
-/// Runs `quaff` with `args` from `cwd`, standard output and standard error into one pipe, so
-/// that what is read back is in the order `quaff` wrote it.
-fn run_quaff(cwd: &Path, args: &[String]) -> Ran {
-    let (mut reader, writer) = std::io::pipe().expect("creating a pipe for quaff's output");
-    let mut command = Command::new(env!("CARGO_BIN_EXE_quaff"));
-    command
-        .args(args)
-        .current_dir(cwd)
-        .env_clear()
-        .stdin(Stdio::null())
-        .stdout(writer.try_clone().expect("cloning the output pipe"))
-        .stderr(writer);
-    if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
-        command.env("LLVM_PROFILE_FILE", profile);
-    }
-    let mut child = command
-        .spawn()
-        .unwrap_or_else(|err| panic!("starting quaff from {}: {err}", cwd.display()));
-    // The command holds the pipe's write ends; until it is dropped the read below never sees
-    // the end of the output.
-    drop(command);
-    let mut bytes = Vec::new();
-    reader
-        .read_to_end(&mut bytes)
-        .expect("reading quaff's output");
-    let status = child.wait().expect("waiting for quaff");
-    Ran {
-        output: String::from_utf8_lossy(&bytes).into_owned(),
-        exit: status.code(),
-    }
-}
-
 /// A fresh copy of the example project, removed when dropped.
 struct ProjectDir(PathBuf);
 
@@ -679,7 +575,7 @@ fn failures(text: &str) -> Vec<String> {
             ));
             continue;
         }
-        let ran = run_quaff(&cwd, &example.args);
+        let ran = run_quaff(&cwd, &example.args, None);
         failures.extend(check(example, &ran));
         failures.extend(check_left(example, &dir.0));
     }
