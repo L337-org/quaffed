@@ -107,8 +107,9 @@ How the guide is read:
 
 1. Write the command and paste what `quaff` printed, both streams, then `[exit N]` unless it is 0.
 2. If it needs a file the example project does not have, show that file in a block of its own,
-   with a language and a `# PATH` first line (no space, and a `.` in it), and put `<!-- check: with PATH -->` on the line
-   before the example.  A file shown again with the same path replaces it for later examples.
+   with a language and a `# PATH` first line (no space, and a `.` in it), and put
+   `<!-- check: with PATH -->` on the line before the example.  A file shown again with the same
+   path replaces it for later examples.
 3. If it runs from a subdirectory, add `cwd DIR` to the directive.
 4. Run `cargo test --locked --test language_guide`.
 
