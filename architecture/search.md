@@ -22,8 +22,15 @@ The forms and options are in `docs/language.md`.  What the parser (`src/cli.rs`)
   otherwise it is the scope.  More than one scope is refused, naming the shell's glob expansion
   as the likely cause, since the search would otherwise look successful over one file.
 - **The query is literal**: anchors and line breaks are script constructs, outside the quotes.
-- **An option in the MVP that is not built** - `-o`, `--version` - is refused as not built, not
-  as unknown.  Both exit 3.  A short option never takes `=VALUE`.
+- **`-o` takes only `text`**, the one rendering.  Any other value is refused with exit 5, as a
+  construct this build does not have, rather than exit 3, because a later build may have it.
+  A short option never takes `=VALUE`.
+- **The help (`src/help.rs`) is a reference that teaches by example.**  It is written for an
+  agent that has never seen `quaff` and has only the help: every invocation form and every
+  statement has a `$ quaff` example, run from the root of a small project the help shows.
+  `tests/help_examples.rs` runs each one and requires it to exit 0, and lists the forms and
+  statements that must each have one; a form or statement this build gains joins that list
+  and gets an example in the same change.
 
 ## Discovery
 

@@ -41,7 +41,8 @@ use crate::write;
 /// caller for a different action.
 #[derive(Debug)]
 pub enum Failure {
-    /// The command line cannot be acted on: fix it.  Exit 3.
+    /// The command line cannot be acted on: fix it.  Exit 3, or 5 for an output this build does
+    /// not have.
     Usage(UsageError),
     /// A script that must be fixed: malformed, or breaking a rule every program keeps.  Exit 3.
     Script {
@@ -151,10 +152,8 @@ impl Failure {
     /// The exit code this failure ends the run with.
     pub fn exit_code(&self) -> u8 {
         match self {
-            Failure::Usage(_)
-            | Failure::Script { .. }
-            | Failure::Empty { .. }
-            | Failure::QuotedScope { .. } => 3,
+            Failure::Usage(err) => err.exit_code(),
+            Failure::Script { .. } | Failure::Empty { .. } | Failure::QuotedScope { .. } => 3,
             Failure::Unknown { .. } => 5,
             Failure::NotThere { .. } | Failure::Io { .. } | Failure::Discovery(_) => 7,
             Failure::Write(err) => err.exit_code(),

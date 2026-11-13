@@ -3,10 +3,9 @@
 
 //! `quaff`, the command-line entry point.
 //!
-//! It runs textual and structural search and the script language's search subset:
-//! `quaff TEXT`, `-s TEXT`, `-p PATTERN`, and scripts from `-e` and `-f` of `find` statements,
-//! of text or backticked patterns, with or without an `expect`.  `architecture/search.md` and
-//! `architecture/script.md` describe its design.
+//! It runs textual and structural search, `quaff TEXT`, `-s TEXT` and `-p PATTERN`, and scripts
+//! from `-e` and `-f` of `find`, `replace` and `delete` statements.  `architecture/search.md` and
+//! `architecture/script.md` describe its design, and `src/help.rs` is the help.
 
 mod cli;
 mod contents;
@@ -14,6 +13,7 @@ mod discover;
 mod editorconfig;
 mod filter;
 mod glob;
+mod help;
 mod identity;
 mod output;
 mod resolve;
@@ -37,80 +37,22 @@ use run::Failure;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-/// The help, printed by `-h` and `--help`, and to standard error when no arguments are given.
-fn help() -> String {
-    format!(
-        "quaff {} - the QUAntiFied File EDitor
-
-Usage:
-  quaff TEXT [PATH]        search the project for TEXT
-  quaff -s TEXT [PATH]     the same, with TEXT given as an option
-  quaff -p PATTERN [PATH]  search the project's Python files for code shaped like PATTERN
-  quaff -e SCRIPT [PATH]   run the statements in SCRIPT
-  quaff -f FILE [PATH]     run the script in FILE; -f - reads it from standard input
-  quaff --dry-run ...      work out every edit and print it, but write nothing
-  quaff -h, --help         this help
-
--s, -p, -e and -f may each be repeated and mixed, and run in the order given.  With any of
-them, the first positional argument is PATH.  TEXT is literal: nothing in it is special.  Put
--- before TEXT that starts with a dash.
-
-A script is statements separated by newlines or ;, with # comments:
-
-  find \"TODO\"                      print every match; `find` may be left out
-  find \"TODO\" expect none          an assertion: fail, exit 2, unless the count holds
-  find \"def\" $^ \"    pass\"         $^ is a line break; adjacent quoted text joins
-  find ^\"x\"$                       ^ and $ anchor to the start and end of a line
-  find `open($path)` expect 2      a backticked pattern is matched by structure, like -p
-  replace string \"a\" with \"b\" expect 3
-                                   replace text: an edit must say how many it changes
-
-Consecutive assertions are one block: every one is checked, each that fails is reported,
-and the run stops after the block.  Counts are N, at least N, at most N, N or none, none and
-any.  An edit is made only if its count holds, and every edit is written at the end of the
-run, into each file in place, or none is - unless quaff is killed while writing, which can
-leave a file half-written.  Nothing in quoted text is escaped: to include a \", fence the text
-with three or more, as \"\"\" say \"hi\" \"\"\".
-
-A search covers this directory.  PATH narrows it to one file or directory, relative to this
-directory, or from the project root - the nearest directory at or above this one that holds
-.git - when it begins :/; a path outside the project is searched by that project's rules.  In
-a script, `in` takes a path or a glob, quoted text with wildcards outside the quotes, as
-in \"src/\"**\".py\", and `where FILE matches` the same.  Files ignored by .gitignore, .ignore
-or .git/info/exclude are skipped, and so is version-control metadata.  Hidden files are
-searched.
-
-A pattern is Python code in which $name matches any one node - an expression, a statement,
-an argument, a parameter, a name - and $name... one or more in a row; a name used twice must
-match the same code each time.  Comments, layout and redundant parentheses take no part.  A
-pattern applies to Python files only, and a Python file in scope quaff cannot parse refuses
-the run.
-
-Each match prints on its own line as path:line:column-endline:endcolumn: text, with columns
-counted in characters.  Binary files are not searched, and the run says how many there were.
-
-Exit status: 0 found, or every assertion held; 1 nothing found, with no assertions; 2 an
-assertion failed; 3 usage or script error; 5 a statement or construct this build does not
-have; 6 a file to be edited changed after it was read, so nothing was written; 7 I/O
-error; 9 a Python file a structural search needs cannot be parsed, or an edit
-would break a Python file or cannot be written in a file's encoding.
-",
-        env!("CARGO_PKG_VERSION")
-    )
-}
-
 fn main() -> ExitCode {
     let invocation = match cli::parse(std::env::args_os().skip(1)) {
         Ok(invocation) => invocation,
         Err(UsageError::NoArguments) => {
-            eprint!("{}", help());
+            eprint!("{}", help::help());
             return ExitCode::from(3);
         }
         Err(err) => return fail(&Failure::Usage(err)),
     };
     match invocation {
         Invocation::Help => {
-            print!("{}", help());
+            print!("{}", help::help());
+            ExitCode::SUCCESS
+        }
+        Invocation::Version => {
+            print!("{}", help::version());
             ExitCode::SUCCESS
         }
         Invocation::Run {

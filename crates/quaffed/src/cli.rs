@@ -17,6 +17,8 @@ use std::path::PathBuf;
 pub enum Invocation {
     /// Print the help and exit 0.
     Help,
+    /// Print the version and exit 0.
+    Version,
     /// Run each source in turn, over the scope if one was given.
     Run {
         /// The sources, in the order they were given.
@@ -102,13 +104,15 @@ impl fmt::Display for Source {
     }
 }
 
-/// A command line `quaff` cannot act on.  Every one exits 3.
+/// A command line `quaff` cannot act on.  Every one exits 3 but [`UsageError::NoSuchOutput`],
+/// which exits 5; [`UsageError::exit_code`] says which.
 #[derive(Debug, PartialEq, Eq)]
 pub enum UsageError {
     /// No arguments at all.
     NoArguments,
-    /// An option that is in the MVP but not built yet.
-    NotBuiltYet(String),
+    /// An output format other than `text`, the only one this build has.  Exit 5, as for any
+    /// construct this build does not have, since a later build may have it.
+    NoSuchOutput(String),
     /// An option `quaff` does not have.
     UnknownOption(String),
     /// An option that takes a value was last on the command line.
@@ -125,14 +129,24 @@ pub enum UsageError {
     StdinTwice,
 }
 
-/// Options in the MVP whose stories have not landed, so saying "unknown" would be wrong.
-const NOT_BUILT_YET: &[&str] = &["-o", "--output", "--version"];
+impl UsageError {
+    /// The exit code this error ends the run with.
+    pub fn exit_code(&self) -> u8 {
+        match self {
+            UsageError::NoSuchOutput(_) => 5,
+            _ => 3,
+        }
+    }
+}
 
 impl fmt::Display for UsageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             UsageError::NoArguments => write!(f, "nothing to do: give a query, or -h for help"),
-            UsageError::NotBuiltYet(option) => write!(f, "{option:?} is not built yet"),
+            UsageError::NoSuchOutput(format) => write!(
+                f,
+                "the output {format:?} is not in this build, which has only -o text"
+            ),
             UsageError::UnknownOption(option) => write!(
                 f,
                 "unknown option {option:?}; to search for text that starts with a dash, put it \
@@ -142,6 +156,7 @@ impl fmt::Display for UsageError {
                 let wanted = match option.as_str() {
                     "-e" | "--expression" => "the statements to run",
                     "-f" | "--file" => "a script file, or - for standard input",
+                    "-o" | "--output" => "the output format, which can only be text",
                     "--debug-pause-before-write" => "the path of a file to create and wait on",
                     _ => "the text to search for",
                 };
@@ -249,10 +264,21 @@ where
         match name {
             "--" if inline.is_none() => options_ended = true,
             "-h" | "--help" if inline.is_none() => return Ok(Invocation::Help),
+            "--version" if inline.is_none() => return Ok(Invocation::Version),
             "--dry-run" if inline.is_none() => dry_run = true,
-            // `--output=X` is the not-built option as surely as `--output X` is.
-            _ if NOT_BUILT_YET.contains(&name) => {
-                return Err(UsageError::NotBuiltYet(name.to_owned()));
+            "--output" | "-o" if name == "--output" || inline.is_none() => {
+                let value = match inline {
+                    Some(value) => OsString::from(value),
+                    None => args
+                        .next()
+                        .ok_or_else(|| UsageError::MissingValue(name.to_owned()))?,
+                };
+                // Text is the only rendering, so there is nothing to record.
+                if value != "text" {
+                    return Err(UsageError::NoSuchOutput(
+                        value.to_string_lossy().into_owned(),
+                    ));
+                }
             }
             // A lone "-" is a positional, as it is to most tools.
             _ if text.starts_with('-') && text != "-" => {
@@ -515,6 +541,61 @@ mod tests {
     }
 
     #[test]
+    fn version_ends_the_command_line_and_takes_no_value() {
+        assert_eq!(parse_strs(&["--version"]), Ok(Invocation::Version));
+        assert_eq!(parse_strs(&["TODO", "--version"]), Ok(Invocation::Version));
+        assert_eq!(
+            parse_strs(&["--version", "--frob"]),
+            Ok(Invocation::Version)
+        );
+        assert_eq!(
+            parse_strs(&["--frob", "--version"]),
+            Err(UsageError::UnknownOption("--frob".into()))
+        );
+        assert_eq!(
+            parse_strs(&["--version=1"]),
+            Err(UsageError::UnknownOption("--version=1".into()))
+        );
+    }
+
+    #[test]
+    fn output_text_is_accepted_in_every_form() {
+        for args in [
+            &["-o", "text", "TODO"][..],
+            &["--output", "text", "TODO"][..],
+            &["--output=text", "TODO"][..],
+            &["TODO", "-o", "text"][..],
+        ] {
+            assert_eq!(
+                parse_strs(args),
+                Ok(run(vec![query_arg("TODO", Source::Positional)], None)),
+                "{args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn any_other_output_exits_5_and_a_missing_one_exits_3() {
+        for (args, format) in [
+            (&["-o", "json", "TODO"][..], "json"),
+            (&["--output=script", "TODO"][..], "script"),
+            (&["--output", "", "TODO"][..], ""),
+            (&["-o", "TEXT", "TODO"][..], "TEXT"),
+        ] {
+            let err = parse_strs(args).unwrap_err();
+            assert_eq!(err, UsageError::NoSuchOutput(format.into()), "{args:?}");
+            assert_eq!(err.exit_code(), 5);
+        }
+        let err = parse_strs(&["TODO", "-o"]).unwrap_err();
+        assert_eq!(err, UsageError::MissingValue("-o".into()));
+        assert_eq!(err.exit_code(), 3);
+        assert_eq!(
+            parse_strs(&["-o=text", "TODO"]),
+            Err(UsageError::UnknownOption("-o=text".into()))
+        );
+    }
+
+    #[test]
     fn a_lone_dash_is_positional() {
         assert_eq!(
             parse_strs(&["-"]),
@@ -543,14 +624,6 @@ mod tests {
     #[test]
     fn each_usage_error() {
         assert_eq!(parse_strs(&[]), Err(UsageError::NoArguments));
-        assert_eq!(
-            parse_strs(&["--version"]),
-            Err(UsageError::NotBuiltYet("--version".into()))
-        );
-        assert_eq!(
-            parse_strs(&["--output=json"]),
-            Err(UsageError::NotBuiltYet("--output".into()))
-        );
         assert_eq!(
             parse_strs(&["-p", ""]),
             Err(UsageError::EmptyQuery(Source::PatternOption))
@@ -650,8 +723,12 @@ mod tests {
             "nothing to run: give a query, or a script with -e or -f"
         );
         assert_eq!(
-            UsageError::NotBuiltYet("-o".into()).to_string(),
-            "\"-o\" is not built yet"
+            UsageError::NoSuchOutput("json".into()).to_string(),
+            "the output \"json\" is not in this build, which has only -o text"
+        );
+        assert_eq!(
+            UsageError::MissingValue("-o".into()).to_string(),
+            "\"-o\" needs a value: the output format, which can only be text"
         );
     }
 }

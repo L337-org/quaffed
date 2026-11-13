@@ -123,6 +123,35 @@ How the guide is read:
    directive, rather than describing the result in a sentence nothing checks.
 5. Run `cargo test --locked --test language_guide`.
 
+## The help's examples
+
+`crates/quaffed/tests/help_examples.rs` runs every example in `quaff --help` against the built
+`quaff`, reading the help as the binary prints it.  The help shows no output, so the check is the
+exit status: every example must exit 0, which for a script means its assertions held.  Run it
+alone with `cargo test --locked --test help_examples`.
+
+How the help is read:
+
+- **The project is the files the help shows**: a line of two spaces and a path - no space in it,
+  and a `.` - followed directly by its lines, each `  | ` and the line, or `  |` for an empty one.
+  Each example runs in a fresh copy of it, with an empty `.git`, from its root, so an edit in one
+  example is never seen by another.
+- **An example is a line starting `  $ `**: `quaff` and its arguments, split as the language
+  guide's are, or `echo` of one word piped into `quaff`, which is then its standard input.
+- **Every form and statement in the test's `MUST_SHOW` list must appear in some example**, so
+  dropping the last example of one fails.  A form or statement the build gains joins the list,
+  with an example, in the same change.
+- **What cannot be run as written fails** rather than being passed over, as in the guide.
+
+### Adding an example to the help
+
+1. Add the `$ quaff ...` line under the heading it belongs to in `crates/quaffed/src/help.rs`,
+   with a line below it, indented six spaces, saying what it does.  Write it to exit 0 against
+   the project the help shows; extend the project if it needs more, keeping it small.
+2. If it shows a form or statement no other example does, add it to `MUST_SHOW`.
+3. Run `cargo test --locked --test help_examples`, then `cargo insta test` for the help's
+   snapshot, and read the snapshot's diff before accepting it.
+
 ## The cost check's corpus
 
 `the_cost_check_gives_the_corpus_its_recorded_verdicts` (`crates/syntax/src/matching.rs`) holds
