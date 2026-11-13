@@ -77,10 +77,10 @@ must be named in the Linux package's copyright file - a test says so if it is no
 
 ## Developer Certificate of Origin
 
-Contributions are accepted under the [Developer Certificate of Origin](https://developercertificate.org/)
-rather than a contributor licence agreement.  It costs nothing: add a sign-off line to every
-commit, certifying that you wrote the change or otherwise have the right to submit it under the
-project's licence.
+Contributions are accepted under the
+[Developer Certificate of Origin](https://developercertificate.org/) rather than a contributor
+licence agreement.  It costs nothing: add a sign-off line to every commit, certifying that you
+wrote the change or otherwise have the right to submit it under the project's licence.
 
 ```bash
 git commit -s

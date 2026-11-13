@@ -1,7 +1,8 @@
 # Tests
 
-How quaffed's behaviour is held by its tests: end-to-end snapshots of what `quaff` prints, and
-the coverage ratchet that keeps the tests from covering less.
+How quaffed's behaviour is held by its tests: end-to-end snapshots of what `quaff` prints, the
+language guide's examples run against the build, and the coverage ratchet that keeps the tests
+from covering less.
 
 ## End-to-end tests and snapshots
 
@@ -52,9 +53,9 @@ To add another:
 3. Act on it under the same `cfg` where the run needs it.  A hook that waits gives up after a
    bounded time with an error, so a test that never releases it fails rather than hangs.
 4. Mark every test that uses it `#[cfg(debug_assertions)]`, so that a build of the tests without
-   debug assertions does not pass the option to a binary that refuses it.  Such a test snapshots its output with
-   `insta::assert_snapshot!` rather than `assert_quaff_snapshot!`, which cannot run a closure
-   mid-run, and keeps any path it adds out of the snapshot.
+   debug assertions does not pass the option to a binary that refuses it.  Such a test snapshots
+   its output with `insta::assert_snapshot!` rather than `assert_quaff_snapshot!`, which cannot
+   run a closure mid-run, and keeps any path it adds out of the snapshot.
 
 ### Reviewing a changed snapshot
 
@@ -63,6 +64,64 @@ diff to accept or reject, and `cargo insta reject` drops them all.  In CI a chan
 snapshot fails the run.  CI also runs `cargo insta test --workspace --check
 --unreferenced=reject`, so a snapshot no test produces fails; `cargo test --locked` runs
 separately because `cargo insta test` cannot take `--locked`.
+
+## The language guide's examples
+
+`crates/quaffed/tests/language_guide.rs` runs every example in `docs/language.md` against the
+built `quaff` and fails, naming each by its line in the guide with a diff, where what `quaff`
+prints, how it exits, or what it leaves in a file the guide shows is not what the guide shows.
+The guide is the expected output, so there is no snapshot to accept: a change that alters an
+example's output changes the guide, or the code, in the same pull request.  Run it alone with
+`cargo test --locked --test language_guide`.
+
+How the guide is read:
+
+- **An example is a fenced block whose first line starts `$ `.**  It may hold several commands,
+  each followed by its output; a command runs on while a quote is open, so it can span lines.
+  Each command must be `quaff`, and its words are split as a POSIX shell splits them, with single
+  and double quotes, but it is never given to a shell: anything a shell would expand or treat
+  specially, such as `$` in double quotes or `*` outside quotes, fails the example as
+  uncheckable.  Escape it, `\$`, or use single quotes.
+- **The output is standard output and standard error as one stream**, in the order `quaff`
+  wrote them, then `[exit N]` as the last line.  With no `[exit N]` the status must be 0.
+- **The guide's own conventions apply**: where an example leaves out the
+  `1 text-tier file not searched for structural patterns...` note, it is dropped from what
+  `quaff` printed before comparing.  Everything else is compared exactly, trailing spaces
+  included.
+- **The example project is the file blocks before the first `##` heading**: a fenced block with
+  a language whose first line is `# PATH`, a label that is not part of the file.  The path has no
+  space and holds a `.`, so that a block of code opening with an ordinary comment, such as
+  `# a note`, is not taken for a file; a file with no `.` in its path, such as `Makefile`, cannot
+  be shown as one.  Each command runs in a fresh copy of it, with an empty `.git`, from its root,
+  so an edit in one example is never seen by another, and the copy is removed afterwards.
+- **Anything else an example needs is said in a directive**, an HTML comment on the line before
+  its block, which a reader never sees: `<!-- check: cwd src; with src/store.py, app.py -->`.
+  `cwd DIR` runs it from that directory; `with PATH, ...` adds each file as most recently shown
+  above it, in a file block of its own, so what is checked is what the reader is shown.  A
+  directive applies to every command in its block.
+- **What an edit leaves is checked where the guide shows it**: `then PATH, ...` in an example's
+  directive says that the first file block showing that path after the example is the file as
+  the command leaves it, and the file on disk after the run is compared with it exactly.  A
+  `then` needs a block of one command, so that which command left the file is known.  A result
+  block is not an input: a later `with` adds the file as last shown before the example, never
+  as an earlier example left it.
+- **What cannot be checked fails** rather than being passed over: a command that is not `quaff`
+  or that a shell would change, a block showing `[exit N]` with no command, a directive with no
+  example after it or naming a file not shown, a `then` with no block after its example showing
+  that file, and a file block after the first `##` that no directive adds or shows as a result.
+
+### Adding an example to the guide
+
+1. Write the command and paste what `quaff` printed, both streams, then `[exit N]` unless it is 0.
+2. If it needs a file the example project does not have, show that file in a block of its own,
+   with a language and a `# PATH` first line (no space, and a `.` in it), and put
+   `<!-- check: with PATH -->` on the line before the example.  A file shown again with the same
+   path replaces it for later examples.
+3. If it runs from a subdirectory, add `cwd DIR` to the directive.
+4. If it edits a file and the guide says what the file then holds, show the whole file as it is
+   left, in a block with the same `# PATH` line after the example, and add `then PATH` to the
+   directive, rather than describing the result in a sentence nothing checks.
+5. Run `cargo test --locked --test language_guide`.
 
 ## The cost check's corpus
 

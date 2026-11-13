@@ -45,6 +45,7 @@ the work instead.  The shared hygiene check that CI runs fails on either.
 | `scripts/coverage`, `scripts/coverage-ratchet` or `.github/workflows/coverage.yaml` | the coverage ratchet section of [architecture/testing.md](architecture/testing.md) |
 | `.github/workflows/random-properties.yaml`, or a property test's seed | the property tests section of [architecture/testing.md](architecture/testing.md) |
 | an end-to-end test, or anything that changes what `quaff` prints or how it exits | the snapshot sections of [architecture/testing.md](architecture/testing.md) |
+| an example in `docs/language.md`, or `crates/quaffed/tests/language_guide.rs` | the language guide's examples section of [architecture/testing.md](architecture/testing.md) |
 | a debug-only option in `crates/quaffed/src/cli.rs`, or a test that pauses a run or injects a fault | the pausing section of [architecture/testing.md](architecture/testing.md) |
 | `crates/quaffed/src/`: the command line, discovery, matching or output | [architecture/search.md](architecture/search.md) |
 | `crates/encoding/`: what a file's bytes are, Python's declared encodings or the codec tables, or `scripts/generate-codecs` | [architecture/encoding.md](architecture/encoding.md) |

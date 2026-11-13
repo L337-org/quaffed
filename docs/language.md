@@ -86,7 +86,9 @@ else:
 In each example, what `quaff` prints to standard output and standard error is shown together,
 with the exit status after it.  Structural examples over the whole project also print the note
 `1 text-tier file not searched for structural patterns, which apply to Python files only`, for
-`docs/notes.md`; after the first, it is left out, and so is the exit status where it is 0.
+`docs/notes.md`; after the first, it is left out, and so is the exit status where it is 0.  A
+file's block starts with its path as a `#` line, which is not part of the file, so its first line
+is the one after that.
 
 ## Contents
 
@@ -150,6 +152,7 @@ next argument or after `=`.  A short option never takes `=`: `-s=x` is an unknow
   would if quaff were run from inside it.
 - **Paths in the output are relative to the current directory**, so from `src/`:
 
+  <!-- check: cwd src -->
   ```
   $ quaff TODO
   app.py:7:7-7:10: TODO
@@ -191,11 +194,25 @@ quaff: no matches for "FIXME"
 A script is statements separated by newlines or `;`, with `#` comments.  It comes from `-e`, from
 a file with `-f`, or from standard input with `-f -`.
 
-```
-$ cat checks.quaff
-find "TODO" expect 2
+```text
+# checks.quaff
+find "TODO" expect 1
 find `return $x` expect at least 1 # every function returns
 ```
+
+<!-- check: with checks.quaff -->
+```
+$ quaff -f checks.quaff src
+src/app.py:7:7-7:10: TODO
+src/app.py:10:9-10:34: return response.error(404)
+src/app.py:12:5-12:46: return response.ok(render(user, response))
+src/app.py:16:5-17:32: return lookup(request.args["id"], default=None,)
+src/totals.py:4:5-4:25: return subtotal + tax
+src/totals.py:8:5-8:31: return price - price * rate
+```
+
+A script in the project is a file like any other, so over the whole project `checks.quaff` would
+also find the `TODO` in its own first line; the scope `src` leaves it out.
 
 ### Statements
 
@@ -754,8 +771,14 @@ alone.
 - **A Python file quaff cannot parse refuses the whole run**, exit 9, before anything is printed,
   because a count that silently skipped a file could not be trusted:
 
-  With a directory `broken/` beside `play/` holding only `bad.py`, which is `def broken(:`:
+  With a directory `broken/` beside `play/` holding only this file:
 
+  ```python
+  # broken/bad.py
+  def broken(:
+  ```
+
+  <!-- check: with broken/bad.py -->
   ```
   $ quaff -p 'wrap($x)' broken
   quaff: refused: 1 Python file in scope cannot be parsed, so a structural search cannot count matches in it:
@@ -785,9 +808,10 @@ written unless every count holds, every edit is written at the end of the run or
 `--dry-run` writes nothing, a file is written back in its own encoding, and a replace that would
 break a Python file that parsed is refused, exit 9.
 
-With `src/store.py` holding:
+With this file beside the others:
 
 ```python
+# src/store.py
 def load(path):
     log("loading %s", path)
     with lock:
@@ -802,6 +826,7 @@ def save(path, data):
     write(path, data)
 ```
 
+<!-- check: with src/store.py -->
 ```
 $ quaff --dry-run -e 'replace `log($msg, $args...)` with `logger.info($msg, $args...)` expect 2'
 src/store.py:2:5-2:27: log("loading %s", path)
@@ -825,8 +850,18 @@ arguments where the template's `, ` stands, but not when the rewrite reorders th
   a brace in an f-string - is escaped, and a note says so.  A name runs to the end of the
   identifier, so `"$name_id"` is the name `name_id`; `"${name}_id"` separates them.  A `$`
   before anything but a name or a brace is text, as in `"costs $5"`, and a literal `$` before a
-  name is written as Python writes it, `"\x24HOME"` or `'$' 'HOME'`:
+  name is written as Python writes it, `"\x24HOME"` or `'$' 'HOME'`.  With this file:
 
+  ```python
+  # app.py
+  from compat import deprecated, warn
+
+  old_name = 1
+
+  deprecated(old_name)
+  ```
+
+  <!-- check: with app.py; then app.py -->
   ```
   $ quaff -e 'replace `deprecated($name)` with `warn("$name is deprecated")` expect 1'
   app.py:5:1-5:20: deprecated(old_name)
@@ -834,15 +869,28 @@ arguments where the template's `, ` stands, but not when the rewrite reorders th
   [exit 0]
   ```
 
-  leaves `warn("old_name is deprecated")`.  Inside braces only a bound name may stand, so
-  `${name|upper}` is refused as a value filter this build does not have, exit 5.
+  leaves:
+
+  ```python
+  # app.py
+  from compat import deprecated, warn
+
+  old_name = 1
+
+  warn("old_name is deprecated")
+  ```
+
+  Inside braces only a bound name may stand, so `${name|upper}` is refused as a value filter
+  this build does not have, exit 5.
 - **Indentation is derived, never written.**  A template's later lines take the indentation of the
   line the match starts on, in the file's own indent unit; captured statements moved to another
   depth are shifted with them, except the lines of a multi-line string, which are part of its
   value.  A captured value that continues a line, inside a bracket or after a backslash, keeps
   its lines as written, since their indentation says nothing of depth: a call's arguments one to
-  a line keep theirs when the call is rewritten round them.  So unwrapping a block is a replace:
+  a line keep theirs when the call is rewritten round them.  So unwrapping a block is a replace,
+  here over `src/store.py` above:
 
+  <!-- check: with src/store.py; then src/store.py -->
   ```
   $ quaff -e 'replace `with lock:
       $body...` with `$body...` expect 1'
@@ -851,8 +899,24 @@ arguments where the template's `, ` stands, but not when the rewrite reorders th
   [exit 0]
   ```
 
-  leaves `data = read(path)` and `check(data)` at the function's own level.  Nothing else is
-  reformatted: a project's formatter does the rest.
+  leaves `data = read(path)` and `check(data)` at the function's own level:
+
+  ```python
+  # src/store.py
+  def load(path):
+      log("loading %s", path)
+      data = read(path)
+      check(data)
+      return data
+
+
+  def save(path, data):
+      log("saving %s to %s", data,
+          path,)
+      write(path, data)
+  ```
+
+  Nothing else is reformatted: a project's formatter does the rest.
 - **Line breaks are the file's own**: each line break the template writes is spelled as the
   file's line ending where the match stands, as `$^` writes one in a textual replace, except one
   inside a string, which is part of its value.
@@ -892,8 +956,18 @@ written.  A replace whose count does not hold says so first, exit 2, as any edit
   bracketed expression, where it would make a tuple.  ``replace `max($a, $b)` with
   `($a if $a > $b else $b)` expect 1`` over a call to `max` that ends `y,` is refused.  Narrow the
   pattern so that it does not match there, or take the comma out first.
-- **A comment in no capture the rewrite writes back**, which the edit would drop:
+- **A comment in no capture the rewrite writes back**, which the edit would drop.  With this
+  file:
 
+  ```python
+  # app.py
+  config = load(
+      path,  # the user's file
+      strict,
+  )
+  ```
+
+  <!-- check: with app.py -->
   ```
   $ quaff -e 'replace `load($p, $s)` with `load($p, strict=$s)` expect 1'
   quaff: refused: the replace cannot be made as written in 1 file, so nothing was written:
@@ -901,19 +975,23 @@ written.  A replace whose count does not hold says so first, exit 2, as any edit
   [exit 9]
   ```
 
-  where `app.py` holds `config = load(` then, each on a line of its own and indented by four
-  spaces, `path,  # the user's file` and `strict,`, then `)`.  A comment on a compound
-  statement's header, before the first statement of its body, or before an `elif`, `else` or
-  `except` is in no hole's reach, so an edit that spells such a header is refused wherever one has
-  such a comment.
+  A comment on a compound statement's header, before the first statement of its body, or before
+  an `elif`, `else` or `except` is in no hole's reach, so an edit that spells such a header is
+  refused wherever one has such a comment.
 - **A value a literal cannot hold as text**: a raw string cannot escape its own quote, a comment
   cannot hold a line break, and a bytes literal holds ASCII only, so writing such a value would
   change more than the literal's text.
 
 **What may not mean what was meant is written, and questioned.**  A capture written where Python
 reads it together with what surrounds it is written as the template says, since that is what was
-asked for, and a note names the file, where, and the capture:
+asked for, and a note names the file, where, and the capture.  With this file:
 
+```python
+# calc.py
+total = f(x + 1)
+```
+
+<!-- check: with calc.py; then calc.py -->
 ```
 $ quaff -e 'replace `f($a)` with `$a * 2` expect 1'
 calc.py:1:9-1:16: f(x + 1)
@@ -922,11 +1000,17 @@ quaff: "calc.py": line 1, column 9: what $a captured, "x + 1", is not code of it
 [exit 0]
 ```
 
-where `calc.py` holds `total = f(x + 1)`: it now holds `total = x + 1 * 2`, which Python reads as
-`x + (1 * 2)`.  If that is not what was meant, a further replace can put it right; put brackets
-round the hole in the rewrite, `($a) * 2`, and it is written as one piece of code.
-`return wrap($x)` over `return a, b` is questioned the same way, since it calls `wrap` with two
-arguments.
+leaves:
+
+```python
+# calc.py
+total = x + 1 * 2
+```
+
+which Python reads as `x + (1 * 2)`.  If that is not what was meant, a further replace can put it
+right; put brackets round the hole in the rewrite, `($a) * 2`, and it is written as one piece of
+code.  `return wrap($x)` over `return a, b` is questioned the same way, since it calls `wrap` with
+two arguments.
 
 ## Deleting code
 
@@ -938,9 +1022,10 @@ spelled, it is reported as a deletion: `deleted 2 matches in 1 file`, and a refu
 delete.  A rewrite that is only a comment writes something, so it is a replace, and reported as
 one.
 
-With `src/debug.py` holding:
+With this file beside the others:
 
 ```python
+# src/debug.py
 import os
 print(os.getcwd())  # noqa
 connect(host, debug)
@@ -948,6 +1033,7 @@ if ready:
     print(ready); go()
 ```
 
+<!-- check: with src/debug.py; then src/debug.py -->
 ```
 $ quaff -e 'delete `print($x)` expect 2'
 src/debug.py:2:1-2:18: print(os.getcwd())
@@ -956,9 +1042,18 @@ quaff: deleted 2 matches in 1 file
 [exit 0]
 ```
 
-leaves `import os`, `connect(host, debug)`, `if ready:` and `go()` indented under it.  A rewrite
-with no code says nothing of the code around a match, so a deletion takes what would otherwise be
-left behind, and nothing else:
+leaves:
+
+```python
+# src/debug.py
+import os
+connect(host, debug)
+if ready:
+    go()
+```
+
+A rewrite with no code says nothing of the code around a match, so a deletion takes what would
+otherwise be left behind, and nothing else:
 
 - **A match alone on its lines takes them whole**: the indentation before it, a comment after
   it, `# noqa` and `# type: ignore` included, and the line break.  Where blank lines stand both
