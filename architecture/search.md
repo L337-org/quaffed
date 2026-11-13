@@ -277,8 +277,8 @@ the path or argument it concerns, and says what to do where there is something t
   they describe code that is gone.  Nothing in such a template says where the code around a match
   goes, so each match takes what would otherwise be left as debris, and nothing else: its whole
   lines where it stands alone on them, with a trailing comment and the line break, the comment
-  lines indented into a block it ends with, and the blank lines after it where blank lines stand
-  before it too (`Deletion::whole_lines`); or else one comma its parent node holds next to it,
+  lines indented into a block it ends with, and of the blank lines either side, the narrower run,
+  or those at the start or end of the file (`Deletion::whole_lines`); or else one comma its parent node holds next to it,
   across line breaks, or one semicolon on its own line (`Deletion`).  Asking the parent is what
   keeps a comma belonging to a neighbouring expression from being taken, and a comma in a
   comment, or with a comment between it and the match, is never taken.  A run of list items,
@@ -287,8 +287,10 @@ the path or argument it concerns, and says what to do where there is something t
   written after it (`one_item_tuples`).  A rewrite that is only a comment is written in place of
   the code, takes no comma from another line, and never takes the line; it is refused where code
   follows it on its line, which it would swallow.  An empty block left behind does not parse,
-  and the parse check refuses it.  A rewrite with no code is reported as a delete however it is
-  spelled (`Replacing::deletes`).
+  and the parse check refuses it.  A match that takes nothing and is an operand is refused
+  (`OPERATIONS`): its operator would be left applied to what is left, which can parse and mean
+  something else, as `x =  + a` does.  An empty rewrite is reported as a delete however it is
+  spelled (`Replacing::deletes`); one that is only a comment is reported as the replace it is.
 - **A file an earlier replace broke is refused as an edit** when a later structural statement
   needs it, naming the replaces that changed it, not as a file that cannot be parsed, since on
   disk it parses.

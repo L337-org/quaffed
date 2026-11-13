@@ -419,7 +419,9 @@ pub fn run(
         if let Step::Replace(replacing) = step
             && let ReplaceKind::Structural { rewrite, .. } = replacing.kind
         {
-            replacing.deletes = !rewrites[rewrite].has_code();
+            // A rewrite that writes a comment replaces the code with it; only one that writes
+            // nothing deletes.
+            replacing.deletes = rewrites[rewrite].text().trim().is_empty();
         }
     }
 
@@ -858,8 +860,9 @@ struct Replacing<'p> {
     span: Span,
     /// Its query.
     query: &'p Query,
-    /// Whether its rewrite has no code, so that it deletes what matched, however it is spelled:
-    /// set once the rewrite is compiled, and only for how its outcome is worded.
+    /// Whether its rewrite is empty, so that it deletes what matched, however it is spelled: set
+    /// once the rewrite is compiled, and only for how its outcome is worded.  One that is only a
+    /// comment is a replace.
     deletes: bool,
 }
 

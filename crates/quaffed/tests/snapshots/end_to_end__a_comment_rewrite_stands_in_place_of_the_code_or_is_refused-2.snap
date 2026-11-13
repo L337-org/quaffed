@@ -11,5 +11,5 @@ exit_code: 9
 ----- stdout -----
 
 ----- stderr -----
-quaff: refused: the delete cannot be made as written in 1 file, so nothing was written:
+quaff: refused: the replace cannot be made as written in 1 file, so nothing was written:
   "a.py": line 5, column 5: the rewrite is a comment, and "y = 3" follows the match on its line, so the comment would swallow that code: narrow the pattern so that it does not match here, or delete the match instead

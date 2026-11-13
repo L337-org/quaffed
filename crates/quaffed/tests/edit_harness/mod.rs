@@ -934,9 +934,9 @@ pub fn minimal_diff(
 }
 
 /// Each of `ranges` in `bytes` widened over what deleting it may take as well: the brackets that
-/// only wrap it, then whitespace and a comma or a semicolon on either side, the indentation before
-/// it, and after it a comment to the end of its line, the line break, and any lines after that
-/// are blank or are comments indented into a block.  This is looser than
+/// only wrap it, then whitespace and a comma or a semicolon on either side, the indentation and
+/// any blank lines before it, and after it a comment to the end of its line, the line break, and
+/// any lines after that are blank or are comments indented into a block.  This is looser than
 /// what quaff takes, one separator, but holds a deletion to the code next to each match: anything
 /// beyond it changed fails minimal diff.  Ranges that come to overlap are joined.
 pub fn deletion_reach(bytes: &[u8], ranges: &[Range<usize>]) -> Vec<Range<usize>> {
@@ -971,6 +971,19 @@ pub fn deletion_reach(bytes: &[u8], ranges: &[Range<usize>]) -> Vec<Range<usize>
         } else {
             back(start, &space)
         };
+        // At the start of a line, the blank lines before it too.
+        if start == 0 || bytes[start - 1] == b'\n' {
+            while start > 0 {
+                let previous = bytes[..start - 1]
+                    .iter()
+                    .rposition(|&b| b == b'\n')
+                    .map_or(0, |at| at + 1);
+                if !bytes[previous..start].iter().all(u8::is_ascii_whitespace) {
+                    break;
+                }
+                start = previous;
+            }
+        }
         let close = forth(end, &white);
         if close < bytes.len() && matches!(bytes[close], b',' | b';') {
             end = close + 1;

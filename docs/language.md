@@ -924,7 +924,8 @@ arguments.
 expect COUNT`` is the same edit, and everything a replace promises holds: the count, writing all
 or nothing, `--dry-run`, and refusing a result that does not parse, exit 9.  Whichever way it is
 spelled, it is reported as a deletion: `deleted 2 matches in 1 file`, and a refusal names the
-delete.
+delete.  A rewrite that is only a comment writes something, so it is a replace, and reported as
+one.
 
 With `src/debug.py` holding:
 
@@ -950,8 +951,10 @@ left behind, and nothing else:
 
 - **A match alone on its lines takes them whole**: the indentation before it, a comment after
   it, `# noqa` and `# type: ignore` included, and the line break.  Where blank lines stand both
-  before and after it, the blank lines after it go too, so deleting a function between two others
-  leaves the gap that stood before it rather than two gaps together.  A decorator is a match of
+  before and after it, the narrower run goes too, so the wider gap is left: deleting a function
+  between two others leaves one gap, not two, and deleting a class's last method leaves the gap
+  after the class.  At the start or the end of the file, the blank lines at that edge go, so the
+  file neither starts nor ends with them.  With blank lines on one side only, they stay.  A decorator is a match of
   its own, so ``delete `@retry($n)` expect 1`` takes the decorator's line and leaves the
   definition.
 - **Otherwise it takes one separator its parent holds next to it**: the comma after a list item
@@ -961,9 +964,12 @@ left behind, and nothing else:
   the trailing comma.  A comma is taken across a line break, since it separates the item from
   its neighbour wherever the lines fall: deleting `debug` from `f(a,` and `debug)` on the next
   line leaves `f(a)`.  A semicolon is taken only from the match's own line.  A comma that belongs
-  to anything else is never taken: deleting `b` from `g(a + b, c)` would leave `g(a + , c)`,
-  which does not parse, so it is refused.  Nor is a comma in a comment, or one with a comment
-  between it and the match.
+  to anything else is never taken, nor is a comma in a comment, or one with a comment between it
+  and the match.
+- **An operand is refused**, exit 9: deleting `debug` from `x = debug + a` would leave
+  `x =  + a`, which parses but means something else, and the same goes for either side of any
+  operator, `and`, `or`, `not` and a comparison.  Delete the whole expression instead.  So
+  deleting `b` from `g(a + b, c)` is refused: the comma after it is the call's, not the sum's.
 - **A tuple left with one item stays a tuple**: a comma is written after the item, so deleting
   `"skip"` from `(test, "skip")` leaves `(test,)`, `x = a, b` without `b` is `x = a,`, and
   `d[a, b]` without `b` is `d[a,]`, keeping each a tuple as the code around it expects.  A list or
@@ -1061,7 +1067,7 @@ src/app.py:16:5-17:32: return lookup(request.args["id"], default=None,)
 | 3 | a usage error, a malformed script or pattern, an empty program, or a scope holding a double quote |
 | 5 | a statement or construct this build does not have |
 | 7 | an I/O error, naming the path and quoting the system's error; an `in` that names nothing there; or edits that could not be written, saying what was left as it was |
-| 9 | a structural search needs a Python file quaff cannot parse, an edit would break a Python file that parses, a file's encoding cannot write a replacement, or a structural replace cannot be made as written - its matches overlap outside each other's holes, it would drop a comment, a trailing comma has no one place to go, a literal cannot hold a value as text, or a rewrite that is only a comment would swallow code after it on its line: the script or the file must change first |
+| 9 | a structural search needs a Python file quaff cannot parse, an edit would break a Python file that parses, a file's encoding cannot write a replacement, or a structural replace cannot be made as written - its matches overlap outside each other's holes, it would drop a comment, a trailing comma has no one place to go, a literal cannot hold a value as text, or a rewrite that is only a comment would swallow code after it on its line; or a delete would leave an operator without its operand: the script or the file must change first |
 
 **A run that cannot give an answer - exit 3, 5, 7 or 9 - prints nothing on standard output**, so
 a partial answer never passes for a whole one.  The whole program is read and checked before any

@@ -136,10 +136,11 @@ case, over each language it names, `find` gives the count `N`, and then:
   in order, and, as a check that needs no column arithmetic, every line outside the matched
   lines.  A case marked `deletes` is judged by bytes alone, outside what a deletion may take
   next to each match (`deletion_reach`): the brackets that only wrap it, whitespace and a
-  separator either side, its indentation, and a comment, the line break and blank or indented
-  comment lines after it, allowing the comma written after the item left in a one-item tuple
-  (`deletion_survives`).  A comma taken from the line before changes that line, so the check by
-  lines does not apply.  What replaced a match is not judged here; the end-to-end tests do that.
+  separator either side, its indentation and the blank lines before it, and a comment, the line
+  break and blank or indented comment lines after it, allowing the comma written after the item
+  left in a one-item tuple (`deletion_survives`).  A comma taken from the line before changes
+  that line, so the check by lines does not apply.  What replaced a match is not judged here; the
+  end-to-end tests do that.
 - **Determinism**: two runs give the same exit, output and files.
 - **Still parses**: the language's oracle accepts after the edit every file it accepted before; a
   case marked `Refused` must exit 9, write nothing, and say the words the case gives, so that a

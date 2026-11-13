@@ -13,4 +13,4 @@ exit_code: 0
 b.py:3:5-3:12: print(g)
 
 ----- stderr -----
-quaff: deleted 1 match in 1 file
+quaff: replaced 1 match in 1 file

@@ -17,6 +17,7 @@
 //! `$a * 2` - is written as the template says, and the edit is questioned rather than refused:
 //! the template is what was asked for, and a question can be answered by a further edit.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
@@ -291,6 +292,8 @@ struct Wrapping<'a> {
     lexed: &'a Lexed,
     /// Every node's range, as `(start, end)`: a bracket some node spans is that node's.
     nodes: HashSet<(usize, usize)>,
+    /// For each bracket, by its place in `lexed.brackets`, the one it stands directly inside.
+    outer: Vec<Option<usize>>,
 }
 
 impl<'a> Wrapping<'a> {
@@ -302,7 +305,37 @@ impl<'a> Wrapping<'a> {
                 (range.start, range.end)
             })
             .collect();
-        Wrapping { text, lexed, nodes }
+        // Brackets nest, and are in the order they open, so the one each stands inside is the
+        // nearest before it still open.
+        let mut outer = Vec::with_capacity(lexed.brackets.len());
+        let mut open: Vec<usize> = Vec::new();
+        for (index, bracket) in lexed.brackets.iter().enumerate() {
+            while open
+                .last()
+                .is_some_and(|&last| lexed.brackets[last].close < bracket.open)
+            {
+                open.pop();
+            }
+            outer.push(open.last().copied());
+            open.push(index);
+        }
+        Wrapping {
+            text,
+            lexed,
+            nodes,
+            outer,
+        }
+    }
+
+    /// The brackets that hold `at`, from either end inclusive, innermost first: found from the
+    /// last to open at or before it, through the brackets each stands inside, so that only
+    /// those around `at` are looked at.
+    fn around(&self, at: usize) -> impl Iterator<Item = &Bracket> {
+        let brackets = &self.lexed.brackets;
+        let last = brackets.partition_point(|b| b.open <= at).checked_sub(1);
+        std::iter::successors(last, |&index| self.outer[index])
+            .map(|index| &brackets[index])
+            .filter(move |b| at <= b.close)
     }
 
     /// Whether `range` holds only whitespace and comments.
@@ -311,11 +344,11 @@ impl<'a> Wrapping<'a> {
         loop {
             let rest = &self.text[at..range.end];
             at += rest.len() - rest.trim_start().len();
-            match self
-                .lexed
-                .comments
-                .iter()
-                .find(|c| c.start == at && c.end <= range.end)
+            let comments = &self.lexed.comments;
+            let index = comments.partition_point(|c| c.start < at);
+            match comments
+                .get(index)
+                .filter(|c| c.start == at && c.end <= range.end)
             {
                 Some(comment) => at = comment.end,
                 None => return at == range.end,
@@ -335,12 +368,19 @@ impl<'a> Wrapping<'a> {
         };
         loop {
             let inside = |b: &Bracket| within.start <= b.open && b.close < within.end;
-            let cut = self
-                .lexed
-                .brackets
+            // A bracket with one end in the capture, or wrapping it, holds its first or its last
+            // byte, so only the brackets around those two are looked at, in the order they open.
+            let mut near: Vec<&Bracket> = self
+                .around(capture.start)
+                .chain(self.around(capture.end - 1))
+                .collect();
+            near.sort_unstable_by_key(|b| b.open);
+            near.dedup_by_key(|b| b.open);
+            let cut = near
                 .iter()
+                .copied()
                 .find(|b| inside(b) && capture.contains(&b.open) != capture.contains(&b.close));
-            let wraps = self.lexed.brackets.iter().filter(wrapping).find(|b| {
+            let wraps = near.iter().copied().filter(wrapping).find(|b| {
                 inside(b)
                     && b.open < capture.start
                     && capture.end <= b.close
@@ -569,6 +609,7 @@ fn deleted(
         .nodes()
         .flat_map(|node| arena.children(node).map(move |child| (child, node)))
         .collect();
+    let children = RefCell::new(HashMap::new());
     let mut taken: Vec<Range<usize>> = Vec::with_capacity(captured.len());
     let mut separated: Vec<bool> = Vec::with_capacity(captured.len());
     let mut writes: Vec<String> = Vec::with_capacity(captured.len());
@@ -586,8 +627,25 @@ fn deleted(
             wrapping: &wrapping,
             taken: &taken,
             parents: &parents,
+            children: &children,
         };
         let (range, took) = deletion.range(&found.range, !comment);
+        // A match that takes neither its lines nor a separator, as an operand, leaves its
+        // operator behind applied to what is left, which can parse and mean something else:
+        // `x = debug + a` would become `x =  + a`.
+        if !took {
+            let parent = deletion.parent(&wrapping.widened(&(0..text.len()), &found.range));
+            if OPERATIONS.contains(&arena.kind(parent).name()) {
+                return Err((
+                    found.range.start,
+                    "this match is an operand, and deleting it would leave its operator applied \
+                     to what is left, which may still parse but would mean something else: \
+                     delete the whole expression, or narrow the pattern so that it does not \
+                     match here"
+                        .to_owned(),
+                ));
+            }
+        }
         // The last of a run of list items, each of which took the separator after it, has none
         // left to take, so the run takes the one before it, if its parent holds one.
         if !took {
@@ -642,10 +700,19 @@ fn deleted(
         let index = parts.partition_point(|(range, _)| range.start < at);
         parts.insert(index, (at..at, ",".to_owned()));
     }
+    Ok(Level {
+        questioned: escapes,
+        ..level(text, &parts)
+    })
+}
+
+/// `text` with each of `parts` written over its range, which are in order and do not overlap, and
+/// each range's old and new place; nothing questioned.
+fn level(text: &str, parts: &[(Range<usize>, String)]) -> Level {
     let mut out = String::with_capacity(text.len());
     let mut copied = 0;
     let mut edits = Vec::with_capacity(parts.len());
-    for (range, written) in &parts {
+    for (range, written) in parts {
         out.push_str(&text[copied..range.start]);
         let base = out.len();
         out.push_str(written);
@@ -653,11 +720,11 @@ fn deleted(
         copied = range.end;
     }
     out.push_str(&text[copied..]);
-    Ok(Level {
+    Level {
         text: out,
         edits,
-        questioned: escapes,
-    })
+        questioned: Vec::new(),
+    }
 }
 
 /// Where to write a comma so that each tuple the deletions in `parts` leave with one item stays a
@@ -687,6 +754,7 @@ fn one_item_tuples(
         wrapping,
         taken: &[],
         parents,
+        children: &RefCell::new(HashMap::new()),
     };
     let mut tuples: Vec<NodeId> = captured
         .iter()
@@ -722,6 +790,9 @@ fn one_item_tuples(
     commas
 }
 
+/// The kinds whose children are operands, which a deletion may not leave an operator without.
+const OPERATIONS: &[&str] = &["ExprBinOp", "ExprBoolOp", "ExprCompare", "ExprUnaryOp"];
+
 /// Where the line holding `offset` ends: its line break, or the end of `text`.
 fn line_end(text: &str, offset: usize) -> usize {
     text[offset..]
@@ -739,6 +810,8 @@ struct Deletion<'a, 'text> {
     taken: &'a [Range<usize>],
     /// Each node's parent.
     parents: &'a HashMap<NodeId, NodeId>,
+    /// The ranges of each parent's children, in order, as [`holds`](Deletion::holds) needs them.
+    children: &'a RefCell<HashMap<NodeId, Vec<Range<usize>>>>,
 }
 
 impl Deletion<'_, '_> {
@@ -856,8 +929,9 @@ impl Deletion<'_, '_> {
 
     /// `lines`, the whole lines a match stands alone on, with what goes with them: the comment
     /// lines after a block the match ends with, indented into it, which describe code that is
-    /// gone; and, where blank lines stand both before and after them, the blank lines after, so
-    /// that the gap left is the one that stood before.
+    /// gone; and the blank lines either side that would otherwise be left as a gap of their own.
+    /// Between code, where blank lines stand both before and after, the narrower run goes, so the
+    /// wider gap is left; at the start or the end of the file, the blank lines at that edge go.
     fn whole_lines(&self, lines: Range<usize>) -> Range<usize> {
         let text = self.text;
         let indent = |at: usize| {
@@ -883,16 +957,33 @@ impl Deletion<'_, '_> {
                 at = next_line(at);
             }
         }
-        let blank_before = lines.start > 0 && {
-            let previous = text[..lines.start - 1].rfind('\n').map_or(0, |at| at + 1);
-            blank(previous)
-        };
-        if blank_before {
-            while end < text.len() && blank(end) {
-                end = next_line(end);
+        // The blank lines either side: those before, back to where the line before them
+        // starts, and those after, to where the line after them starts.
+        let mut start = lines.start;
+        let mut before = 0;
+        while start > 0 {
+            let previous = text[..start - 1].rfind('\n').map_or(0, |at| at + 1);
+            if !blank(previous) {
+                break;
             }
+            (start, before) = (previous, before + 1);
         }
-        lines.start..end
+        let (mut past, mut after) = (end, 0);
+        while past < text.len() && blank(past) {
+            (past, after) = (next_line(past), after + 1);
+        }
+        // At the start or the end of the file, the blank lines at that edge go too, so that none
+        // are left there.  Between code, the gap that is left is the wider of the two, so that the
+        // file's own spacing stands: deleting a class's last method leaves the class's gap.
+        if start == 0 || past == text.len() {
+            start..past
+        } else if before > 0 && after > 0 && before < after {
+            start..end
+        } else if before > 0 && after > 0 {
+            lines.start..past
+        } else {
+            lines.start..end
+        }
     }
 
     /// The deepest node whose range holds `range` and is wider than it: from the first node
@@ -917,10 +1008,19 @@ impl Deletion<'_, '_> {
     fn holds(&self, parent: NodeId, at: usize) -> bool {
         let arena = self.arena;
         let range = arena.range(parent);
-        (range.start <= at && at < range.end || parent == arena.root())
-            && !arena
-                .children(parent)
-                .any(|child| arena.range(child).contains(&at))
+        if !(range.start <= at && at < range.end || parent == arena.root()) {
+            return false;
+        }
+        // Each parent's children's ranges, gathered once and in order, so `at` is found among
+        // them by search.
+        let mut children = self.children.borrow_mut();
+        let ranges = children
+            .entry(parent)
+            .or_insert_with(|| arena.children(parent).map(|c| arena.range(c)).collect());
+        let index = ranges.partition_point(|child| child.start <= at);
+        !index
+            .checked_sub(1)
+            .is_some_and(|index| ranges[index].contains(&at))
     }
 }
 
@@ -1556,10 +1656,10 @@ mod tests {
             ),
             "import os\nx = 2\nif x:\n    y = 3\n"
         );
-        // Its own line ending, whatever it is; the lines around it are left as they were.
+        // Its own line ending, whatever it is; the line around it is left as it was.
         assert_eq!(
-            deleted("import os", "import os\r\n\nimport sys\r\n"),
-            "\nimport sys\r\n"
+            deleted("import os", "a()\nimport os\r\nimport sys\r\n"),
+            "a()\nimport sys\r\n"
         );
     }
 
@@ -1597,11 +1697,25 @@ mod tests {
             deleted("def g():\n    pass", text),
             "def f():\n    pass\n\n\ndef h():\n    pass\n"
         );
-        // With none before, those after stay.
+        // At the start of the file, or its end, the blank lines at that edge go too.
         assert_eq!(
             deleted("def f():\n    pass", text),
-            "\n\ndef g():\n    pass\n\n\ndef h():\n    pass\n"
+            "def g():\n    pass\n\n\ndef h():\n    pass\n"
         );
+        assert_eq!(
+            deleted("def h():\n    pass", text),
+            "def f():\n    pass\n\n\ndef g():\n    pass\n"
+        );
+        // Between code, the wider gap is left: a class's last method leaves the class's two.
+        assert_eq!(
+            deleted(
+                "def g(self):\n    pass",
+                "class A:\n    def f(self):\n        pass\n\n    def g(self):\n        pass\n\n\nx = 1\n"
+            ),
+            "class A:\n    def f(self):\n        pass\n\n\nx = 1\n"
+        );
+        // With blank lines on one side only, they stay.
+        assert_eq!(deleted("b()", "a()\n\nb()\nc()\n"), "a()\n\nc()\n");
     }
 
     #[test]
@@ -1675,9 +1789,37 @@ mod tests {
         assert_eq!(deleted("b", "x = (a, b, c)\n"), "x = (a, c)\n");
         // A list left with one item is still a list, so it needs no comma.
         assert_eq!(deleted("b", "x = [a, b]\n"), "x = [a]\n");
+        // An operand is refused, whichever side it stands on, since what is left may parse.
+        for text in [
+            "x = debug + a\n",
+            "x = a - debug\n",
+            "f(debug * args)\n",
+            "x = not debug\n",
+        ] {
+            let refused = replaced("debug", "", text).unwrap_err();
+            assert!(
+                refused.contains("this match is an operand"),
+                "{text:?}: {refused}"
+            );
+        }
+        assert!(
+            replaced("debug", "", "x = a and debug or b\n")
+                .unwrap_err()
+                .contains("operand")
+        );
+        assert!(
+            replaced("debug", "", "x = a < debug\n")
+                .unwrap_err()
+                .contains("operand")
+        );
         // A comma the parent does not hold is never taken: this one is the call's, not the sum's,
-        // so what is left does not parse, and the parse check refuses it.
-        assert_eq!(deleted("b", "g(a + b, c)\n"), "g(a + , c)\n");
+        // so the match takes nothing, and is refused as an operand.  Taking the comma would have
+        // left `g(a + c)`, which parses.
+        assert!(
+            replaced("b", "", "g(a + b, c)\n")
+                .unwrap_err()
+                .contains("operand")
+        );
     }
 
     #[test]
