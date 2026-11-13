@@ -81,8 +81,8 @@ rules a user sees are `docs/language.md`'s _Paths and globs_.
   that is absolute.  A glob's leading directory, where it is there, is the exception: it is
   resolved on disk and the glob matched as an absolute one (`scope::on_disk`), so it names the
   directory a path with no wildcard would - `"../"**` from `src/` takes in `src/` as `in ".."`
-  does - and follows a symbolic link as discovery does.  `contains` reads none of those prefixes: it is text anywhere in the path as
-  printed.  A glob is compiled to a regular expression (`src/glob.rs`), with `regex-automata`,
+  does - and follows a symbolic link as discovery does.  `contains` reads none of those
+  prefixes: it is text anywhere in the path as printed.  A glob is compiled to a regular expression (`src/glob.rs`), with `regex-automata`,
   so a match takes time linear in the path however the glob is written.  `*`, `?` and a
   class are kept within a segment - for a path a directory name, for a string a line - and `**`
   crosses them.

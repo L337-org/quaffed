@@ -53,9 +53,9 @@ To add another:
 3. Act on it under the same `cfg` where the run needs it.  A hook that waits gives up after a
    bounded time with an error, so a test that never releases it fails rather than hangs.
 4. Mark every test that uses it `#[cfg(debug_assertions)]`, so that a build of the tests without
-   debug assertions does not pass the option to a binary that refuses it.  Such a test snapshots its output with
-   `insta::assert_snapshot!` rather than `assert_quaff_snapshot!`, which cannot run a closure
-   mid-run, and keeps any path it adds out of the snapshot.
+   debug assertions does not pass the option to a binary that refuses it.  Such a test snapshots
+   its output with `insta::assert_snapshot!` rather than `assert_quaff_snapshot!`, which cannot
+   run a closure mid-run, and keeps any path it adds out of the snapshot.
 
 ### Reviewing a changed snapshot
 
