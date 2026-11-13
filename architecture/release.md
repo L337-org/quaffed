@@ -89,8 +89,9 @@ installed and run before it can ship.
 `scripts/test-deb PACKAGE` checks that a built package installs and runs, on every pull request
 and before every release, in the *Debian package* job.  For each target distribution it starts a
 clean container with no network and runs `packaging/deb/install-test/check`, which installs the
-package with `dpkg -i`, checks its version and path, runs `quaff --help`, and runs searches whose
-results are known, so a binary that runs but answers wrongly fails.  A failure names the step;
+package with `dpkg -i`, checks its version and path, runs `quaff --help`, checks that a
+debug-only option is refused as unknown (the pausing section of `testing.md`), and runs searches
+whose results are known, so a binary that runs but answers wrongly fails.  A failure names the step;
 each distribution's whole log is kept in the job's artefact.  Only a registry 5xx while building
 an image is retried.
 

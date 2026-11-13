@@ -3,6 +3,12 @@
 
 //! Writing a run's edits: every file in place, or none of them.
 //!
+//! **No file another process changed since quaff read it is written over.**  Before anything is
+//! written, every file is checked against what it was when read (`contents::unchanged`), and if
+//! any has changed, or is no longer there, the run is refused with nothing written.  This narrows
+//! the window in which another writer's edit can be lost to the moments between the check and the
+//! writes; it does not close it, since nothing is locked.
+//!
 //! Every file is written in place, into the file itself, so that whatever a user relies on in it
 //! is untouched: its hard links, its owner and group, its permissions.  Writing a new file and
 //! renaming it over the old one would be atomic, but it is a different file: a hard link would
@@ -28,12 +34,18 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-/// One file to write: where it is, how a message names it, and its bytes before and after.
+use crate::contents::{self, Check};
+use crate::identity::Identity;
+
+/// One file to write: where it is, how a message names it, what it was when read, and its bytes
+/// before and after.
 pub struct Edit<'a> {
     /// Where it is.
     pub path: &'a Path,
     /// The path a message shows.
     pub shown: &'a Path,
+    /// Its identity when it was read, to tell whether it has changed since.
+    pub identity: &'a Identity,
     /// Its bytes as they were read, written back if writing fails.
     pub original: &'a [u8],
     /// Its new bytes.
@@ -58,9 +70,24 @@ pub enum Unflushed {
     },
 }
 
-/// Why the edits were not all written.  Every case exits 7, and says what state it left.
+/// Why the edits were not all written.  A file changed since it was read exits 6, and every
+/// other case 7, and each says what state it left.
 #[derive(Debug)]
 pub enum Failure {
+    /// A file changed after it was read, or is no longer there, so nothing was written.
+    Changed {
+        /// The file, as a message shows it.
+        path: PathBuf,
+        /// Whether it is no longer there, rather than changed.
+        gone: bool,
+    },
+    /// Whether a file changed since it was read could not be found out, so nothing was written.
+    Check {
+        /// The file, as a message shows it.
+        path: PathBuf,
+        /// The system's error, verbatim.
+        cause: io::Error,
+    },
     /// A file could not be opened for writing, so nothing was written.
     Open {
         /// The file, as a message shows it.
@@ -93,6 +120,21 @@ pub enum Failure {
 impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Failure::Changed { path, gone: false } => write!(
+                f,
+                "{path:?} changed after quaff read it, and writing the edits would lose that \
+                 change; nothing was written.  Run quaff again to edit the file as it is now"
+            ),
+            Failure::Changed { path, gone: true } => write!(
+                f,
+                "{path:?} was removed or renamed after quaff read it; nothing was written.  Run \
+                 quaff again to edit the files as they are now"
+            ),
+            Failure::Check { path, cause } => write!(
+                f,
+                "checking whether {path:?} changed since quaff read it: {cause}; nothing was \
+                 written"
+            ),
             Failure::Open { path, cause } => write!(
                 f,
                 "opening {path:?} to write the edits: {cause}; nothing was written"
@@ -160,9 +202,25 @@ fn put_back(
 impl std::error::Error for Failure {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Failure::Open { cause, .. }
+            Failure::Check { cause, .. }
+            | Failure::Open { cause, .. }
             | Failure::Write { cause, .. }
             | Failure::Flush { cause, .. } => Some(cause),
+            Failure::Changed { .. } => None,
+        }
+    }
+}
+
+impl Failure {
+    /// The exit code this failure ends the run with: 6 for a file changed since it was read, 7
+    /// for every other.
+    pub fn exit_code(&self) -> u8 {
+        match self {
+            Failure::Changed { .. } => 6,
+            Failure::Check { .. }
+            | Failure::Open { .. }
+            | Failure::Write { .. }
+            | Failure::Flush { .. } => 7,
         }
     }
 }
@@ -296,14 +354,40 @@ mod platform {
     }
 }
 
-/// Writes every edit in place, or none of them.
+/// Writes every edit in place, or none of them, and none if any file changed since it was read.
 ///
 /// # Errors
 ///
 /// Returns a [`Failure`] saying what could not be written and what state that left: nothing
-/// changed when a file could not be opened, every file put back when a write or a flush failed,
-/// or which files could not be put back.
+/// changed when a file changed since it was read, could not be checked or could not be opened,
+/// every file put back when a write or a flush failed, or which files could not be put back.
 pub fn commit(edits: &[Edit]) -> Result<(), Failure> {
+    // Every file checked before any is opened, so that one removed since it was read is reported
+    // as changed rather than as failing to open.
+    for edit in edits {
+        let path = || edit.shown.to_path_buf();
+        match contents::unchanged(edit.path, edit.identity, edit.original) {
+            Ok(Check::Unchanged) => {}
+            Ok(Check::Changed) => {
+                return Err(Failure::Changed {
+                    path: path(),
+                    gone: false,
+                });
+            }
+            Ok(Check::Gone) => {
+                return Err(Failure::Changed {
+                    path: path(),
+                    gone: true,
+                });
+            }
+            Err(cause) => {
+                return Err(Failure::Check {
+                    path: path(),
+                    cause,
+                });
+            }
+        }
+    }
     commit_with(
         edits,
         |path| OpenOptions::new().write(true).open(path),
@@ -505,10 +589,17 @@ mod tests {
         String::from_utf8(disk.borrow().files[Path::new(path)].clone()).unwrap()
     }
 
+    /// An identity for edits whose files are in memory, which only `commit` checks.
+    static UNCHECKED: std::sync::LazyLock<Identity> = std::sync::LazyLock::new(|| {
+        let metadata = std::fs::metadata(env!("CARGO_MANIFEST_DIR")).unwrap();
+        Identity::of(&metadata, std::time::SystemTime::now())
+    });
+
     fn edit<'a>(path: &'a str, original: &'a str, edited: &'a str) -> Edit<'a> {
         Edit {
             path: Path::new(path),
             shown: Path::new(path),
+            identity: &UNCHECKED,
             original: original.as_bytes(),
             edited: edited.as_bytes(),
         }
@@ -822,9 +913,14 @@ mod tests {
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o640)).unwrap();
         std::fs::hard_link(&file, &link).unwrap();
         let inode = std::fs::metadata(&file).unwrap().ino();
+        let read = Identity::of(
+            &std::fs::metadata(&file).unwrap(),
+            std::time::SystemTime::now(),
+        );
         let edits = [Edit {
             path: &file,
             shown: Path::new("a.txt"),
+            identity: &read,
             original: b"a longer original\n",
             edited: b"short\n",
         }];

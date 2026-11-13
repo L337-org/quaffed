@@ -1,0 +1,8 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+expression: result
+---
+exit_code: Some(7)
+----- stdout -----
+----- stderr -----
+quaff: checking whether "a.txt" changed since quaff read it: Permission denied (os error 13); nothing was written

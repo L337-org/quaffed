@@ -9,6 +9,8 @@
 
 use std::ffi::OsString;
 use std::fmt;
+#[cfg(debug_assertions)]
+use std::path::PathBuf;
 
 /// What the command line asked for.
 #[derive(Debug, PartialEq, Eq)]
@@ -21,10 +23,35 @@ pub enum Invocation {
         sources: Vec<SourceArg>,
         /// The one positional scope argument, as given.
         scope: Option<OsString>,
-        /// `--dry-run`: work everything out, and write nothing.
-        dry_run: bool,
+        /// How to run them.
+        options: Options,
     },
 }
+
+/// How to run the sources, from the options that are not sources.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Options {
+    /// `--dry-run`: work everything out, and write nothing.
+    pub dry_run: bool,
+    /// What a test asked of a debug build.
+    pub hooks: Hooks,
+}
+
+/// What a test can ask of a debug build, from options only a debug build has, so that a release
+/// build refuses each as unknown and has no field here.  None is in the help.  The end-to-end
+/// section of `architecture/testing.md` says when to use one and how to add another.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Hooks {
+    /// `--debug-pause-before-write PATH`: create a file at `PATH` once every file is read and the
+    /// edits are decided, and wait until it is removed before checking and writing the files, so
+    /// that a test can change a file between its read and its write.
+    #[cfg(debug_assertions)]
+    pub pause_before_write: Option<PathBuf>,
+}
+
+/// The option for [`Hooks::pause_before_write`].
+#[cfg(debug_assertions)]
+const PAUSE_BEFORE_WRITE: &str = "--debug-pause-before-write";
 
 /// One source of statements, as the command line gave it.
 #[derive(Debug, PartialEq, Eq)]
@@ -115,6 +142,7 @@ impl fmt::Display for UsageError {
                 let wanted = match option.as_str() {
                     "-e" | "--expression" => "the statements to run",
                     "-f" | "--file" => "a script file, or - for standard input",
+                    "--debug-pause-before-write" => "the path of a file to create and wait on",
                     _ => "the text to search for",
                 };
                 write!(f, "{option:?} needs a value: {wanted}")
@@ -178,6 +206,8 @@ where
     let mut positionals = Vec::new();
     let mut options_ended = false;
     let mut dry_run = false;
+    #[cfg(debug_assertions)]
+    let mut pause_before_write = None;
     while let Some(arg) = args.next() {
         if options_ended {
             positionals.push(arg);
@@ -203,6 +233,17 @@ where
                     .ok_or_else(|| UsageError::MissingValue(name.to_owned()))?,
             };
             sources.push(source(option, value, &sources)?);
+            continue;
+        }
+        #[cfg(debug_assertions)]
+        if name == PAUSE_BEFORE_WRITE {
+            let value = match inline {
+                Some(value) => OsString::from(value),
+                None => args
+                    .next()
+                    .ok_or_else(|| UsageError::MissingValue(name.to_owned()))?,
+            };
+            pause_before_write = Some(PathBuf::from(value));
             continue;
         }
         match name {
@@ -233,7 +274,13 @@ where
     Ok(Invocation::Run {
         sources,
         scope: scopes.into_iter().next(),
-        dry_run,
+        options: Options {
+            dry_run,
+            hooks: Hooks {
+                #[cfg(debug_assertions)]
+                pause_before_write,
+            },
+        },
     })
 }
 
@@ -310,8 +357,37 @@ mod tests {
         Invocation::Run {
             sources,
             scope: scope.map(OsString::from),
-            dry_run: false,
+            options: Options::default(),
         }
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_debug_build_takes_a_pause_before_writing_in_either_form() {
+        for args in [
+            &["--debug-pause-before-write", "/tmp/m", "TODO"][..],
+            &["--debug-pause-before-write=/tmp/m", "TODO"][..],
+        ] {
+            assert_eq!(
+                parse_strs(args),
+                Ok(Invocation::Run {
+                    sources: vec![query_arg("TODO", Source::Positional)],
+                    scope: None,
+                    options: Options {
+                        dry_run: false,
+                        hooks: Hooks {
+                            pause_before_write: Some(PathBuf::from("/tmp/m")),
+                        },
+                    },
+                })
+            );
+        }
+        assert_eq!(
+            parse_strs(&["TODO", "--debug-pause-before-write"]),
+            Err(UsageError::MissingValue(
+                "--debug-pause-before-write".into()
+            ))
+        );
     }
 
     #[test]

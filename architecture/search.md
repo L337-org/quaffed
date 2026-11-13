@@ -241,6 +241,22 @@ the path or argument it concerns, and says what to do where there is something t
   a hook for each system after each file is written and after them all, each a no-op, where a
   flush goes once decided.  `src/write.rs` is the only file besides `src/contents.rs` that
   opens a project's files, and only to write; `contents_containment.rs` holds both.
+- **A file changed since it was read is never written over: optimistic checking, not locking.**
+  Every read records the file's identity (`src/identity.rs`) from the open file before its bytes
+  are read, so a write landing during the read is seen later.  Before any file is opened for
+  writing, each is checked (`contents::unchanged`): if its identity now vouches for it, it is
+  written without being read again; otherwise its bytes are read again and compared with the
+  original the run holds, and only a difference, or the file no longer being there or a file,
+  refuses the run, exit 6, with nothing written.  Comparing the held bytes stands in for a
+  content hash, and needs none.  Nothing is locked, so nothing waits on another process and
+  nothing is left behind by a crash; the cost is that a write landing between the check and the
+  write is lost, which only a lock held across those moments would close.
+- **An identity vouches only for what its system can show**, so each system has its own
+  `platform` module in `identity.rs`.  On Unix it is the device, inode, size, and modification
+  and change times: the inode sees an editor's save by rename, and the change time, which nothing
+  sets back, sees an edit whose modification time was restored.  **A timestamp is only as fine as
+  the clock that set it**, so, as git does for its racily clean files, a file whose newest
+  timestamp is within two seconds of its read is never vouched for, and has its bytes compared.
 - **A structural replace edits a Python file's decoded text** and encodes the result back as the
   file is encoded (`python::Source::encode`), which gives a file's own bytes back exactly, so every
   byte outside the matches is kept.  A character the encoding cannot hold is refused as for a

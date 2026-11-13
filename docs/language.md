@@ -466,7 +466,18 @@ Without `--dry-run`, the files are written, and the note is `replaced 5 matches 
   its hard links, owner and permissions are kept, and every file is checked for writing before any
   is written: one that cannot be written stops the run with nothing changed, exit 7.  If a write
   fails partway, every file already written is put back as it was, and the message names any that
-  could not be.  **Two gaps remain.**  If quaff is killed, or the machine loses power, while it
+  could not be.
+- **A file changed by anyone else after quaff read it is not written over.**  Just before
+  writing, quaff checks every file it is about to edit against what it was when read, and if any
+  has changed, or been removed or renamed, the run is refused, exit 6, naming the file, and
+  nothing is written; run quaff again to edit the files as they are now.  A change is seen even
+  when it keeps the file's size and its modification time is put back afterwards, as `cp -p` or
+  a restore from backup does.  Saving a file without changing it, or changing only its
+  permissions, is not a change.  A file that cannot be checked stops the run, exit 7, with
+  nothing written.  **Only the moment between the check and the write is left**: another
+  program writing a file in that moment, after it is checked, can still have its change written
+  over.
+- **Two gaps remain in writing itself.**  If quaff is killed, or the machine loses power, while it
   is writing, a file can be left half-written.  And quaff does not yet flush what it writes to
   disk, so a power loss soon after a run that succeeded can lose its edits, all of them or only
   some files.
@@ -1069,6 +1080,7 @@ src/app.py:16:5-17:32: return lookup(request.args["id"], default=None,)
 | 2 | an assertion failed |
 | 3 | a usage error, a malformed script or pattern, an empty program, or a scope holding a double quote |
 | 5 | a statement or construct this build does not have |
+| 6 | a file to be edited changed after quaff read it, or was removed or renamed, so nothing was written |
 | 7 | an I/O error, naming the path and quoting the system's error; an `in` that names nothing there; or edits that could not be written, saying what was left as it was |
 | 9 | a structural search needs a Python file quaff cannot parse, an edit would break a Python file that parses, a file's encoding cannot write a replacement, or a structural replace cannot be made as written - its matches overlap outside each other's holes, it would drop a comment, a trailing comma has no one place to go, a literal cannot hold a value as text, or a rewrite that is only a comment would swallow code after it on its line; or a delete would leave what holds a match without it: the script or the file must change first |
 
@@ -1090,6 +1102,8 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
   will be once written - but not where it is on disk, even with `--dry-run`.
 - **A file's encoding is decided once, from disk.**  A replace that edits an `.editorconfig` or a
   `.gitattributes` does not change how the other files are read or written in the same run.
+- **A file removed or renamed after quaff read it is a change, exit 6**, not an I/O error: what
+  quaff would have written over is gone, so the run is refused as for any other change.
 - **A match replaced by the same text counts as replaced**, towards the `expect` and the note,
   but changes no bytes, so nothing is written to its file.
 

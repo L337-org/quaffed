@@ -2319,6 +2319,122 @@ fn a_file_that_cannot_be_written_stops_the_run_before_any_file_is_written() {
     project.assert_unchanged();
 }
 
+/// Runs `quaff` with `args` in `project`, paused by its debug-only hook once every file is read
+/// and the edits are decided, runs `meanwhile` on the project's directory, then lets it check
+/// and write the files.  Returns what it printed and how it exited, as a snapshot records them.
+#[cfg(debug_assertions)]
+fn quaff_while(project: &Project, args: &[&str], meanwhile: impl FnOnce(&Path)) -> String {
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    // Beside the project, not in it, so it is never searched.
+    let marker = project.dir.with_extension("pause");
+    let mut command = project.quaff(args);
+    command
+        .arg("--debug-pause-before-write")
+        .arg(&marker)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().expect("starting quaff");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !marker.exists() {
+        if let Some(status) = child.try_wait().expect("polling quaff") {
+            panic!("quaff exited {status} before it paused");
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("quaff did not pause within 30 seconds");
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    meanwhile(&project.dir);
+    fs::remove_file(&marker).expect("letting quaff go on");
+    let output = child.wait_with_output().expect("waiting for quaff");
+    format!(
+        "exit_code: {:?}\n----- stdout -----\n{}----- stderr -----\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+}
+
+/// Waits until the project's files are older than the check's racy window, so that their
+/// timestamps alone vouch for an unchanged file and the change time must show a changed one.
+#[cfg(debug_assertions)]
+fn let_the_timestamps_settle() {
+    std::thread::sleep(std::time::Duration::from_millis(2100));
+}
+
+#[cfg(debug_assertions)]
+const REPLACE_TODO: &[&str] = &["-e", "replace string \"TODO\" with \"DONE\" expect 3"];
+
+#[cfg(debug_assertions)]
+#[test]
+fn a_file_changed_after_it_was_read_is_refused_with_exit_6_and_nothing_written() {
+    let project = Project::new(EDITABLE);
+    insta::assert_snapshot!(quaff_while(&project, REPLACE_TODO, |dir| {
+        fs::write(dir.join("b.txt"), "TODO\nsomebody else's line\n").unwrap();
+    }));
+    project.assert_changed(&[("b.txt", b"TODO\nsomebody else's line\n")]);
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn a_same_size_edit_with_its_modification_time_restored_is_refused_with_exit_6() {
+    let project = Project::new(EDITABLE);
+    let_the_timestamps_settle();
+    insta::assert_snapshot!(quaff_while(&project, REPLACE_TODO, |dir| {
+        let file = dir.join("b.txt");
+        let modified = fs::metadata(&file).unwrap().modified().unwrap();
+        fs::write(&file, "TODX\n").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        assert_eq!(fs::metadata(&file).unwrap().modified().unwrap(), modified);
+    }));
+    project.assert_changed(&[("b.txt", b"TODX\n")]);
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn a_file_removed_after_it_was_read_is_refused_with_exit_6() {
+    let project = Project::new(EDITABLE);
+    insta::assert_snapshot!(quaff_while(&project, REPLACE_TODO, |dir| {
+        fs::remove_file(dir.join("b.txt")).unwrap();
+    }));
+    assert_eq!(
+        fs::read(project.dir.join("a.txt")).unwrap(),
+        b"TODO one\nTODO two\n",
+        "a file was written though another was refused"
+    );
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn an_unchanged_file_is_written_after_the_check() {
+    let project = Project::new(EDITABLE);
+    let_the_timestamps_settle();
+    insta::assert_snapshot!(quaff_while(&project, REPLACE_TODO, |_| {}));
+    project.assert_changed(&[("a.txt", b"DONE one\nDONE two\n"), ("b.txt", b"DONE\n")]);
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn a_file_that_cannot_be_checked_exits_7_naming_it() {
+    let project = Project::new(EDITABLE);
+    let mut locked = None;
+    let result = quaff_while(&project, REPLACE_TODO, |dir| {
+        // Nothing in the project can be looked up, so no file's metadata can be read.
+        locked = Some(Locked::to(dir.to_path_buf(), 0o000));
+    });
+    drop(locked);
+    insta::assert_snapshot!(result);
+    project.assert_unchanged();
+}
+
 #[test]
 fn a_structural_search_after_a_replace_sees_the_code_as_edited() {
     let project = Project::new(&[(".git/HEAD", ""), ("fine.py", "f(x)\nh(y)\n")]);
