@@ -2817,14 +2817,17 @@ impl<'s> Evaluation<'s> {
     fn nothing_applicable(&self, index: usize, pattern: Wanted) -> Option<String> {
         let searched = self.searched;
         match pattern {
-            Wanted::Structural { .. } if searched.python_for[index] == 0 => Some(format!(
-                "no file in scope has structural support; {} not searched",
-                count(
-                    searched.not_applicable_for[index],
-                    "text-tier file",
-                    "text-tier files"
-                )
-            )),
+            // With nothing in scope at all, as where a `where` leaves out every file, there are no
+            // text-tier files to count, and "0 not searched" would say nothing.
+            Wanted::Structural { .. } if searched.python_for[index] == 0 => {
+                Some(match searched.not_applicable_for[index] {
+                    0 => "no file in scope has structural support".to_string(),
+                    n => format!(
+                        "no file in scope has structural support; {} not searched",
+                        count(n, "text-tier file", "text-tier files")
+                    ),
+                })
+            }
             // Every Python file in scope is binary, which the binary count says.
             Wanted::Structural { .. } if searched.structural_for[index] == 0 => Some(format!(
                 "no Python file in scope could be searched; {} not searched",

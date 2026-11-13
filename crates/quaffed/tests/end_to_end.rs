@@ -1998,6 +1998,11 @@ fn a_scope_with_no_python_says_so_rather_than_finding_nothing() {
         "find `handle_request($a, $b)` expect none",
         "README.md",
     ]));
+    // With nothing in scope at all there are no text-tier files to count, so none are named.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "find `handle_request($a, $b)` where FILE contains \"no such path\" expect none",
+    ]));
     project.assert_unchanged();
 }
 

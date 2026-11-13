@@ -1204,6 +1204,9 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
 - **After a replace, positions are in the file as edited.**  A statement after a replace sees its
   edits, so the lines and columns it prints are where the text is after them, which is where it
   will be once written - but not where it is on disk, even with `--dry-run`.
+- **A structural statement with nothing in scope at all says only that no file has structural
+  support**, as where a `where` leaves out every file.  With text-tier files in scope it counts
+  them as not searched; with none, a count of none would say nothing, so it is left out.
 - **A file's encoding is decided once, from disk.**  A replace that edits an `.editorconfig` or a
   `.gitattributes` does not change how the other files are read or written in the same run.
 - **A file removed or renamed after quaff read it is a change, exit 6**, not an I/O error: what
