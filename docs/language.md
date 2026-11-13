@@ -861,7 +861,7 @@ arguments where the template's `, ` stands, but not when the rewrite reorders th
   deprecated(old_name)
   ```
 
-  <!-- check: with app.py -->
+  <!-- check: with app.py; then app.py -->
   ```
   $ quaff -e 'replace `deprecated($name)` with `warn("$name is deprecated")` expect 1'
   app.py:5:1-5:20: deprecated(old_name)
@@ -869,8 +869,19 @@ arguments where the template's `, ` stands, but not when the rewrite reorders th
   [exit 0]
   ```
 
-  leaves `warn("old_name is deprecated")`.  Inside braces only a bound name may stand, so
-  `${name|upper}` is refused as a value filter this build does not have, exit 5.
+  leaves:
+
+  ```python
+  # app.py
+  from compat import deprecated, warn
+
+  old_name = 1
+
+  warn("old_name is deprecated")
+  ```
+
+  Inside braces only a bound name may stand, so `${name|upper}` is refused as a value filter
+  this build does not have, exit 5.
 - **Indentation is derived, never written.**  A template's later lines take the indentation of the
   line the match starts on, in the file's own indent unit; captured statements moved to another
   depth are shifted with them, except the lines of a multi-line string, which are part of its
@@ -879,7 +890,7 @@ arguments where the template's `, ` stands, but not when the rewrite reorders th
   a line keep theirs when the call is rewritten round them.  So unwrapping a block is a replace,
   here over `src/store.py` above:
 
-  <!-- check: with src/store.py -->
+  <!-- check: with src/store.py; then src/store.py -->
   ```
   $ quaff -e 'replace `with lock:
       $body...` with `$body...` expect 1'
@@ -888,8 +899,24 @@ arguments where the template's `, ` stands, but not when the rewrite reorders th
   [exit 0]
   ```
 
-  leaves `data = read(path)` and `check(data)` at the function's own level.  Nothing else is
-  reformatted: a project's formatter does the rest.
+  leaves `data = read(path)` and `check(data)` at the function's own level:
+
+  ```python
+  # src/store.py
+  def load(path):
+      log("loading %s", path)
+      data = read(path)
+      check(data)
+      return data
+
+
+  def save(path, data):
+      log("saving %s to %s", data,
+          path,)
+      write(path, data)
+  ```
+
+  Nothing else is reformatted: a project's formatter does the rest.
 - **Line breaks are the file's own**: each line break the template writes is spelled as the
   file's line ending where the match stands, as `$^` writes one in a textual replace, except one
   inside a string, which is part of its value.
@@ -964,7 +991,7 @@ asked for, and a note names the file, where, and the capture.  With this file:
 total = f(x + 1)
 ```
 
-<!-- check: with calc.py -->
+<!-- check: with calc.py; then calc.py -->
 ```
 $ quaff -e 'replace `f($a)` with `$a * 2` expect 1'
 calc.py:1:9-1:16: f(x + 1)
@@ -973,10 +1000,17 @@ quaff: "calc.py": line 1, column 9: what $a captured, "x + 1", is not code of it
 [exit 0]
 ```
 
-`calc.py` now holds `total = x + 1 * 2`, which Python reads as `x + (1 * 2)`.  If that is not
-what was meant, a further replace can put it right; put brackets round the hole in the rewrite,
-`($a) * 2`, and it is written as one piece of code.  `return wrap($x)` over `return a, b` is
-questioned the same way, since it calls `wrap` with two arguments.
+leaves:
+
+```python
+# calc.py
+total = x + 1 * 2
+```
+
+which Python reads as `x + (1 * 2)`.  If that is not what was meant, a further replace can put it
+right; put brackets round the hole in the rewrite, `($a) * 2`, and it is written as one piece of
+code.  `return wrap($x)` over `return a, b` is questioned the same way, since it calls `wrap` with
+two arguments.
 
 ## Deleting code
 
@@ -999,7 +1033,7 @@ if ready:
     print(ready); go()
 ```
 
-<!-- check: with src/debug.py -->
+<!-- check: with src/debug.py; then src/debug.py -->
 ```
 $ quaff -e 'delete `print($x)` expect 2'
 src/debug.py:2:1-2:18: print(os.getcwd())
@@ -1008,9 +1042,18 @@ quaff: deleted 2 matches in 1 file
 [exit 0]
 ```
 
-leaves `import os`, `connect(host, debug)`, `if ready:` and `go()` indented under it.  A rewrite
-with no code says nothing of the code around a match, so a deletion takes what would otherwise be
-left behind, and nothing else:
+leaves:
+
+```python
+# src/debug.py
+import os
+connect(host, debug)
+if ready:
+    go()
+```
+
+A rewrite with no code says nothing of the code around a match, so a deletion takes what would
+otherwise be left behind, and nothing else:
 
 - **A match alone on its lines takes them whole**: the indentation before it, a comment after
   it, `# noqa` and `# type: ignore` included, and the line break.  Where blank lines stand both

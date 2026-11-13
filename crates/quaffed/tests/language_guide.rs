@@ -3,9 +3,10 @@
 //! The guide teaches by example: a command, then what `quaff` prints for it, standard output and
 //! standard error together, and the exit status.  This test builds the guide's example project
 //! from the files the guide shows, runs each example's command in a fresh copy of it, and fails,
-//! naming the example by its line in the guide, wherever what `quaff` prints or how it exits is
-//! not what the guide shows.  An example it cannot run fails too, rather than being passed over.
-//! `architecture/testing.md` says how to write an example so that it is checked.
+//! naming the example by its line in the guide, wherever what `quaff` prints, how it exits, or
+//! what it leaves in a file the guide shows it leaving is not what the guide shows.  An example
+//! it cannot run fails too, rather than being passed over.  `architecture/testing.md` says how
+//! to write an example so that it is checked.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -17,7 +18,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// The note every structural search over the whole project prints for `docs/notes.md`, which
 /// the guide leaves out of every example after the first.
-const TEXT_TIER_NOTE: &str = "quaff: 1 text-tier file not searched for structural patterns, which apply to Python files only";
+const TEXT_TIER_NOTE: &str = "quaff: 1 text-tier file not searched for structural patterns, \
+    which apply to Python files only";
 
 /// What opens a directive, an HTML comment that says how to run the example after it.
 const DIRECTIVE_OPEN: &str = "<!-- check:";
@@ -47,6 +49,9 @@ struct Example {
     output: Vec<String>,
     /// The exit status the guide shows, or 0 where it shows none.
     exit: i32,
+    /// The files the guide shows as the command leaves them, each in the first block showing its
+    /// path after the example.
+    then: Vec<Shown>,
 }
 
 /// The guide, read: the example project, the examples, and what could not be read.
@@ -73,6 +78,7 @@ struct Directive {
     line: usize,
     cwd: Option<String>,
     with: Vec<String>,
+    then: Vec<String>,
 }
 
 /// Reads the guide's text into its project, its examples and what cannot be checked.
@@ -129,6 +135,9 @@ struct Reader {
     used: BTreeMap<(String, usize), bool>,
     /// The directive waiting for the example block after it.
     directive: Option<Directive>,
+    /// Each file a directive's `then` expects shown after its example: the example's index in
+    /// `guide.examples`, the path, and the directive's line.
+    then: Vec<(usize, String, usize)>,
 }
 
 impl Reader {
@@ -146,7 +155,12 @@ impl Reader {
     fn block(&mut self, block: &Block, in_intro: bool) {
         let directive = self.directive.take();
         if let Some(file) = shown_file(block) {
-            if in_intro {
+            if let Some(at) = self.then.iter().position(|(_, path, _)| *path == file.path) {
+                // A file shown as an example left it is a result, not an input, so it is not
+                // what a later `with` adds.
+                let (example, _, _) = self.then.remove(at);
+                self.guide.examples[example].then.push(file);
+            } else if in_intro {
                 self.guide.project.push(file);
             } else {
                 self.used.insert((file.path.clone(), file.line), false);
@@ -192,15 +206,40 @@ impl Reader {
             }
         }
         let cwd = directive.cwd.unwrap_or_default();
-        match read_examples(block, &cwd, &with) {
-            Ok(examples) => self.guide.examples.extend(examples),
-            Err(err) => self.guide.unreadable.push(err),
+        let examples = match read_examples(block, &cwd, &with) {
+            Ok(examples) => examples,
+            Err(err) => {
+                self.guide.unreadable.push(err);
+                return;
+            }
+        };
+        if !directive.then.is_empty() {
+            if examples.len() == 1 {
+                let example = self.guide.examples.len();
+                for path in directive.then {
+                    self.then.push((example, path, directive.line));
+                }
+            } else {
+                self.guide.unreadable.push(format!(
+                    "docs/language.md:{}: the check directive's `then` is before a block of {} \
+                     commands, so which one leaves the file is not known",
+                    directive.line,
+                    examples.len()
+                ));
+            }
         }
+        self.guide.examples.extend(examples);
     }
 
     /// Ends the reading, recording a directive left waiting and every file no directive added.
     fn finish(mut self) -> Guide {
         self.no_example_after_directive();
+        for (_, path, line) in &self.then {
+            self.guide.unreadable.push(format!(
+                "docs/language.md:{line}: the check directive says what the example leaves in \
+                 {path:?}, but no block after the example shows it"
+            ));
+        }
         for ((path, line), was_used) in self.used {
             if !was_used {
                 self.guide.unreadable.push(format!(
@@ -213,8 +252,8 @@ impl Reader {
     }
 }
 
-/// Reads a directive's settings, `cwd DIR` and `with PATH, PATH`, separated by `;`, from the
-/// text after `<!-- check:`.
+/// Reads a directive's settings, `cwd DIR`, `with PATH, ...` and `then PATH, ...`, separated by
+/// `;`, from the text after `<!-- check:`.
 fn read_directive(line: usize, rest: &str) -> Result<Directive, String> {
     let Some(body) = rest.trim_end().strip_suffix("-->") else {
         return Err(format!(
@@ -237,10 +276,15 @@ fn read_directive(line: usize, rest: &str) -> Result<Directive, String> {
                     .with
                     .extend(value.split(',').map(|p| p.trim().to_string()));
             }
+            "then" if !value.is_empty() => {
+                directive
+                    .then
+                    .extend(value.split(',').map(|p| p.trim().to_string()));
+            }
             _ => {
                 return Err(format!(
                     "docs/language.md:{line}: {setting:?} is not a check setting; the settings are \
-                     `cwd DIR`, once, and `with PATH, ...`"
+                     `cwd DIR`, once, `with PATH, ...` and `then PATH, ...`"
                 ));
             }
         }
@@ -351,7 +395,8 @@ fn read_examples(block: &Block, cwd: &str, with: &[Shown]) -> Result<Vec<Example
         }
         if output.iter().any(|l| l.starts_with("[exit ")) {
             return Err(format!(
-                "docs/language.md:{start}: an exit status must be the last line of an example's output"
+                "docs/language.md:{start}: an exit status must be the last line of an example's \
+                output"
             ));
         }
         examples.push(Example {
@@ -362,6 +407,7 @@ fn read_examples(block: &Block, cwd: &str, with: &[Shown]) -> Result<Vec<Example
             with: with.to_vec(),
             output,
             exit,
+            then: Vec::new(),
         });
     }
     Ok(examples)
@@ -549,6 +595,44 @@ fn check(example: &Example, ran: &Ran) -> Option<String> {
     Some(report)
 }
 
+/// Checks each file the guide shows an example leaving, returning what is wrong with each.
+fn check_left(example: &Example, dir: &Path) -> Vec<String> {
+    let mut wrong = Vec::new();
+    for file in &example.then {
+        let path = dir.join(&file.path);
+        let held = match fs::read_to_string(&path) {
+            Ok(held) => held,
+            Err(err) => {
+                wrong.push(format!(
+                    "docs/language.md:{}: the guide shows what {:?} holds after the example at \
+                     line {}, but reading it failed: {err}",
+                    file.line, file.path, example.line
+                ));
+                continue;
+            }
+        };
+        if held != file.content {
+            let shown: Vec<&str> = file.content.lines().collect();
+            let held_lines: Vec<&str> = held.lines().collect();
+            let mut report = format!(
+                "docs/language.md:{}: {:?} after the example at line {}: the guide shows (-), \
+                 the file holds (+):\n",
+                file.line, file.path, example.line
+            );
+            for line in diff(&shown, &held_lines) {
+                let _ = writeln!(report, "    {line}");
+            }
+            if shown == held_lines {
+                report.push_str(
+                    "    (the lines agree; the line endings or the last newline differ)\n",
+                );
+            }
+            wrong.push(report);
+        }
+    }
+    wrong
+}
+
 /// A line diff of `old` against `new`, each line prefixed `-`, `+` or a space, by their longest
 /// common subsequence.
 fn diff(old: &[&str], new: &[&str]) -> Vec<String> {
@@ -597,6 +681,7 @@ fn failures(text: &str) -> Vec<String> {
         }
         let ran = run_quaff(&cwd, &example.args);
         failures.extend(check(example, &ran));
+        failures.extend(check_left(example, &dir.0));
     }
     failures
 }
@@ -727,7 +812,8 @@ fn a_directive_adds_the_file_last_shown_and_sets_where_it_runs() {
                  ```python\n# src/b.py\nTODO = 1\n```\n\n\
                  <!-- check: with src/b.py -->\n```\n$ quaff TODO\nsrc/b.py:1:1-1:4: TODO\n```\n\n\
                  ```python\n# src/b.py\nb = 2  # TODO\n```\n\n\
-                 <!-- check: cwd src; with src/b.py -->\n```\n$ quaff TODO\nb.py:1:10-1:13: TODO\n```\n";
+                 <!-- check: cwd src; with src/b.py -->\n```\n$ quaff TODO\n\
+                     b.py:1:10-1:13: TODO\n```\n";
     assert_eq!(failures(guide), Vec::<String>::new());
 }
 
@@ -749,7 +835,8 @@ fn a_file_shown_again_before_any_example_adds_it_fails_as_unchecked() {
 
 #[test]
 fn a_directive_naming_a_file_not_shown_fails() {
-    let guide = "# Guide\n\n## Section\n\n<!-- check: with src/c.py -->\n```\n$ quaff x\nquaff: no matches for \"x\"\n[exit 1]\n```\n";
+    let guide = "# Guide\n\n## Section\n\n<!-- check: with src/c.py -->\n```\n$ quaff x\n\
+        quaff: no matches for \"x\"\n[exit 1]\n```\n";
     let failures = failures(guide);
     assert!(
         failures
@@ -791,6 +878,7 @@ fn the_text_tier_note_is_dropped_only_where_the_example_leaves_it_out() {
         with: Vec::new(),
         output: vec!["a".to_string()],
         exit: 0,
+        then: Vec::new(),
     };
     let ran = Ran {
         output: format!("a\n{TEXT_TIER_NOTE}\n"),
@@ -826,7 +914,8 @@ fn a_fence_never_closed_fails() {
 #[test]
 fn a_directive_not_closed_on_its_line_fails() {
     assert_one_failure(
-        "# Guide\n\n## Section\n\n<!-- check: cwd src\n-->\n```\n$ quaff x\nquaff: no matches for \"x\"\n[exit 1]\n```\n",
+        "# Guide\n\n## Section\n\n<!-- check: cwd src\n-->\n```\n$ quaff x\n\
+        quaff: no matches for \"x\"\n[exit 1]\n```\n",
         "docs/language.md:5: a check directive must close with `-->`",
     );
 }
@@ -835,7 +924,8 @@ fn a_directive_not_closed_on_its_line_fails() {
 fn an_unknown_or_repeated_setting_fails() {
     for setting in ["dir src", "cwd src; cwd docs", "with", "cwd"] {
         let guide = format!(
-            "# Guide\n\n## Section\n\n<!-- check: {setting} -->\n```\n$ quaff x\nquaff: no matches for \"x\"\n[exit 1]\n```\n"
+            "# Guide\n\n## Section\n\n<!-- check: {setting} -->\n```\n$ quaff x\n\
+            quaff: no matches for \"x\"\n[exit 1]\n```\n"
         );
         assert_one_failure(&guide, "is not a check setting");
     }
@@ -859,7 +949,8 @@ fn a_directive_with_no_example_straight_after_it_fails() {
 fn a_directive_before_a_file_fails() {
     let guide = "# Guide\n\n## Section\n\n<!-- check: cwd src -->\n\
                  ```python\n# src/b.py\nb = 1\n```\n\n\
-                 <!-- check: with src/b.py -->\n```\n$ quaff zzz\nquaff: no matches for \"zzz\"\n[exit 1]\n```\n";
+                 <!-- check: with src/b.py -->\n```\n$ quaff zzz\nquaff: no matches for \"zzz\"\n\
+                     [exit 1]\n```\n";
     assert_one_failure(
         guide,
         "docs/language.md:5: a check directive before a file rather than an example",
@@ -877,7 +968,8 @@ fn a_directive_before_a_block_with_no_command_fails() {
 #[test]
 fn a_cwd_that_is_not_a_directory_fails() {
     assert_one_failure(
-        "# Guide\n\n## Section\n\n<!-- check: cwd nowhere -->\n```\n$ quaff x\nquaff: no matches for \"x\"\n[exit 1]\n```\n",
+        "# Guide\n\n## Section\n\n<!-- check: cwd nowhere -->\n```\n$ quaff x\n\
+        quaff: no matches for \"x\"\n[exit 1]\n```\n",
         "runs it from \"nowhere\", which is not a directory in the example project",
     );
 }
@@ -893,7 +985,8 @@ fn quotes_never_closed_fail() {
 #[test]
 fn an_exit_status_that_is_not_last_or_not_a_number_fails() {
     assert_one_failure(
-        "# Guide\n\n## Section\n\n```\n$ quaff x\nquaff: no matches for \"x\"\n[exit 1]\nmore\n```\n",
+        "# Guide\n\n## Section\n\n```\n$ quaff x\nquaff: no matches for \"x\"\n[exit 1]\nmore\n\
+        ```\n",
         "docs/language.md:6: an exit status must be the last line of an example's output",
     );
     assert_one_failure(
@@ -916,4 +1009,67 @@ fn each_example_s_project_is_removed_after_it_runs() {
     assert!(path.join("src/a.py").is_file());
     drop(dir);
     assert!(!path.exists(), "{} was left behind", path.display());
+}
+
+/// A guide with one edit example that leaves `src/a.py` holding `left`.
+fn edit_guide(left: &str) -> String {
+    format!(
+        "# Guide\n\n## Section\n\n```python\n# src/a.py\nx = old\n```\n\n\
+         <!-- check: with src/a.py; then src/a.py -->\n```\n\
+         $ quaff -e 'replace string \"old\" with \"new\" expect 1'\n\
+         src/a.py:1:5-1:7: old\nquaff: replaced 1 match in 1 file\n```\n\n\
+         leaves:\n\n```python\n# src/a.py\n{left}\n```\n"
+    )
+}
+
+#[test]
+fn a_file_an_example_leaves_as_shown_passes() {
+    assert_eq!(failures(&edit_guide("x = new")), Vec::<String>::new());
+}
+
+#[test]
+fn a_file_an_example_leaves_otherwise_fails_with_a_diff() {
+    let failures = failures(&edit_guide("x = newer"));
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert!(
+        failures[0].starts_with(
+            "docs/language.md:19: \"src/a.py\" after the example at line 12: the guide shows (-), \
+             the file holds (+):"
+        ),
+        "{}",
+        failures[0]
+    );
+    assert!(failures[0].contains("- x = newer"), "{}", failures[0]);
+    assert!(failures[0].contains("+ x = new"), "{}", failures[0]);
+}
+
+#[test]
+fn a_then_with_no_block_after_it_fails() {
+    let guide = edit_guide("x = new");
+    let cut = &guide[..guide.find("leaves:").expect("the guide has a result")];
+    assert_one_failure(
+        cut,
+        "docs/language.md:10: the check directive says what the example leaves in \"src/a.py\", \
+         but no block after the example shows it",
+    );
+}
+
+#[test]
+fn a_then_before_several_commands_fails() {
+    let guide = "# Guide\n\n## Section\n\n<!-- check: then src/a.py -->\n```\n$ quaff zzz\n\
+                 quaff: no matches for \"zzz\"\n[exit 1]\n\n$ quaff zzz\n\
+                 quaff: no matches for \"zzz\"\n[exit 1]\n```\n";
+    assert_one_failure(
+        guide,
+        "the check directive's `then` is before a block of 2 commands",
+    );
+}
+
+#[test]
+fn a_result_block_is_not_what_a_later_with_adds() {
+    let guide = format!(
+        "{}\n<!-- check: with src/a.py -->\n```\n$ quaff old\nsrc/a.py:1:5-1:7: old\n```\n",
+        edit_guide("x = new")
+    );
+    assert_eq!(failures(&guide), Vec::<String>::new());
 }

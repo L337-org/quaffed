@@ -69,9 +69,10 @@ separately because `cargo insta test` cannot take `--locked`.
 
 `crates/quaffed/tests/language_guide.rs` runs every example in `docs/language.md` against the
 built `quaff` and fails, naming each by its line in the guide with a diff, where what `quaff`
-prints or how it exits is not what the guide shows.  The guide is the expected output, so there
-is no snapshot to accept: a change that alters an example's output changes the guide, or the
-code, in the same pull request.  Run it alone with `cargo test --locked --test language_guide`.
+prints, how it exits, or what it leaves in a file the guide shows is not what the guide shows.
+The guide is the expected output, so there is no snapshot to accept: a change that alters an
+example's output changes the guide, or the code, in the same pull request.  Run it alone with
+`cargo test --locked --test language_guide`.
 
 How the guide is read:
 
@@ -98,10 +99,16 @@ How the guide is read:
   `cwd DIR` runs it from that directory; `with PATH, ...` adds each file as most recently shown
   above it, in a file block of its own, so what is checked is what the reader is shown.  A
   directive applies to every command in its block.
+- **What an edit leaves is checked where the guide shows it**: `then PATH, ...` in an example's
+  directive says that the first file block showing that path after the example is the file as
+  the command leaves it, and the file on disk after the run is compared with it exactly.  A
+  `then` needs a block of one command, so that which command left the file is known.  A result
+  block is not an input: a later `with` adds the file as last shown before the example, never
+  as an earlier example left it.
 - **What cannot be checked fails** rather than being passed over: a command that is not `quaff`
   or that a shell would change, a block showing `[exit N]` with no command, a directive with no
-  example after it or naming a file not shown, and a file block after the first `##` that no
-  directive adds.
+  example after it or naming a file not shown, a `then` with no block after its example showing
+  that file, and a file block after the first `##` that no directive adds or shows as a result.
 
 ### Adding an example to the guide
 
@@ -111,7 +118,10 @@ How the guide is read:
    `<!-- check: with PATH -->` on the line before the example.  A file shown again with the same
    path replaces it for later examples.
 3. If it runs from a subdirectory, add `cwd DIR` to the directive.
-4. Run `cargo test --locked --test language_guide`.
+4. If it edits a file and the guide says what the file then holds, show the whole file as it is
+   left, in a block with the same `# PATH` line after the example, and add `then PATH` to the
+   directive, rather than describing the result in a sentence nothing checks.
+5. Run `cargo test --locked --test language_guide`.
 
 ## The cost check's corpus
 
