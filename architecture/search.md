@@ -82,10 +82,10 @@ rules a user sees are `docs/language.md`'s _Paths and globs_.
   resolved on disk and the glob matched as an absolute one (`scope::on_disk`), so it names the
   directory a path with no wildcard would - `"../"**` from `src/` takes in `src/` as `in ".."`
   does - and follows a symbolic link as discovery does.  `contains` reads none of those
-  prefixes: it is text anywhere in the path as printed.  A glob is compiled to a regular expression (`src/glob.rs`), with `regex-automata`,
-  so a match takes time linear in the path however the glob is written.  `*`, `?` and a
-  class are kept within a segment - for a path a directory name, for a string a line - and `**`
-  crosses them.
+  prefixes: it is text anywhere in the path as printed.  A glob is compiled to a regular
+  expression (`src/glob.rs`), with `regex-automata`, so a match takes time linear in the path
+  however the glob is written.  `*`, `?` and a class are kept within a segment - for a path a
+  directory name, for a string a line - and `**` crosses them.
 - **A path with no wildcard names what is on disk**: it is resolved and compared by where it is,
   so `in "src"` and `in "../src"` from inside `src/` agree, as a scope on the command line would.
 - **`where` is decided as far as it can be before a file is parsed** (`FileTest`), with every
