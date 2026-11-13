@@ -1,0 +1,15 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "replace `f($x, $y)` with `g($x, $y)` expect 1"
+---
+success: true
+exit_code: 0
+----- stdout -----
+a.py:1:1-2:4: f(a,  # why b)
+
+----- stderr -----
+quaff: replaced 1 match in 1 file

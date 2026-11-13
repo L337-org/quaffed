@@ -1,0 +1,15 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "replace `f($a)` with `g($a, \"é\")` expect 1"
+---
+success: true
+exit_code: 0
+----- stdout -----
+l.py:2:5-2:13: f("café")
+
+----- stderr -----
+quaff: replaced 1 match in 1 file

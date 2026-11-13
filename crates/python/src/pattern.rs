@@ -181,9 +181,9 @@ impl std::error::Error for PatternError {}
 /// One stretch of the pattern the substitution claimed: where it was written, and the hole it
 /// asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Claim {
-    written: Range<usize>,
-    hole: Hole,
+pub(crate) struct Claim {
+    pub(crate) written: Range<usize>,
+    pub(crate) hole: Hole,
 }
 
 /// `text`, a structural pattern in Python, compiled.  It is parsed as a single expression if it
@@ -366,7 +366,7 @@ fn claim(text: &str) -> Vec<Claim> {
 
 /// The length in bytes of the Python identifier `text` starts with, by the rules Ruff's lexer
 /// uses: `_` or `XID_Start`, then `XID_Continue`.
-fn identifier_len(text: &str) -> usize {
+pub(crate) fn identifier_len(text: &str) -> usize {
     let mut chars = text.char_indices();
     match chars.next() {
         Some((_, c)) if c == '_' || unicode_ident::is_xid_start(c) => {}
@@ -379,7 +379,7 @@ fn identifier_len(text: &str) -> usize {
 
 /// A stem for placeholders that the pattern does not already contain, so a placeholder can
 /// never be confused with a name the pattern wrote.
-fn placeholder_stem(text: &str) -> String {
+pub(crate) fn placeholder_stem(text: &str) -> String {
     let mut stem = String::from("__quaff_hole");
     while text.contains(&stem) {
         stem.push('_');
@@ -388,16 +388,16 @@ fn placeholder_stem(text: &str) -> String {
 }
 
 /// The pattern with some claims replaced by placeholders, and where each placeholder landed.
-struct Substituted {
-    text: String,
+pub(crate) struct Substituted {
+    pub(crate) text: String,
     /// The placeholders' ranges in `text`, in the order of the claims they replaced.
-    placeholders: Vec<Range<usize>>,
+    pub(crate) placeholders: Vec<Range<usize>>,
     /// For each claim replaced, its range written and its range in `text`, to map an offset
     /// in `text` back to the pattern as written.
     moves: Vec<(Range<usize>, Range<usize>)>,
 }
 
-fn substitute(
+pub(crate) fn substitute(
     text: &str,
     claims: &[Claim],
     replace: impl Fn(usize) -> bool,
@@ -429,7 +429,7 @@ fn substitute(
 impl Substituted {
     /// The offset in the pattern as written of `offset` in the substituted text: the start of
     /// the hole it falls inside, if it does.
-    fn written_offset(&self, offset: usize) -> usize {
+    pub(crate) fn written_offset(&self, offset: usize) -> usize {
         let mut shift: isize = 0;
         for (written, placed) in &self.moves {
             if offset < placed.start {
@@ -461,7 +461,7 @@ fn invalid(err: ParseError, substituted: &Substituted) -> PatternError {
 /// The text parsed as a single expression if it is one, and otherwise as statements, with the
 /// mode that worked.  When neither works, the statements' error is the one reported, since a
 /// pattern that is not an expression was most likely meant as statements.
-fn parse_either(text: &str) -> Result<(Mode, Arena<'_>), ParseError> {
+pub(crate) fn parse_either(text: &str) -> Result<(Mode, Arena<'_>), ParseError> {
     parse_as(text, Mode::Expression)
         .map(|arena| (Mode::Expression, arena))
         .or_else(|_| parse_as(text, Mode::Module).map(|arena| (Mode::Module, arena)))
@@ -484,7 +484,7 @@ const LITERAL_TEXT: &[&str] = &[
 /// exactly `range`, unless one of those nodes is a string's literal text, in which case it is
 /// no hole at all.  The root never is the hole: a pattern that is one placeholder parses to a
 /// root spanning just that, and its content, not the root, is the hole.
-fn node_spanning(arena: &Arena<'_>, range: &Range<usize>) -> Option<NodeId> {
+pub(crate) fn node_spanning(arena: &Arena<'_>, range: &Range<usize>) -> Option<NodeId> {
     let mut spanning = arena
         .nodes()
         .skip(1)

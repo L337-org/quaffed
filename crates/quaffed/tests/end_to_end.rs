@@ -1320,9 +1320,216 @@ fn each_construct_outside_the_mvp_exits_5_naming_it() {
 #[test]
 fn each_construct_not_built_yet_exits_5_naming_it() {
     let project = Project::new(SCRIPTED);
-    assert_quaff_snapshot!(project.quaff(&["-e", "replace `f($a)` with `g($a)` expect 1"]));
     assert_quaff_snapshot!(project.quaff(&["-e", "find \"a\"; delete `a` expect 1"]));
+    // A rewrite with no code would delete what matched, which is to be decided with `delete`.
+    assert_quaff_snapshot!(project.quaff(&["-e", "replace `f($a)` with `` expect 1"]));
     project.assert_unchanged();
+}
+
+/// A project of Python files, for replacing by structure.
+const REWRITABLE: &[(&str, &str)] = &[
+    (".git/HEAD", ""),
+    ("a.py", "x = f(1)\ny = f(\n    two,\n    three,\n)\n"),
+    ("b.py", "if c:\n    with lock:\n        a()\n        b()\n"),
+    ("notes.txt", "f(1)\n"),
+];
+
+#[test]
+fn a_structural_replace_writes_back_what_each_hole_captured() {
+    let project = Project::new(REWRITABLE);
+    assert_quaff_snapshot!(project.quaff(&["-e", "replace `f($a)` with `g($a)` expect 1"]));
+    project.assert_changed(&[("a.py", b"x = g(1)\ny = f(\n    two,\n    three,\n)\n")]);
+}
+
+#[test]
+fn a_structural_replace_keeps_a_trailing_comma_and_derives_indentation() {
+    let project = Project::new(REWRITABLE);
+    // The call a formatter split keeps its trailing comma; the unwrapped body moves out a level.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "replace `f($a, $b)` with `h($b, $a)` expect 1\n\
+         replace `with $m:\n    $body...` with `$body...` expect 1",
+    ]));
+    project.assert_changed(&[
+        ("a.py", b"x = f(1)\ny = h(\n    three, two,\n)\n"),
+        ("b.py", b"if c:\n    a()\n    b()\n"),
+    ]);
+}
+
+#[test]
+fn a_structural_replace_whose_count_does_not_hold_writes_nothing() {
+    let project = Project::new(REWRITABLE);
+    assert_quaff_snapshot!(project.quaff(&["-e", "replace `f($a)` with `g($a)` expect 2"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_structural_dry_run_prints_what_it_would_replace_and_writes_nothing() {
+    let project = Project::new(REWRITABLE);
+    assert_quaff_snapshot!(project.quaff(&[
+        "--dry-run",
+        "-e",
+        "replace `f($a)` with `g($a)` expect 1",
+    ]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_structural_replace_takes_a_where() {
+    let project = Project::new(REWRITABLE);
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "replace `f($a, $b)` with `h($a)` where $a matches \"two\" expect 1",
+    ]));
+    project.assert_changed(&[("a.py", b"x = f(1)\ny = h(\n    two,\n)\n")]);
+}
+
+#[test]
+fn a_rewrite_naming_what_the_pattern_does_not_bind_is_refused_where_it_was_written() {
+    let project = Project::new(REWRITABLE);
+    assert_quaff_snapshot!(project.quaff(&["-e", "replace `f($a)` with `g($b)` expect 1"]));
+    // A value filter is refused by the script parser as not in this build, exit 5.
+    assert_quaff_snapshot!(
+        project.quaff(&["-e", "replace `f($a)` with `g(\"${a|upper}\")` expect 1",])
+    );
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_structural_match_inside_anothers_hole_is_rewritten_first() {
+    let project = Project::new(&[(".git/HEAD", ""), ("a.py", "f(f(1))\n")]);
+    assert_quaff_snapshot!(project.quaff(&["-e", "replace `f($x)` with `g($x)` expect 2"]));
+    project.assert_changed(&[("a.py", b"g(g(1))\n")]);
+}
+
+#[test]
+fn structural_matches_overlapping_outside_each_others_holes_exit_9_naming_both() {
+    let project = Project::new(&[(".git/HEAD", ""), ("a.py", "a()\na()\na()\n")]);
+    assert_quaff_snapshot!(project.quaff(&["-e", "replace `a()\na()` with `b()` expect 2"]));
+    project.assert_unchanged();
+    // A count that does not hold is told first, as for any edit: the answer, exit 2.
+    assert_quaff_snapshot!(project.quaff(&["-e", "replace `a()\na()` with `b()` expect 3"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_structural_replace_that_would_drop_a_comment_exits_9_naming_it() {
+    let project = Project::new(&[(".git/HEAD", ""), ("a.py", "f(a,  # why\n  b)\n")]);
+    // Reordered, the comment between the two has no place.
+    assert_quaff_snapshot!(
+        project.quaff(&["-e", "replace `f($x, $y)` with `g($y, $x)` expect 1",])
+    );
+    project.assert_unchanged();
+    // In order, it stands with the layout between them.
+    assert_quaff_snapshot!(project.quaff(&["-e", "replace `f($x, $y)` with `g($x, $y)` expect 1"]));
+    project.assert_changed(&[("a.py", b"g(a,  # why\n  b)\n")]);
+}
+
+#[test]
+fn a_value_written_into_a_string_is_escaped_and_questioned() {
+    let project = Project::new(&[(".git/HEAD", ""), ("a.py", "f({y})\n")]);
+    assert_quaff_snapshot!(
+        project.quaff(&["-e", "replace `f($v)` with `f\"value: $v\"` expect 1",])
+    );
+    project.assert_changed(&[("a.py", b"f\"value: {{y}}\"\n")]);
+}
+
+#[test]
+fn a_value_a_string_cannot_hold_as_text_exits_9() {
+    let project = Project::new(&[(".git/HEAD", ""), ("a.py", "f(\"a\")\n")]);
+    // A raw string cannot escape its own quote.
+    assert_quaff_snapshot!(
+        project.quaff(&["-e", "replace `f($v)` with `r\"value: $v\"` expect 1",])
+    );
+    project.assert_unchanged();
+    // Nor can bytes hold other than ASCII.
+    let project = Project::new(&[(".git/HEAD", ""), ("a.py", "f(caf\u{e9})\n")]);
+    assert_quaff_snapshot!(project.quaff(&["-e", "replace `f($v)` with `b\"$v\"` expect 1"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_capture_python_would_read_with_its_surroundings_is_written_and_questioned() {
+    let project = Project::new(&[(".git/HEAD", ""), ("calc.py", "total = f(x + 1)\n")]);
+    assert_quaff_snapshot!(project.quaff(&["-e", "replace `f($a)` with `$a * 2` expect 1"]));
+    project.assert_changed(&[("calc.py", b"total = x + 1 * 2\n")]);
+}
+
+#[test]
+fn a_replace_the_run_never_reached_is_not_questioned() {
+    let project = Project::new(&[(".git/HEAD", ""), ("calc.py", "total = f(x + 1)\n")]);
+    // The failed assertion ends the run before the replace, so nothing is said of it.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "find `f($a)` expect 0\nreplace `f($a)` with `$a * 2` expect 1",
+    ]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn brackets_in_the_rewrite_keep_a_capture_one_piece_of_code() {
+    let project = Project::new(&[(".git/HEAD", ""), ("calc.py", "total = f(x + 1)\n")]);
+    assert_quaff_snapshot!(project.quaff(&["-e", "replace `f($a)` with `($a) * 2` expect 1"]));
+    project.assert_changed(&[("calc.py", b"total = (x + 1) * 2\n")]);
+}
+
+#[test]
+fn a_trailing_comma_goes_with_a_bracket_the_rewrite_deletes() {
+    let project = Project::new(&[(".git/HEAD", ""), ("a.py", "y = wrap(\n    a,\n)\n")]);
+    assert_quaff_snapshot!(project.quaff(&["-e", "replace `wrap($x)` with `$x` expect 1"]));
+    project.assert_changed(&[("a.py", b"y = a\n")]);
+}
+
+#[test]
+fn a_trailing_comma_inside_a_match_is_carried_to_the_rewrites_bracket() {
+    let project = Project::new(&[(".git/HEAD", ""), ("a.py", "r = f(x, g(\n    y,\n))\n")]);
+    assert_quaff_snapshot!(
+        project.quaff(&["-e", "replace `f($a, g($b))` with `h($a, k($b))` expect 1"])
+    );
+    project.assert_changed(&[("a.py", b"r = h(x, k(\n    y,\n))\n")]);
+}
+
+#[test]
+fn a_trailing_comma_with_nowhere_to_go_exits_9() {
+    let project = Project::new(&[(".git/HEAD", ""), ("a.py", "m = max(\n    x,\n    y,\n)\n")]);
+    // A comma in the bracketed expression would make a tuple.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "replace `max($a, $b)` with `($a if $a > $b else $b)` expect 1"
+    ]));
+    project.assert_unchanged();
+    // Three brackets in the rewrite hold what the call's did, so which one is not known.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "replace `max($a, $b)` with `max([$a, $b], [$b, $a])` expect 1"
+    ]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_structural_replace_that_would_break_a_file_exits_9() {
+    let project = Project::new(&[(".git/HEAD", ""), ("a.py", "f(1)\n")]);
+    // `1 = 1` is not Python, so the parse of the result refuses it.
+    assert_quaff_snapshot!(project.quaff(&["-e", "replace `f($v)` with `$v = 1` expect 1"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_structural_replace_writes_back_in_the_files_encoding() {
+    let mut project = Project::new(&[(".git/HEAD", "")]);
+    project.add_bytes("l.py", b"# -*- coding: latin-1 -*-\nx = f(\"caf\xe9\")\n");
+    // A character Latin-1 cannot hold refuses the edit.
+    assert_quaff_snapshot!(
+        project.quaff(&["-e", "replace `f($a)` with `g($a, \"\u{20ac}\")` expect 1",])
+    );
+    project.assert_unchanged();
+    assert_quaff_snapshot!(
+        project.quaff(&["-e", "replace `f($a)` with `g($a, \"\u{e9}\")` expect 1",])
+    );
+    project.assert_changed(&[(
+        "l.py",
+        b"# -*- coding: latin-1 -*-\nx = g(\"caf\xe9\", \"\xe9\")\n",
+    )]);
 }
 
 #[test]
@@ -2055,6 +2262,25 @@ fn a_structural_search_needing_a_file_an_earlier_replace_broke_refuses_the_edit(
         "-e",
         "replace string \"(x)\" with \"(x\" expect 5\nfind `f($a)`"
     ]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_structural_replace_needing_a_file_an_earlier_replace_broke_refuses_the_edit() {
+    let project = Project::new(&[(".git/HEAD", ""), ("fine.py", "f(x)\n")]);
+    // As a find does: refused, naming the statement that broke it, rather than a count of 0.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "replace string \"(x)\" with \"(x\" expect 1\nreplace `f($a)` with `g($a)` expect 1"
+    ]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_structural_replace_over_no_python_cannot_be_checked() {
+    let project = Project::new(&[(".git/HEAD", ""), ("notes.txt", "f(x)\n")]);
+    // Even `expect any` fails: nothing was searched, so no count was taken.
+    assert_quaff_snapshot!(project.quaff(&["-e", "replace `f($a)` with `g($a)` expect any"]));
     project.assert_unchanged();
 }
 

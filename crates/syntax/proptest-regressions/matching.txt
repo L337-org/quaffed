@@ -12,3 +12,7 @@ cc 52ae96d98cdbe3d68ac3b93f8e24337bd6d173f73f23d2c49d2dc2b0c718d0db # shrinks to
 cc ef1d0bafe300017eee00581759724133b122d43a2a094ca28975d7466a9288e1 # shrinks to items = ["$q...", "$p...", "$...", "(g $p... $a)"], run = false
 cc 66b6e73dcd54e5c3b81f18b27e7cc3aef142773b0fb7fbe94fe50fc174a30b94 # shrinks to items = ["$p...", "x", "$...", "$q...", "(g (g (g $p...)) $q...)"], run = false
 cc d9ed20a14d61922b33451fd7a55e7aa9601262bee922b06aea669b94e399f47c # shrinks to items = ["(g (g $... $b $q...))", "$p...", "$...", "x", "$b"], run = false
+cc 8c81df3108fbf2d9c8948c8ab577b4df2cd2a681eca225d29a3d906541449fd0 # shrinks to pattern = ["(g (g $p...) $a)", "y"], target = ["(g (g x) x)", "y"], length = 1
+cc 1271c2b19700ba915b96304864ee9cb1ea513cfc8aaaef542d4727bcd5590395 # shrinks to statements = [0, 0, 0, 0, 0, 2, 2, 0, 2], split = 8, before = [Sequence(None)], after = [Sequence(None), Single(Some(1))], separated = false, tested = 1, wanted = 0
+cc 4f42468e258c074b92f62e69ea8a830caaf85aeac571e1d95a5d330b1b367eee # shrinks to pattern = ["y", "(g $q... $q... $a)"], target = ["x", "x", "x", "x", "x", "x", "[y (g y y x)]"], length = 3
+cc 6b09582ed559ebf55b2119f989b2dbb51a0a109c5e3435975dcf1f25890d366a # overlapping captures: $b (g $p... $a $q...) over [(g x) [x] x [x (g x x) x x (g x x x x x)]], a where on $a

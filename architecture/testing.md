@@ -70,7 +70,7 @@ When changing the cost check or how the matcher searches a list:
 
 ## Property tests and their seeds
 
-**Pull requests draw the same cases every run; the nightly run draws fresh ones.**  The `Tests
+**Pull requests draw the same cases every run; the nightly run draws fresh ones.**  The `Test`
 job in `premerge.yaml` and `scripts/coverage` fix proptest's seed, so a pull request fails only
 for what it changed, never for a case an unrelated run happened to draw.
 `random-properties.yaml` runs the workspace's tests nightly from new seeds, round after round,

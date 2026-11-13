@@ -1,0 +1,15 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "replace `f($v)` with `r\"value: $v\"` expect 1"
+---
+success: false
+exit_code: 9
+----- stdout -----
+
+----- stderr -----
+quaff: refused: the replace cannot be made as written in 1 file, so nothing was written:
+  "a.py": line 1, column 1: what $v captured, "\"a\"", cannot be written into the string as text - a raw string cannot escape its own quote, a backslash before its closing quote or a line break on one line, and bytes hold ASCII only - so the edit would change more than the string's text: narrow the pattern so that such values do not match

@@ -137,7 +137,8 @@ case, over each language it names, `find` gives the count `N`, and then:
   lines.  What replaced a match is not judged here; the end-to-end tests do that.
 - **Determinism**: two runs give the same exit, output and files.
 - **Still parses**: the language's oracle accepts after the edit every file it accepted before; a
-  case marked `Refused` must exit 9 and write nothing.
+  case marked `Refused` must exit 9, write nothing, and say the words the case gives, so that a
+  refusal for some other reason does not pass for the one it exercises.
 - **Idempotency**: the edit is applied again to its own output and judged by the same rules,
   against a `find` on that output.  It may change things again; it must change only the new
   matches.
@@ -147,9 +148,9 @@ and logs how long it took, so that a new language or case adds its own time rath
 lengthening the others', and the slowest is named in the log.
 
 **It fails rather than passes** when nothing is registered, a language has no files, a file is
-claimed by no language or by more than one, a case matches or edits nothing, a structural language's
-oracle cannot run, or the corpus holds a `.gitattributes` or `.editorconfig`, whose encodings the
-harness does not read.
+claimed by no language or by more than one, a case matches or edits nothing, a structural
+language's oracle cannot run, a `parsed_only` case names a language with no oracle, or the corpus
+holds a `.gitattributes` or `.editorconfig`, whose encodings the harness does not read.
 
 **The harness is tested before it is trusted**: `tests/edit_harness/tests.rs` checks its parts on
 small inputs, and runs each check against a `quaff` broken on purpose in one way, in the ordinary
@@ -166,12 +167,30 @@ QUAFFED_PYTHON_ORACLE=$(which python3.X) \
 the path as given, a tab, and its reason.  It exits 0 only once it has judged every file.
 `scripts/oracle-python` is Python's, run with the oracle's Python.
 
+**Structural rewrites are also held to what they should keep**, in a second corpus test,
+`structural_rewrites_keep_what_they_should_over_the_corpus`, over the Python files the oracle
+accepts:
+
+- **Identity**: each pattern in `IDENTITIES` rewritten to itself must keep every token, comments
+  included, and inside brackets every line break and the indentation after it.  Spacing within a
+  line round the tokens a template writes is the template's, so it is not compared.
+- **Meaning**: each rename in `ROUND_TRIPS` must leave the tree `CPython` reads unchanged but for
+  the name, judged by `CPython`'s own `ast` rather than quaff's parser.
+- **There and back**: renaming back must restore each file as identity does.
+
+A pattern that should survive being rewritten to itself belongs in `IDENTITIES`.  A failure names
+the pattern or the rename, and the file, with the line where the tokens or the layout first
+differ.
+
 ### Checklist: registering an operation
 
 1. Add one or more `Case`s to `CASES` in `edit_invariants.rs`: a `find` and the edit whose matches
-   it counts, neither with `expect`, and the languages to run over.
+   it counts, neither with `expect`, and the languages to run over.  A structural case sets
+   `parsed_only`, so that it runs over only the files the oracle accepts: a structural search
+   refuses a run with a file it cannot parse, and the corpus holds some on purpose.
 2. Cover what could go wrong on the operation's own output, such as a replacement that holds its
-   own match, and an edit quaff must refuse, marked `Outcome::Refused`.
+   own match, and an edit quaff must refuse, marked `Outcome::Refused` with words from the
+   refusal it exercises.
 3. Run the corpus run.  A failure names the case, the language, the invariant and the file.
 
 ### Checklist: adding a language

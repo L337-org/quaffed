@@ -38,6 +38,10 @@ pub struct Case {
     pub languages: &'static [&'static str],
     /// What quaff should make of it.
     pub outcome: Outcome,
+    /// Whether it runs only over the files the language's oracle accepts.  A structural search
+    /// refuses a run with a file in scope it cannot parse, by design, so a structural case over
+    /// a corpus holding deliberately broken files would only ever be refused.
+    pub parsed_only: bool,
 }
 
 /// What quaff should make of a case.
@@ -45,8 +49,10 @@ pub struct Case {
 pub enum Outcome {
     /// It edits, and every invariant is checked, on its own output again too.
     Edits,
-    /// It would leave a file unparseable, so quaff refuses it with exit 9 and writes nothing.
-    Refused,
+    /// It cannot be made as written - it would leave a file unparseable, say, or rewrite matches
+    /// that overlap - so quaff refuses it with exit 9 and writes nothing, saying why in words
+    /// that hold this text: a refusal for another reason does not exercise what the case does.
+    Refused(&'static str),
 }
 
 /// A language the corpus holds.
@@ -489,6 +495,18 @@ fn concurrently<J: Sync>(jobs: &[J], judge: impl Fn(&J) -> Vec<Failure> + Sync) 
         .collect()
 }
 
+/// The files of `files` the oracle `accepted`, or `None` if no oracle judged them.
+fn parsed_only(files: &Files, accepted: Option<&BTreeSet<String>>) -> Option<Files> {
+    let accepted = accepted?;
+    Some(
+        files
+            .iter()
+            .filter(|(path, _)| accepted.contains(*path))
+            .map(|(path, bytes)| (path.clone(), bytes.clone()))
+            .collect(),
+    )
+}
+
 /// One case, judged over one language's files.
 struct Judging<'a> {
     case: &'a Case,
@@ -536,12 +554,24 @@ impl Judging<'_> {
                 None
             }
         };
+        let no_oracle = "the case runs only over files that parse, but no oracle judged which do";
+        let (files, project) = if self.case.parsed_only {
+            let Some(parsed) = parsed_only(files, accepted.as_ref()) else {
+                let failure = self.failure(Invariant::Harness, false, None, no_oracle.into());
+                failures.push(failure);
+                return failures;
+            };
+            let project = Scratch::new(&parsed);
+            (parsed, project)
+        } else {
+            (files.clone(), project)
+        };
+        let before = &files;
         let start = Applied {
             files: files.clone(),
             accepted,
             project,
         };
-        let before = files;
         if let Some(edited) = self.apply(start, false, &mut failures) {
             if edited.files == *before {
                 failures.push(self.failure(
@@ -587,8 +617,8 @@ impl Judging<'_> {
         let edited = applied.files();
         self.determinism(&start.files, &script, (&run, &edited), again, failures);
 
-        if self.case.outcome == Outcome::Refused && !again {
-            self.refusal(&start.files, (&run, &edited), failures);
+        if let (Outcome::Refused(why), false) = (self.case.outcome, again) {
+            self.refusal(why, &start.files, (&run, &edited), failures);
             return None;
         }
         if run.code != Some(0) {
@@ -600,7 +630,9 @@ impl Judging<'_> {
             ));
             return None;
         }
-        for (path, (invariant, what)) in minimal_diff(&start.files, &matches, &edited) {
+        for (path, (invariant, what)) in
+            minimal_diff(&start.files, &matches, &edited, self.case.parsed_only)
+        {
             failures.push(self.failure(invariant, again, Some(&path), what));
         }
         let accepted = self.still_parses(
@@ -713,8 +745,14 @@ impl Judging<'_> {
         }
     }
 
-    /// An edit that would leave files unparseable exited 9 and wrote nothing.
-    fn refusal(&self, files: &Files, applied: (&Run, &Files), failures: &mut Vec<Failure>) {
+    /// An edit that cannot be made as written exited 9, saying `why`, and wrote nothing.
+    fn refusal(
+        &self,
+        why: &str,
+        files: &Files,
+        applied: (&Run, &Files),
+        failures: &mut Vec<Failure>,
+    ) {
         let (run, edited) = applied;
         if run.code != Some(9) {
             failures.push(self.failure(
@@ -722,8 +760,19 @@ impl Judging<'_> {
                 false,
                 None,
                 format!(
-                    "an edit leaving files unparseable exited {:?}, not 9: {}",
+                    "an edit that cannot be made as written exited {:?}, not 9: {}",
                     run.code,
+                    run.stderr.trim()
+                ),
+            ));
+        } else if !run.stderr.contains(why) {
+            failures.push(self.failure(
+                Invariant::StillParses,
+                false,
+                None,
+                format!(
+                    "the edit was refused, but not saying {why:?}, so not for what the case \
+                     exercises: {}",
                     run.stderr.trim()
                 ),
             ));
@@ -802,11 +851,13 @@ pub fn differing(before: &Files, after: &Files) -> Vec<String> {
 }
 
 /// Every way `edited` changed `before` outside the `matches` `find` reported: by bytes, and by
-/// whole lines.
+/// whole lines.  Overlapping matches are joined where they may `nest`, as a structural match
+/// inside another's hole does, and are otherwise a fault of `find`.
 pub fn minimal_diff(
     before: &Files,
     matches: &BTreeMap<String, Vec<Span>>,
     edited: &Files,
+    nest: bool,
 ) -> Vec<(String, (Invariant, String))> {
     let mut found = Vec::new();
     for path in differing(before, edited) {
@@ -839,6 +890,15 @@ pub fn minimal_diff(
                     continue;
                 };
                 match byte_ranges(original, encoding, mark, spans) {
+                    Ok(ranges) if !nest && ranges.len() < spans.len() => found.push((
+                        path.clone(),
+                        (
+                            Invariant::Harness,
+                            "find reported overlapping matches, which only a structural search \
+                             nests"
+                                .into(),
+                        ),
+                    )),
                     Ok(ranges) => {
                         if let Err(why) = outside_survives(original, &ranges, after) {
                             found.push((path.clone(), (Invariant::MinimalDiff, why)));
@@ -990,12 +1050,14 @@ fn walk(
     }
 }
 
-/// The bytes each span covers in `bytes`.
+/// The bytes the spans cover in `bytes`, joined where they overlap: a structural match inside
+/// another's hole is reported as well as the one round it, and the two are rewritten as one.
 ///
 /// # Errors
 ///
-/// If a span's first or last character is not in the file, or the spans are not in order and
-/// apart: `find` placed them, so either is a fault the harness must report, not guess past.
+/// If a span's first or last character is not in the file, or a span starts before the one
+/// reported before it: `find` placed them, so either is a fault the harness must report, not
+/// guess past.
 pub fn byte_ranges(
     bytes: &[u8],
     encoding: Encoding,
@@ -1020,13 +1082,16 @@ pub fn byte_ranges(
             })
         };
         let range = place(span.start)?.0..place(span.end)?.1;
-        if range.start >= range.end || ranges.last().is_some_and(|last| last.end > range.start) {
+        if range.start >= range.end || ranges.last().is_some_and(|last| last.start > range.start) {
             return Err(format!(
-                "find reported matches out of order or overlapping, at line {}, column {}",
+                "find reported matches out of order, at line {}, column {}",
                 span.start.line, span.start.column
             ));
         }
-        ranges.push(range);
+        match ranges.last_mut() {
+            Some(last) if last.end > range.start => last.end = last.end.max(range.end),
+            _ => ranges.push(range),
+        }
     }
     Ok(ranges)
 }

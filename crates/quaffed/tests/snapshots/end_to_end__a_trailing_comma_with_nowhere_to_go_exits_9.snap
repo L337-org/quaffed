@@ -1,0 +1,15 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "replace `max($a, $b)` with `($a if $a > $b else $b)` expect 1"
+---
+success: false
+exit_code: 9
+----- stdout -----
+
+----- stderr -----
+quaff: refused: the replace cannot be made as written in 1 file, so nothing was written:
+  "a.py": line 3, column 6: the trailing comma before ")" is in the match but no capture holds it, and in the rewrite's bracket holding $a, $b it would change what the code means, so it can be neither kept nor dropped: narrow the pattern so that it does not match here, or take it out first

@@ -1,0 +1,17 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "replace `f($a, $b)` with `h($b, $a)` expect 1\nreplace `with $m:\n    $body...` with `$body...` expect 1"
+---
+success: true
+exit_code: 0
+----- stdout -----
+a.py:2:5-5:1: f( two, three, )
+b.py:2:5-4:11: with lock: a() b()
+
+----- stderr -----
+quaff: replaced 2 matches in 2 files
+quaff: 1 text-tier file not searched for structural patterns, which apply to Python files only

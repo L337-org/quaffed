@@ -99,19 +99,32 @@ fn a_column_counts_characters_not_bytes() {
 }
 
 #[test]
-fn a_span_outside_the_file_or_out_of_order_is_a_fault_of_find() {
+fn a_span_outside_the_file_or_out_of_order_is_a_fault_of_find_and_overlaps_are_joined() {
     let outside = byte_ranges(b"ab\n", Encoding::Utf8, 0, &[span((3, 1), (3, 1))]);
     assert_eq!(
         outside,
         Err("find reported a match at line 3, column 1, which is not in the file".into())
     );
-    let overlapping = byte_ranges(
+    let out_of_order = byte_ranges(
         b"abc",
         Encoding::Utf8,
         0,
-        &[span((1, 1), (1, 2)), span((1, 2), (1, 3))],
+        &[span((1, 2), (1, 3)), span((1, 1), (1, 1))],
     );
-    assert!(overlapping.is_err_and(|why| why.contains("overlapping")));
+    assert!(out_of_order.is_err_and(|why| why.contains("out of order")));
+    // A match inside another, or overlapping the next, is joined with it.
+    let nested = byte_ranges(
+        b"abcd",
+        Encoding::Utf8,
+        0,
+        &[
+            span((1, 1), (1, 3)),
+            span((1, 2), (1, 2)),
+            span((1, 3), (1, 4)),
+        ],
+    );
+    let joined: Vec<Range<usize>> = std::iter::once(0..4).collect();
+    assert_eq!(nested, Ok(joined));
 }
 
 #[test]
@@ -273,16 +286,35 @@ fn matches_at_the_ends_adjacent_or_absent_leave_nothing_to_spare() {
 }
 
 #[test]
+fn overlapping_matches_are_a_fault_of_find_unless_they_may_nest() {
+    let before = files(&[("a.txt", b"f(g(x))\n")]);
+    let matches: BTreeMap<String, Vec<Span>> = [(
+        "a.txt".to_owned(),
+        vec![span((1, 1), (1, 7)), span((1, 3), (1, 6))],
+    )]
+    .into();
+    let edited = files(&[("a.txt", b"h(h(x))\n")]);
+    let invariants = |nest| -> Vec<Invariant> {
+        minimal_diff(&before, &matches, &edited, nest)
+            .iter()
+            .map(|(_, (invariant, _))| *invariant)
+            .collect()
+    };
+    assert_eq!(invariants(false), vec![Invariant::Harness]);
+    assert_eq!(invariants(true), Vec::<Invariant>::new());
+}
+
+#[test]
 fn a_change_within_a_matched_line_is_seen_by_bytes_but_not_by_lines() {
     let before = files(&[("a.txt", b"one the two\nthree\n")]);
     let matches: BTreeMap<String, Vec<Span>> =
         [("a.txt".to_owned(), vec![span((1, 5), (1, 7))])].into();
     let edited = files(&[("a.txt", b"ONE THE two\nthree\n")]);
-    let found = minimal_diff(&before, &matches, &edited);
+    let found = minimal_diff(&before, &matches, &edited, false);
     let invariants: Vec<Invariant> = found.iter().map(|(_, (invariant, _))| *invariant).collect();
     assert_eq!(invariants, vec![Invariant::MinimalDiff], "{found:?}");
     let edited = files(&[("a.txt", b"one THE two\nTHREE\n")]);
-    let found = minimal_diff(&before, &matches, &edited);
+    let found = minimal_diff(&before, &matches, &edited, false);
     let invariants: Vec<Invariant> = found.iter().map(|(_, (invariant, _))| *invariant).collect();
     assert_eq!(
         invariants,
@@ -295,7 +327,7 @@ fn a_change_within_a_matched_line_is_seen_by_bytes_but_not_by_lines() {
 fn a_file_created_deleted_or_changed_without_a_match_breaks_minimal_diff() {
     let before = files(&[("a.txt", b"a"), ("b.txt", b"b")]);
     let edited = files(&[("a.txt", b"A"), ("c.txt", b"c")]);
-    let found = minimal_diff(&before, &BTreeMap::new(), &edited);
+    let found = minimal_diff(&before, &BTreeMap::new(), &edited, false);
     let said: Vec<(&str, &str)> = found
         .iter()
         .map(|(path, (_, what))| (path.as_str(), what.as_str()))
@@ -413,6 +445,7 @@ const WORD: Case = Case {
     edit: r#"replace string "the" with "THE""#,
     languages: &["Python", "text"],
     outcome: Outcome::Edits,
+    parsed_only: false,
 };
 
 /// The real `quaff`, with what it did changed afterwards by `breaks`, given the project, the
@@ -462,7 +495,7 @@ fn the_real_quaff_keeps_every_invariant_on_a_small_project() {
         find: r#"find "def ""#,
         edit: r#"replace string "def " with "def def ""#,
         languages: &["Python"],
-        outcome: Outcome::Refused,
+        outcome: Outcome::Refused("unparseable"),
         ..WORD
     };
     let own_match = Case {
@@ -477,6 +510,58 @@ fn the_real_quaff_keeps_every_invariant_on_a_small_project() {
         &Binary,
     );
     assert_eq!(failures, vec![]);
+}
+
+#[test]
+fn a_parsed_only_case_runs_over_just_the_files_the_oracle_accepts() {
+    const STRUCTURAL: Case = Case {
+        operation: "replace",
+        exercises: "captures written back",
+        find: "find `f()`",
+        edit: "replace `f()` with `g()`",
+        languages: &["Python"],
+        outcome: Outcome::Edits,
+        parsed_only: true,
+    };
+    let python = Python::new();
+    let mut corpus = project();
+    corpus.insert("broken.py".into(), b"def (:\n".to_vec());
+    let mut corpus_with_call = corpus.clone();
+    corpus_with_call.insert("c.py".into(), b"f()\n".to_vec());
+    assert_eq!(
+        check(
+            &[STRUCTURAL],
+            &languages(&python),
+            &corpus_with_call,
+            &Binary
+        ),
+        vec![]
+    );
+    // Over every file, the one that does not parse refuses even the `find`, naming it.
+    let everything = Case {
+        parsed_only: false,
+        ..STRUCTURAL
+    };
+    let failures = check(
+        &[everything],
+        &languages(&python),
+        &corpus_with_call,
+        &Binary,
+    );
+    assert_eq!(broken(&failures), [(Invariant::Harness, false)]);
+    assert!(failures[0].what.contains("\"broken.py\""), "{failures:?}");
+    // A language with no oracle cannot say which files parse.
+    let text = Case {
+        languages: &["text"],
+        ..STRUCTURAL
+    };
+    let failures = check(&[text], &languages(&python), &corpus, &Binary);
+    assert!(
+        failures
+            .iter()
+            .any(|failure| failure.what.contains("no oracle judged which do")),
+        "{failures:?}"
+    );
 }
 
 #[test]
@@ -607,7 +692,7 @@ fn not_refusing_an_edit_that_breaks_files_breaks_still_parses() {
         find: r#"find "def ""#,
         edit: r#"replace string "def " with "def def ""#,
         languages: &["Python"],
-        outcome: Outcome::Refused,
+        outcome: Outcome::Refused("unparseable"),
         ..WORD
     };
     let quaff = Broken(|project: &Path, script: &str, run: &mut Run| {
@@ -624,6 +709,31 @@ fn not_refusing_an_edit_that_breaks_files_breaks_still_parses() {
     );
     let said: Vec<Option<&str>> = failures.iter().map(|f| f.file.as_deref()).collect();
     assert_eq!(said, vec![None, Some("a.py")], "{failures:#?}");
+}
+
+#[test]
+fn a_refusal_for_another_reason_breaks_still_parses() {
+    let python = Python::new();
+    let refused = Case {
+        exercises: "an edit breaking files that parsed",
+        find: r#"find "def ""#,
+        edit: r#"replace string "def " with "def def ""#,
+        languages: &["Python"],
+        outcome: Outcome::Refused("this match overlaps"),
+        ..WORD
+    };
+    let failures = check(&[refused], &languages(&python), &project(), &Binary);
+    assert_eq!(
+        broken(&failures),
+        vec![(Invariant::StillParses, false)],
+        "{failures:#?}"
+    );
+    assert!(
+        failures[0]
+            .what
+            .contains("not saying \"this match overlaps\""),
+        "{failures:#?}"
+    );
 }
 
 /// The real `quaff`, but writing outside its matches when the project it edits already holds

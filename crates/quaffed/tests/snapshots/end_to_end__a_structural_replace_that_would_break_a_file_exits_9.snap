@@ -1,0 +1,16 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "replace `f($v)` with `$v = 1` expect 1"
+---
+success: false
+exit_code: 9
+----- stdout -----
+
+----- stderr -----
+quaff: refused: the edit would leave 1 Python file that parses unparseable, so nothing was written:
+  "a.py": line 1, column 1: Invalid assignment target; changed by the replace at -e expression 1, at character 1
+Change the replacement so that the file still parses, or leave it out of the statement: with `in`, with `where not FILE matches`, such as where not FILE matches "a.py", or with a narrower scope on the command line

@@ -12,7 +12,7 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use quaffed_encoding::{self as encoding, Encoding, Named, Refusal, python};
-use quaffed_python::compile_pattern;
+use quaffed_python::{Rewrite, RewriteError, compile_pattern, compile_rewrite};
 use quaffed_representation::check;
 use quaffed_representation::glob::Glob;
 use quaffed_representation::program::{
@@ -30,6 +30,7 @@ use crate::editorconfig::EditorConfig;
 use crate::filter;
 use crate::output;
 use crate::resolve::{self, Declarations, Resolution, Unknown};
+use crate::rewrite;
 use crate::scope;
 use crate::search::{self, Match};
 use crate::structural;
@@ -109,6 +110,13 @@ pub enum Failure {
         /// Each such file.
         files: Vec<Broken>,
     },
+    /// A structural replace cannot be made as written in some files - its matches overlap, it
+    /// would drop a comment, or it would change a literal's structure - so the run is refused
+    /// and nothing written.  Exit 9.
+    EditRefused {
+        /// Each such file, as the user would recognise it, with where and why.
+        files: Vec<(PathBuf, String)>,
+    },
     /// The edits could not all be written.  Exit 7.
     Write(write::Failure),
 }
@@ -152,7 +160,8 @@ impl Failure {
             | Failure::Write(_) => 7,
             Failure::Unparseable { .. }
             | Failure::Unwritable { .. }
-            | Failure::BrokenByEdit { .. } => 9,
+            | Failure::BrokenByEdit { .. }
+            | Failure::EditRefused { .. } => 9,
         }
     }
 }
@@ -210,6 +219,17 @@ impl fmt::Display for Failure {
             }
             Failure::Unwritable { files } => unwritable(f, files),
             Failure::BrokenByEdit { files } => broken(f, files),
+            Failure::EditRefused { files } => {
+                write!(
+                    f,
+                    "refused: the replace cannot be made as written in {}, so nothing was written:",
+                    count(files.len(), "file", "files")
+                )?;
+                for (path, why) in files {
+                    write!(f, "\n  {path:?}: {why}")?;
+                }
+                Ok(())
+            }
             Failure::Write(err) => err.fmt(f),
         }
     }
@@ -312,7 +332,8 @@ impl std::error::Error for Failure {
             | Failure::NotThere { .. }
             | Failure::Unparseable { .. }
             | Failure::Unwritable { .. }
-            | Failure::BrokenByEdit { .. } => None,
+            | Failure::BrokenByEdit { .. }
+            | Failure::EditRefused { .. } => None,
         }
     }
 }
@@ -384,26 +405,12 @@ pub fn run(
             Failure::Script { location, message }
         }
     })?;
-    let (steps, structural) =
+    let (steps, structural, planned_rewrites) =
         plan(&built.program).map_err(|(construct, span)| Failure::Unknown {
             location: built.locate(span, span.start),
             message: format!("{construct} is not built yet"),
         })?;
-    // Every structural pattern is compiled before any file is read, so one that cannot be
-    // compiled stops the run before it looks at anything.
-    let compiled: Vec<Pattern> = structural
-        .iter()
-        .map(|(written, span)| {
-            compile_pattern(written).map_err(|err| Failure::Script {
-                location: built.locate(
-                    *span,
-                    err.offset()
-                        .map_or(span.start, |at| built.content_start(*span) + at),
-                ),
-                message: err.to_string(),
-            })
-        })
-        .collect::<Result<_, _>>()?;
+    let (compiled, rewrites) = compile(&structural, &planned_rewrites, &built)?;
 
     let cwd = fs::canonicalize(cwd).map_err(|cause| Failure::Io {
         doing: "reading the current directory",
@@ -420,7 +427,7 @@ pub fn run(
 
     let searching: Vec<Searching> = steps.iter().flat_map(Step::patterns).collect();
     let patterns: Vec<Wanted> = searching.iter().map(|s| s.pattern).collect();
-    let replacements: Vec<Option<&TextPattern>> =
+    let replacements: Vec<Option<Replacement>> =
         steps.iter().flat_map(Step::replacements).collect();
     // Every `where` is compiled and checked, as every pattern is, before discovery looks at a
     // file, so that a script error is reported as one however large or unreadable the tree.
@@ -439,6 +446,7 @@ pub fn run(
         &patterns,
         &replacements,
         &compiled,
+        &rewrites,
         &filters,
         &mut projects,
         locale.as_ref(),
@@ -478,6 +486,59 @@ pub fn run(
         note(&text);
     }
     Ok(outcome)
+}
+
+/// Every structural pattern compiled, and every rewrite template against the pattern whose
+/// captures it writes back, before any file is read, so that one that cannot be compiled stops
+/// the run before it looks at anything.
+fn compile(
+    structural: &[(&str, Span)],
+    planned_rewrites: &[PlannedRewrite],
+    built: &Built,
+) -> Result<(Vec<Pattern>, Vec<Rewrite>), Failure> {
+    // Every structural pattern is compiled before any file is read, so one that cannot be
+    // compiled stops the run before it looks at anything.
+    let mut compiled: Vec<Pattern> = structural
+        .iter()
+        .map(|(written, span)| {
+            compile_pattern(written).map_err(|err| Failure::Script {
+                location: built.locate(
+                    *span,
+                    err.offset()
+                        .map_or(span.start, |at| built.content_start(*span) + at),
+                ),
+                message: err.to_string(),
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    // So is every rewrite template, against the pattern whose captures it writes back.
+    let rewrites: Vec<Rewrite> = planned_rewrites
+        .iter()
+        .map(|(written, span, compiled_at)| {
+            compile_rewrite(written, &compiled[*compiled_at]).map_err(|err| match err {
+                RewriteError::Empty => Failure::Unknown {
+                    location: built.locate(*span, span.start),
+                    message: "a replace whose rewrite has no code, which would delete what \
+                              matched, is not built yet"
+                        .to_owned(),
+                },
+                err => Failure::Script {
+                    location: built.locate(
+                        *span,
+                        err.offset()
+                            .map_or(span.start, |at| built.content_start(*span) + at),
+                    ),
+                    message: err.to_string(),
+                },
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    // A replace's unnamed holes are named once its rewrite is compiled, which reports `$_` in a
+    // rewrite as the unnamed hole it is, so that each match says where they matched too.
+    for (_, _, compiled_at) in planned_rewrites {
+        compiled[*compiled_at] = rewrite::name_every_hole(&compiled[*compiled_at]);
+    }
+    Ok((compiled, rewrites))
 }
 
 /// Decides the run's outcome from what the search found, writes its edits - unless it is a dry
@@ -759,12 +820,10 @@ enum Step<'p> {
     Replace(Replacing<'p>),
 }
 
-/// A textual replace this build can run.
+/// A replace this build can run.
 struct Replacing<'p> {
-    /// What it replaces.
-    pattern: &'p TextPattern,
-    /// What it writes in its place.
-    with: &'p TextPattern,
+    /// What it replaces, and with what.
+    kind: ReplaceKind<'p>,
     /// The count its `expect` requires.
     count: Count,
     /// Where the statement was written.
@@ -773,8 +832,45 @@ struct Replacing<'p> {
     query: &'p Query,
 }
 
-/// A program's steps, and each structural pattern in it with where it was written.
-type Planned<'p> = (Vec<Step<'p>>, Vec<(&'p str, Span)>);
+/// What a replace replaces, and with what.
+#[derive(Clone, Copy)]
+enum ReplaceKind<'p> {
+    /// Text, with text.
+    Text {
+        pattern: &'p TextPattern,
+        with: &'p TextPattern,
+    },
+    /// A structural pattern, with a rewrite template: the pattern as a search finds it, and the
+    /// template's index among the run's rewrites.
+    Structural { pattern: Wanted<'p>, rewrite: usize },
+}
+
+impl Replacing<'_> {
+    /// What it replaces, as a search finds it.
+    fn wanted(&self) -> Wanted<'_> {
+        match self.kind {
+            ReplaceKind::Text { pattern, .. } => Wanted::Text(pattern),
+            ReplaceKind::Structural { pattern, .. } => pattern,
+        }
+    }
+}
+
+/// What one of the run's patterns is replaced with, if it is replaced.
+#[derive(Clone, Copy)]
+enum Replacement<'p> {
+    /// Text.
+    Text(&'p TextPattern),
+    /// A rewrite template, by its index among the run's rewrites.
+    Structural(usize),
+}
+
+/// A structural replace's rewrite template as written: its text, where it was written, and the
+/// index of the compiled pattern whose captures it writes back.
+type PlannedRewrite<'p> = (&'p str, Span, usize);
+
+/// A program's steps, each structural pattern in it with where it was written, and each rewrite
+/// template.
+type Planned<'p> = (Vec<Step<'p>>, Vec<(&'p str, Span)>, Vec<PlannedRewrite<'p>>);
 
 /// What a query searches for: text, or a structural pattern.
 #[derive(Clone, Copy)]
@@ -818,7 +914,7 @@ impl Step<'_> {
                 })
                 .collect(),
             Step::Replace(replacing) => vec![Searching {
-                pattern: Wanted::Text(replacing.pattern),
+                pattern: replacing.wanted(),
                 query: replacing.query,
             }],
         }
@@ -826,11 +922,14 @@ impl Step<'_> {
 
     /// The replacement each of the step's patterns is replaced with, in the order
     /// [`Step::patterns`] lists them: `None` for a pattern only searched for.
-    fn replacements(&self) -> Vec<Option<&TextPattern>> {
+    fn replacements(&self) -> Vec<Option<Replacement<'_>>> {
         match self {
             Step::Find(..) => vec![None],
             Step::Assert(block) => block.iter().map(|_| None).collect(),
-            Step::Replace(replacing) => vec![Some(replacing.with)],
+            Step::Replace(replacing) => vec![Some(match replacing.kind {
+                ReplaceKind::Text { with, .. } => Replacement::Text(with),
+                ReplaceKind::Structural { rewrite, .. } => Replacement::Structural(rewrite),
+            })],
         }
     }
 }
@@ -841,6 +940,7 @@ impl Step<'_> {
 fn plan(program: &Program) -> Result<Planned<'_>, (&'static str, Span)> {
     let mut steps = Vec::new();
     let mut structural = Vec::new();
+    let mut rewrites = Vec::new();
     for statement in program.body() {
         steps.push(match &statement.node {
             Statement::Find(query) => Step::Find(buildable(query, &mut structural)?, query),
@@ -850,29 +950,50 @@ fn plan(program: &Program) -> Result<Planned<'_>, (&'static str, Span)> {
                     .map(|a| assertion(a, &mut structural))
                     .collect::<Result<_, _>>()?,
             ),
-            Statement::Act(action) => Step::Replace(replacing(action, statement.span)?),
+            Statement::Act(action) => Step::Replace(replacing(
+                action,
+                statement.span,
+                &mut structural,
+                &mut rewrites,
+            )?),
             _ => return Err(("this statement", statement.span)),
         });
     }
-    Ok((steps, structural))
+    Ok((steps, structural, rewrites))
 }
 
-/// The textual replace `action` is, if this build can run it.
-fn replacing(action: &Action, span: Span) -> Result<Replacing<'_>, (&'static str, Span)> {
+/// The replace `action` is, if this build can run it.  A structural one's pattern joins
+/// `structural` and its template `rewrites`, to be compiled before any file is read.
+fn replacing<'p>(
+    action: &'p Action,
+    span: Span,
+    structural: &mut Vec<(&'p str, Span)>,
+    rewrites: &mut Vec<PlannedRewrite<'p>>,
+) -> Result<Replacing<'p>, (&'static str, Span)> {
     let ActionKind::Replace(with) = &action.kind else {
         return Err(("delete", span));
     };
-    let (Operand::Text(pattern), Operand::Text(with)) = (&action.query.operand.node, &with.node)
-    else {
-        return Err(("a structural replace", span));
+    let kind = match (&action.query.operand.node, &with.node) {
+        (Operand::Text(pattern), Operand::Text(with)) => ReplaceKind::Text { pattern, with },
+        (Operand::Pattern(_), Operand::Pattern(written)) => {
+            let pattern = buildable(&action.query, structural)?;
+            let Wanted::Structural { compiled, .. } = pattern else {
+                unreachable!("a backticked operand is a structural pattern");
+            };
+            rewrites.push((written.as_str(), with.span, compiled));
+            ReplaceKind::Structural {
+                pattern,
+                rewrite: rewrites.len() - 1,
+            }
+        }
+        _ => return Err(("this kind of replace", span)),
     };
     // The checker has refused an edit with no `expect`, and the parser takes at most one.
     let Some(count) = action.expect.first() else {
         return Err(("a replace with no `expect`", span));
     };
     Ok(Replacing {
-        pattern,
-        with,
+        kind,
         count: count.node,
         span,
         query: &action.query,
@@ -1594,9 +1715,17 @@ struct Searched {
     /// by the paths a message shows, and why.
     unspelled: Vec<Vec<(PathBuf, Unspelled)>>,
     /// For each replaced pattern, the files whose encoding cannot write its replacement, by the
-    /// paths a message shows, with the encoding, the text it cannot write, and whether it spells
-    /// that text more than one way rather than not at all.
-    unwritable: Vec<Vec<(PathBuf, Encoding, String, bool)>>,
+    /// paths a message shows, with the encoding as `CPython` names its codec, the text it cannot
+    /// write, and whether it spells that text more than one way rather than not at all.
+    unwritable: Vec<Vec<(PathBuf, &'static str, String, bool)>>,
+    /// For each structural replace, the files it cannot be made in as written, by the paths a
+    /// message shows, with where and why: refused once its count holds, as an edit its files'
+    /// encodings cannot write is, so that a count that does not hold is told first.
+    edits_refused: Vec<Vec<(PathBuf, String)>>,
+    /// For each structural replace, the places it was made as written but may have changed what
+    /// the code means, by the paths a message shows, with where and why: noted only for the
+    /// statements the run reached.
+    questioned: Vec<Vec<(PathBuf, String)>>,
     /// Every file a replace changed, with its bytes before and after, held until the run ends.
     changed: Vec<Changed>,
     /// For each structural pattern, the Python files an earlier replace left unparseable, though
@@ -1657,33 +1786,48 @@ enum Batch<'p> {
         pattern: &'p TextPattern,
         with: &'p TextPattern,
     },
+    /// Replace the structural pattern at this index, compiled at `compiled`, with the rewrite at
+    /// `rewrite`.
+    Rewrite {
+        index: usize,
+        compiled: usize,
+        rewrite: usize,
+    },
 }
 
 /// `patterns` in batches, `replacements` naming each one's replacement, if it is replaced.
 fn batches<'p>(
     patterns: &[Wanted<'p>],
-    replacements: &[Option<&'p TextPattern>],
+    replacements: &[Option<Replacement<'p>>],
 ) -> Vec<Batch<'p>> {
     let mut batches = Vec::new();
     let mut textual = Vec::new();
     let mut structural = Vec::new();
     for (index, (wanted, with)) in patterns.iter().zip(replacements).enumerate() {
+        if with.is_some() && (!textual.is_empty() || !structural.is_empty()) {
+            batches.push(Batch::Search {
+                textual: std::mem::take(&mut textual),
+                structural: std::mem::take(&mut structural),
+            });
+        }
         match (wanted, with) {
-            (Wanted::Text(pattern), Some(with)) => {
-                if !textual.is_empty() || !structural.is_empty() {
-                    batches.push(Batch::Search {
-                        textual: std::mem::take(&mut textual),
-                        structural: std::mem::take(&mut structural),
-                    });
-                }
+            (Wanted::Text(pattern), Some(Replacement::Text(with))) => {
                 batches.push(Batch::Replace {
                     index,
                     pattern,
                     with,
                 });
             }
+            (Wanted::Structural { compiled, .. }, Some(Replacement::Structural(rewrite))) => {
+                batches.push(Batch::Rewrite {
+                    index,
+                    compiled: *compiled,
+                    rewrite: *rewrite,
+                });
+            }
             (Wanted::Text(pattern), None) => textual.push((index, *pattern)),
-            (Wanted::Structural { compiled, .. }, _) => structural.push((index, *compiled)),
+            (Wanted::Structural { compiled, .. }, None) => structural.push((index, *compiled)),
+            _ => unreachable!("a replace replaces text with text, and a pattern with a pattern"),
         }
     }
     if !textual.is_empty() || !structural.is_empty() {
@@ -1693,6 +1837,25 @@ fn batches<'p>(
         });
     }
     batches
+}
+
+/// A file as it was read for the run: where it is, the path a message shows, its bytes on disk,
+/// how its encoding was decided, and whether it is Python and whether binary.
+struct ReadFile<'a> {
+    file: &'a Path,
+    shown: &'a Path,
+    bytes: &'a [u8],
+    resolution: &'a Resolution,
+    python: bool,
+    binary: bool,
+}
+
+/// A structural replace as a file is edited by it: its pattern's index among the run's patterns,
+/// the compiled pattern, and its rewrite.
+struct Rewriting<'a> {
+    index: usize,
+    pattern: &'a Pattern,
+    rewrite: &'a Rewrite,
 }
 
 /// What earlier replaces did to a file: its bytes on disk if they changed it, and which did, by
@@ -1707,6 +1870,7 @@ struct Earlier<'a> {
 struct Plan<'p> {
     batches: Vec<Batch<'p>>,
     compiled: &'p [Pattern],
+    rewrites: &'p [Rewrite],
     /// The structural patterns, by their index among all the run's patterns.
     structural: Vec<usize>,
     /// For each pattern, its `where` if that tests a metavariable.
@@ -1726,8 +1890,9 @@ fn search_files(
     files: &[ToSearch],
     roots: scope::Roots,
     patterns: &[Wanted],
-    replacements: &[Option<&TextPattern>],
+    replacements: &[Option<Replacement>],
     compiled: &[Pattern],
+    rewrites: &[Rewrite],
     filters: &[Option<filter::Filter>],
     projects: &mut Projects,
     locale: Option<&(String, Encoding)>,
@@ -1751,6 +1916,8 @@ fn search_files(
         possible: vec![Vec::new(); patterns.len()],
         unspelled: vec![Vec::new(); patterns.len()],
         unwritable: vec![Vec::new(); patterns.len()],
+        edits_refused: vec![Vec::new(); patterns.len()],
+        questioned: vec![Vec::new(); patterns.len()],
         changed: Vec::new(),
         broken: vec![Vec::new(); patterns.len()],
         refused: Vec::new(),
@@ -1766,6 +1933,7 @@ fn search_files(
     let plan = Plan {
         batches,
         compiled,
+        rewrites,
         structural,
         filters,
         roots,
@@ -1817,13 +1985,45 @@ impl Searched {
         let binary = matches!(resolution, Resolution::Binary);
         let python = resolve::is_python(file);
         self.count_for_structure(plan, applies, python, binary);
+        let read = ReadFile {
+            file,
+            shown: &shown,
+            bytes: &bytes,
+            resolution: &resolution,
+            python,
+            binary,
+        };
+        let (edited, by) = self.through_batches(&read, plan, applies);
+        self.tally(&shown, resolution, &bytes, locale);
+        if let Some(edited) = edited.filter(|edited| edited[..] != bytes[..]) {
+            self.changed.push(Changed {
+                path: file.to_path_buf(),
+                shown,
+                python,
+                original: bytes,
+                edited,
+                by,
+            });
+        }
+        Ok(())
+    }
+
+    /// Takes a file through the run's batches in order, as `applies` says which patterns look at
+    /// it: each search on the file as the replaces before it left it.  Returns the file's bytes
+    /// once a replace has changed them, and the replaces that did, by their pattern's index.
+    fn through_batches(
+        &mut self,
+        read: &ReadFile,
+        plan: &Plan,
+        applies: &[bool],
+    ) -> (Option<Vec<u8>>, Vec<usize>) {
         // The file as the replaces so far have left it, once one has changed it.
         let mut edited: Option<Vec<u8>> = None;
         // The replaces that changed it so far, by their pattern's index.
         let mut by: Vec<usize> = Vec::new();
         let mut unparsed = false;
         for batch in &plan.batches {
-            let text: &[u8] = edited.as_deref().unwrap_or(&bytes);
+            let text: &[u8] = edited.as_deref().unwrap_or(read.bytes);
             match batch {
                 Batch::Search {
                     textual,
@@ -1831,29 +2031,29 @@ impl Searched {
                 } => {
                     let textual = applying(textual, applies);
                     let structural = applying(structural, applies);
-                    if !structural.is_empty() && python && !binary {
+                    if !structural.is_empty() && read.python && !read.binary {
                         // On disk, if an edit has changed it, to tell a file that never parsed
                         // from one an edit broke.
                         let earlier = Earlier {
-                            on_disk: edited.is_some().then_some(&bytes[..]),
+                            on_disk: edited.is_some().then_some(read.bytes),
                             by: &by,
                         };
                         self.structural_batch(
-                            &shown,
+                            read.shown,
                             text,
                             &earlier,
                             &structural,
                             plan,
-                            file,
+                            read.file,
                             &mut unparsed,
                         );
                     }
-                    match &resolution {
+                    match read.resolution {
                         Resolution::Known { encoding, body, .. } => {
-                            self.known(&shown, &text[*body..], *encoding, &textual);
+                            self.known(read.shown, &text[*body..], *encoding, &textual);
                         }
                         Resolution::Unknown(reason) => {
-                            self.unknown(&shown, text, reason, &textual);
+                            self.unknown(read.shown, text, reason, &textual);
                         }
                         Resolution::Binary | Resolution::Refused(_) => {}
                     }
@@ -1867,26 +2067,45 @@ impl Searched {
                         continue;
                     }
                     if let Some(whole) =
-                        self.replace_in(&shown, text, &resolution, *index, pattern, with)
+                        self.replace_in(read.shown, text, read.resolution, *index, pattern, with)
                     {
+                        edited = Some(whole);
+                        by.push(*index);
+                    }
+                }
+                Batch::Rewrite {
+                    index,
+                    compiled,
+                    rewrite,
+                } => {
+                    if !applies[*index] || !read.python || read.binary {
+                        continue;
+                    }
+                    let earlier = Earlier {
+                        on_disk: edited.is_some().then_some(read.bytes),
+                        by: &by,
+                    };
+                    let edit = Rewriting {
+                        index: *index,
+                        pattern: &plan.compiled[*compiled],
+                        rewrite: &plan.rewrites[*rewrite],
+                    };
+                    if let Some(whole) = self.rewrite_in(
+                        read.shown,
+                        text,
+                        &earlier,
+                        &edit,
+                        plan,
+                        read.file,
+                        &mut unparsed,
+                    ) {
                         edited = Some(whole);
                         by.push(*index);
                     }
                 }
             }
         }
-        self.tally(&shown, resolution, &bytes, locale);
-        if let Some(edited) = edited.filter(|edited| edited[..] != bytes[..]) {
-            self.changed.push(Changed {
-                path: file.to_path_buf(),
-                shown,
-                python,
-                original: bytes,
-                edited,
-                by,
-            });
-        }
-        Ok(())
+        (edited, by)
     }
 
     /// Counts a file for the structural patterns that look at it, as `applies` says: a Python
@@ -2036,13 +2255,129 @@ impl Searched {
         let Err(why) = outcome else {
             return;
         };
+        let indices: Vec<usize> = structural.iter().map(|&(i, _)| i).collect();
+        self.not_parsed(shown, why, earlier, &indices, unparsed);
+    }
+
+    /// Records that a Python file could not be parsed for the patterns at `indices`, `why`: as
+    /// broken by an earlier replace, if it parses on disk and a replace changed it, and otherwise
+    /// as a file that cannot be parsed, once however many batches find it so.
+    fn not_parsed(
+        &mut self,
+        shown: &Path,
+        why: String,
+        earlier: &Earlier,
+        indices: &[usize],
+        unparsed: &mut bool,
+    ) {
         if earlier.on_disk.is_some_and(|bytes| parses(bytes).is_ok()) {
-            for &(i, _) in structural {
+            for &i in indices {
                 self.broken[i].push((shown.to_owned(), why.clone(), earlier.by.to_vec()));
             }
         } else if !*unparsed {
             self.unparsed.push((shown.to_owned(), why));
             *unparsed = true;
+        }
+    }
+
+    /// Replaces a structural pattern in a Python file's current bytes, `text`, as `edit` says,
+    /// and returns the file's new bytes if that changed it.  The text is decoded as `CPython`
+    /// decodes it and written back in the same encoding, so that every byte outside the matches
+    /// is as it was.  A file that does not parse is recorded as a search records it; an edit
+    /// that cannot be made as written, or written in the file's encoding, is recorded for the
+    /// run to refuse.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the file, the edit and what earlier batches found, as a search has them"
+    )]
+    fn rewrite_in(
+        &mut self,
+        shown: &Path,
+        text: &[u8],
+        earlier: &Earlier,
+        edit: &Rewriting,
+        plan: &Plan,
+        file: &Path,
+        unparsed: &mut bool,
+    ) -> Option<Vec<u8>> {
+        let index = edit.index;
+        let place = plan.filters[index]
+            .is_some()
+            .then(|| scope::Place::of(file, plan.roots.cwd, plan.roots.root));
+        let filter = plan.filters[index].as_ref().map(|filter| {
+            let place = place
+                .as_ref()
+                .expect("worked out for a pattern with a `where`");
+            let found = filter::Found::default();
+            structural::Where {
+                names: filter.names.iter().map(String::as_str).collect(),
+                holds: Box::new(move |arena, nodes| filter.holds(place, arena, nodes, &found)),
+            }
+        });
+        let source = match python::Source::decode(text) {
+            Ok(source) => source,
+            Err(refusal) => {
+                self.not_parsed(shown, refusal.to_string(), earlier, &[index], unparsed);
+                return None;
+            }
+        };
+        let replaced =
+            match rewrite::replace(&source.text, edit.pattern, filter.as_ref(), edit.rewrite) {
+                Ok(replaced) => replaced,
+                Err(err) => {
+                    self.not_parsed(shown, unparsed_at(&err), earlier, &[index], unparsed);
+                    return None;
+                }
+            };
+        self.structural_for[index] += 1;
+        if !replaced.found.is_empty() {
+            self.matches[index].push((
+                shown.to_owned(),
+                replaced
+                    .found
+                    .into_iter()
+                    .map(|f| Hit {
+                        at: f.at,
+                        text: Some(f.text),
+                    })
+                    .collect(),
+            ));
+        }
+        match replaced.outcome {
+            Ok(None) => None,
+            Ok(Some(edited)) => match source.encode(&edited.text) {
+                Ok(bytes) => {
+                    for questioned in edited.questioned {
+                        self.questioned[index].push((
+                            shown.to_owned(),
+                            format!(
+                                "line {}, column {}: {}",
+                                questioned.at.line, questioned.at.column, questioned.why
+                            ),
+                        ));
+                    }
+                    Some(bytes)
+                }
+                Err(unencodable) => {
+                    self.unwritable[index].push((
+                        shown.to_owned(),
+                        unencodable.encoding,
+                        unencodable.character.to_string(),
+                        unencodable.ambiguous,
+                    ));
+                    None
+                }
+            },
+            Err(refused) => {
+                self.edits_refused[index].push((
+                    shown.to_owned(),
+                    format!(
+                        "line {}, column {}: {}",
+                        refused.at.line, refused.at.column, refused.why
+                    ),
+                ));
+                None
+            }
         }
     }
 
@@ -2129,7 +2464,7 @@ impl Searched {
                 ambiguous,
             } => {
                 self.matches[index].push((shown.to_owned(), hits(matches)));
-                self.unwritable[index].push((shown.to_owned(), encoding, text, ambiguous));
+                self.unwritable[index].push((shown.to_owned(), name_of(encoding), text, ambiguous));
                 None
             }
         }
@@ -2285,14 +2620,22 @@ impl<'s> Evaluation<'s> {
                 }
                 Step::Replace(replacing) => {
                     asserted = true;
+                    self.refuse_broken_for(1)?;
                     let index = self.next;
-                    let pattern = Wanted::Text(replacing.pattern);
+                    let pattern = replacing.wanted();
                     let found = self.print_matches(pattern, out)?;
-                    if !replacing.count.holds(found) {
+                    // As for an assertion: a count over files that have no structure to search
+                    // is not a held one, whatever it asks.
+                    let unsearched = self.nothing_applicable(index, pattern);
+                    if unsearched.is_some() || !replacing.count.holds(found) {
                         let location = built.locate(replacing.span, replacing.span.start);
+                        let what = match unsearched {
+                            Some(why) => format!("which cannot be checked: {why}"),
+                            None => format!("found {found}"),
+                        };
                         let mut failed = vec![format!(
-                            "{location}: expected {} of {} to replace, found {found}; nothing \
-                             was written",
+                            "{location}: expected {} of {} to replace, {what}; nothing was \
+                             written",
                             expected(replacing.count),
                             quoted(pattern)
                         )];
@@ -2300,20 +2643,7 @@ impl<'s> Evaluation<'s> {
                         self.notes = failed;
                         return Ok(Outcome::AssertionFailed);
                     }
-                    let unwritable = &self.searched.unwritable[index];
-                    if !unwritable.is_empty() {
-                        return Err(Failure::Unwritable {
-                            files: unwritable
-                                .iter()
-                                .map(|(path, encoding, text, ambiguous)| Unwritable {
-                                    path: path.clone(),
-                                    encoding: name_of(*encoding),
-                                    text: text.clone(),
-                                    ambiguous: *ambiguous,
-                                })
-                                .collect(),
-                        });
-                    }
+                    self.refuse_edits_of(index)?;
                     self.replaced += usize::try_from(found).unwrap_or(usize::MAX);
                     self.replaced_in.extend(
                         self.searched.matches[index]
@@ -2328,6 +2658,32 @@ impl<'s> Evaluation<'s> {
         } else {
             Outcome::NothingFound
         })
+    }
+
+    /// Refuses the run if the replace at `index`, whose count holds, cannot be made: a file's
+    /// encoding cannot write its replacement, or a structural replace cannot be made as written.
+    fn refuse_edits_of(&self, index: usize) -> Result<(), Failure> {
+        let unwritable = &self.searched.unwritable[index];
+        if !unwritable.is_empty() {
+            return Err(Failure::Unwritable {
+                files: unwritable
+                    .iter()
+                    .map(|(path, encoding, text, ambiguous)| Unwritable {
+                        path: path.clone(),
+                        encoding,
+                        text: text.clone(),
+                        ambiguous: *ambiguous,
+                    })
+                    .collect(),
+            });
+        }
+        let refused = &self.searched.edits_refused[index];
+        if !refused.is_empty() {
+            return Err(Failure::EditRefused {
+                files: refused.clone(),
+            });
+        }
+        Ok(())
     }
 
     /// Refuses the run if the next `patterns` patterns need a Python file an earlier replace
@@ -2559,6 +2915,9 @@ fn structural_notes(searched: &Searched, evaluated: &[Searching]) -> Vec<String>
         .any(|s| matches!(s.pattern, Wanted::Structural { .. }))
     {
         return notes;
+    }
+    for (path, why) in searched.questioned[..evaluated.len()].iter().flatten() {
+        notes.push(format!("{path:?}: {why}"));
     }
     // With no Python in scope, the run's own message counts these instead.
     if searched.python > 0 && searched.not_applicable > 0 {
@@ -2967,6 +3326,7 @@ mod tests {
             &[Wanted::Text(&pattern)],
             &[None],
             &[],
+            &[],
             &[None],
             &mut projects,
             None,
@@ -2978,7 +3338,7 @@ mod tests {
     }
 
     #[test]
-    fn a_replace_this_build_cannot_run_is_named_where_it_was_written() {
+    fn a_replace_is_planned_and_one_this_build_cannot_run_is_named_where_it_was_written() {
         let span = |start| Span {
             source: 0,
             start,
@@ -2994,7 +3354,15 @@ mod tests {
             vec![Spanned::new(Glob::literal("x"), span(3))],
             None,
         );
-        assert!(replacing(&replace(scoped, count.clone()), span(1)).is_ok());
+        assert!(
+            replacing(
+                &replace(scoped, count.clone()),
+                span(1),
+                &mut Vec::new(),
+                &mut Vec::new()
+            )
+            .is_ok()
+        );
         // A test of a metavariable needs what a match binds.
         let of_x = Spanned::new(
             Filter::Matches(
@@ -3007,23 +3375,51 @@ mod tests {
         let filtered = Query::with(text("a"), Vec::new(), Some(filter));
         // A test of a metavariable is planned like any other: the run checks it against the
         // pattern once that is compiled.
-        assert!(replacing(&replace(filtered, count.clone()), span(1)).is_ok());
+        assert!(
+            replacing(
+                &replace(filtered, count.clone()),
+                span(1),
+                &mut Vec::new(),
+                &mut Vec::new()
+            )
+            .is_ok()
+        );
         // The checker refuses an edit with no `expect` first; the planner still names it.
         assert_eq!(
-            replacing(&replace(Query::new(text("a")), Vec::new()), span(1)).err(),
+            replacing(
+                &replace(Query::new(text("a")), Vec::new()),
+                span(1),
+                &mut Vec::new(),
+                &mut Vec::new()
+            )
+            .err(),
             Some(("a replace with no `expect`", span(1)))
         );
         let delete = Action::new(ActionKind::Delete, Query::new(text("a")), count.clone());
-        assert_eq!(replacing(&delete, span(1)).err(), Some(("delete", span(1))));
+        assert_eq!(
+            replacing(&delete, span(1), &mut Vec::new(), &mut Vec::new()).err(),
+            Some(("delete", span(1)))
+        );
         let pattern = Spanned::new(Operand::Pattern("f()".into()), span(0));
         let structural = Action::new(
             ActionKind::Replace(pattern.clone()),
             Query::new(pattern),
             count,
         );
+        // A structural one is planned too, its pattern and its rewrite to be compiled.
+        let (mut patterns, mut rewrites) = (Vec::new(), Vec::new());
+        assert!(replacing(&structural, span(1), &mut patterns, &mut rewrites).is_ok());
+        assert_eq!(patterns.len(), 1);
+        assert_eq!(rewrites, [("f()", span(0), 0)]);
+        // Text replaced with a pattern, or the other way round, the parser never builds.
+        let mixed = Action::new(
+            ActionKind::Replace(text("b")),
+            Query::new(Spanned::new(Operand::Pattern("f()".into()), span(0))),
+            vec![Spanned::new(Count::Any, span(9))],
+        );
         assert_eq!(
-            replacing(&structural, span(1)).err(),
-            Some(("a structural replace", span(1)))
+            replacing(&mixed, span(1), &mut Vec::new(), &mut Vec::new()).err(),
+            Some(("this kind of replace", span(1)))
         );
     }
 
