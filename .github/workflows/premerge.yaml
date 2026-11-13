@@ -322,27 +322,41 @@ jobs:
           if-no-files-found: warn
 
   real-world-corpus:
-    # The oracle - the CPython release corpus/real-world.toml names - judges both corpora.  It
-    # confirms every Python file of the synthetic corpus is valid Python (scripts/check-synthetic).
-    # The real-world corpus fetches, matches its pinned SHA-256, and has the oracle judge every
-    # file: scripts/fetch-corpus fails on a hash mismatch, an archive
-    # member that would land outside its directory, or fewer files than the floor.  The fetched
-    # tree and the oracle's verdicts are cached on a hash of the manifest and the script, so
-    # this costs a cache restore until either changes.  The oracle's version is read from the
-    # manifest, so no Python version is named here.  Then every file of the real-world corpus is
-    # parsed into an arena and printed back byte for byte, and every file the oracle refuses must
-    # be refused: the round trip's ignored test in crates/python, which needs the fetched tree.
-    # Then the edit-invariant harness's own tests run, and its ignored corpus run, optimised,
-    # holds every registered edit to the edit invariants over all the corpora, with the oracle
-    # judging that Python files still parse.  Last, scripts/count-structural has the oracle count
-    # each structural pattern's matches file by file, and real_world_matches, another ignored
-    # test there, requires quaff's counts to agree in every file.
+    # The oracle - the CPython release corpus/real-world.toml names - judges both corpora.  The
+    # real-world corpus fetches, matches its pinned SHA-256, and has the oracle judge every file:
+    # scripts/fetch-corpus fails on a hash mismatch, an archive member that would land outside its
+    # directory, or fewer files than the floor.  The fetched tree and the oracle's verdicts are
+    # cached on a hash of the manifest and the script, so this costs a cache restore until either
+    # changes.  The oracle's version is read from the manifest, so no Python version is named
+    # here.
+    #
+    # The work is split in two parts that run side by side, each taking one of the two
+    # edit-invariant corpus runs; a new corpus check joins whichever part keeps the two closest in
+    # length.  Each part repeats the setup, the build and the harness's own checks.
+    #
+    # - invariants: scripts/check-synthetic confirms every Python file of the synthetic corpus is
+    #   valid Python.  The edit-invariant harness's own tests run, then its ignored corpus run,
+    #   optimised, holds every registered edit to the edit invariants over all the corpora, with
+    #   the oracle judging that Python files still parse.
+    # - rewrites: the harness's second corpus run holds structural rewrites to what they should
+    #   keep.  Every file of the real-world corpus is parsed into an arena and printed back byte
+    #   for byte, and every file the oracle refuses must be refused: the round trip's ignored test
+    #   in crates/python.  Last, scripts/count-structural has the oracle count each structural
+    #   pattern's matches file by file, and real_world_matches, another ignored test there,
+    #   requires quaff's counts to agree in every file.
+    #
+    # Each ignored test's step requires that exactly one test ran: --ignored runs nothing, and
+    # passes, if the test loses its #[ignore].  A second ignored test in a file trips this too, so
+    # change the count with it.
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [invariants, rewrites]
     runs-on: [ubuntu-latest]
-    name: Real-world corpus
+    name: Real-world corpus (${{ matrix.part }})
     # Longer than scripts/fetch-corpus's download deadline plus one read's wait, with room for the
-    # setup, the parse, check-synthetic, building and running the round trip, the edit-invariant
-    # harness's release build and corpus run, and the structural counts, so a stalled download
-    # ends in the script's own error rather than a bare cancellation.
+    # setup, a build with nothing cached, and the part's corpus runs, so a stalled download ends in
+    # the script's own error rather than a bare cancellation.
     timeout-minutes: 20
     steps:
       - name: Check out source repository
@@ -361,11 +375,6 @@ jobs:
         with:
           python-version: ${{ steps.oracle.outputs.version }}
 
-      - name: The oracle accepts every Python file of the synthetic corpus
-        env:
-          PYTHON: ${{ steps.python.outputs.python-path }}
-        run: '"$PYTHON" scripts/check-synthetic'
-
       - name: Restore the fetched corpus
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -380,28 +389,37 @@ jobs:
       - name: Install the pinned toolchain
         run: rustup toolchain install
 
-      - name: Every file round-trips, and every file the oracle refuses is refused
-        # --ignored runs nothing, and passes, if the test loses its #[ignore], so the step also
-        # requires that exactly one test ran.  A second ignored test in the file trips this too:
-        # change the count with it.
-        run: |
-          set -o pipefail
-          cargo test --locked -p quaffed-python --test round_trip -- --ignored --nocapture 2>&1 \
-            | tee "$RUNNER_TEMP/round-trip.log"
-          if ! grep -q '^test result: ok\. 1 passed;' "$RUNNER_TEMP/round-trip.log"; then
-            echo "::error::the real-world round trip did not run exactly one test" >&2
-            exit 1
-          fi
+      - name: Restore the build
+        # This part's build, keyed on what decides its dependencies, so that on a hit only the
+        # workspace's own crates are built again.  A pull request reads what main's runs saved.
+        # There is no fallback to an older key: a build from another toolchain or lock file would
+        # only carry dead artefacts forward, so a change to either builds once from nothing.
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target/debug
+            target/release
+          key: corpus-build-${{ matrix.part }}-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+
+      - name: The oracle accepts every Python file of the synthetic corpus
+        if: matrix.part == 'invariants'
+        env:
+          PYTHON: ${{ steps.python.outputs.python-path }}
+        run: '"$PYTHON" scripts/check-synthetic'
 
       - name: The edit-invariant harness's own checks hold
         # Run before the harness is trusted with the corpus, so that a fault in a check fails
-        # here, named, rather than as wrong judgements of hundreds of files.
+        # here, named, rather than as wrong judgements of hundreds of files.  Both parts' corpus
+        # runs use the harness, so both run these.
         run: cargo test --locked --release -p quaffed --test edit_invariants
 
       - name: Every registered edit keeps the invariants over the corpus
         # Optimised, because an edit parses every Python file it changes, before and after, and
-        # the harness runs each edit several times over the real-world corpus.  As for the round
-        # trip, the step requires that exactly one test ran.
+        # the harness runs each edit several times over the real-world corpus.
+        if: matrix.part == 'invariants'
         env:
           QUAFFED_PYTHON_ORACLE: ${{ steps.python.outputs.python-path }}
         run: |
@@ -417,7 +435,7 @@ jobs:
       - name: Structural rewrites keep what they should over the corpus
         # Identities that must change nothing but spacing the template spells, and renames there
         # and back that must keep every tree CPython reads and then every file as identities do.
-        # As above, exactly one test must run.
+        if: matrix.part == 'rewrites'
         env:
           QUAFFED_PYTHON_ORACLE: ${{ steps.python.outputs.python-path }}
         run: |
@@ -430,13 +448,25 @@ jobs:
             exit 1
           fi
 
+      - name: Every file round-trips, and every file the oracle refuses is refused
+        if: matrix.part == 'rewrites'
+        run: |
+          set -o pipefail
+          cargo test --locked -p quaffed-python --test round_trip -- --ignored --nocapture 2>&1 \
+            | tee "$RUNNER_TEMP/round-trip.log"
+          if ! grep -q '^test result: ok\. 1 passed;' "$RUNNER_TEMP/round-trip.log"; then
+            echo "::error::the real-world round trip did not run exactly one test" >&2
+            exit 1
+          fi
+
       - name: CPython counts the structural matches
+        if: matrix.part == 'rewrites'
         env:
           PYTHON: ${{ steps.python.outputs.python-path }}
         run: '"$PYTHON" scripts/count-structural'
 
       - name: Every structural match is found as CPython counts it
-        # As for the round trip, the step requires that exactly one test ran.
+        if: matrix.part == 'rewrites'
         run: |
           set -o pipefail
           cargo test --locked -p quaffed-python --test real_world_matches -- --ignored --nocapture 2>&1 \
