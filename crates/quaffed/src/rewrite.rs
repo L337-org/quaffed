@@ -637,6 +637,8 @@ fn deleted(
         if !took {
             let matched = wrapping.widened(&(0..text.len()), &found.range);
             let parent = deletion.parent(&matched);
+            // Every statement kind's name starts `Stmt`, as Ruff names them and
+            // `quaffed_python`'s kind list keeps them: its test holds the list to Ruff's enum.
             let statement = arena
                 .nodes_within(matched.clone())
                 .next()
@@ -797,8 +799,10 @@ fn one_item_tuples(
 }
 
 /// The kinds whose children are items that a deletion taking no separator may simply leave out:
-/// `[debug]` is `[]`, `f(debug)` is `f()`.  A set is not one, since `{}` is a dict.
-const ITEMS: &[&str] = &["ExprList", "ExprTuple", "Arguments", "Parameters"];
+/// `[debug]` is `[]`, `f(debug)` is `f()`, `class A(debug)` is `class A()`.  A set is not one,
+/// since `{}` is a dict.  Each is Ruff's name for the node kind, as `quaffed_python`'s kind list
+/// gives it; a parameter is left out because no pattern of its own matches one.
+const ITEMS: &[&str] = &["ExprList", "ExprTuple", "Arguments"];
 
 /// Where the line holding `offset` ends: its line break, or the end of `text`.
 fn line_end(text: &str, offset: usize) -> usize {
@@ -1820,7 +1824,13 @@ mod tests {
             );
         }
         // An item, the only one, simply goes.
-        assert_eq!(deleted("debug", "f(debug)\nx = [debug]\n"), "f()\nx = []\n");
+        assert_eq!(
+            deleted(
+                "debug",
+                "f(debug)\nx = [debug]\nclass A(debug):\n    pass\n"
+            ),
+            "f()\nx = []\nclass A():\n    pass\n"
+        );
         // A comma the parent does not hold is never taken: this one is the call's, not the sum's,
         // so the match takes nothing, and is refused.  Taking the comma would have left
         // `g(a + c)`, which parses.

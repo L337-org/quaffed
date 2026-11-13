@@ -967,8 +967,8 @@ left behind, and nothing else:
   to anything else is never taken, nor is a comma in a comment, or one with a comment between it
   and the match.
 - **A match that takes neither its lines nor a separator must be a statement or an item** of a
-  list, a tuple, a call's arguments or a definition's parameters, which can simply be gone:
-  `f(debug)` leaves `f()`.  Anywhere else it is refused, exit 9, since what is left can parse and
+  list, a tuple, or a call's or a class's arguments, which can simply be gone: `f(debug)` leaves
+  `f()`.  Anywhere else it is refused, exit 9, since what is left can parse and
   mean something else: `x = debug + a` would leave `x =  + a`, `x = debug(1)` would leave
   `x = (1)`, `return debug` would leave `return`, and `{debug}` would leave `{}`, a dict.  Remove
   the whole of what holds it instead.  So deleting `b` from `g(a + b, c)` is refused: the comma
