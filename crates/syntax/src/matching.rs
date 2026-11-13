@@ -4540,9 +4540,9 @@ mod trees {
 
     #[test]
     fn a_where_over_a_run_captures_the_way_it_accepted_inside_a_node() {
-        // Found by the property below.  `$a` is tested, and the way the `where` accepts binds it
-        // to the fourth `x`; matched again by code alone, it bound the second, an equal `x`, and
-        // `$p...` and `$q...` were kept from that other way, overlapping `$a`.
+        // `$a` is tested, and the way the `where` accepts binds it to the fourth `x`; matched
+        // again by code alone, it would bind the second, an equal `x`, and `$p...` and `$q...`
+        // would be kept from that other way, overlapping `$a`.
         let compiled = pattern("$b (g $p... $a $q...)");
         let (built, _) = build("[(g x) [x] x [x (g x x) x x (g x x x x x)]]");
         let mut placed = |nodes: &[NodeId]| built.range(nodes[0]).start % 3 == 1;

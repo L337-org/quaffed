@@ -466,9 +466,8 @@ mod tests {
         compile_rewrite(template, &binder()).expect_err(template)
     }
 
-    // The cases measured when the rule for interpolation was chosen that are decided when a
-    // rewrite is compiled, in the order they were measured.  Those decided when a value is
-    // written - the structure check, a non-ASCII value in bytes, a value spanning lines - belong
+    // Interpolation decided when a rewrite is compiled.  What is decided when a value is
+    // written - the structure check, a non-ASCII value in bytes, a value spanning lines - belongs
     // to the edit.
 
     #[test]
@@ -598,8 +597,6 @@ mod tests {
         assert_eq!(sites(r"'\x24HOME'"), Vec::<String>::new());
         assert_eq!(sites("'$' 'HOME'"), Vec::<String>::new());
     }
-
-    // The decisions beyond those measured cases.
 
     #[test]
     fn a_name_the_pattern_does_not_bind_is_refused_in_code_too() {

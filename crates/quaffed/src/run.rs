@@ -2620,14 +2620,22 @@ impl<'s> Evaluation<'s> {
                 }
                 Step::Replace(replacing) => {
                     asserted = true;
+                    self.refuse_broken_for(1)?;
                     let index = self.next;
                     let pattern = replacing.wanted();
                     let found = self.print_matches(pattern, out)?;
-                    if !replacing.count.holds(found) {
+                    // As for an assertion: a count over files that have no structure to search
+                    // is not a held one, whatever it asks.
+                    let unsearched = self.nothing_applicable(index, pattern);
+                    if unsearched.is_some() || !replacing.count.holds(found) {
                         let location = built.locate(replacing.span, replacing.span.start);
+                        let what = match unsearched {
+                            Some(why) => format!("which cannot be checked: {why}"),
+                            None => format!("found {found}"),
+                        };
                         let mut failed = vec![format!(
-                            "{location}: expected {} of {} to replace, found {found}; nothing \
-                             was written",
+                            "{location}: expected {} of {} to replace, {what}; nothing was \
+                             written",
                             expected(replacing.count),
                             quoted(pattern)
                         )];

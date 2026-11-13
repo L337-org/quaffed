@@ -286,16 +286,35 @@ fn matches_at_the_ends_adjacent_or_absent_leave_nothing_to_spare() {
 }
 
 #[test]
+fn overlapping_matches_are_a_fault_of_find_unless_they_may_nest() {
+    let before = files(&[("a.txt", b"f(g(x))\n")]);
+    let matches: BTreeMap<String, Vec<Span>> = [(
+        "a.txt".to_owned(),
+        vec![span((1, 1), (1, 7)), span((1, 3), (1, 6))],
+    )]
+    .into();
+    let edited = files(&[("a.txt", b"h(h(x))\n")]);
+    let invariants = |nest| -> Vec<Invariant> {
+        minimal_diff(&before, &matches, &edited, nest)
+            .iter()
+            .map(|(_, (invariant, _))| *invariant)
+            .collect()
+    };
+    assert_eq!(invariants(false), vec![Invariant::Harness]);
+    assert_eq!(invariants(true), Vec::<Invariant>::new());
+}
+
+#[test]
 fn a_change_within_a_matched_line_is_seen_by_bytes_but_not_by_lines() {
     let before = files(&[("a.txt", b"one the two\nthree\n")]);
     let matches: BTreeMap<String, Vec<Span>> =
         [("a.txt".to_owned(), vec![span((1, 5), (1, 7))])].into();
     let edited = files(&[("a.txt", b"ONE THE two\nthree\n")]);
-    let found = minimal_diff(&before, &matches, &edited);
+    let found = minimal_diff(&before, &matches, &edited, false);
     let invariants: Vec<Invariant> = found.iter().map(|(_, (invariant, _))| *invariant).collect();
     assert_eq!(invariants, vec![Invariant::MinimalDiff], "{found:?}");
     let edited = files(&[("a.txt", b"one THE two\nTHREE\n")]);
-    let found = minimal_diff(&before, &matches, &edited);
+    let found = minimal_diff(&before, &matches, &edited, false);
     let invariants: Vec<Invariant> = found.iter().map(|(_, (invariant, _))| *invariant).collect();
     assert_eq!(
         invariants,
@@ -308,7 +327,7 @@ fn a_change_within_a_matched_line_is_seen_by_bytes_but_not_by_lines() {
 fn a_file_created_deleted_or_changed_without_a_match_breaks_minimal_diff() {
     let before = files(&[("a.txt", b"a"), ("b.txt", b"b")]);
     let edited = files(&[("a.txt", b"A"), ("c.txt", b"c")]);
-    let found = minimal_diff(&before, &BTreeMap::new(), &edited);
+    let found = minimal_diff(&before, &BTreeMap::new(), &edited, false);
     let said: Vec<(&str, &str)> = found
         .iter()
         .map(|(path, (_, what))| (path.as_str(), what.as_str()))

@@ -2266,6 +2266,25 @@ fn a_structural_search_needing_a_file_an_earlier_replace_broke_refuses_the_edit(
 }
 
 #[test]
+fn a_structural_replace_needing_a_file_an_earlier_replace_broke_refuses_the_edit() {
+    let project = Project::new(&[(".git/HEAD", ""), ("fine.py", "f(x)\n")]);
+    // As a find does: refused, naming the statement that broke it, rather than a count of 0.
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "replace string \"(x)\" with \"(x\" expect 1\nreplace `f($a)` with `g($a)` expect 1"
+    ]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_structural_replace_over_no_python_cannot_be_checked() {
+    let project = Project::new(&[(".git/HEAD", ""), ("notes.txt", "f(x)\n")]);
+    // Even `expect any` fails: nothing was searched, so no count was taken.
+    assert_quaff_snapshot!(project.quaff(&["-e", "replace `f($a)` with `g($a)` expect any"]));
+    project.assert_unchanged();
+}
+
+#[test]
 fn an_assertion_that_fails_after_a_replace_says_nothing_was_written() {
     let project = Project::new(EDITABLE);
     assert_quaff_snapshot!(project.quaff(&[

@@ -630,7 +630,9 @@ impl Judging<'_> {
             ));
             return None;
         }
-        for (path, (invariant, what)) in minimal_diff(&start.files, &matches, &edited) {
+        for (path, (invariant, what)) in
+            minimal_diff(&start.files, &matches, &edited, self.case.parsed_only)
+        {
             failures.push(self.failure(invariant, again, Some(&path), what));
         }
         let accepted = self.still_parses(
@@ -849,11 +851,13 @@ pub fn differing(before: &Files, after: &Files) -> Vec<String> {
 }
 
 /// Every way `edited` changed `before` outside the `matches` `find` reported: by bytes, and by
-/// whole lines.
+/// whole lines.  Overlapping matches are joined where they may `nest`, as a structural match
+/// inside another's hole does, and are otherwise a fault of `find`.
 pub fn minimal_diff(
     before: &Files,
     matches: &BTreeMap<String, Vec<Span>>,
     edited: &Files,
+    nest: bool,
 ) -> Vec<(String, (Invariant, String))> {
     let mut found = Vec::new();
     for path in differing(before, edited) {
@@ -886,6 +890,15 @@ pub fn minimal_diff(
                     continue;
                 };
                 match byte_ranges(original, encoding, mark, spans) {
+                    Ok(ranges) if !nest && ranges.len() < spans.len() => found.push((
+                        path.clone(),
+                        (
+                            Invariant::Harness,
+                            "find reported overlapping matches, which only a structural search \
+                             nests"
+                                .into(),
+                        ),
+                    )),
                     Ok(ranges) => {
                         if let Err(why) = outside_survives(original, &ranges, after) {
                             found.push((path.clone(), (Invariant::MinimalDiff, why)));

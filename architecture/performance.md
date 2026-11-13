@@ -93,11 +93,9 @@ than the budgets.  `.github/workflows/benchmarks.yaml` counts instructions with 
 Callgrind on every pull request, on amd64 and arm64.
 
 - **What is counted is `crates/python/benches/front_end.rs`**, over the synthetic corpus only:
-  Ruff's parse alone, the parse with the arena, compiling a pattern, and matching; and what a
-  structural replace adds to them, matching with captures, compiling a rewrite template, and
-  lexing.  The rewrite engine itself is in the `quaff` binary, so the budgets' `rewrite`
-  scenario counts it.  Everything
-  else is setup, which gungraun does not count, and each benchmark hands its input back so that
+  the front end's stages, each named in its `library_benchmark_group!`.  The rewrite engine
+  itself is in the `quaff` binary, so the budgets' `rewrite` scenario counts it.  Everything else
+  is setup, which gungraun does not count, and each benchmark hands its input back so that
   freeing it is not counted.
 - **They build with the `benchmarks` profile**: the shipped optimisation with symbols but **no
   debug information**, because with any, line tables included, some counts on arm64 collapse to a

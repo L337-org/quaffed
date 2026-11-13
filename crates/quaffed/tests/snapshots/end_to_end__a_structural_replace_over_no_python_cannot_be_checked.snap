@@ -1,0 +1,14 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "replace `f($a)` with `g($a)` expect any"
+---
+success: false
+exit_code: 2
+----- stdout -----
+
+----- stderr -----
+quaff: -e expression 1, at character 1: expected any number of matches of `f($a)` to replace, which cannot be checked: no file in scope has structural support; 1 text-tier file not searched; nothing was written
