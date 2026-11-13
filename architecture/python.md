@@ -48,6 +48,14 @@ a file's bytes the same way.
    `x$a`, is put back too and fails to parse; one inside a dotted module name, `import a.$m`, is
    refused as `PatternError::InsideAName`.
 
+**A decorator alone is not Python**, so a pattern that does not parse and starts with `@` is
+parsed again with a definition after it to decorate (`DECORATED`), and its decorator is lifted
+out of that definition to be the pattern's only content (`Arena::lifted`).  An error is still the
+pattern's own.  Only one decorator: a definition's decorators are not marked as a list, so a run
+of them could not be kept to one definition's, and several are refused
+(`PatternError::SeveralDecorators`).  A rewrite template may be a decorator alone too, parsed the
+same way for its sites.
+
 `compile_pattern`'s doc comment lists what it refuses, including the two limits `syntax.md` sets
 and one name used for both a node and a sequence.  An error from Ruff is placed in the pattern as
 written, not in the text with placeholders.  Each error with a place carries it as a byte offset
@@ -58,7 +66,9 @@ in the terms its reader knows.
 
 `compile_rewrite` (`src/rewrite.rs`) takes the `with` side of a structural `replace` and the
 compiled pattern whose captures it writes back, and gives the template with each **site**: where a
-captured name is written, and whether that is in code or in a literal.  It claims every `$` before
+captured name is written, and whether that is in code or in a literal.  A template with no code,
+empty or only comments, compiles, and says so (`Rewrite::has_code`): it deletes what matched, and
+what that takes from the file around a match is the edit's to decide.  It claims every `$` before
 a name, `...` or a brace and substitutes placeholders exactly as `compile_pattern` does, so both
 sides agree on where a `$` lands, but it reads **Ruff's tokens** to decide that, since comments
 are not in the arena:

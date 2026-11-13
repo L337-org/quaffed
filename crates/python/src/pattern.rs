@@ -41,6 +41,10 @@ pub enum PatternError {
     NoShape,
     /// The pattern has no code at all: it is empty, or only whitespace and comments.
     Empty,
+    /// The pattern is more than one decorator and nothing else.  One decorator matches any
+    /// decorator of its shape; a run of them is not matched, since a definition's decorators
+    /// are not marked as a list that a run could stay in.
+    SeveralDecorators,
     /// One name is both a hole for one node and a sequence, `$x` and `$x...`, which cannot
     /// both hold.
     MixedHole {
@@ -118,6 +122,11 @@ impl fmt::Display for PatternError {
             PatternError::Empty => {
                 f.write_str("the pattern has no code in it, only whitespace or comments")
             }
+            PatternError::SeveralDecorators => f.write_str(
+                "the pattern is several decorators, and only one decorator at a time can be \
+                 matched on its own: write one statement for each, or the definition they \
+                 decorate after them",
+            ),
             PatternError::UnboundedSequence { name, leading, .. } => {
                 let spelled = format!("${}...", name.as_deref().unwrap_or(""));
                 let (role, edge, put) = if *leading {
@@ -171,7 +180,10 @@ impl PatternError {
             | PatternError::SequencesTogether { offset, .. }
             | PatternError::ThirdPlace { offset, .. }
             | PatternError::InsideAName { offset, .. } => Some(*offset),
-            PatternError::NoShape | PatternError::Empty | PatternError::TooLong(_) => None,
+            PatternError::NoShape
+            | PatternError::Empty
+            | PatternError::SeveralDecorators
+            | PatternError::TooLong(_) => None,
         }
     }
 }
@@ -187,14 +199,16 @@ pub(crate) struct Claim {
 }
 
 /// `text`, a structural pattern in Python, compiled.  It is parsed as a single expression if it
-/// is one, and otherwise as statements.
+/// is one, and otherwise as statements; a decorator alone, which is neither, is parsed with a
+/// definition after it to decorate, and lifted out of it to match any decorator of its shape.
 ///
 /// # Errors
 ///
 /// Returns a [`PatternError`] if the pattern is not Python, has no code at all, spells a hole
 /// `$_...`, uses one name for a node and a sequence, puts a hole inside a name Python reads as
-/// one, is nothing but holes, starts or ends a run of statements with a sequence hole, is too
-/// costly to search ([`Pattern::costly`]), or is too long.  Nothing partial is returned.
+/// one, is nothing but holes, starts or ends a run of statements with a sequence hole, is
+/// several decorators alone, is too costly to search ([`Pattern::costly`]), or is too long.
+/// Nothing partial is returned.
 ///
 /// # Panics
 ///
@@ -205,7 +219,7 @@ pub fn compile_pattern(text: &str) -> Result<Pattern, PatternError> {
     let placeholder = placeholder_stem(text);
     // First parse: every claim a placeholder, to learn which of them the grammar makes nodes.
     let first = substitute(text, &claims, |_| true, &placeholder);
-    let (mode, arena) = parse_either(&first.text).map_err(|err| invalid(err, &first))?;
+    let (mode, arena) = parse_pattern(&first.text).map_err(|err| invalid(err, &first))?;
     let is_hole: Vec<bool> = first
         .placeholders
         .iter()
@@ -234,7 +248,12 @@ pub fn compile_pattern(text: &str) -> Result<Pattern, PatternError> {
     // Second parse: a literal claim restored as written, so the pattern matches that text.  A
     // string or comment's content takes no part in the structure, so the shape is unchanged.
     let second = substitute(text, &claims, |i| is_hole[i], &placeholder);
-    let arena = parse_as(&second.text, mode).map_err(|err| invalid(err, &second))?;
+    let arena = match mode {
+        Parsed::Plain(mode) => parse_as(&second.text, mode)
+            .map_err(|err| invalid(err, &second))?
+            .into_owned(),
+        Parsed::Decorators => decorated(&second.text).map_err(|err| invalid(err, &second))?,
+    };
     let placed: Vec<(NodeId, &Claim)> = claims
         .iter()
         .zip(&is_hole)
@@ -246,10 +265,16 @@ pub fn compile_pattern(text: &str) -> Result<Pattern, PatternError> {
             (node, claim)
         })
         .collect();
-    let holes: Vec<(NodeId, Hole)> = placed
+    let mut holes: Vec<(NodeId, Hole)> = placed
         .iter()
         .map(|(node, claim)| (*node, claim.hole.clone()))
         .collect();
+    let mut placed = placed;
+    let arena = if mode == Parsed::Decorators {
+        lift_decorator(&arena, &mut holes, &mut placed)?
+    } else {
+        arena
+    };
     let content: Vec<NodeId> = arena.children(arena.root()).collect();
     if content.is_empty() {
         return Err(PatternError::Empty);
@@ -261,7 +286,7 @@ pub fn compile_pattern(text: &str) -> Result<Pattern, PatternError> {
         return Err(PatternError::NoShape);
     }
     let first = content[0];
-    let pattern = Pattern::new(arena.into_owned(), holes);
+    let pattern = Pattern::new(arena, holes);
     if let Some(node) = pattern.unbounded_sequence() {
         let (_, claim) = placed
             .iter()
@@ -294,6 +319,41 @@ pub fn compile_pattern(text: &str) -> Result<Pattern, PatternError> {
         });
     }
     Ok(pattern)
+}
+
+/// The decorator of `arena`, a pattern of one decorator parsed with a definition after it to
+/// decorate, lifted out of that definition to be the pattern's only content, with `holes` and
+/// `placed` renumbered to match.
+fn lift_decorator(
+    arena: &Arena<'static>,
+    holes: &mut [(NodeId, Hole)],
+    placed: &mut [(NodeId, &Claim)],
+) -> Result<Arena<'static>, PatternError> {
+    let definition = arena
+        .children(arena.root())
+        .next()
+        .expect("a decorated definition parsed");
+    let decorators: Vec<NodeId> = arena
+        .children(definition)
+        .filter(|&node| arena.kind(node).name() == "Decorator")
+        .collect();
+    if decorators.len() > 1 {
+        return Err(PatternError::SeveralDecorators);
+    }
+    let (lifted, ids) = arena.lifted(&decorators);
+    let id = |node: NodeId| {
+        ids.iter()
+            .find(|(old, _)| *old == node)
+            .map(|(_, new)| *new)
+            .expect("every hole of a decorator pattern is in the decorator")
+    };
+    for (node, _) in holes.iter_mut() {
+        *node = id(*node);
+    }
+    for (node, _) in placed.iter_mut() {
+        *node = id(*node);
+    }
+    Ok(lifted.into_owned())
 }
 
 /// Refuses `$_...`, and one name used both for one node and for a sequence, among the claims the
@@ -461,13 +521,43 @@ fn invalid(err: ParseError, substituted: &Substituted) -> PatternError {
 /// The text parsed as a single expression if it is one, and otherwise as statements, with the
 /// mode that worked.  When neither works, the statements' error is the one reported, since a
 /// pattern that is not an expression was most likely meant as statements.
+/// How a pattern was parsed: as itself, in a mode, or as decorators alone, with a definition after
+/// them to decorate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Parsed {
+    Plain(Mode),
+    Decorators,
+}
+
+/// What a pattern of decorators alone is parsed with after it, so that they decorate something.
+pub(crate) const DECORATED: &str = "\ndef _():\n    pass\n";
+
+/// `text`, a pattern, parsed as [`parse_either`] parses it, or, where it is not Python and
+/// starts with a decorator, parsed with a definition after it for the decorators to decorate.
+/// An error is the pattern's own, as written.
+fn parse_pattern(text: &str) -> Result<(Parsed, Arena<'static>), ParseError> {
+    match parse_either(text) {
+        Ok((mode, arena)) => Ok((Parsed::Plain(mode), arena.into_owned())),
+        Err(err) if text.trim_start().starts_with('@') => decorated(text)
+            .map(|arena| (Parsed::Decorators, arena))
+            .map_err(|_| err),
+        Err(err) => Err(err),
+    }
+}
+
+/// `text`, decorators alone, parsed with a definition after them to decorate.
+fn decorated(text: &str) -> Result<Arena<'static>, ParseError> {
+    let whole = format!("{text}{DECORATED}");
+    parse_as(&whole, Mode::Module).map(Arena::into_owned)
+}
+
 pub(crate) fn parse_either(text: &str) -> Result<(Mode, Arena<'_>), ParseError> {
     parse_as(text, Mode::Expression)
         .map(|arena| (Mode::Expression, arena))
         .or_else(|_| parse_as(text, Mode::Module).map(|arena| (Mode::Module, arena)))
 }
 
-fn parse_as(text: &str, mode: Mode) -> Result<Arena<'_>, ParseError> {
+pub(crate) fn parse_as(text: &str, mode: Mode) -> Result<Arena<'_>, ParseError> {
     parse_from(Builder::new(PYTHON, text), text, mode)
 }
 

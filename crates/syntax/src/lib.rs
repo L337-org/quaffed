@@ -245,6 +245,68 @@ impl<'text> Arena<'text> {
         }
     }
 
+    /// The arena with `children`, nodes of it that do not overlap, in source order, as the
+    /// root's only children, in one list, each with its subtree, its tokens and its values; and
+    /// for each node kept, its id here and its id there.  The root keeps its kind and spans the
+    /// children.  A language's pattern compiler uses it to match nodes no text parses to on
+    /// their own, parsed inside the code they need and then lifted out of it.
+    ///
+    /// # Panics
+    ///
+    /// If `children` is empty, which is a defect in the caller.
+    #[must_use]
+    pub fn lifted(&self, children: &[NodeId]) -> (Arena<'text>, Vec<(NodeId, NodeId)>) {
+        let (first, last) = match children {
+            [first, .., last] => (*first, *last),
+            [only] => (*only, *only),
+            [] => panic!("a caller lifted no nodes out of an arena"),
+        };
+        let range = self.range(first).start..self.range(last).end;
+        let root = self.node(self.root());
+        let mut nodes = vec![Node {
+            kind: root.kind,
+            start: narrow(range.start),
+            end: narrow(range.end),
+            after: 0,
+            list: 0,
+        }];
+        let mut ids = vec![(self.root(), NodeId(0))];
+        let mut tokens = Vec::new();
+        for &child in children {
+            let from = widen(child.0);
+            let past = widen(self.node(child).after);
+            let offset = nodes.len();
+            for (index, node) in self.nodes[from..past].iter().enumerate() {
+                let mut node = *node;
+                node.after = narrow(widen(node.after) - from + offset);
+                // The lifted children are one list, as a block's statements are; their
+                // descendants keep theirs, which no number here can collide with.
+                node.list = if index == 0 { u32::MAX } else { node.list };
+                ids.push((NodeId(narrow(from + index)), NodeId(narrow(offset + index))));
+                nodes.push(node);
+            }
+            tokens.extend_from_slice(self.tokens_in(self.range(child)));
+        }
+        nodes[0].after = narrow(nodes.len());
+        let values = self
+            .values
+            .iter()
+            .filter_map(|(node, value)| {
+                ids.iter()
+                    .find(|(old, _)| old == node)
+                    .map(|(_, new)| (*new, value.clone()))
+            })
+            .collect();
+        let arena = Arena {
+            language: self.language,
+            text: self.text.clone(),
+            nodes,
+            tokens,
+            values,
+        };
+        (arena, ids)
+    }
+
     /// The tokens the adapter kept that lie inside `range`, in source order.
     #[must_use]
     pub fn tokens_in(&self, range: Range<usize>) -> &[Token] {

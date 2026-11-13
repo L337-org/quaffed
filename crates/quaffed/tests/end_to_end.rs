@@ -1317,12 +1317,93 @@ fn each_construct_outside_the_mvp_exits_5_naming_it() {
     project.assert_unchanged();
 }
 
+/// A project of Python files, for deleting by structure.
+const DELETABLE: &[(&str, &str)] = &[
+    (".git/HEAD", ""),
+    (
+        "a.py",
+        "import os\nprint(1)  # noqa\nf(a, debug)\nif x:\n    print(x); y = 3\n",
+    ),
+    ("b.py", "def g():\n    # keep\n    print(g)\n    return\n"),
+];
+
 #[test]
-fn each_construct_not_built_yet_exits_5_naming_it() {
-    let project = Project::new(SCRIPTED);
-    assert_quaff_snapshot!(project.quaff(&["-e", "find \"a\"; delete `a` expect 1"]));
-    // A rewrite with no code would delete what matched, which is to be decided with `delete`.
-    assert_quaff_snapshot!(project.quaff(&["-e", "replace `f($a)` with `` expect 1"]));
+fn a_delete_takes_each_match_with_its_line_or_its_separator() {
+    let project = Project::new(DELETABLE);
+    assert_quaff_snapshot!(project.quaff(&["-e", "delete `print($x)` expect 3"]));
+    project.assert_changed(&[
+        ("a.py", b"import os\nf(a, debug)\nif x:\n    y = 3\n"),
+        ("b.py", b"def g():\n    # keep\n    return\n"),
+    ]);
+    let project = Project::new(DELETABLE);
+    assert_quaff_snapshot!(project.quaff(&["-e", "delete `debug` expect 1"]));
+    project.assert_changed(&[(
+        "a.py",
+        b"import os\nprint(1)  # noqa\nf(a)\nif x:\n    print(x); y = 3\n",
+    )]);
+}
+
+#[test]
+fn a_decorator_alone_is_a_pattern_and_deletes_with_its_line() {
+    let project = Project::new(&[
+        (".git/HEAD", ""),
+        ("a.py", "@retry(3)  # flaky\n@cache\ndef f():\n    pass\n"),
+    ]);
+    assert_quaff_snapshot!(project.quaff(&["-e", "delete `@retry($n)` expect 1"]));
+    project.assert_changed(&[("a.py", b"@cache\ndef f():\n    pass\n")]);
+}
+
+#[test]
+fn a_delete_is_a_replace_with_an_empty_rewrite() {
+    for script in [
+        "delete `print($x)` expect 3",
+        "replace `print($x)` with `` expect 3",
+        "replace `print($x)` with ` ` expect 3",
+    ] {
+        let project = Project::new(DELETABLE);
+        let output = project.quaff(&["-e", script]).output().expect("quaff runs");
+        assert!(output.status.success(), "{script}: {output:?}");
+        assert_eq!(
+            output.stdout,
+            b"a.py:2:1-2:8: print(1)\na.py:5:5-5:12: print(x)\nb.py:3:5-3:12: print(g)\n"
+        );
+        assert_eq!(output.stderr, b"quaff: deleted 3 matches in 2 files\n");
+        project.assert_changed(&[
+            ("a.py", b"import os\nf(a, debug)\nif x:\n    y = 3\n"),
+            ("b.py", b"def g():\n    # keep\n    return\n"),
+        ]);
+    }
+}
+
+#[test]
+fn a_delete_that_would_leave_a_file_unparseable_is_refused_with_nothing_written() {
+    // The only statement in a block: what is left has no body.
+    let project = Project::new(&[
+        (".git/HEAD", ""),
+        ("a.py", "if x:\n    y = 3\n"),
+        ("b.py", "y = 3\n"),
+    ]);
+    assert_quaff_snapshot!(project.quaff(&["-e", "delete `$x = 3` expect 2"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_comment_rewrite_stands_in_place_of_the_code_or_is_refused() {
+    let project = Project::new(DELETABLE);
+    assert_quaff_snapshot!(project.quaff(&[
+        "-e",
+        "replace `print($x)` with `# print($x)` expect 1",
+        "b.py"
+    ]));
+    project.assert_changed(&[(
+        "b.py",
+        b"def g():\n    # keep\n    # print(g)\n    return\n",
+    )]);
+    // Code after it on its line would be swallowed.
+    let project = Project::new(DELETABLE);
+    assert_quaff_snapshot!(
+        project.quaff(&["-e", "replace `print($x)` with `# print($x)` expect 3"])
+    );
     project.assert_unchanged();
 }
 

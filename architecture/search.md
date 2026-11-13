@@ -199,8 +199,8 @@ and binary files never decide it, so that a file quaff cannot read never blocks 
 those it can, and a `find` and an edit with the same `expect` count the same matches.
 
 **The whole program is read, parsed and checked before any file is looked at**, so a script with
-an error anywhere does not run.  The constructs that parse but are not built - `delete`, and a
-structural `replace` whose rewrite has no code - exit 5, named, where they were written.
+an error anywhere does not run.  A construct that parses but is not built exits 5, named, where
+it was written.
 
 **A run that cannot give an answer - exit 3, 5, 7 or 9 - prints nothing on standard output**, so
 a partial answer never passes for a whole one.  Every message says what was being done, quotes
@@ -210,7 +210,8 @@ the path or argument it concerns, and says what to do where there is something t
 ## Editing
 
 `replace string` edits text (`src/run.rs`, `src/search.rs`, `src/write.rs`), and a structural
-`replace` edits code (`src/rewrite.rs`), through the same pipeline.
+`replace` edits code (`src/rewrite.rs`), through the same pipeline.  `delete` is a structural
+`replace` whose rewrite is empty.
 
 - **Each file is taken through the program's statements in order** and read once: the patterns
   between two replaces are searched in one pass over the file as it then is, and a replace changes
@@ -271,6 +272,21 @@ the path or argument it concerns, and says what to do where there is something t
   is no longer one node**, or a run of them, once the file is written, is written as the template
   says and questioned in a note, since the template is what was asked for.  A refusal is decided in
   the silent first pass, once its replace's count holds.
+- **A rewrite with no code deletes** (`deleted`), and the rules above about what the pattern
+  ignored do not apply to it: everything inside a match goes with it, comments included, since
+  they describe code that is gone.  Nothing in such a template says where the code around a match
+  goes, so each match takes what would otherwise be left as debris, and nothing else: its whole
+  lines where it stands alone on them, with a trailing comment and the line break, the comment
+  lines indented into a block it ends with, and the blank lines after it where blank lines stand
+  before it too (`Deletion::whole_lines`); or else one comma its parent node holds next to it,
+  across line breaks, or one semicolon on its own line (`Deletion`).  A rewrite with no code is
+  reported as a delete however it is spelled (`Replacing::deletes`).  Asking the parent is what keeps a comma belonging to a neighbouring expression
+  from being taken.  A run of list items, each taking the separator after it, leaves the last
+  with none, so the run takes the one before it.  A tuple left with one item and no comma after
+  it would be that item alone, so a comma is written after it (`one_item_tuples`).  A rewrite that is only a comment is written in
+  place of the code and never takes the line; it is refused where code follows it on its line,
+  which it would swallow.  An empty block left behind does not parse, and the parse check refuses
+  it.
 - **A file an earlier replace broke is refused as an edit** when a later structural statement
   needs it, naming the replaces that changed it, not as a file that cannot be parsed, since on
   disk it parses.

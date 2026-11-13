@@ -12,7 +12,7 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use quaffed_encoding::{self as encoding, Encoding, Named, Refusal, python};
-use quaffed_python::{Rewrite, RewriteError, compile_pattern, compile_rewrite};
+use quaffed_python::{Rewrite, compile_pattern, compile_rewrite};
 use quaffed_representation::check;
 use quaffed_representation::glob::Glob;
 use quaffed_representation::program::{
@@ -114,6 +114,8 @@ pub enum Failure {
     /// would drop a comment, or it would change a literal's structure - so the run is refused
     /// and nothing written.  Exit 9.
     EditRefused {
+        /// The statement, as a message names it: `replace` or `delete`.
+        verb: &'static str,
         /// Each such file, as the user would recognise it, with where and why.
         files: Vec<(PathBuf, String)>,
     },
@@ -128,7 +130,7 @@ pub struct Broken {
     path: PathBuf,
     /// Where and why it would not parse.
     why: String,
-    /// Where each replace that changed it was written.
+    /// Each statement that changed it, and where it was written: "the replace at" a place.
     by: Vec<String>,
 }
 
@@ -219,10 +221,10 @@ impl fmt::Display for Failure {
             }
             Failure::Unwritable { files } => unwritable(f, files),
             Failure::BrokenByEdit { files } => broken(f, files),
-            Failure::EditRefused { files } => {
+            Failure::EditRefused { verb, files } => {
                 write!(
                     f,
-                    "refused: the replace cannot be made as written in {}, so nothing was written:",
+                    "refused: the {verb} cannot be made as written in {}, so nothing was written:",
                     count(files.len(), "file", "files")
                 )?;
                 for (path, why) in files {
@@ -296,17 +298,19 @@ fn broken(f: &mut fmt::Formatter<'_>, files: &[Broken]) -> fmt::Result {
     for file in files {
         write!(f, "\n  {:?}: {}", file.path, file.why)?;
         if !file.by.is_empty() {
-            write!(
-                f,
-                "; changed by the replace at {}",
-                file.by.join(" and at ")
-            )?;
+            write!(f, "; changed by {}", file.by.join(" and by "))?;
         }
     }
+    // Each `by` names its statement, "the delete at" or "the replace at".
+    let deleting = files
+        .iter()
+        .flat_map(|file| &file.by)
+        .all(|by| by.starts_with("the delete "));
     write!(
         f,
-        "\nChange the replacement so that {} still {}, or leave {} out of the statement: {}, \
+        "\nChange the {} so that {} still {}, or leave {} out of the statement: {}, \
          or with a narrower scope on the command line",
+        if deleting { "deletion" } else { "replacement" },
         if files.len() == 1 {
             "the file"
         } else {
@@ -405,12 +409,19 @@ pub fn run(
             Failure::Script { location, message }
         }
     })?;
-    let (steps, structural, planned_rewrites) =
+    let (mut steps, structural, planned_rewrites) =
         plan(&built.program).map_err(|(construct, span)| Failure::Unknown {
             location: built.locate(span, span.start),
             message: format!("{construct} is not built yet"),
         })?;
     let (compiled, rewrites) = compile(&structural, &planned_rewrites, &built)?;
+    for step in &mut steps {
+        if let Step::Replace(replacing) = step
+            && let ReplaceKind::Structural { rewrite, .. } = replacing.kind
+        {
+            replacing.deletes = !rewrites[rewrite].has_code();
+        }
+    }
 
     let cwd = fs::canonicalize(cwd).map_err(|cause| Failure::Io {
         doing: "reading the current directory",
@@ -515,21 +526,13 @@ fn compile(
     let rewrites: Vec<Rewrite> = planned_rewrites
         .iter()
         .map(|(written, span, compiled_at)| {
-            compile_rewrite(written, &compiled[*compiled_at]).map_err(|err| match err {
-                RewriteError::Empty => Failure::Unknown {
-                    location: built.locate(*span, span.start),
-                    message: "a replace whose rewrite has no code, which would delete what \
-                              matched, is not built yet"
-                        .to_owned(),
-                },
-                err => Failure::Script {
-                    location: built.locate(
-                        *span,
-                        err.offset()
-                            .map_or(span.start, |at| built.content_start(*span) + at),
-                    ),
-                    message: err.to_string(),
-                },
+            compile_rewrite(written, &compiled[*compiled_at]).map_err(|err| Failure::Script {
+                location: built.locate(
+                    *span,
+                    err.offset()
+                        .map_or(span.start, |at| built.content_start(*span) + at),
+                ),
+                message: err.to_string(),
             })
         })
         .collect::<Result<_, _>>()?;
@@ -577,14 +580,34 @@ fn conclude<'s>(
     }
     let mut evaluation = Evaluation::new(searched, true, locations);
     let outcome = evaluation.steps(steps, built, out)?;
-    if outcome == Outcome::Success && evaluation.replaced > 0 {
+    if outcome == Outcome::Success && evaluation.replaced + evaluation.deleted > 0 {
         let files = count(evaluation.replaced_in.len(), "file", "files");
-        let matches = count(evaluation.replaced, "match", "matches");
-        evaluation.notes.push(if dry_run {
-            format!("dry run: {matches} in {files} would be replaced; nothing was written")
-        } else {
-            format!("replaced {matches} in {files}")
-        });
+        let matches = |n| count(n, "match", "matches");
+        let (replaced, deleted) = (evaluation.replaced, evaluation.deleted);
+        evaluation
+            .notes
+            .push(match (replaced > 0, deleted > 0, dry_run) {
+                (true, true, true) => format!(
+                    "dry run: {} would be replaced and {} deleted in {files}; nothing was written",
+                    matches(replaced),
+                    matches(deleted)
+                ),
+                (true, true, false) => format!(
+                    "replaced {} and deleted {} in {files}",
+                    matches(replaced),
+                    matches(deleted)
+                ),
+                (false, _, true) => format!(
+                    "dry run: {} in {files} would be deleted; nothing was written",
+                    matches(deleted)
+                ),
+                (false, _, false) => format!("deleted {} in {files}", matches(deleted)),
+                (true, false, true) => format!(
+                    "dry run: {} in {files} would be replaced; nothing was written",
+                    matches(replaced)
+                ),
+                (true, false, false) => format!("replaced {} in {files}", matches(replaced)),
+            });
     }
     Ok((outcome, evaluation))
 }
@@ -624,9 +647,11 @@ fn replace_locations(steps: &[Step], built: &Built) -> Vec<Option<String>> {
     steps
         .iter()
         .flat_map(|step| match step {
-            Step::Replace(replacing) => {
-                vec![Some(built.locate(replacing.span, replacing.span.start))]
-            }
+            Step::Replace(replacing) => vec![Some(format!(
+                "the {} at {}",
+                replacing.verb(),
+                built.locate(replacing.span, replacing.span.start)
+            ))],
             _ => step.patterns().iter().map(|_| None).collect(),
         })
         .collect()
@@ -779,6 +804,9 @@ impl Built {
 }
 
 /// The UTF-8 byte-order mark.
+/// What `delete` replaces each match with: a rewrite with no code.
+static NOTHING: Operand = Operand::Pattern(String::new());
+
 const UTF8_BOM: &[u8] = b"\xEF\xBB\xBF";
 
 /// The text of a script that `read` read from `source`, which must be UTF-8, without a leading
@@ -830,6 +858,16 @@ struct Replacing<'p> {
     span: Span,
     /// Its query.
     query: &'p Query,
+    /// Whether its rewrite has no code, so that it deletes what matched, however it is spelled:
+    /// set once the rewrite is compiled, and only for how its outcome is worded.
+    deletes: bool,
+}
+
+impl Replacing<'_> {
+    /// What the statement does, as a message names it.
+    fn verb(&self) -> &'static str {
+        if self.deletes { "delete" } else { "replace" }
+    }
 }
 
 /// What a replace replaces, and with what.
@@ -970,17 +1008,21 @@ fn replacing<'p>(
     structural: &mut Vec<(&'p str, Span)>,
     rewrites: &mut Vec<PlannedRewrite<'p>>,
 ) -> Result<Replacing<'p>, (&'static str, Span)> {
-    let ActionKind::Replace(with) = &action.kind else {
-        return Err(("delete", span));
+    // `delete X` is `replace X with ``: a rewrite with no code, whose matches go with their
+    // separator or their line.  It has no behaviour of its own.
+    let (with, with_span) = match &action.kind {
+        ActionKind::Replace(with) => (&with.node, with.span),
+        ActionKind::Delete => (&NOTHING, span),
+        _ => return Err(("this kind of edit", span)),
     };
-    let kind = match (&action.query.operand.node, &with.node) {
+    let kind = match (&action.query.operand.node, with) {
         (Operand::Text(pattern), Operand::Text(with)) => ReplaceKind::Text { pattern, with },
         (Operand::Pattern(_), Operand::Pattern(written)) => {
             let pattern = buildable(&action.query, structural)?;
             let Wanted::Structural { compiled, .. } = pattern else {
                 unreachable!("a backticked operand is a structural pattern");
             };
-            rewrites.push((written.as_str(), with.span, compiled));
+            rewrites.push((written.as_str(), with_span, compiled));
             ReplaceKind::Structural {
                 pattern,
                 rewrite: rewrites.len() - 1,
@@ -997,6 +1039,7 @@ fn replacing<'p>(
         count: count.node,
         span,
         query: &action.query,
+        deletes: false,
     })
 }
 
@@ -2530,8 +2573,10 @@ struct Evaluation<'s> {
     next: usize,
     /// Notes and failed assertions, for standard error once the results are out.
     notes: Vec<String>,
-    /// How many matches the replaces replaced, and in which files.
+    /// How many matches the replaces replaced, how many those with no code deleted, and in which
+    /// files.
     replaced: usize,
+    deleted: usize,
     replaced_in: std::collections::BTreeSet<&'s Path>,
     /// For each pattern, where its replace was written, if it is a replace's.
     locations: Vec<Option<String>>,
@@ -2546,6 +2591,7 @@ impl<'s> Evaluation<'s> {
             next: 0,
             notes: Vec::new(),
             replaced: 0,
+            deleted: 0,
             replaced_in: std::collections::BTreeSet::new(),
             locations,
         }
@@ -2604,7 +2650,7 @@ impl<'s> Evaluation<'s> {
                         }
                     }
                     if !failed.is_empty() {
-                        if self.replaced > 0 {
+                        if self.replaced + self.deleted > 0 {
                             failed.push(
                                 "nothing was written: the edits before the failed assertion are \
                                  made only if every assertion holds"
@@ -2634,17 +2680,23 @@ impl<'s> Evaluation<'s> {
                             None => format!("found {found}"),
                         };
                         let mut failed = vec![format!(
-                            "{location}: expected {} of {} to replace, {what}; nothing was \
+                            "{location}: expected {} of {} to {}, {what}; nothing was \
                              written",
                             expected(replacing.count),
-                            quoted(pattern)
+                            quoted(pattern),
+                            replacing.verb()
                         )];
                         failed.append(&mut self.notes);
                         self.notes = failed;
                         return Ok(Outcome::AssertionFailed);
                     }
-                    self.refuse_edits_of(index)?;
-                    self.replaced += usize::try_from(found).unwrap_or(usize::MAX);
+                    self.refuse_edits_of(index, replacing.verb())?;
+                    let found = usize::try_from(found).unwrap_or(usize::MAX);
+                    if replacing.deletes {
+                        self.deleted += found;
+                    } else {
+                        self.replaced += found;
+                    }
                     self.replaced_in.extend(
                         self.searched.matches[index]
                             .iter()
@@ -2662,7 +2714,7 @@ impl<'s> Evaluation<'s> {
 
     /// Refuses the run if the replace at `index`, whose count holds, cannot be made: a file's
     /// encoding cannot write its replacement, or a structural replace cannot be made as written.
-    fn refuse_edits_of(&self, index: usize) -> Result<(), Failure> {
+    fn refuse_edits_of(&self, index: usize, verb: &'static str) -> Result<(), Failure> {
         let unwritable = &self.searched.unwritable[index];
         if !unwritable.is_empty() {
             return Err(Failure::Unwritable {
@@ -2680,6 +2732,7 @@ impl<'s> Evaluation<'s> {
         let refused = &self.searched.edits_refused[index];
         if !refused.is_empty() {
             return Err(Failure::EditRefused {
+                verb,
                 files: refused.clone(),
             });
         }
@@ -3338,7 +3391,8 @@ mod tests {
     }
 
     #[test]
-    fn a_replace_is_planned_and_one_this_build_cannot_run_is_named_where_it_was_written() {
+    fn a_replace_or_a_delete_is_planned_and_one_this_build_cannot_run_is_named_where_it_was_written()
+     {
         let span = |start| Span {
             source: 0,
             start,
@@ -3395,11 +3449,13 @@ mod tests {
             .err(),
             Some(("a replace with no `expect`", span(1)))
         );
-        let delete = Action::new(ActionKind::Delete, Query::new(text("a")), count.clone());
-        assert_eq!(
-            replacing(&delete, span(1), &mut Vec::new(), &mut Vec::new()).err(),
-            Some(("delete", span(1)))
-        );
+        // A delete is a structural replace with an empty rewrite, written where it was.
+        let backticked = Spanned::new(Operand::Pattern("f()".into()), span(0));
+        let delete = Action::new(ActionKind::Delete, Query::new(backticked), count.clone());
+        let (mut patterns, mut rewrites) = (Vec::new(), Vec::new());
+        assert!(replacing(&delete, span(1), &mut patterns, &mut rewrites).is_ok());
+        assert_eq!(rewrites.len(), 1);
+        assert_eq!((rewrites[0].0, rewrites[0].1), ("", span(1)));
         let pattern = Spanned::new(Operand::Pattern("f()".into()), span(0));
         let structural = Action::new(
             ActionKind::Replace(pattern.clone()),
@@ -3466,8 +3522,8 @@ mod tests {
                     path: "a.py".into(),
                     why: "line 1, column 1: x".into(),
                     by: vec![
-                        "-e expression 1, at character 1".into(),
-                        "-e expression 2, at character 1".into(),
+                        "the replace at -e expression 1, at character 1".into(),
+                        "the delete at -e expression 2, at character 1".into(),
                     ],
                 },
                 Broken {
@@ -3484,11 +3540,19 @@ mod tests {
             "{message}"
         );
         assert!(
-            message.contains("x; changed by the replace at -e expression 1, at character 1 and at -e expression 2, at character 1"),
+            message.contains(
+                "x; changed by the replace at -e expression 1, at character 1 and by the delete \
+                 at -e expression 2, at character 1"
+            ),
             "{message}"
         );
         assert!(
             message.contains("\"b.py\": line 2, column 1: y\n"),
+            "{message}"
+        );
+        // One of the statements replaced, so it is the replacement that must change.
+        assert!(
+            message.contains("\nChange the replacement so that"),
             "{message}"
         );
         assert!(

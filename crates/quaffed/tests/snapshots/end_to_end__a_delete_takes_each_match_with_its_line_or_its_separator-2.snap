@@ -1,0 +1,15 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "delete `debug` expect 1"
+---
+success: true
+exit_code: 0
+----- stdout -----
+a.py:3:6-3:10: debug
+
+----- stderr -----
+quaff: deleted 1 match in 1 file

@@ -9,7 +9,8 @@
 //! - **Atomicity**: the edit expecting one more match than `find` counts exits 2, every file
 //!   byte-identical.
 //! - **Minimal diff**: the edit expecting the count changes nothing outside the matches `find`
-//!   reports, checked by bytes and again by whole lines.
+//!   reports, checked by bytes and again by whole lines; for a deletion, by bytes outside what it
+//!   may take next to each match alone.
 //! - **Determinism**: two runs give the same exit, output and files.
 //! - **Still parses**: every file the language's oracle accepted before, it accepts after; a case
 //!   that would break one must be refused with exit 9, nothing written.
@@ -41,6 +42,7 @@ const CASES: &[Case] = &[
         languages: &["Python", "text"],
         outcome: Outcome::Edits,
         parsed_only: false,
+        deletes: false,
     },
     Case {
         operation: "replace string",
@@ -50,6 +52,7 @@ const CASES: &[Case] = &[
         languages: &["Python", "text"],
         outcome: Outcome::Edits,
         parsed_only: false,
+        deletes: false,
     },
     Case {
         operation: "replace string",
@@ -59,6 +62,7 @@ const CASES: &[Case] = &[
         languages: &["Python", "text"],
         outcome: Outcome::Edits,
         parsed_only: false,
+        deletes: false,
     },
     Case {
         operation: "replace string",
@@ -68,6 +72,7 @@ const CASES: &[Case] = &[
         languages: &["text"],
         outcome: Outcome::Edits,
         parsed_only: false,
+        deletes: false,
     },
     Case {
         operation: "replace string",
@@ -77,6 +82,7 @@ const CASES: &[Case] = &[
         languages: &["text"],
         outcome: Outcome::Edits,
         parsed_only: false,
+        deletes: false,
     },
     Case {
         operation: "replace string",
@@ -86,6 +92,7 @@ const CASES: &[Case] = &[
         languages: &["Python"],
         outcome: Outcome::Refused("unparseable"),
         parsed_only: false,
+        deletes: false,
     },
     // A structural replace runs only over files that parse: it refuses a run with any it cannot,
     // by design, and the corpus holds some on purpose.
@@ -97,6 +104,7 @@ const CASES: &[Case] = &[
         languages: &["Python"],
         outcome: Outcome::Edits,
         parsed_only: true,
+        deletes: false,
     },
     Case {
         operation: "replace",
@@ -106,6 +114,7 @@ const CASES: &[Case] = &[
         languages: &["Python"],
         outcome: Outcome::Edits,
         parsed_only: true,
+        deletes: false,
     },
     Case {
         operation: "replace",
@@ -115,6 +124,7 @@ const CASES: &[Case] = &[
         languages: &["Python"],
         outcome: Outcome::Edits,
         parsed_only: true,
+        deletes: false,
     },
     Case {
         operation: "replace",
@@ -124,6 +134,7 @@ const CASES: &[Case] = &[
         languages: &["Python"],
         outcome: Outcome::Edits,
         parsed_only: true,
+        deletes: false,
     },
     Case {
         operation: "replace",
@@ -133,6 +144,7 @@ const CASES: &[Case] = &[
         languages: &["Python"],
         outcome: Outcome::Edits,
         parsed_only: true,
+        deletes: false,
     },
     Case {
         operation: "replace",
@@ -142,6 +154,7 @@ const CASES: &[Case] = &[
         languages: &["Python"],
         outcome: Outcome::Refused("this match overlaps"),
         parsed_only: true,
+        deletes: false,
     },
     Case {
         operation: "replace",
@@ -151,6 +164,69 @@ const CASES: &[Case] = &[
         languages: &["Python"],
         outcome: Outcome::Refused("in no capture the rewrite writes back"),
         parsed_only: true,
+        deletes: false,
+    },
+    // A rewrite with no code takes the separator or the line a match leaves behind, so it may
+    // change what lies next to each match, and nothing else.
+    Case {
+        operation: "delete",
+        exercises: "statements alone on their lines, the comments inside them included",
+        find: "find `__all__ = $x`",
+        edit: "delete `__all__ = $x`",
+        languages: &["Python"],
+        outcome: Outcome::Edits,
+        parsed_only: true,
+        deletes: true,
+    },
+    Case {
+        operation: "delete",
+        exercises: "list items and arguments, each taking one comma",
+        find: "find `\"__all__\"`",
+        edit: "delete `\"__all__\"`",
+        languages: &["Python"],
+        outcome: Outcome::Edits,
+        parsed_only: true,
+        deletes: true,
+    },
+    Case {
+        operation: "delete",
+        exercises: "a block left empty",
+        find: "find `print($a)`",
+        edit: "delete `print($a)`",
+        languages: &["Python"],
+        outcome: Outcome::Refused("unparseable"),
+        parsed_only: true,
+        deletes: true,
+    },
+    Case {
+        operation: "replace",
+        exercises: "a rewrite with no code, as delete",
+        find: "find `isinstance($x, $t)`",
+        edit: "replace `isinstance($x, $t)` with ``",
+        languages: &["Python"],
+        outcome: Outcome::Refused("unparseable"),
+        parsed_only: true,
+        deletes: true,
+    },
+    Case {
+        operation: "replace",
+        exercises: "a rewrite that is only a comment, in place of a statement",
+        find: "find `from __future__ import annotations`",
+        edit: "replace `from __future__ import annotations` with `# from __future__ import annotations`",
+        languages: &["Python"],
+        outcome: Outcome::Edits,
+        parsed_only: true,
+        deletes: true,
+    },
+    Case {
+        operation: "replace",
+        exercises: "a rewrite that is only a comment, with code after it on its line",
+        find: "find `pass`",
+        edit: "replace `pass` with `# pass`",
+        languages: &["Python"],
+        outcome: Outcome::Refused("would swallow that code"),
+        parsed_only: true,
+        deletes: true,
     },
 ];
 
