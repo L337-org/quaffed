@@ -274,6 +274,9 @@ fn read_block(lines: &[&str], start: usize) -> Result<(Block, usize), String> {
 
 /// The file a block shows, if it is one: a block with a language whose first line is `# PATH`,
 /// a label that is not part of the file.
+///
+/// The path has no space and holds a `.`, so that a block of code that opens with an ordinary
+/// comment, such as `# a note`, is not taken for a file.
 fn shown_file(block: &Block) -> Option<Shown> {
     if block.info.is_empty() {
         return None;
@@ -470,9 +473,21 @@ fn run_quaff(cwd: &Path, args: &[String]) -> Ran {
     }
 }
 
+/// A fresh copy of the example project, removed when dropped.
+struct ProjectDir(PathBuf);
+
+impl Drop for ProjectDir {
+    fn drop(&mut self) {
+        // Not checked: a panic here, during the unwinding of a failed test, would abort the
+        // whole run and hide that failure.  A directory left behind is cleared by the next
+        // build_project that reuses its name.
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
 /// Creates a fresh directory holding the project and `with`, and an empty `.git`, so that it is
 /// a project as the guide's is.
-fn build_project(project: &[Shown], with: &[Shown]) -> PathBuf {
+fn build_project(project: &[Shown], with: &[Shown]) -> ProjectDir {
     static COUNT: AtomicUsize = AtomicUsize::new(0);
     let dir = std::env::temp_dir().join(format!(
         "quaffed-language-guide-{}-{}",
@@ -494,7 +509,7 @@ fn build_project(project: &[Shown], with: &[Shown]) -> PathBuf {
             .expect("creating a project directory");
         fs::write(&path, &file.content).expect("writing a project file");
     }
-    dir
+    ProjectDir(dir)
 }
 
 /// Checks one example, returning what is wrong with it, or `None` if it holds.
@@ -571,7 +586,7 @@ fn failures(text: &str) -> Vec<String> {
     let mut failures = guide.unreadable.clone();
     for example in &guide.examples {
         let dir = build_project(&guide.project, &example.with);
-        let cwd = dir.join(&example.cwd);
+        let cwd = dir.0.join(&example.cwd);
         if !cwd.is_dir() {
             failures.push(format!(
                 "docs/language.md:{}: the check directive runs it from {:?}, which is not a \
@@ -734,8 +749,7 @@ fn a_file_shown_again_before_any_example_adds_it_fails_as_unchecked() {
 
 #[test]
 fn a_directive_naming_a_file_not_shown_fails() {
-    let guide =
-        "# Guide\n\n## Section\n\n<!-- check: with src/c.py -->\n```\n$ quaff x\n[exit 1]\n```\n";
+    let guide = "# Guide\n\n## Section\n\n<!-- check: with src/c.py -->\n```\n$ quaff x\nquaff: no matches for \"x\"\n[exit 1]\n```\n";
     let failures = failures(guide);
     assert!(
         failures
@@ -792,4 +806,114 @@ fn the_text_tier_note_is_dropped_only_where_the_example_leaves_it_out() {
         exit: Some(0),
     };
     assert!(check(&shown_twice, &ran_without).is_some());
+}
+
+/// Fails unless reading `guide` reports exactly one problem, and that problem contains `needle`.
+fn assert_one_failure(guide: &str, needle: &str) {
+    let failures = failures(guide);
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert!(failures[0].contains(needle), "{}", failures[0]);
+}
+
+#[test]
+fn a_fence_never_closed_fails() {
+    assert_one_failure(
+        "# Guide\n\n## Section\n\n```\n$ quaff TODO\n",
+        "docs/language.md:5: a fenced block that is never closed",
+    );
+}
+
+#[test]
+fn a_directive_not_closed_on_its_line_fails() {
+    assert_one_failure(
+        "# Guide\n\n## Section\n\n<!-- check: cwd src\n-->\n```\n$ quaff x\nquaff: no matches for \"x\"\n[exit 1]\n```\n",
+        "docs/language.md:5: a check directive must close with `-->`",
+    );
+}
+
+#[test]
+fn an_unknown_or_repeated_setting_fails() {
+    for setting in ["dir src", "cwd src; cwd docs", "with", "cwd"] {
+        let guide = format!(
+            "# Guide\n\n## Section\n\n<!-- check: {setting} -->\n```\n$ quaff x\nquaff: no matches for \"x\"\n[exit 1]\n```\n"
+        );
+        assert_one_failure(&guide, "is not a check setting");
+    }
+}
+
+#[test]
+fn a_directive_with_no_example_straight_after_it_fails() {
+    for after in [
+        "",
+        "Some prose.\n\n```\n$ quaff x\nquaff: no matches for \"x\"\n[exit 1]\n```\n",
+    ] {
+        let guide = format!("# Guide\n\n## Section\n\n<!-- check: cwd src -->\n{after}");
+        assert_one_failure(
+            &guide,
+            "docs/language.md:5: a check directive with no example block straight after it",
+        );
+    }
+}
+
+#[test]
+fn a_directive_before_a_file_fails() {
+    let guide = "# Guide\n\n## Section\n\n<!-- check: cwd src -->\n\
+                 ```python\n# src/b.py\nb = 1\n```\n\n\
+                 <!-- check: with src/b.py -->\n```\n$ quaff zzz\nquaff: no matches for \"zzz\"\n[exit 1]\n```\n";
+    assert_one_failure(
+        guide,
+        "docs/language.md:5: a check directive before a file rather than an example",
+    );
+}
+
+#[test]
+fn a_directive_before_a_block_with_no_command_fails() {
+    assert_one_failure(
+        "# Guide\n\n## Section\n\n<!-- check: cwd src -->\n```\nsome text\n```\n",
+        "docs/language.md:5: a check directive before a block with no `$ ` command",
+    );
+}
+
+#[test]
+fn a_cwd_that_is_not_a_directory_fails() {
+    assert_one_failure(
+        "# Guide\n\n## Section\n\n<!-- check: cwd nowhere -->\n```\n$ quaff x\nquaff: no matches for \"x\"\n[exit 1]\n```\n",
+        "runs it from \"nowhere\", which is not a directory in the example project",
+    );
+}
+
+#[test]
+fn quotes_never_closed_fail() {
+    assert_one_failure(
+        "# Guide\n\n## Section\n\n```\n$ quaff -e 'find \"x\"\n[exit 1]\n```\n",
+        "docs/language.md:6: the command's quotes are never closed",
+    );
+}
+
+#[test]
+fn an_exit_status_that_is_not_last_or_not_a_number_fails() {
+    assert_one_failure(
+        "# Guide\n\n## Section\n\n```\n$ quaff x\nquaff: no matches for \"x\"\n[exit 1]\nmore\n```\n",
+        "docs/language.md:6: an exit status must be the last line of an example's output",
+    );
+    assert_one_failure(
+        "# Guide\n\n## Section\n\n```\n$ quaff x\n[exit one]\n```\n",
+        "docs/language.md:6: \"[exit one]\" is not an exit status",
+    );
+}
+
+#[test]
+fn each_example_s_project_is_removed_after_it_runs() {
+    let dir = build_project(
+        &[Shown {
+            path: "src/a.py".to_string(),
+            content: "a = 1\n".to_string(),
+            line: 1,
+        }],
+        &[],
+    );
+    let path = dir.0.clone();
+    assert!(path.join("src/a.py").is_file());
+    drop(dir);
+    assert!(!path.exists(), "{} was left behind", path.display());
 }

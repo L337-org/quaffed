@@ -86,7 +86,9 @@ else:
 In each example, what `quaff` prints to standard output and standard error is shown together,
 with the exit status after it.  Structural examples over the whole project also print the note
 `1 text-tier file not searched for structural patterns, which apply to Python files only`, for
-`docs/notes.md`; after the first, it is left out, and so is the exit status where it is 0.
+`docs/notes.md`; after the first, it is left out, and so is the exit status where it is 0.  A
+file's block starts with its path as a `#` line, which is not part of the file, so its first line
+is the one after that.
 
 ## Contents
 
@@ -946,10 +948,9 @@ written.  A replace whose count does not hold says so first, exit 2, as any edit
   [exit 9]
   ```
 
-  A comment on a compound
-  statement's header, before the first statement of its body, or before an `elif`, `else` or
-  `except` is in no hole's reach, so an edit that spells such a header is refused wherever one has
-  such a comment.
+  A comment on a compound statement's header, before the first statement of its body, or before
+  an `elif`, `else` or `except` is in no hole's reach, so an edit that spells such a header is
+  refused wherever one has such a comment.
 - **A value a literal cannot hold as text**: a raw string cannot escape its own quote, a comment
   cannot hold a line break, and a bytes literal holds ASCII only, so writing such a value would
   change more than the literal's text.
@@ -972,11 +973,10 @@ quaff: "calc.py": line 1, column 9: what $a captured, "x + 1", is not code of it
 [exit 0]
 ```
 
-`calc.py` now holds `total = x + 1 * 2`, which Python reads as
-`x + (1 * 2)`.  If that is not what was meant, a further replace can put it right; put brackets
-round the hole in the rewrite, `($a) * 2`, and it is written as one piece of code.
-`return wrap($x)` over `return a, b` is questioned the same way, since it calls `wrap` with two
-arguments.
+`calc.py` now holds `total = x + 1 * 2`, which Python reads as `x + (1 * 2)`.  If that is not
+what was meant, a further replace can put it right; put brackets round the hole in the rewrite,
+`($a) * 2`, and it is written as one piece of code.  `return wrap($x)` over `return a, b` is
+questioned the same way, since it calls `wrap` with two arguments.
 
 ## Deleting code
 

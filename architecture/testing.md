@@ -88,9 +88,11 @@ How the guide is read:
   `quaff` printed before comparing.  Everything else is compared exactly, trailing spaces
   included.
 - **The example project is the file blocks before the first `##` heading**: a fenced block with
-  a language whose first line is `# PATH`, a label that is not part of the file.  Each command
-  runs in a fresh copy of it, with an empty `.git`, from its root, so an edit in one example is
-  never seen by another.
+  a language whose first line is `# PATH`, a label that is not part of the file.  The path has no
+  space and holds a `.`, so that a block of code opening with an ordinary comment, such as
+  `# a note`, is not taken for a file; a file with no `.` in its path, such as `Makefile`, cannot
+  be shown as one.  Each command runs in a fresh copy of it, with an empty `.git`, from its root,
+  so an edit in one example is never seen by another, and the copy is removed afterwards.
 - **Anything else an example needs is said in a directive**, an HTML comment on the line before
   its block, which a reader never sees: `<!-- check: cwd src; with src/store.py, app.py -->`.
   `cwd DIR` runs it from that directory; `with PATH, ...` adds each file as most recently shown
@@ -105,7 +107,7 @@ How the guide is read:
 
 1. Write the command and paste what `quaff` printed, both streams, then `[exit N]` unless it is 0.
 2. If it needs a file the example project does not have, show that file in a block of its own,
-   with a language and a `# PATH` first line, and put `<!-- check: with PATH -->` on the line
+   with a language and a `# PATH` first line (no space, and a `.` in it), and put `<!-- check: with PATH -->` on the line
    before the example.  A file shown again with the same path replaces it for later examples.
 3. If it runs from a subdirectory, add `cwd DIR` to the directive.
 4. Run `cargo test --locked --test language_guide`.
