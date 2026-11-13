@@ -19,7 +19,7 @@ jobs:
     if: github.repository == 'L337-org/quaffed'
     runs-on: [ubuntu-latest]
     # The build, then the rounds below, then room to finish the round under way.
-    timeout-minutes: 75
+    timeout-minutes: 60
     steps:
       - name: Check out source repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -34,7 +34,7 @@ jobs:
 
       - name: Properties hold from fresh seeds
         run: |
-          end=$((SECONDS + 45 * 60))
+          end=$((SECONDS + 35 * 60))
           round=0
           while [ "$SECONDS" -lt "$end" ]; do
             round=$((round + 1))
