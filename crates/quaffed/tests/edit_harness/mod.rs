@@ -911,7 +911,7 @@ pub fn minimal_diff(
                     )),
                     Ok(ranges) if deletes => {
                         let reach = deletion_reach(original, &ranges);
-                        if let Err(why) = outside_survives(original, &reach, after) {
+                        if let Err(why) = deletion_survives(original, &reach, after) {
                             found.push((path.clone(), (Invariant::MinimalDiff, why)));
                         }
                         continue;
@@ -1211,6 +1211,66 @@ pub fn line_ranges(
         }
     }
     ranges
+}
+
+/// Whether `edited` keeps every byte of `original` outside `inside`, the reach of each deletion,
+/// in order, as [`outside_survives`] judges it, but allowing a comma written where none was: a
+/// deletion that leaves a tuple one item writes the comma that keeps it a tuple after that item,
+/// outside the reach of the match it deleted.  Each stretch between two reaches is looked for no
+/// further on than the reach before it is long, since only what that reach allowed but quaff did
+/// not take can stand before it.  Any other byte that is not where it was fails.
+///
+/// # Errors
+///
+/// Says which text outside the reaches did not survive, and where it was in `original`.
+pub fn deletion_survives(
+    original: &[u8],
+    inside: &[Range<usize>],
+    edited: &[u8],
+) -> Result<(), String> {
+    if outside_survives(original, inside, edited).is_ok() {
+        return Ok(());
+    }
+    // Where `needle` ends if it stands at `from` in `hay`, skipping commas `needle` lacks.
+    let ends = |from: usize, needle: &[u8]| {
+        let (mut i, mut j) = (0, from);
+        while i < needle.len() {
+            match edited.get(j) {
+                Some(&b) if b == needle[i] => (i, j) = (i + 1, j + 1),
+                Some(b',') => j += 1,
+                _ => return None,
+            }
+        }
+        Some(j)
+    };
+    let line = |offset: usize| memchr::memchr_iter(b'\n', &original[..offset]).count() + 1;
+    // Each stretch outside the reaches, with how far on it may start: the length of the reach
+    // before it, or nothing for the first.
+    let mut stretches = Vec::with_capacity(inside.len() + 1);
+    let (mut from, mut window) = (0, 0);
+    for range in inside {
+        stretches.push((from..range.start, window));
+        (from, window) = (range.end, range.len());
+    }
+    stretches.push((from..original.len(), window));
+    let count = stretches.len();
+    let mut position = 0;
+    for (index, (stretch, window)) in stretches.into_iter().enumerate() {
+        let text = &original[stretch.clone()];
+        let last = index + 1 == count;
+        let found = (position..=(position + window).min(edited.len()))
+            .find_map(|start| ends(start, text).filter(|&end| !last || end == edited.len()));
+        let Some(end) = found else {
+            return Err(format!(
+                "the text from byte {} (line {}) to byte {} is not in the edited file in order",
+                stretch.start,
+                line(stretch.start),
+                stretch.end
+            ));
+        };
+        position = end;
+    }
+    Ok(())
 }
 
 /// Whether `edited` keeps every byte of `original` outside `inside`, in order: it must start

@@ -341,6 +341,17 @@ fn a_deletion_may_take_what_lies_next_to_its_matches_and_nothing_else() {
     );
     // Nothing else may go: not the comment after the bracket, which is not the match's, nor
     // anything on another line.
+    // The comma that keeps a tuple a tuple, written after the item that is left, outside the
+    // reach of the one deleted; but no other byte.
+    let before = files(&[("a.py", b"x = (skip, t)\n")]);
+    let matches: BTreeMap<String, Vec<Span>> =
+        [("a.py".to_owned(), vec![span((1, 6), (1, 9))])].into();
+    let judged = |edited: &[u8]| {
+        minimal_diff(&before, &matches, &files(&[("a.py", edited)]), false, true).len()
+    };
+    assert_eq!(judged(b"x = (t,)\n"), 0);
+    assert_eq!(judged(b"x = (u,)\n"), 1);
+    assert_eq!(judged(b"x = (t,);\n"), 1);
     // A statement's line, with the blank and indented comment lines after it, but not the next
     // code.
     let before = files(&[("a.py", b"if x:\n    a()\n\n    # gone\nz()\n")]);

@@ -597,7 +597,9 @@ fn deleted(
             }
             if first < taken.len() {
                 let floor = first.checked_sub(1).map_or(0, |before| taken[before].end);
-                if let Some(start) = deletion.before(&found.range, taken[first].start, floor) {
+                if let Some(start) =
+                    deletion.before(&found.range, taken[first].start, floor, !comment)
+                {
                     taken[first].start = start;
                 }
             }
@@ -756,7 +758,8 @@ impl Deletion<'_, '_> {
             let at = matched.end + rest.len() - rest.trim_start().len();
             (at < text.len()
                 && self.separator(parent, at)
-                && (text.as_bytes()[at] == b',' || !text[matched.end..at].contains('\n')))
+                && (text.as_bytes()[at] == b',' && whole_lines
+                    || !text[matched.end..at].contains('\n')))
             .then_some(at)
         };
         let line_start = text[..matched.start].rfind('\n').map_or(0, |at| at + 1);
@@ -782,7 +785,7 @@ impl Deletion<'_, '_> {
                 return (self.whole_lines(lines), true);
             }
         }
-        let before = self.before(found, matched.start, floor);
+        let before = self.before(found, matched.start, floor, whole_lines);
         let trailing_comma = after.is_some_and(|at| {
             text.as_bytes()[at] == b','
                 && matches!(
@@ -812,18 +815,35 @@ impl Deletion<'_, '_> {
 
     /// Where deleting from `start` back to the separator before it would start, if the parent of
     /// `found` holds a separator there after `floor`, which earlier matches took up to: on the
-    /// same line for a semicolon.  The spaces before the separator go with it.
-    fn before(&self, found: &Range<usize>, start: usize, floor: usize) -> Option<usize> {
+    /// same line for a semicolon, and for a comma unless `across_lines`.  The spaces before the
+    /// separator go with it.
+    fn before(
+        &self,
+        found: &Range<usize>,
+        start: usize,
+        floor: usize,
+        across_lines: bool,
+    ) -> Option<usize> {
         let text = self.text;
         let parent = self.parent(&self.wrapping.widened(&(0..text.len()), found));
         let floor = floor.min(start);
         let at = floor + text[floor..start].trim_end().len();
+        // A comma in a comment is no separator, and one with a comment between it and the match
+        // is not taken, since the comment would go with it.
         let separator = at.checked_sub(1).filter(|&at| {
             at >= floor
+                && !self.in_comment(at)
                 && self.separator(parent, at)
-                && (text.as_bytes()[at] == b',' || !text[at..start].contains('\n'))
+                && (text.as_bytes()[at] == b',' && across_lines || !text[at..start].contains('\n'))
         })?;
         Some(floor + text[floor..separator].trim_end_matches([' ', '\t']).len())
+    }
+
+    /// Whether `at` lies inside a comment.
+    fn in_comment(&self, at: usize) -> bool {
+        let comments = &self.wrapping.lexed.comments;
+        let index = comments.partition_point(|comment| comment.start <= at);
+        index > 0 && comments[index - 1].contains(&at)
     }
 
     /// Whether `at` is a comma or a semicolon `parent` holds between its children.
@@ -844,7 +864,9 @@ impl Deletion<'_, '_> {
         let blank = |at: usize| text[at..line_end(text, at)].trim().is_empty();
         let next_line = |at: usize| (line_end(text, at) + 1).min(text.len());
         let mut end = lines.end;
-        let last_line = text[..lines.end - 1].rfind('\n').map_or(0, |at| at + 1);
+        // The lines without their final line break, which a last line may not have.
+        let body = text[lines.clone()].trim_end_matches(['\n', '\r']);
+        let last_line = lines.start + body.rfind('\n').map_or(0, |at| at + 1);
         let base = indent(lines.start);
         if indent(last_line) > base {
             let mut at = end;
@@ -1625,6 +1647,16 @@ mod tests {
         assert_eq!(deleted("debug", "f(debug, a, debug, debug)\n"), "f(a)\n");
         // With the brackets that only wrap it.
         assert_eq!(deleted("debug", "f(a, (debug))\n"), "f(a)\n");
+        // A comma in a comment is no separator, and the comment line stays.
+        assert_eq!(
+            deleted(
+                "\"debug\"",
+                "x = [\n    \"a\",\n    # \"b\",\n    \"debug\"]\n"
+            ),
+            "x = [\n    \"a\",\n    # \"b\",\n    ]\n"
+        );
+        // A last line with no line break, ending in a character of more than one byte.
+        assert_eq!(deleted("$x = $y", "a()\nx = caf\u{e9}"), "a()\n");
         // A tuple left with one item stays a tuple.
         assert_eq!(deleted("\"skip\"", "x = [(t, \"skip\")]\n"), "x = [(t,)]\n");
         assert_eq!(deleted("\"skip\"", "x = [(\"skip\", t)]\n"), "x = [(t,)]\n");
@@ -1657,6 +1689,11 @@ mod tests {
         );
         assert_eq!(
             ok("debug", "# debug", "f(\n    a,\n    debug,\n)\n"),
+            "f(\n    a,\n    # debug\n)\n"
+        );
+        // It takes no comma from another line, which would join it to that line.
+        assert_eq!(
+            ok("debug", "# debug", "f(\n    a,\n    debug\n)\n"),
             "f(\n    a,\n    # debug\n)\n"
         );
         // Where code follows on the line, the comment would swallow it.

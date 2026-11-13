@@ -102,7 +102,8 @@ Callgrind on every pull request, on amd64 and arm64.
 
 - **What is counted is `crates/python/benches/front_end.rs`**, over the synthetic corpus only:
   the front end's stages, each named in its `library_benchmark_group!`.  The rewrite engine
-  itself is in the `quaff` binary, so the budgets' `rewrite` and `delete` scenarios count it.
+  itself is in the `quaff` binary, so the budgets' editing scenarios (`SCENARIOS` in
+  `scripts/budgets`) count it.
   Everything else is setup, which gungraun does not count, and each benchmark hands its input
   back so that freeing it is not counted.
 - **They build with the `benchmarks` profile**: the shipped optimisation with symbols but **no

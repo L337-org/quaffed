@@ -279,14 +279,16 @@ the path or argument it concerns, and says what to do where there is something t
   lines where it stands alone on them, with a trailing comment and the line break, the comment
   lines indented into a block it ends with, and the blank lines after it where blank lines stand
   before it too (`Deletion::whole_lines`); or else one comma its parent node holds next to it,
-  across line breaks, or one semicolon on its own line (`Deletion`).  A rewrite with no code is
-  reported as a delete however it is spelled (`Replacing::deletes`).  Asking the parent is what keeps a comma belonging to a neighbouring expression
-  from being taken.  A run of list items, each taking the separator after it, leaves the last
-  with none, so the run takes the one before it.  A tuple left with one item and no comma after
-  it would be that item alone, so a comma is written after it (`one_item_tuples`).  A rewrite that is only a comment is written in
-  place of the code and never takes the line; it is refused where code follows it on its line,
-  which it would swallow.  An empty block left behind does not parse, and the parse check refuses
-  it.
+  across line breaks, or one semicolon on its own line (`Deletion`).  Asking the parent is what
+  keeps a comma belonging to a neighbouring expression from being taken, and a comma in a
+  comment, or with a comment between it and the match, is never taken.  A run of list items,
+  each taking the separator after it, leaves the last with none, so the run takes the one before
+  it.  A tuple left with one item and no comma after it would be that item alone, so a comma is
+  written after it (`one_item_tuples`).  A rewrite that is only a comment is written in place of
+  the code, takes no comma from another line, and never takes the line; it is refused where code
+  follows it on its line, which it would swallow.  An empty block left behind does not parse,
+  and the parse check refuses it.  A rewrite with no code is reported as a delete however it is
+  spelled (`Replacing::deletes`).
 - **A file an earlier replace broke is refused as an edit** when a later structural statement
   needs it, naming the replaces that changed it, not as a file that cannot be parsed, since on
   disk it parses.

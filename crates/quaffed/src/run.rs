@@ -803,10 +803,10 @@ impl Built {
     }
 }
 
-/// The UTF-8 byte-order mark.
 /// What `delete` replaces each match with: a rewrite with no code.
 static NOTHING: Operand = Operand::Pattern(String::new());
 
+/// The UTF-8 byte-order mark.
 const UTF8_BOM: &[u8] = b"\xEF\xBB\xBF";
 
 /// The text of a script that `read` read from `source`, which must be UTF-8, without a leading

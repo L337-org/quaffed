@@ -954,15 +954,16 @@ left behind, and nothing else:
   leaves the gap that stood before it rather than two gaps together.  A decorator is a match of
   its own, so ``delete `@retry($n)` expect 1`` takes the decorator's line and leaves the
   definition.
-- **Otherwise it takes one separator its parent holds next to it**: the comma
-  after a list item or argument, or the one before it where it is the last, and the semicolon
-  after a statement sharing its line, or the one before it.  ``delete `debug` expect 1`` over
+- **Otherwise it takes one separator its parent holds next to it**: the comma after a list item
+  or argument, or the one before it where it is the last, and the semicolon after a statement
+  sharing its line, or the one before it.  ``delete `debug` expect 1`` over
   `connect(host, debug)` leaves `connect(host)`; over `f(a, debug,)` it leaves `f(a,)`, keeping
   the trailing comma.  A comma is taken across a line break, since it separates the item from
   its neighbour wherever the lines fall: deleting `debug` from `f(a,` and `debug)` on the next
   line leaves `f(a)`.  A semicolon is taken only from the match's own line.  A comma that belongs
   to anything else is never taken: deleting `b` from `g(a + b, c)` would leave `g(a + , c)`,
-  which does not parse, so it is refused.
+  which does not parse, so it is refused.  Nor is a comma in a comment, or one with a comment
+  between it and the match.
 - **A tuple left with one item stays a tuple**: a comma is written after the item, so deleting
   `"skip"` from `(test, "skip")` leaves `(test,)`, `x = a, b` without `b` is `x = a,`, and
   `d[a, b]` without `b` is `d[a,]`, keeping each a tuple as the code around it expects.  A list or
@@ -979,8 +980,8 @@ left behind, and nothing else:
 **A rewrite that is only a comment** stands in place of the code, at its indentation, so
 ``replace `print($x)` with `# print($x)` expect 1`` comments a line out, leaving its own comment
 after it as it was: `# print(x)  # why`.  It takes a separator as a deletion does, but never the
-line, which stays.  Where code would follow it on its line, the comment would swallow that code,
-so the edit is refused, exit 9.
+line, which stays, nor a comma from another line, which would join it to that line.  Where code
+would follow it on its line, the comment would swallow that code, so the edit is refused, exit 9.
 
 ## What is searched
 
@@ -1108,7 +1109,8 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
 - **A rewrite drops what no hole captures**, layout and the template's spelling replacing it, but
   never a comment or a trailing comma: one at a bracket's edge is carried to the rewrite's matching
   bracket, a comma goes with a bracket the rewrite deletes, and any other comment in no capture
-  refuses the edit.  A sequence hole captures everything between its first node and its last,
+  refuses the edit.  A rewrite with no code is the exception: it [deletes](#deleting-code), and
+  every comment inside the match goes with it.  A sequence hole captures everything between its first node and its last,
   and the whole of any bracket that only wraps one of them.
 - **A trailing comma and a semicolon between statements are layout**, so `f($a, $b)` matches a
   call a formatter has split over lines and ended with a comma.

@@ -518,9 +518,6 @@ fn invalid(err: ParseError, substituted: &Substituted) -> PatternError {
     }
 }
 
-/// The text parsed as a single expression if it is one, and otherwise as statements, with the
-/// mode that worked.  When neither works, the statements' error is the one reported, since a
-/// pattern that is not an expression was most likely meant as statements.
 /// How a pattern was parsed: as itself, in a mode, or as decorators alone, with a definition after
 /// them to decorate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -551,6 +548,9 @@ fn decorated(text: &str) -> Result<Arena<'static>, ParseError> {
     parse_as(&whole, Mode::Module).map(Arena::into_owned)
 }
 
+/// The text parsed as a single expression if it is one, and otherwise as statements, with the
+/// mode that worked.  When neither works, the statements' error is the one reported, since a
+/// pattern that is not an expression was most likely meant as statements.
 pub(crate) fn parse_either(text: &str) -> Result<(Mode, Arena<'_>), ParseError> {
     parse_as(text, Mode::Expression)
         .map(|arena| (Mode::Expression, arena))
