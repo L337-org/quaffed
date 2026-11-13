@@ -46,6 +46,15 @@ help="$(quaff --help)"
 printf '%s\n' "$help" | sed -n 1,5p
 [[ -n "$help" ]] || fail "quaff --help printed nothing on standard output"
 
+# Options for tests that only a debug build has, which the shipped build must refuse as unknown.
+step "checking a debug-only option is refused"
+status=0
+quaff --debug-pause-before-write /tmp/pause TODO >/dev/null 2>/tmp/stderr.txt || status=$?
+cat /tmp/stderr.txt
+[[ $status -eq 3 ]] || fail "exit status was $status"
+grep -q 'unknown option "--debug-pause-before-write"' /tmp/stderr.txt ||
+    fail "the option was not refused as unknown"
+
 # A real repository: the checkout this package was built from.  Every source file under crates/
 # opens with this header, and a test in the ordinary run enforces it, so the assertion holds on
 # any commit that passes CI.

@@ -156,10 +156,8 @@ impl Failure {
             | Failure::Empty { .. }
             | Failure::QuotedScope { .. } => 3,
             Failure::Unknown { .. } => 5,
-            Failure::NotThere { .. }
-            | Failure::Io { .. }
-            | Failure::Discovery(_)
-            | Failure::Write(_) => 7,
+            Failure::NotThere { .. } | Failure::Io { .. } | Failure::Discovery(_) => 7,
+            Failure::Write(err) => err.exit_code(),
             Failure::Unparseable { .. }
             | Failure::Unwritable { .. }
             | Failure::BrokenByEdit { .. }
@@ -384,7 +382,7 @@ impl Outcome {
 pub fn run(
     sources: Vec<SourceArg>,
     scope: Option<&OsString>,
-    dry_run: bool,
+    options: &cli::Options,
     cwd: &Path,
     stdin: &mut impl Read,
     out: &mut impl Write,
@@ -472,7 +470,7 @@ pub fn run(
             files: searched.unparsed.clone(),
         });
     }
-    let (outcome, evaluation) = conclude(&searched, &steps, &built, dry_run, out)?;
+    let (outcome, evaluation) = conclude(&searched, &steps, &built, options, out)?;
 
     // Notes are best effort: a run that cannot write to standard error has nowhere to say so.
     let mut note = |text: &str| {
@@ -546,6 +544,30 @@ fn compile(
     Ok((compiled, rewrites))
 }
 
+/// `--debug-pause-before-write`: creates `marker` and waits until it is removed, so that a test
+/// can change a file after it was read and before it is checked and written.  Gives up after a
+/// minute, so a test that never removes it fails rather than hangs.
+#[cfg(debug_assertions)]
+fn pause(marker: &Path) -> Result<(), Failure> {
+    let failed = |cause| Failure::Io {
+        doing: "pausing before writing, at the marker",
+        path: marker.to_path_buf(),
+        cause,
+    };
+    fs::write(marker, b"").map_err(failed)?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while fs::exists(marker).map_err(failed)? {
+        if std::time::Instant::now() > deadline {
+            return Err(failed(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "still there after a minute",
+            )));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    Ok(())
+}
+
 /// Decides the run's outcome from what the search found, writes its edits - unless it is a dry
 /// run - and prints its results, in that order.
 ///
@@ -558,9 +580,10 @@ fn conclude<'s>(
     searched: &'s Searched,
     steps: &[Step],
     built: &Built,
-    dry_run: bool,
+    options: &cli::Options,
     out: &mut impl Write,
 ) -> Result<(Outcome, Evaluation<'s>), Failure> {
+    let dry_run = options.dry_run;
     let locations = replace_locations(steps, built);
     let verdict =
         Evaluation::new(searched, false, locations.clone()).steps(steps, built, &mut io::sink())?;
@@ -573,10 +596,15 @@ fn conclude<'s>(
                 .map(|file| write::Edit {
                     path: &file.path,
                     shown: &file.shown,
+                    identity: file.original.identity(),
                     original: &file.original,
                     edited: &file.edited,
                 })
                 .collect();
+            #[cfg(debug_assertions)]
+            if let Some(marker) = &options.hooks.pause_before_write {
+                pause(marker)?;
+            }
             write::commit(&edits).map_err(Failure::Write)?;
         }
     }
@@ -3114,7 +3142,7 @@ mod tests {
             run(
                 sources,
                 None,
-                false,
+                &cli::Options::default(),
                 &dir,
                 &mut io::empty(),
                 &mut Closed,
@@ -3244,7 +3272,7 @@ mod tests {
                 source: cli::Source::Positional,
             })],
             None,
-            false,
+            &cli::Options::default(),
             &dir,
             &mut io::empty(),
             &mut Vec::new(),
@@ -3305,7 +3333,7 @@ mod tests {
                 source: cli::Source::Positional,
             })],
             None,
-            false,
+            &cli::Options::default(),
             &project,
             &mut io::empty(),
             &mut Vec::new(),
@@ -3342,7 +3370,7 @@ mod tests {
         let outcome = run(
             vec![SourceArg::File(script.clone().into_os_string())],
             None,
-            false,
+            &cli::Options::default(),
             &dir,
             &mut io::empty(),
             &mut out,

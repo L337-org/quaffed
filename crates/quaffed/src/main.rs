@@ -14,6 +14,7 @@ mod discover;
 mod editorconfig;
 mod filter;
 mod glob;
+mod identity;
 mod output;
 mod resolve;
 mod rewrite;
@@ -90,7 +91,8 @@ counted in characters.  Binary files are not searched, and the run says how many
 
 Exit status: 0 found, or every assertion held; 1 nothing found, with no assertions; 2 an
 assertion failed; 3 usage or script error; 5 a statement or construct this build does not
-have; 7 I/O error; 9 a Python file a structural search needs cannot be parsed, or an edit
+have; 6 a file to be edited changed after it was read, so nothing was written; 7 I/O
+error; 9 a Python file a structural search needs cannot be parsed, or an edit
 would break a Python file or cannot be written in a file's encoding.
 ",
         env!("CARGO_PKG_VERSION")
@@ -114,7 +116,7 @@ fn main() -> ExitCode {
         Invocation::Run {
             sources,
             scope,
-            dry_run,
+            options,
         } => {
             let cwd = match std::env::current_dir() {
                 Ok(cwd) => cwd,
@@ -132,7 +134,7 @@ fn main() -> ExitCode {
             let result = run::run(
                 sources,
                 scope.as_ref(),
-                dry_run,
+                &options,
                 &cwd,
                 &mut stdin,
                 &mut out,

@@ -1,0 +1,8 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+expression: "quaff_while(&project, REPLACE_TODO, |dir|\n{ fs::remove_file(dir.join(\"b.txt\")).unwrap(); })"
+---
+exit_code: Some(6)
+----- stdout -----
+----- stderr -----
+quaff: "b.txt" was removed or renamed after quaff read it; nothing was written.  Run quaff again to edit the files as they are now

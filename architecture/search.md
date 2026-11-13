@@ -188,6 +188,7 @@ The format is in `docs/language.md`, _Output_.  The rules behind it:
 | 2 | an assertion failed |
 | 3 | a usage error, a malformed script, a program with no statements, an edit with no `expect`, or a command-line scope holding a double quote |
 | 5 | a statement or construct this build does not have: outside the MVP, or in it and not built |
+| 6 | a file to be edited changed after it was read, or was removed or renamed, naming it; nothing is written |
 | 7 | an I/O error, naming the path and quoting the system's error; an `in` that names nothing there; for edits that could not be written, saying what was left |
 | 9 | the script or a file must change first: a structural search needs a Python file quaff cannot parse, naming each and how to leave it out; an edit would break a Python file that parsed; a file's encoding cannot write a replacement; or a structural replace cannot be made as written |
 
@@ -202,7 +203,7 @@ those it can, and a `find` and an edit with the same `expect` count the same mat
 an error anywhere does not run.  A construct that parses but is not built exits 5, named, where
 it was written.
 
-**A run that cannot give an answer - exit 3, 5, 7 or 9 - prints nothing on standard output**, so
+**A run that cannot give an answer - exit 3, 5, 6, 7 or 9 - prints nothing on standard output**, so
 a partial answer never passes for a whole one.  Every message says what was being done, quotes
 the path or argument it concerns, and says what to do where there is something to do
 (`src/run.rs`).
@@ -225,7 +226,7 @@ the path or argument it concerns, and says what to do where there is something t
   replace cannot be made as written; then every changed Python file that parsed must still
   parse; then the files are written, unless `--dry-run`; and only then are the results printed.
   So a count that does not hold is told first, exit 2, whatever else is wrong with the edit, and
-  a run refused with exit 7 or 9 prints nothing and writes nothing.  Only a Python file that
+  a run refused with exit 6, 7 or 9 prints nothing and writes nothing.  Only a Python file that
   cannot be parsed refuses the run before any count, since a structural count over it cannot be
   trusted.
 - **Only a file of known encoding is edited**, its replacement spelled in that encoding, a line
@@ -241,6 +242,22 @@ the path or argument it concerns, and says what to do where there is something t
   a hook for each system after each file is written and after them all, each a no-op, where a
   flush goes once decided.  `src/write.rs` is the only file besides `src/contents.rs` that
   opens a project's files, and only to write; `contents_containment.rs` holds both.
+- **A file changed since it was read is never written over: optimistic checking, not locking.**
+  Every read records the file's identity (`src/identity.rs`) from the open file before its bytes
+  are read, so a write landing during the read is seen later.  Before any file is opened for
+  writing, each is checked (`contents::unchanged`): if its identity now vouches for it, it is
+  written without being read again; otherwise its bytes are read again and compared with the
+  original the run holds, and only a difference, or the file no longer being there or a file,
+  refuses the run, exit 6, with nothing written.  Comparing the held bytes stands in for a
+  content hash, and needs none.  Nothing is locked, so nothing waits on another process and
+  nothing is left behind by a crash; the cost is that a write landing between the check and the
+  write is lost, which only a lock held across those moments would close.
+- **An identity vouches only for what its system can show**, so each system has its own
+  `platform` module in `identity.rs`.  On Unix it is the device, inode, size, and modification
+  and change times: the inode sees an editor's save by rename, and the change time, which nothing
+  sets back, sees an edit whose modification time was restored.  **A timestamp is only as fine as
+  the clock that set it**, so, as git does for its racily clean files, a file whose newest
+  timestamp is within two seconds of its read is never vouched for, and has its bytes compared.
 - **A structural replace edits a Python file's decoded text** and encodes the result back as the
   file is encoded (`python::Source::encode`), which gives a file's own bytes back exactly, so every
   byte outside the matches is kept.  A character the encoding cannot hold is refused as for a

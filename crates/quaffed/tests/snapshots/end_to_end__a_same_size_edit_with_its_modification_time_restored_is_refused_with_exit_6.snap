@@ -1,0 +1,8 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+expression: "quaff_while(&project, REPLACE_TODO, |dir|\n{\n    let file = dir.join(\"b.txt\"); let modified =\n    fs::metadata(&file).unwrap().modified().unwrap();\n    fs::write(&file, \"TODX\\n\").unwrap();\n    fs::File::options().write(true).open(&file).unwrap().set_modified(modified).unwrap();\n    assert_eq!(fs::metadata(&file).unwrap().modified().unwrap(), modified);\n})"
+---
+exit_code: Some(6)
+----- stdout -----
+----- stderr -----
+quaff: "b.txt" changed after quaff read it, and writing the edits would lose that change; nothing was written.  Run quaff again to edit the file as it is now

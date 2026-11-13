@@ -28,6 +28,34 @@ shows on the pull request as a diff of a `.snap` file.  Every diagnostic `quaff`
    says what `quaff` should say.  A snapshot accepted unread asserts whatever the code printed.
 5. Commit the `.snap` file with the test.
 
+### Pausing a run, or injecting a fault, from a test
+
+Some cases need something to happen inside a run: a file changed between its read and its
+write, say.  **A debug build takes options a release build does not have**, and an end-to-end
+test drives the case through one of them.  They are the one way to do it, rather than a timed
+race, which fails on a loaded runner, or an environment variable, which an inherited
+environment can switch on unnoticed.  Each is gathered in `cli::Hooks`.  For instance,
+`--debug-pause-before-write PATH`: once every file is read and the edits are decided, quaff
+creates `PATH` and waits until it is removed, and `quaff_while` in `end_to_end.rs` runs a
+closure in that pause.
+
+To add another:
+
+1. Add a field to `cli::Hooks` and the option's name as a constant, both under
+   `#[cfg(debug_assertions)]`, so a release build has neither and refuses the option as unknown.
+   Name it `--debug-...`, and keep it out of `--help`.
+2. Parse it in `cli::parse` under the same `cfg`, and add its value to `UsageError::MissingValue`
+   if it takes one.  Add it to the package install test's check (`release.md`), which runs the
+   shipped binary and fails unless the option is refused as unknown.  That is the guard rather
+   than a test of a `cargo test` build, which would check a different binary, built with whatever
+   profile settings that run has.
+3. Act on it under the same `cfg` where the run needs it.  A hook that waits gives up after a
+   bounded time with an error, so a test that never releases it fails rather than hangs.
+4. Mark every test that uses it `#[cfg(debug_assertions)]`, so that a build of the tests without
+   debug assertions does not pass the option to a binary that refuses it.  Such a test snapshots its output with
+   `insta::assert_snapshot!` rather than `assert_quaff_snapshot!`, which cannot run a closure
+   mid-run, and keeps any path it adds out of the snapshot.
+
 ### Reviewing a changed snapshot
 
 `cargo insta test` writes a changed result as `.snap.new`; `cargo insta review` shows each as a
