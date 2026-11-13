@@ -125,12 +125,12 @@ kept is recorded where the search went.  So asking for captures never changes th
 adds work in one place only, and only once a match is found: a node matched by its ways of
 binding a name used after it (`Matcher::node_ways`) binds only that name, so it is matched once
 more to record what it captured.  Where no name is compared the work is unchanged; elsewhere the
-property tests above bound it by `CaptureCheck::holds`, and the cost check needs no change for it.  Where a name
-could capture different code at one match, it captures what the search settles on, each sequence
-taking the fewest nodes that let the rest match.  With a `where`, the captures are those of the
-way it accepted: where that is not the first way found, the match is made again from the same
-place by plain backtracking, each tested name first binding the very node that way bound it to,
-not any with equal code, since a `where` can tell such nodes apart.
+property tests above bound it by `CaptureCheck::holds`, and the cost check needs no change for
+it.  Where a name could capture different code at one match, it captures what the search settles
+on, each sequence taking the fewest nodes that let the rest match.  With a `where`, the captures
+are those of the way it accepted: where that is not the first way found, the match is made again
+from the same place by plain backtracking, each tested name first binding the very node that way
+bound it to, not any with equal code, since a `where` can tell such nodes apart.
 
 ## Building one
 
