@@ -954,9 +954,9 @@ left behind, and nothing else:
   before and after it, the narrower run goes too, so the wider gap is left: deleting a function
   between two others leaves one gap, not two, and deleting a class's last method leaves the gap
   after the class.  At the start or the end of the file, the blank lines at that edge go, so the
-  file neither starts nor ends with them.  With blank lines on one side only, they stay.  A decorator is a match of
-  its own, so ``delete `@retry($n)` expect 1`` takes the decorator's line and leaves the
-  definition.
+  file neither starts nor ends with them.  With blank lines on one side only, they stay.  A
+  decorator is a match of its own, so ``delete `@retry($n)` expect 1`` takes the decorator's line
+  and leaves the definition.
 - **Otherwise it takes one separator its parent holds next to it**: the comma after a list item
   or argument, or the one before it where it is the last, and the semicolon after a statement
   sharing its line, or the one before it.  ``delete `debug` expect 1`` over
@@ -966,10 +966,13 @@ left behind, and nothing else:
   line leaves `f(a)`.  A semicolon is taken only from the match's own line.  A comma that belongs
   to anything else is never taken, nor is a comma in a comment, or one with a comment between it
   and the match.
-- **An operand is refused**, exit 9: deleting `debug` from `x = debug + a` would leave
-  `x =  + a`, which parses but means something else, and the same goes for either side of any
-  operator, `and`, `or`, `not` and a comparison.  Delete the whole expression instead.  So
-  deleting `b` from `g(a + b, c)` is refused: the comma after it is the call's, not the sum's.
+- **A match that takes neither its lines nor a separator must be a statement or an item** of a
+  list, a tuple, a call's arguments or a definition's parameters, which can simply be gone:
+  `f(debug)` leaves `f()`.  Anywhere else it is refused, exit 9, since what is left can parse and
+  mean something else: `x = debug + a` would leave `x =  + a`, `x = debug(1)` would leave
+  `x = (1)`, `return debug` would leave `return`, and `{debug}` would leave `{}`, a dict.  Remove
+  the whole of what holds it instead.  So deleting `b` from `g(a + b, c)` is refused: the comma
+  after it is the call's, not the sum's.
 - **A tuple left with one item stays a tuple**: a comma is written after the item, so deleting
   `"skip"` from `(test, "skip")` leaves `(test,)`, `x = a, b` without `b` is `x = a,`, and
   `d[a, b]` without `b` is `d[a,]`, keeping each a tuple as the code around it expects.  A list or
@@ -1067,7 +1070,7 @@ src/app.py:16:5-17:32: return lookup(request.args["id"], default=None,)
 | 3 | a usage error, a malformed script or pattern, an empty program, or a scope holding a double quote |
 | 5 | a statement or construct this build does not have |
 | 7 | an I/O error, naming the path and quoting the system's error; an `in` that names nothing there; or edits that could not be written, saying what was left as it was |
-| 9 | a structural search needs a Python file quaff cannot parse, an edit would break a Python file that parses, a file's encoding cannot write a replacement, or a structural replace cannot be made as written - its matches overlap outside each other's holes, it would drop a comment, a trailing comma has no one place to go, a literal cannot hold a value as text, or a rewrite that is only a comment would swallow code after it on its line; or a delete would leave an operator without its operand: the script or the file must change first |
+| 9 | a structural search needs a Python file quaff cannot parse, an edit would break a Python file that parses, a file's encoding cannot write a replacement, or a structural replace cannot be made as written - its matches overlap outside each other's holes, it would drop a comment, a trailing comma has no one place to go, a literal cannot hold a value as text, or a rewrite that is only a comment would swallow code after it on its line; or a delete would leave what holds a match without it: the script or the file must change first |
 
 **A run that cannot give an answer - exit 3, 5, 7 or 9 - prints nothing on standard output**, so
 a partial answer never passes for a whole one.  The whole program is read and checked before any

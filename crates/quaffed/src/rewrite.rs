@@ -630,18 +630,24 @@ fn deleted(
             children: &children,
         };
         let (range, took) = deletion.range(&found.range, !comment);
-        // A match that takes neither its lines nor a separator, as an operand, leaves its
-        // operator behind applied to what is left, which can parse and mean something else:
-        // `x = debug + a` would become `x =  + a`.
+        // A match that takes neither its lines nor a separator leaves a hole where it stood.
+        // A statement, or an item of a list, a tuple, or a call's or definition's own, can
+        // simply be gone; anywhere else what is left can parse and mean something else -
+        // `x = debug + a` becomes `x =  + a`, `return debug` becomes `return` - so it is refused.
         if !took {
-            let parent = deletion.parent(&wrapping.widened(&(0..text.len()), &found.range));
-            if OPERATIONS.contains(&arena.kind(parent).name()) {
+            let matched = wrapping.widened(&(0..text.len()), &found.range);
+            let parent = deletion.parent(&matched);
+            let statement = arena
+                .nodes_within(matched.clone())
+                .next()
+                .is_some_and(|node| arena.kind(node).name().starts_with("Stmt"));
+            if !statement && !ITEMS.contains(&arena.kind(parent).name()) {
                 return Err((
                     found.range.start,
-                    "this match is an operand, and deleting it would leave its operator applied \
-                     to what is left, which may still parse but would mean something else: \
-                     delete the whole expression, or narrow the pattern so that it does not \
-                     match here"
+                    "removing this match would leave what holds it without it - an operator, a \
+                     call, a subscript, a slice, or a return, yield or raise - which may still \
+                     parse but would mean something else: remove the whole of what holds it, \
+                     or narrow the pattern so that it does not match here"
                         .to_owned(),
                 ));
             }
@@ -790,8 +796,9 @@ fn one_item_tuples(
     commas
 }
 
-/// The kinds whose children are operands, which a deletion may not leave an operator without.
-const OPERATIONS: &[&str] = &["ExprBinOp", "ExprBoolOp", "ExprCompare", "ExprUnaryOp"];
+/// The kinds whose children are items that a deletion taking no separator may simply leave out:
+/// `[debug]` is `[]`, `f(debug)` is `f()`.  A set is not one, since `{}` is a dict.
+const ITEMS: &[&str] = &["ExprList", "ExprTuple", "Arguments", "Parameters"];
 
 /// Where the line holding `offset` ends: its line break, or the end of `text`.
 fn line_end(text: &str, offset: usize) -> usize {
@@ -1789,36 +1796,38 @@ mod tests {
         assert_eq!(deleted("b", "x = (a, b, c)\n"), "x = (a, c)\n");
         // A list left with one item is still a list, so it needs no comma.
         assert_eq!(deleted("b", "x = [a, b]\n"), "x = [a]\n");
-        // An operand is refused, whichever side it stands on, since what is left may parse.
+        // Anywhere but a statement or an item, a match that takes nothing is refused, since what
+        // is left may parse and mean something else.
         for text in [
             "x = debug + a\n",
             "x = a - debug\n",
             "f(debug * args)\n",
             "x = not debug\n",
+            "x = a and debug or b\n",
+            "x = a < debug\n",
+            "x = debug(1)\n",
+            "x = debug[0]\n",
+            "x = a[1:debug]\n",
+            "x = {debug}\n",
+            "def f():\n    return debug\n",
+            "def f():\n    yield debug\n",
+            "try:\n    pass\nexcept E:\n    raise debug\n",
         ] {
             let refused = replaced("debug", "", text).unwrap_err();
             assert!(
-                refused.contains("this match is an operand"),
+                refused.contains("mean something else"),
                 "{text:?}: {refused}"
             );
         }
-        assert!(
-            replaced("debug", "", "x = a and debug or b\n")
-                .unwrap_err()
-                .contains("operand")
-        );
-        assert!(
-            replaced("debug", "", "x = a < debug\n")
-                .unwrap_err()
-                .contains("operand")
-        );
+        // An item, the only one, simply goes.
+        assert_eq!(deleted("debug", "f(debug)\nx = [debug]\n"), "f()\nx = []\n");
         // A comma the parent does not hold is never taken: this one is the call's, not the sum's,
-        // so the match takes nothing, and is refused as an operand.  Taking the comma would have
-        // left `g(a + c)`, which parses.
+        // so the match takes nothing, and is refused.  Taking the comma would have left
+        // `g(a + c)`, which parses.
         assert!(
             replaced("b", "", "g(a + b, c)\n")
                 .unwrap_err()
-                .contains("operand")
+                .contains("mean something else")
         );
     }
 
