@@ -1,0 +1,61 @@
+name: 'Random properties'
+permissions:
+  contents: read
+
+# Pull requests run the property tests from a fixed seed, so their verdict depends on the change
+# alone.  This draws fresh cases instead: the workspace's tests, run again and again from new
+# seeds for as long as the time below allows.  A failure names the seed that found it, and the
+# Report failures workflow posts it to Slack.  architecture/testing.md has the reasoning and how
+# to reproduce a failure.
+on:
+  schedule:
+    - cron: '23 2 * * *'
+  workflow_dispatch:
+
+jobs:
+
+  properties:
+    name: Random properties
+    if: github.repository == 'L337-org/quaffed'
+    runs-on: [ubuntu-latest]
+    # The build, then the rounds below, then room to finish the round under way.
+    timeout-minutes: 75
+    steps:
+      - name: Check out source repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+
+      # Release, as the matcher's properties do far more work per case than a debug build
+      # finishes in reasonable time.
+      - name: Build the tests
+        run: cargo test --workspace --locked --release --no-run
+
+      - name: Properties hold from fresh seeds
+        run: |
+          end=$((SECONDS + 45 * 60))
+          round=0
+          while [ "$SECONDS" -lt "$end" ]; do
+            round=$((round + 1))
+            seed=$(od -An -N8 -tu8 /dev/urandom | tr -d ' ')
+            echo "::group::round $round, PROPTEST_RNG_SEED=$seed"
+            status=0
+            PROPTEST_RNG_SEED="$seed" cargo test --workspace --locked --release || status=$?
+            echo "::endgroup::"
+            if [ "$status" -ne 0 ]; then
+              echo "::error::a property failed in round $round from PROPTEST_RNG_SEED=$seed; the regressions artefact holds the case it saved"
+              exit "$status"
+            fi
+          done
+          echo "$round rounds passed"
+
+      # Proptest saves the failing case it found beside the test; commit the line it added with
+      # the fix, so the failure stays a test.
+      - name: Keep the failing cases proptest saved
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: proptest-regressions
+          path: crates/*/proptest-regressions/
+          if-no-files-found: warn

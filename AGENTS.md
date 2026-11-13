@@ -43,6 +43,7 @@ the work instead.  The shared hygiene check that CI runs fails on either.
 | adding a workspace member | the checklist in [architecture/workspace.md](architecture/workspace.md) |
 | `tools.toml`, `scripts/install-tools`, `.github/actions/install-tools` or `.github/actions/apt-install`, or adding a verification tool or an apt package | [architecture/tools.md](architecture/tools.md) |
 | `scripts/coverage`, `scripts/coverage-ratchet` or `.github/workflows/coverage.yaml` | the coverage ratchet section of [architecture/testing.md](architecture/testing.md) |
+| `.github/workflows/random-properties.yaml`, or a property test's seed | the property tests section of [architecture/testing.md](architecture/testing.md) |
 | an end-to-end test, or anything that changes what `quaff` prints or how it exits | the snapshot sections of [architecture/testing.md](architecture/testing.md) |
 | `crates/quaffed/src/`: the command line, discovery, matching or output | [architecture/search.md](architecture/search.md) |
 | `crates/encoding/`: what a file's bytes are, Python's declared encodings or the codec tables, or `scripts/generate-codecs` | [architecture/encoding.md](architecture/encoding.md) |
@@ -98,6 +99,27 @@ and the reasoning.  These are not enforced, so they are carried here:
 - **Prose is British English in plain ASCII punctuation** - hyphens rather than dashes, straight
   quotes, three full stops rather than an ellipsis character - in documentation, comments,
   commit messages and pull request descriptions.
+
+## Working economically
+
+Waiting on long jobs and the tokens an assistant spends are what limit this project, so:
+
+- **Before a push**: rustfmt, clippy, and the tests of the module changed, at their default case
+  counts.  Then push, and let CI run the rest once.  No repeated or enlarged property runs, and no
+  corpus or full-suite runs locally; ask before anything expected to take more than about two
+  minutes.
+- **An automated review point is answered by reasoning.**  Run an experiment only for a claimed
+  defect, and reply only where a reply moves the work on.
+- **A fix that has not converged after a couple of attempts stops**, and what is known goes to
+  the owner, rather than more attempts.  An edge case not needed now goes on the list of designed
+  but unbuilt work, not into the change.
+- **One pull request per story**, unless the owner decides a large one is built as dev branches
+  onto a feature branch.
+- **Sessions are short**: compact between phases of a long pull request, and start a new session
+  for a new story.  A session that will end mid-story leaves a short handover comment on the
+  story in the tracker - the branch and pull request, what is done, the next step, what waits on
+  the owner, and what was tried and ruled out - and the next session reads that, this file and
+  `git log`, then only what the work needs.
 
 <!-- BEGIN GENERATED -->
 ## Read these when they apply

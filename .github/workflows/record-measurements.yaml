@@ -49,11 +49,12 @@ jobs:
           persist-credentials: false
 
       # Enabling an enabled workflow changes nothing; after a quiet spell, this merge brings it
-      # back.
-      - name: Keep the daily catch-up enabled
+      # back.  The nightly random properties are kept enabled the same way.
+      - name: Keep the daily catch-up and the nightly properties enabled
         run: |
-          gh api --method PUT \
-            "repos/$GITHUB_REPOSITORY/actions/workflows/catch-up-measurements.yaml/enable"
+          for workflow in catch-up-measurements.yaml random-properties.yaml; do
+            gh api --method PUT "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/enable"
+          done
 
       # This merge's points first, and kept if they cannot be posted, so that catching up on
       # earlier ones can never use the job's time up before they are safe.

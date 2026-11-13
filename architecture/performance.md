@@ -27,8 +27,13 @@ cargo flamegraph --profile profiling --bin quaff -o target/flamegraph.svg \
 
 ## The budgets
 
-The work the shipped build does over the synthetic corpus is held to budgets on every pull
-request, by the **Budgets** job in `premerge.yaml`.  **Nothing is timed**: hosted runners vary in
+The work the shipped build does over the synthetic corpus is measured against budgets on every
+pull request, by the **Budgets** job in `premerge.yaml`.  **A budget exceeded is reported, not
+failed**: while features are still being added most of them move a budget, and a red job for
+each meant a round of CI to set the new limit before the change could be judged at all.  The job
+warns, and its summary names the budget and the limit to set.  Anything that could not be
+measured still fails.  Making an exceeded budget fail the job again is the owner's decision.
+**Nothing is timed**: hosted runners vary in
 speed, so a time budget fails on noise; each budget counts something the runner's speed cannot
 move.
 
@@ -69,7 +74,7 @@ scripts/budgets target/x86_64-unknown-linux-musl/profiling/quaff --repeat 3
 A limit changes only in the pull request that moves it, and only once the new behaviour is
 agreed to be correct.
 
-1. Read the failing job's summary, and download the `budgets` artefact.
+1. Read the job's summary, and download the `budgets` artefact.
 2. Compare the trace with main's latest artefact: `callgrind_annotate` the judged runs' profiles
    for instructions, or diff the `.files.txt` lists for files.
 3. Decide whether that is what the change should do.  If not, fix the code, not the limit.
@@ -166,7 +171,7 @@ can be followed; nothing gates on what is recorded.
   `catch-up-measurements.yaml` post it and then delete it.  Only an artefact a Record measurements
   run left is posted, since any pull request's run can upload one of that name.  The daily one is
   a workflow of its own, re-enabled by every merge's run, because GitHub disables a scheduled
-  workflow after 60 days without activity.  A point posted twice is
+  workflow after 60 days without activity; the same step keeps `random-properties.yaml` enabled.  A point posted twice is
   the same point, so posting again is safe.  What InfluxDB refuses as malformed is kept as
   `rejected-measurements` and never posted again.  A failed run is posted to Slack, and its job
   summary says how to post by hand.
