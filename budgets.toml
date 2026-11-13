@@ -46,8 +46,8 @@ bytes_read = 5_951
 paths_written = 8
 
 [delete]
-instructions = 11_615_400
-peak_memory_kib = 10_100
+instructions = 6_920_800
+peak_memory_kib = 10_300
 paths_opened = 17
 bytes_read = 5_951
 paths_written = 0
