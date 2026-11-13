@@ -130,6 +130,8 @@ enforces it.
   main's on every pull request, and the merged commit's after a merge (`performance.md`).
 - `.github/workflows/record-measurements.yaml` posts each merge's budgets and benchmark counts to
   InfluxDB, and `catch-up-measurements.yaml` posts daily what it could not (`performance.md`).
+- `.github/workflows/random-properties.yaml` runs the tests nightly from fresh proptest seeds
+  (`testing.md`).
 - `.github/workflows/report-failures.yaml` posts a failed run to Slack.  A new workflow that runs on
   a schedule, a push, a release or a pull request is added there, as below.
 

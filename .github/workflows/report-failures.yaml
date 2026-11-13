@@ -16,6 +16,7 @@ on:
       - 'Announce pull requests'
       - 'Record measurements'
       - 'Catch up on measurements'
+      - 'Random properties'
     types: [completed]
 
 permissions:
