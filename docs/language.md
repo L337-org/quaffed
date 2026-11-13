@@ -1110,8 +1110,8 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
   never a comment or a trailing comma: one at a bracket's edge is carried to the rewrite's matching
   bracket, a comma goes with a bracket the rewrite deletes, and any other comment in no capture
   refuses the edit.  A rewrite with no code is the exception: it [deletes](#deleting-code), and
-  every comment inside the match goes with it.  A sequence hole captures everything between its first node and its last,
-  and the whole of any bracket that only wraps one of them.
+  every comment inside the match goes with it.  A sequence hole captures everything between its
+  first node and its last, and the whole of any bracket that only wraps one of them.
 - **A trailing comma and a semicolon between statements are layout**, so `f($a, $b)` matches a
   call a formatter has split over lines and ended with a comma.
 - **Implicitly concatenated plain strings are joined, but f-strings are not**: `"abc"` matches

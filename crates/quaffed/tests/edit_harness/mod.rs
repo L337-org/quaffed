@@ -1231,34 +1231,39 @@ pub fn deletion_survives(
     if outside_survives(original, inside, edited).is_ok() {
         return Ok(());
     }
-    // Where `needle` ends if it stands at `from` in `hay`, skipping commas `needle` lacks.
+    // Where `needle` ends if it stands at `from` in `edited`, skipping a comma `needle` lacks
+    // only where a one-item tuple's would stand: just before a closing bracket or a line break.
     let ends = |from: usize, needle: &[u8]| {
         let (mut i, mut j) = (0, from);
         while i < needle.len() {
             match edited.get(j) {
                 Some(&b) if b == needle[i] => (i, j) = (i + 1, j + 1),
-                Some(b',') => j += 1,
+                Some(b',') if matches!(needle[i], b')' | b']' | b'\n' | b'\r') => j += 1,
                 _ => return None,
             }
         }
         Some(j)
     };
     let line = |offset: usize| memchr::memchr_iter(b'\n', &original[..offset]).count() + 1;
-    // Each stretch outside the reaches, with how far on it may start: the length of the reach
-    // before it, or nothing for the first.
+    // Each stretch outside the reaches, with the reach before it, or none for the first: what
+    // the stretch may follow in `edited` is part of that reach that quaff did not take.
     let mut stretches = Vec::with_capacity(inside.len() + 1);
-    let (mut from, mut window) = (0, 0);
+    let (mut from, mut reach) = (0, 0..0);
     for range in inside {
-        stretches.push((from..range.start, window));
-        (from, window) = (range.end, range.len());
+        stretches.push((from..range.start, reach));
+        (from, reach) = (range.end, range.clone());
     }
-    stretches.push((from..original.len(), window));
+    stretches.push((from..original.len(), reach));
     let count = stretches.len();
     let mut position = 0;
-    for (index, (stretch, window)) in stretches.into_iter().enumerate() {
+    for (index, (stretch, reach)) in stretches.into_iter().enumerate() {
         let text = &original[stretch.clone()];
         let last = index + 1 == count;
-        let found = (position..=(position + window).min(edited.len()))
+        let left = &original[reach.clone()];
+        let found = (position..=(position + reach.len()).min(edited.len()))
+            .filter(|&start| {
+                start == position || memchr::memmem::find(left, &edited[position..start]).is_some()
+            })
             .find_map(|start| ends(start, text).filter(|&end| !last || end == edited.len()));
         let Some(end) = found else {
             return Err(format!(

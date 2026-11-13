@@ -341,27 +341,6 @@ fn a_deletion_may_take_what_lies_next_to_its_matches_and_nothing_else() {
     );
     // Nothing else may go: not the comment after the bracket, which is not the match's, nor
     // anything on another line.
-    // The comma that keeps a tuple a tuple, written after the item that is left, outside the
-    // reach of the one deleted; but no other byte.
-    let before = files(&[("a.py", b"x = (skip, t)\n")]);
-    let matches: BTreeMap<String, Vec<Span>> =
-        [("a.py".to_owned(), vec![span((1, 6), (1, 9))])].into();
-    let judged = |edited: &[u8]| {
-        minimal_diff(&before, &matches, &files(&[("a.py", edited)]), false, true).len()
-    };
-    assert_eq!(judged(b"x = (t,)\n"), 0);
-    assert_eq!(judged(b"x = (u,)\n"), 1);
-    assert_eq!(judged(b"x = (t,);\n"), 1);
-    // A statement's line, with the blank and indented comment lines after it, but not the next
-    // code.
-    let before = files(&[("a.py", b"if x:\n    a()\n\n    # gone\nz()\n")]);
-    let matches: BTreeMap<String, Vec<Span>> =
-        [("a.py".to_owned(), vec![span((1, 1), (2, 7))])].into();
-    let judged = |edited: &[u8]| {
-        minimal_diff(&before, &matches, &files(&[("a.py", edited)]), false, true).len()
-    };
-    assert_eq!(judged(b"z()\n"), 0);
-    assert_eq!(judged(b""), 1);
     for edited in [
         &b"one\nf(a)\nthree\n"[..],
         b"onE\nf(a)  # x\nthree\n",
@@ -374,6 +353,41 @@ fn a_deletion_may_take_what_lies_next_to_its_matches_and_nothing_else() {
             "{edited:?}"
         );
     }
+}
+
+#[test]
+fn a_deletion_may_take_its_lines_with_the_blank_and_block_comment_lines_after_them() {
+    let before = files(&[("a.py", b"if x:\n    a()\n\n    # gone\nz()\n")]);
+    let matches: BTreeMap<String, Vec<Span>> =
+        [("a.py".to_owned(), vec![span((1, 1), (2, 7))])].into();
+    let judged = |edited: &[u8]| {
+        minimal_diff(&before, &matches, &files(&[("a.py", edited)]), false, true).len()
+    };
+    assert_eq!(judged(b"z()\n"), 0);
+    // Not the next code.
+    assert_eq!(judged(b""), 1);
+}
+
+#[test]
+fn a_deletion_may_add_the_comma_that_keeps_a_tuple_a_tuple_and_nothing_else() {
+    // A second match in the file, whose reach a stretch could start inside.
+    let before = files(&[("a.py", b"x = (skip, t)\ny = f(a, debug)\n")]);
+    let matches: BTreeMap<String, Vec<Span>> = [(
+        "a.py".to_owned(),
+        vec![span((1, 6), (1, 9)), span((2, 10), (2, 14))],
+    )]
+    .into();
+    let judged = |edited: &[u8]| {
+        minimal_diff(&before, &matches, &files(&[("a.py", edited)]), false, true).len()
+    };
+    assert_eq!(judged(b"x = (t,)\ny = f(a)\n"), 0);
+    // What quaff left of a reach may stand before the next stretch, but nothing it never held.
+    assert_eq!(judged(b"x = (t,)\ny = f(a, )\n"), 0);
+    assert_eq!(judged(b"x = (t,)\ny = f(a XYZ)\n"), 1);
+    // A comma only where a one-item tuple's stands, and no other change.
+    assert_eq!(judged(b"x = (t,)\ny =, f(a)\n"), 1);
+    assert_eq!(judged(b"x = (u,)\ny = f(a)\n"), 1);
+    assert_eq!(judged(b"x = (t,);\ny = f(a)\n"), 1);
 }
 
 #[test]

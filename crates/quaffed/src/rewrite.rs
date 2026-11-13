@@ -744,15 +744,18 @@ struct Deletion<'a, 'text> {
 impl Deletion<'_, '_> {
     /// What deleting `found` takes: the match with the brackets that only wrap it, and its whole
     /// lines where `whole_lines` and it stands alone on them, or else one separator its parent
-    /// holds next to it; and whether it took either.
+    /// holds next to it; and whether it took either.  `whole_lines` is false for a comment
+    /// written in place of the match, which keeps its line and so may take no comma from
+    /// another; [`before`](Deletion::before) calls the same choice `across_lines`.
     fn range(&self, found: &Range<usize>, whole_lines: bool) -> (Range<usize>, bool) {
         let text = self.text;
         let matched = self.wrapping.widened(&(0..text.len()), found);
         let floor = self.taken.last().map_or(0, |taken| taken.end);
         let parent = self.parent(&matched);
         // The separator after the match, if its parent holds one there: on the same line for a
-        // semicolon, anywhere before the next code for a comma, which separates the item from its
-        // neighbour wherever the line breaks fall.
+        // semicolon, and for a comma anywhere before the next code where `whole_lines`, since it
+        // separates the item from its neighbour wherever the line breaks fall.  A comment
+        // written in place of the item takes none from another line, which it would join.
         let after = {
             let rest = &text[matched.end..];
             let at = matched.end + rest.len() - rest.trim_start().len();
