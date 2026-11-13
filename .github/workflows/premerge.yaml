@@ -330,8 +330,9 @@ jobs:
     # changes.  The oracle's version is read from the manifest, so no Python version is named
     # here.
     #
-    # The work is split in two parts that run side by side, since together they take far longer
-    # than any other job; each part repeats only the setup and the build.
+    # The work is split in two parts that run side by side, each taking one of the two
+    # edit-invariant corpus runs; a new corpus check joins whichever part keeps the two closest in
+    # length.  Each part repeats the setup, the build and the harness's own checks.
     #
     # - invariants: scripts/check-synthetic confirms every Python file of the synthetic corpus is
     #   valid Python.  The edit-invariant harness's own tests run, then its ignored corpus run,
@@ -389,9 +390,10 @@ jobs:
         run: rustup toolchain install
 
       - name: Restore the build
-        # The dependencies compiled for this part, keyed on what decides them, so that only the
-        # workspace's own crates are built on a hit.  A pull request reads what main's runs saved;
-        # the restore keys fall back to the last build for this part when the lock file moved.
+        # This part's build, keyed on what decides its dependencies, so that on a hit only the
+        # workspace's own crates are built again.  A pull request reads what main's runs saved.
+        # There is no fallback to an older key: a build from another toolchain or lock file would
+        # only carry dead artefacts forward, so a change to either builds once from nothing.
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -401,7 +403,6 @@ jobs:
             target/debug
             target/release
           key: corpus-build-${{ matrix.part }}-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
-          restore-keys: corpus-build-${{ matrix.part }}-${{ runner.os }}-
 
       - name: The oracle accepts every Python file of the synthetic corpus
         if: matrix.part == 'invariants'

@@ -63,9 +63,9 @@ manifest entry and the script are unchanged.  `refused.txt` is generated, never 
 The **Real-world corpus** job in `premerge.yaml` runs in two parts side by side, each fetching
 the corpus with `scripts/fetch-corpus` and building from a cache of its last build.  *invariants*
 runs `scripts/check-synthetic` and the edit invariants; *rewrites* runs the structural rewrite
-checks, the round trip, `scripts/count-structural` and the structural counts.  The split is by
-time: the two edit-invariant corpus runs are most of the job, so each part takes one.  A new
-corpus check joins whichever part keeps the two closest in length.  `crates/quaffed/tests/fetch_corpus.rs`, `check_synthetic.rs` and
+checks, the round trip, `scripts/count-structural` and the structural counts.  Each part takes
+one of the two edit-invariant corpus runs, and a new corpus check joins whichever part keeps the
+two closest in length.  `crates/quaffed/tests/fetch_corpus.rs`, `check_synthetic.rs` and
 `oracle_python.rs` test the scripts themselves in the ordinary run.
 
 ### Checklist: moving the pin to a new CPython release
