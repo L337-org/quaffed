@@ -4232,7 +4232,7 @@ mod trees {
         /// No pattern the cost check accepts makes the matcher's work grow faster than the
         /// square of the code it searches, measured as the corpus is
         /// ([`the_cost_check_gives_the_corpus_its_recorded_verdicts`]) but over patterns
-        /// generated afresh on every run, deeper than the corpus's, so that a shape the corpus
+        /// generated anew from each seed, deeper than the corpus's, so that a shape the corpus
         /// never holds is still met in time.
         #[test]
         fn no_accepted_pattern_costs_more_than_the_square(

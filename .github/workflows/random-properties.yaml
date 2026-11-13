@@ -12,6 +12,10 @@ on:
     - cron: '23 2 * * *'
   workflow_dispatch:
 
+env:
+  CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS: 'true'
+  CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS: 'true'
+
 jobs:
 
   properties:
@@ -29,6 +33,7 @@ jobs:
 
       # Release, as the matcher's properties do far more work per case than a debug build
       # finishes in reasonable time.
+      # With overflow checks and debug assertions back on, as pull requests' debug runs have them.
       - name: Build the tests
         run: cargo test --workspace --locked --release --no-run
 
@@ -57,5 +62,8 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: proptest-regressions
-          path: crates/*/proptest-regressions/
+          # Beside src/ for unit tests, beside the test file for integration tests.
+          path: |
+            crates/*/proptest-regressions/
+            crates/*/tests/*.proptest-regressions
           if-no-files-found: warn

@@ -194,6 +194,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    # Proptest's seed is fixed for the whole job, since the snapshot step runs the suite again, so
+    # a pull request's verdict depends on its change and not on which cases a run drew.  Fresh
+    # cases are drawn by random-properties.yaml.
+    env:
+      PROPTEST_RNG_SEED: '0'
     steps:
       - name: Check out source repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -201,12 +206,7 @@ jobs:
       - name: Install the pinned toolchain
         run: rustup toolchain install
 
-      # Proptest's seed is fixed, as scripts/coverage fixes it, so a pull request's verdict
-      # depends on its change and not on which cases a run happened to draw.  Fresh cases are
-      # drawn nightly by the Random properties workflow instead.
       - name: Tests pass
-        env:
-          PROPTEST_RNG_SEED: '0'
         run: cargo test --workspace --locked
 
       - name: Install cargo-insta from tools.toml
@@ -254,8 +254,8 @@ jobs:
 
       # Several runs of each scenario, judged on the worst, so the job summary shows how much the
       # counts move from run to run.  A budget exceeded (exit 1) is reported but does not fail
-      # the job, while features are still being added and most of them move a budget; anything
-      # that could not be measured (exit 2) still fails.  performance.md has the reasoning.
+      # the job; anything that could not be measured (exit 2) still fails.  performance.md has
+      # the reasoning.
       - name: Budgets are measured, and any exceeded is reported
         run: |
           status=0

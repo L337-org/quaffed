@@ -29,13 +29,16 @@ cargo flamegraph --profile profiling --bin quaff -o target/flamegraph.svg \
 
 The work the shipped build does over the synthetic corpus is measured against budgets on every
 pull request, by the **Budgets** job in `premerge.yaml`.  **A budget exceeded is reported, not
-failed**: while features are still being added most of them move a budget, and a red job for
-each meant a round of CI to set the new limit before the change could be judged at all.  The job
-warns, and its summary names the budget and the limit to set.  Anything that could not be
-measured still fails.  Making an exceeded budget fail the job again is the owner's decision.
-**Nothing is timed**: hosted runners vary in
-speed, so a time budget fails on noise; each budget counts something the runner's speed cannot
-move.
+failed**, because a feature that moves a budget would otherwise need a round of CI to set the
+new limit before the change could be judged.  The job warns, and its summary names the budget and
+the limit to set.  Anything that could not be measured still fails.  Making an exceeded budget
+fail the job again is the owner's decision.  **Nothing is timed**: hosted runners vary in speed,
+so a time budget fails on noise; each budget counts something the runner's speed cannot move.
+
+**Accepted limitation:** a pull request that exceeds a budget can merge without setting the
+limit.  Every later pull request's job then warns about a move it did not make, until a pull
+request sets the limit by the checklist below; its summary's *Limit to set* is still right for
+that.
 
 - **What is measured** is the amd64 musl binary built with the `profiling` profile, on the
   runner image `runs-on:` names, not `ubuntu-latest`, because Valgrind comes from the image and
@@ -171,7 +174,8 @@ can be followed; nothing gates on what is recorded.
   `catch-up-measurements.yaml` post it and then delete it.  Only an artefact a Record measurements
   run left is posted, since any pull request's run can upload one of that name.  The daily one is
   a workflow of its own, re-enabled by every merge's run, because GitHub disables a scheduled
-  workflow after 60 days without activity; the same step keeps `random-properties.yaml` enabled.  A point posted twice is
+  workflow after 60 days without activity; `record-measurements.yaml`'s enable step names each
+  scheduled workflow it keeps alive.  A point posted twice is
   the same point, so posting again is safe.  What InfluxDB refuses as malformed is kept as
   `rejected-measurements` and never posted again.  A failed run is posted to Slack, and its job
   summary says how to post by hand.

@@ -7,7 +7,8 @@ permissions: {}
 # they know the runner they measured on; this workflow and catch-up-measurements.yaml are the only
 # ones given the secrets, and neither runs for a pull request.  The daily catch-up is a workflow of
 # its own because GitHub disables a scheduled workflow after 60 days without activity in the
-# repository, and a merge must still be recorded after a quiet spell; each run here re-enables it.
+# repository, and a merge must still be recorded after a quiet spell; each run here re-enables it,
+# and random-properties.yaml for the same reason.
 # architecture/performance.md has the records and their names.
 on:
   workflow_run:
@@ -33,7 +34,7 @@ jobs:
     timeout-minutes: 30
     permissions:
       # To download other runs' artefacts, delete a kept one once it is posted, and re-enable the
-      # daily catch-up.
+      # scheduled workflows: the daily catch-up and the nightly random properties.
       actions: write
       contents: read
     env:

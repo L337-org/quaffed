@@ -108,11 +108,12 @@ Waiting on long jobs and the tokens an assistant spends are what limit this proj
   counts.  Then push, and let CI run the rest once.  No repeated or enlarged property runs, and no
   corpus or full-suite runs locally; ask before anything expected to take more than about two
   minutes.
-- **An automated review point is answered by reasoning.**  Run an experiment only for a claimed
-  defect, and reply only where a reply moves the work on.
+- **A review point is answered by reasoning.**  Run an experiment only for a claimed defect.
+  Every point still gets its answer, but one short reply can answer them all: what was fixed in
+  which commit, and why the rest need no change.
 - **A fix that has not converged after a couple of attempts stops**, and what is known goes to
-  the owner, rather than more attempts.  An edge case not needed now goes on the list of designed
-  but unbuilt work, not into the change.
+  the owner, rather than more attempts.  An edge case not needed now is recorded as designed but
+  unbuilt work in the tracker, not built into the change.
 - **One pull request per story**, unless the owner decides a large one is built as dev branches
   onto a feature branch.
 - **Sessions are short**: compact between phases of a long pull request, and start a new session

@@ -71,14 +71,16 @@ When changing the cost check or how the matcher searches a list:
 ## Property tests and their seeds
 
 **Pull requests draw the same cases every run; the nightly run draws fresh ones.**  The `Tests
-pass` step in `premerge.yaml` fixes proptest's seed, as `scripts/coverage` does, so a pull
-request fails only for what it changed, never for a case an unrelated run happened to draw.
+job in `premerge.yaml` and `scripts/coverage` fix proptest's seed, so a pull request fails only
+for what it changed, never for a case an unrelated run happened to draw.
 `random-properties.yaml` runs the workspace's tests nightly from new seeds, round after round,
 and a failure is posted to Slack.  To act on one:
 
 1. Read the failed run's log: the error names the round's `PROPTEST_RNG_SEED`.
 2. Download its `proptest-regressions` artefact, and copy the line proptest added into the
-   matching file in `crates/*/proptest-regressions/`.  Locally the case then replays first.
+   matching file: `crates/*/proptest-regressions/` for a test under `src/`, or the
+   `.proptest-regressions` file beside the test file for one under `tests/`.  Locally the case
+   then replays first.
 3. If the artefact is missing, `PROPTEST_RNG_SEED=<seed> cargo test --release -p <crate> <test>`
    draws the same cases again.
 4. Fix the cause, and commit the regressions line with the fix.
