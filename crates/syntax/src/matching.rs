@@ -339,9 +339,9 @@ impl Asked {
     /// captures are found this way.
     ///
     /// Each tested name must first be bound to the very node the way bound it to, while the match
-    /// is made again by plain backtracking; what was remembered is forgotten before and after,
-    /// since outcomes worked out with pinned names would not hold for the search, nor the
-    /// search's for the pinned match.
+    /// is made again by plain backtracking.  Outcomes worked out with pinned names would not hold
+    /// for the search, nor the search's for the pinned match, but plain backtracking neither
+    /// reads nor records them, so what the search remembered is kept for its later starts.
     fn again<T>(
         &self,
         matcher: &Matcher<'_, '_>,
@@ -353,8 +353,6 @@ impl Asked {
         for (&slot, &node) in self.tested.iter().zip(accepted) {
             pins[slot] = Some(node);
         }
-        matcher.start();
-        matcher.next_node();
         // Plain backtracking: the shortcuts assume a name takes any code equal to what it holds,
         // so one would give up on a later place where only the pinned node stands.
         let remember = matcher.remember.replace(false);
@@ -362,8 +360,6 @@ impl Asked {
         let outcome = make(&mut again);
         matcher.pins.borrow_mut().clear();
         matcher.remember.set(remember);
-        matcher.start();
-        matcher.next_node();
         (outcome, again)
     }
 }
@@ -1644,17 +1640,13 @@ impl<'p, 't> Matcher<'p, 't> {
                 again[slot] = None;
                 pins[slot] = Some(bound);
             }
-            // As for [`Asked::again`]: what was worked out without these pins would not hold
-            // with them, nor theirs for the search, so it is forgotten before and after.
+            // As for [`Asked::again`]: plain backtracking neither reads nor records what is
+            // remembered, so what the search worked out without these pins is left for it.
             let remember = self.remember.replace(false);
             let outer = self.pins.replace(pins);
-            self.start();
-            self.next_node();
             let found = self.node(wanted, node, &mut again);
             *self.pins.borrow_mut() = outer;
             self.remember.set(remember);
-            self.start();
-            self.next_node();
             found
         };
         assert!(
