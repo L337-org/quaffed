@@ -20,8 +20,9 @@ use crate::search::{Match, Position};
 pub struct Found {
     /// Its first and last character.
     pub at: Match,
-    /// The code it covers, as written.
-    pub text: String,
+    /// The code it covers, as a range of the text searched: a range rather than a copy, since
+    /// matches can overlap, and copies of many long ones would hold far more than the text.
+    pub range: Range<usize>,
 }
 
 /// Why a Python file could not be parsed: where its first error is, and what the parser said.
@@ -87,7 +88,7 @@ pub fn search(
                         start: placed[&range.start],
                         end: placed[&last_char(text, &range)],
                     },
-                    text: text[range].to_owned(),
+                    range,
                 })
                 .collect()
         })
@@ -191,7 +192,10 @@ mod tests {
         };
         let found = search(text, &[(&pattern, Some(&filter))]).unwrap();
         assert_eq!(found[0].len(), 1);
-        assert_eq!(found[0][0].text, "connect('https://x', port)");
+        assert_eq!(
+            &text[found[0][0].range.clone()],
+            "connect('https://x', port)"
+        );
         assert_eq!(
             *offered.borrow(),
             [vec!["'https://x'", "port"], vec!["r\"http://y\"", "80"]]
@@ -212,7 +216,7 @@ mod tests {
                     start: pos(2, 11),
                     end: pos(2, 23)
                 },
-                text: "connect(host)".into()
+                range: 28..41
             }]
         );
     }
@@ -298,8 +302,9 @@ mod tests {
     #[test]
     fn matches_inside_matches_are_each_placed() {
         let pattern = compile_pattern("f($x)").unwrap();
-        let found = search("f(f(1))\n", &[(&pattern, None)]).unwrap();
-        let texts: Vec<&str> = found[0].iter().map(|f| f.text.as_str()).collect();
+        let text = "f(f(1))\n";
+        let found = search(text, &[(&pattern, None)]).unwrap();
+        let texts: Vec<&str> = found[0].iter().map(|f| &text[f.range.clone()]).collect();
         assert_eq!(texts, ["f(f(1))", "f(1)"]);
         assert_eq!(
             found[0][1].at,

@@ -185,6 +185,21 @@ The format is in `docs/language.md`, _Output_.  The rules behind it:
   counts expected and found, hits only, and any files its query could not be searched in.
 - **A closed standard output stops the printing quietly**, but assertions are still evaluated,
   so the exit code is still the answer.
+- **Every match is held until the run prints, so a match holds where its code is, not the code**
+  (`Hit` and `Code` in `src/run.rs`).  Files are searched one at a time, but each statement's
+  matches print together, so nothing can print until the last file is done; structural matches
+  can overlap, as `x = $v` and a sequence to the end of a block do from every statement in it, and
+  copies of their code would hold about the square of the block's length.  So a structural match
+  holds which file it was found in, which version of it - as read, or as a replace left it - and
+  where in that version's decoded text.  **Of each file a structural match was found in, the run
+  holds the smaller of the file and the code its matches cover** (`Held`): a few short matches in
+  a large file, as most searches find, keep a copy of their code, one after another, and nothing
+  else; matches that cover more than the file keep the file, and when they print, the version they
+  were found in is built and decoded again, once for all of them.  So a run never holds more for a
+  file than a copy of every match would.  A file a replace changed is held whole whatever its
+  matches, since it is checked and written from it.  `Hit` is `Copy`, so a field that owns memory,
+  such as a copy of the code, does not compile.  A textual match prints the pattern's own text, so
+  it holds only where it is.
 
 ## Exit codes
 
@@ -226,7 +241,15 @@ the path or argument it concerns, and says what to do where there is something t
   it for the statements after.  With no replace, that is one pass, as for any search.  The
   encoding is decided once, from the file on disk.
 - **Edits are held in memory to the end of the run**, with every changed file's original bytes,
-  so an edit holds every file it changes until then.
+  so an edit holds every file it changes until then.  **A changed file is held as its bytes as
+  read and the changes each replace made** (`src/changes.rs`), not as a whole copy per edit: the
+  stretches each wrote over and what it wrote there.  The whole file after a replace exists only
+  while the run is on that file, for the statements after it to read; the parse check, the writer
+  and the printing of a match found after a replace build the version they need again, one file
+  at a time.  Each replace says what it wrote
+  over - a textual one its matches, a structural one its outermost matches, which hold any nested
+  in them - and `Changes::between` checks that everything else is unchanged, taking any stretch
+  that is not as changed, so a wrong report can make the changes larger but never wrong.
 - **The outcome is decided before anything is printed or written.**  A silent first pass over the
   results finds, statement by statement, whether each count holds, and for a replace whose count
   holds, whether any file's encoding cannot write its replacement and whether a structural
