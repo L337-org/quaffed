@@ -594,7 +594,7 @@ fn conclude<'s>(
             searched
                 .changed
                 .iter()
-                .flat_map(|file| &searched.held[file.held].changes)
+                .flat_map(|file| searched.held[file.held].file().1)
                 .map(Changes::held)
                 .sum(),
         );
@@ -608,13 +608,13 @@ fn conclude<'s>(
                 .changed
                 .iter()
                 .map(|file| {
-                    let held = &searched.held[file.held];
+                    let (original, changes) = searched.held[file.held].file();
                     write::Edit {
                         path: &file.path,
                         shown: &file.shown,
-                        identity: held.original.identity(),
-                        original: &held.original,
-                        changes: &held.changes,
+                        identity: original.identity(),
+                        original,
+                        changes,
                     }
                 })
                 .collect();
@@ -675,10 +675,10 @@ fn refuse_broken(searched: &Searched, locations: &[Option<String>]) -> Result<()
     let broken: Vec<Broken> = searched
         .changed
         .iter()
-        .filter(|file| file.python && parses(&searched.held[file.held].original).is_ok())
+        .filter(|file| file.python && parses(searched.held[file.held].file().0).is_ok())
         .filter_map(|file| {
-            let held = &searched.held[file.held];
-            parses(&held.version(held.changes.len()))
+            let (original, changes) = searched.held[file.held].file();
+            parses(&changes::applied(original, changes))
                 .err()
                 .map(|why| Broken {
                     path: file.shown.clone(),
@@ -717,7 +717,6 @@ fn replace_locations(steps: &[Step], built: &Built) -> Vec<Option<String>> {
         .collect()
 }
 
-/// Whether a Python file's bytes parse, decoded as `CPython` decodes them; where and why not.
 /// Stretches an edit wrote over, each where it was in the bytes before and where what was written
 /// stands in those after, as [`Changes::between`] takes them.
 type Over = Vec<(Range<usize>, Range<usize>)>;
@@ -726,8 +725,9 @@ type Over = Vec<(Range<usize>, Range<usize>)>;
 /// as the same stretches in the file's bytes before and after.  Every encoding a Python file is
 /// read in spells each character on its own, so a stretch's bytes are its characters' spellings,
 /// after the byte-order mark if there is one.  A stretch that does not fall on characters in
-/// either text is not one a rewrite gives; then nothing is claimed, and the changes are found by
-/// comparing the bytes whole, which is slower but still exact.
+/// either text is not one a rewrite gives; then nothing is claimed, and the changes are one
+/// stretch from the first byte that differs to the last - exact, but holding about a whole copy of
+/// the file for the rest of the run, as a run did before changes were held as stretches.
 fn in_bytes(source: &python::Source, edited: &str, over: &[(Range<usize>, Range<usize>)]) -> Over {
     let plain = python::Source {
         text: String::new(),
@@ -776,6 +776,7 @@ fn in_bytes(source: &python::Source, edited: &str, over: &[(Range<usize>, Range<
         .collect()
 }
 
+/// Whether a Python file's bytes parse, decoded as `CPython` decodes them; where and why not.
 fn parses(bytes: &[u8]) -> Result<(), String> {
     let source = python::Source::decode(bytes).map_err(|refusal| refusal.to_string())?;
     structural::search(&source.text, &[])
@@ -1874,21 +1875,58 @@ struct Code {
     end: usize,
 }
 
-/// A file the run holds until it ends, because a replace changed it or a structural match was
-/// found in it: its bytes as read, and what each replace that changed it changed, in order, from
-/// which any version of it is built.
-struct Held {
-    original: crate::contents::Bytes,
-    changes: Vec<Changes>,
+/// What the run holds of a file until it ends, because a replace changed it or a structural match
+/// was found in it: whichever is smaller of the file and the code its matches cover.
+enum Held {
+    /// The whole file: its bytes as read, and what each replace that changed it changed, in
+    /// order, from which any version of it is built.  A file a replace changed is always held
+    /// so, since it is checked and written from these.
+    File {
+        original: crate::contents::Bytes,
+        changes: Vec<Changes>,
+    },
+    /// The code the structural matches found in a file no replace changed cover, one match's
+    /// after another, where that is less than the file: a few short matches in a large file, as
+    /// most searches find.  Each match's [`Code`] is where its code stands in this.
+    Copied(String),
 }
 
 impl Held {
-    /// The file as read, for version 0, or as the first `version` replaces left it.
-    fn version(&self, version: usize) -> Cow<'_, [u8]> {
-        if version == 0 {
-            Cow::Borrowed(&self.original)
-        } else {
-            Cow::Owned(changes::applied(&self.original, &self.changes[..version]))
+    /// The file's bytes as read and the changes made to it, for a file held whole, as every file
+    /// a replace changed is.
+    fn file(&self) -> (&crate::contents::Bytes, &[Changes]) {
+        match self {
+            Held::File { original, changes } => (original, changes),
+            Held::Copied(_) => unreachable!("a file a replace changed is held whole"),
+        }
+    }
+
+    /// The decoded text a match's [`Code`] places it in: the version it was found in, built and
+    /// decoded again, for a file held whole, and the copies for one whose matches were copied.
+    fn text(&self, version: usize) -> Cow<'_, str> {
+        match self {
+            Held::File { original, changes } => {
+                let bytes = if version == 0 {
+                    Cow::Borrowed(&original[..])
+                } else {
+                    Cow::Owned(changes::applied(original, &changes[..version]))
+                };
+                let source = python::Source::decode(&bytes)
+                    .expect("a version a match was found in decoded then");
+                Cow::Owned(source.text)
+            }
+            Held::Copied(copies) => Cow::Borrowed(copies),
+        }
+    }
+
+    /// How many bytes it holds.
+    #[cfg(test)]
+    fn size(&self) -> usize {
+        match self {
+            Held::File { original, changes } => {
+                original.len() + changes.iter().map(Changes::held).sum::<usize>()
+            }
+            Held::Copied(copies) => copies.len(),
         }
     }
 }
@@ -1935,8 +1973,9 @@ struct Searched {
     /// Every file the run holds until it ends, which a [`Changed`] or a [`Code`] names by its place
     /// here.
     held: Vec<Held>,
-    /// Whether a structural match was found in the file being searched, so it must be held.
-    cited: bool,
+    /// The patterns, by their index, that structural matches were found for in the file being
+    /// searched, whose last entry in [`Searched::matches`] is that file's: it must be held.
+    cited: Vec<usize>,
     /// For each structural pattern, the Python files an earlier replace left unparseable, though
     /// they parse on disk, with where and why: the pattern cannot be searched for in them, and
     /// the edit is refused.
@@ -2138,7 +2177,7 @@ fn search_files(
         questioned: vec![Vec::new(); patterns.len()],
         changed: Vec::new(),
         held: Vec::new(),
-        cited: false,
+        cited: Vec::new(),
         broken: vec![Vec::new(); patterns.len()],
         refused: Vec::new(),
         hinted: Vec::new(),
@@ -2177,11 +2216,7 @@ impl Searched {
             .flatten()
             .map(|(_, hits)| hits.len())
             .sum();
-        let files: usize = self
-            .held
-            .iter()
-            .map(|held| held.original.len() + held.changes.iter().map(Changes::held).sum::<usize>())
-            .sum();
+        let files: usize = self.held.iter().map(Held::size).sum();
         hits * std::mem::size_of::<Hit>() + files
     }
 
@@ -2232,7 +2267,7 @@ impl Searched {
             python,
             binary,
         };
-        self.cited = false;
+        self.cited.clear();
         let (edited, by, changes) = self.through_batches(&read, plan, applies);
         self.tally(&shown, resolution, &bytes, locale);
         // Only the changes are kept, not the bytes they made: those are built again when needed.
@@ -2247,11 +2282,14 @@ impl Searched {
             });
         }
         // The place a match found here was given is this one, taken only if something needs it.
-        if differs || self.cited {
-            self.held.push(Held {
+        if differs || (!self.cited.is_empty() && !changes.is_empty()) {
+            self.held.push(Held::File {
                 original: bytes,
                 changes,
             });
+        } else if !self.cited.is_empty() {
+            let held = self.copied_or_whole(bytes);
+            self.held.push(held);
         }
         Ok(())
     }
@@ -2442,6 +2480,48 @@ impl Searched {
         }
     }
 
+    /// What to hold of a file no replace changed, `bytes`, that structural matches were found in:
+    /// the code they cover, copied, if that is less than the file, as for a few short matches in a
+    /// large file, with each match's [`Code`] moved to where its copy stands; and otherwise the
+    /// file, as for matches that overlap, each to the end of a long block.  So a run holds no more
+    /// of a file than the smaller of the two.
+    fn copied_or_whole(&mut self, bytes: crate::contents::Bytes) -> Held {
+        let cited = std::mem::take(&mut self.cited);
+        let codes = |matches: &[(PathBuf, Vec<Hit>)]| -> Vec<Code> {
+            let (_, hits) = matches
+                .last()
+                .expect("a pattern cited here has this file's matches");
+            hits.iter().filter_map(|hit| hit.code).collect()
+        };
+        let covered: usize = cited
+            .iter()
+            .flat_map(|&index| codes(&self.matches[index]))
+            .map(|code| code.end - code.start)
+            .sum();
+        if covered >= bytes.len() {
+            return Held::File {
+                original: bytes,
+                changes: Vec::new(),
+            };
+        }
+        let text = python::Source::decode(&bytes)
+            .expect("a file a structural match was found in decoded then")
+            .text;
+        let mut copies = String::with_capacity(covered);
+        for index in cited {
+            let (_, hits) = self.matches[index]
+                .last_mut()
+                .expect("a pattern cited here has this file's matches");
+            for code in hits.iter_mut().filter_map(|hit| hit.code.as_mut()) {
+                let start = copies.len();
+                copies.push_str(&text[code.start..code.end]);
+                code.start = start;
+                code.end = copies.len();
+            }
+        }
+        Held::Copied(copies)
+    }
+
     /// Records the structural matches `found` of the pattern at `index` in a file, as where each
     /// is in the version of it searched, holding the file if there is any.
     fn cite(
@@ -2454,7 +2534,7 @@ impl Searched {
         if found.is_empty() {
             return;
         }
-        self.cited = true;
+        self.cited.push(index);
         self.matches[index].push((
             shown.to_owned(),
             found
@@ -3010,8 +3090,8 @@ impl<'s> Evaluation<'s> {
             Wanted::Structural { .. } => String::new(),
         };
         let mut count = 0;
-        // The version of a file whose matches are being printed, decoded once for all of them.
-        let mut decoded: Option<((usize, usize), String)> = None;
+        // The text a file's matches are being printed from, built once for all of them.
+        let mut decoded: Option<((usize, usize), Cow<str>)> = None;
         for (path, in_file) in &self.searched.matches[self.next] {
             for hit in in_file {
                 count += 1;
@@ -3023,10 +3103,8 @@ impl<'s> Evaluation<'s> {
                     Some(code) => {
                         let wanted = (code.held, code.version);
                         if decoded.as_ref().is_none_or(|(at, _)| *at != wanted) {
-                            let bytes = self.searched.held[code.held].version(code.version);
-                            let source = python::Source::decode(&bytes)
-                                .expect("a version a match was found in decoded then");
-                            decoded = Some((wanted, source.text));
+                            decoded =
+                                Some((wanted, self.searched.held[code.held].text(code.version)));
                         }
                         let (_, version) = decoded.as_ref().expect("decoded just now");
                         &version[code.start..code.end]
@@ -3630,6 +3708,22 @@ mod tests {
     }
 
     #[test]
+    fn a_search_holds_the_code_its_matches_cover_not_the_file_they_are_in() {
+        let mut text = "a = 1\n".repeat(5000);
+        text.push_str("TODO = 2\nTODO = 33\n");
+        let (held, printed) = held_and_printed_in(&text, "find `TODO = $v` expect 2");
+        assert!(printed > 0);
+        // The two matches, each a fixed size, and their code copied: none of the rest.
+        let code = "TODO = 2".len() + "TODO = 33".len();
+        assert_eq!(held, 2 * std::mem::size_of::<Hit>() + code);
+        // Matches covering more than the file hold the file instead, never more than it.
+        let (held, printed) = held_and_printed(50, "find `x = $v\n$mid...\nend()` expect any");
+        let block: usize = (0..50).map(|i| format!("x = {i}\n").len()).sum::<usize>() + 6;
+        assert!(printed > block);
+        assert_eq!(held, 49 * std::mem::size_of::<Hit>() + block);
+    }
+
+    #[test]
     fn an_edit_holds_what_it_wrote_not_a_copy_of_the_file() {
         let dir = std::env::temp_dir().join(format!("quaffed-run-held-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
@@ -3662,28 +3756,45 @@ mod tests {
         let both = held(
             "replace string \"TODO\" with \"DONE\" expect 1\nreplace `DONE = $v` with `DONE = ($v)` expect 1",
         );
+        let deleted = held("delete `TODO = $v` expect 1");
+        // A match nested in another's hole is rewritten inside the outer one's stretch.
+        fs::write(dir.join("big.py"), text.clone() + "f(f(1))\n").unwrap();
+        let nested = held("replace `f($x)` with `g($x)` expect 2");
         let _ = fs::remove_dir_all(&dir);
         // Each edit holds the bytes it wrote - "DONE", then the match rewritten whole - and none
         // of the thousands it left as they were.
         assert_eq!(textual, "DONE".len());
         assert_eq!(structural, "DONE = 2".len());
         assert_eq!(both, "DONE".len() + "DONE = (2)".len());
+        // A deletion writes nothing over its line, and holds nothing.
+        assert_eq!(deleted, 0);
+        assert_eq!(nested, "g(g(1))".len());
     }
 
     /// What a run on a block of `n` statements, each followed by every later one to the block's
     /// end, holds until it prints, and how much it prints: the matches overlap, so what they
     /// cover is about the square of the block's length.
     fn held_and_printed(n: usize, script: &str) -> (usize, usize) {
-        let dir = std::env::temp_dir().join(format!("quaffed-run-block-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(dir.join(".git")).unwrap();
         let mut block = String::new();
         for i in 0..n {
             std::fmt::Write::write_fmt(&mut block, format_args!("x = {i}\n"))
                 .expect("a String takes any text");
         }
         block.push_str("end()\n");
-        fs::write(dir.join("block.py"), block).unwrap();
+        held_and_printed_in(&block, script)
+    }
+
+    /// What a run of `script` over a project holding one Python file, `text`, holds until it
+    /// prints, by [`Searched::held_for_printing`], and how many bytes it prints.
+    fn held_and_printed_in(text: &str, script: &str) -> (usize, usize) {
+        // One project per call: tests run on several threads of one process at once.
+        static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("quaffed-run-block-{}-{call}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join(".git")).unwrap();
+        fs::write(dir.join("block.py"), text).unwrap();
         let dir = fs::canonicalize(&dir).unwrap();
         let mut out = Vec::new();
         let outcome = run(
@@ -3706,8 +3817,11 @@ mod tests {
         (HELD.with(std::cell::Cell::get), out.len())
     }
 
+    /// The matches a run holds, each a fixed size, and the files it holds grow with the code
+    /// while what it prints grows with the square.  What this cannot see is memory a match owns,
+    /// which `Hit` being `Copy` rules out where it is declared.
     #[test]
-    fn a_run_holds_what_grows_with_the_code_not_with_what_it_prints() {
+    fn the_matches_and_files_a_run_holds_grow_with_the_code_not_with_what_it_prints() {
         let block = |end: &str| format!("find `x = $v\n$mid...\n{end}` expect any");
         for script in [
             block("end()"),

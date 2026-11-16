@@ -191,11 +191,15 @@ The format is in `docs/language.md`, _Output_.  The rules behind it:
   can overlap, as `x = $v` and a sequence to the end of a block do from every statement in it, and
   copies of their code would hold about the square of the block's length.  So a structural match
   holds which file it was found in, which version of it - as read, or as a replace left it - and
-  where in that version's decoded text; a file a structural match was found in is held, as read
-  and with its changes, and when its matches print, the version they were found in is built and
-  decoded again, once for all of them.  `Hit` is `Copy`, so a field that owns memory, such as a
-  copy of the code, does not compile.  A textual match prints the pattern's own text, so it holds
-  only where it is.
+  where in that version's decoded text.  **Of each file a structural match was found in, the run
+  holds the smaller of the file and the code its matches cover** (`Held`): a few short matches in
+  a large file, as most searches find, keep a copy of their code, one after another, and nothing
+  else; matches that cover more than the file keep the file, and when they print, the version they
+  were found in is built and decoded again, once for all of them.  So a run never holds more for a
+  file than a copy of every match would.  A file a replace changed is held whole whatever its
+  matches, since it is checked and written from it.  `Hit` is `Copy`, so a field that owns memory,
+  such as a copy of the code, does not compile.  A textual match prints the pattern's own text, so
+  it holds only where it is.
 
 ## Exit codes
 
