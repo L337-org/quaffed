@@ -21,9 +21,8 @@ architecture/performance.md has the reasoning and how to change a limit.
 
 The scenarios run on a scratch copy of corpus/synthetic, made a project root with an empty
 `.git`, so nothing else in the checkout can move a budget.  A scenario that edits gets a fresh
-copy, at the same path, before every run of quaff, made before any run and left to settle, so
-that its files are as old as quaff takes a file nobody is editing to be.  Every trace is kept
-under DIR
+copy, at the same path, before every run of quaff, made before any run and left until quaff
+trusts its files' timestamps.  Every trace is kept under DIR
 (default target/budgets), each run's under names carrying its index: the callgrind profile and
 its annotated report, the strace log, and a list of every path opened with the bytes read from
 it, which is what a reviewer reads to judge whether a moved budget is still correct behaviour.
@@ -110,12 +109,13 @@ MARGINS = {"instructions": 0.02, "peak_memory_kib": 0.10}
 TIME = "/usr/bin/time"
 
 # How old a file's newest timestamp must be before quaff trusts its metadata to show any later
-# change: RACY in crates/quaffed/src/identity.rs.  A file any newer has its bytes read again and
-# compared before it is written over, as git does for a racily clean file, which is right but is
-# not what an edit of files nobody is editing costs.  So every fresh copy is made up front and
-# left this long, and a little more, before the first run.  Were this to fall below RACY, every
-# edited file would be read twice again, which judge() refuses, so it cannot drift unseen.
-RACY_SECONDS = 2
+# change, read from RACY in this source rather than restated, so the two cannot drift apart.  A
+# file any newer has its bytes read again and compared before it is written over, as git does
+# for a racily clean file, which is right but is not what an edit of files nobody is editing
+# costs.  So every fresh copy is made up front and left that long, and a little more, before the
+# first run.
+IDENTITY = ROOT / "crates" / "quaffed" / "src" / "identity.rs"
+RACY = re.compile(r"const RACY: Duration = Duration::from_secs\((\d+)\);")
 SETTLE_MARGIN_SECONDS = 0.5
 
 # A tool's run, so a hung one cannot hang the job.  Valgrind runs quaff many times slower than
@@ -286,25 +286,41 @@ def make_fresh(scratch, count):
     at once so the whole job waits once, however many runs edit."""
     corpus = ROOT / "corpus" / "synthetic"
     pool = scratch / "fresh"
+    if count == 0:
+        return []
+    racy = racy_seconds()
     copies = []
     for i in range(count):
         copy = pool / f"{i:03}"
         shutil.copytree(corpus, copy)
         (copy / ".git").mkdir()
         copies.append(copy)
-    if not copies:
-        return copies
     newest = max(
         max(stat.st_mtime_ns, stat.st_ctime_ns)
         for copy in copies
         for path in [copy, *copy.rglob("*")]
         for stat in [path.lstat()]
     )
-    settled = newest / 1e9 + RACY_SECONDS + SETTLE_MARGIN_SECONDS
+    settled = newest / 1e9 + racy + SETTLE_MARGIN_SECONDS
     wait = settled - time.time()
     if wait > 0:
         time.sleep(wait)
     return copies
+
+
+def racy_seconds():
+    """RACY from quaff's source, in seconds.  Not found means the harness no longer knows how long
+    to let a copy settle, so nothing that edits can be measured."""
+    try:
+        found = RACY.findall(IDENTITY.read_text(encoding="utf-8"))
+    except OSError as err:
+        raise Unmeasured(f"reading {str(IDENTITY)!r} for RACY: {err}") from err
+    if len(found) != 1:
+        raise Unmeasured(
+            f"{str(IDENTITY)!r} has {len(found)} definitions of RACY in seconds, not one; "
+            "scripts/budgets reads it to know how long to let an edited copy settle"
+        )
+    return int(found[0])
 
 
 def measure(name, scenario, binary, project, env, out, index, reset):

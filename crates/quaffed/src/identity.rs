@@ -61,7 +61,8 @@ mod platform {
     use std::time::{Duration, SystemTime};
 
     /// How recent a timestamp must be for a change in the same tick to be possible: the
-    /// coarsest a filesystem quaff may write keeps, FAT's two seconds.
+    /// coarsest a filesystem quaff may write keeps, FAT's two seconds.  `scripts/budgets` reads
+    /// this line to know how long to let its copies settle, and refuses to measure if it cannot.
     const RACY: Duration = Duration::from_secs(2);
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
