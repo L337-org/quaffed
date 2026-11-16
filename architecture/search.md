@@ -185,6 +185,17 @@ The format is in `docs/language.md`, _Output_.  The rules behind it:
   counts expected and found, hits only, and any files its query could not be searched in.
 - **A closed standard output stops the printing quietly**, but assertions are still evaluated,
   so the exit code is still the answer.
+- **Every match is held until the run prints, so a match holds where its code is, not the code**
+  (`Hit` and `Code` in `src/run.rs`).  Files are searched one at a time, but each statement's
+  matches print together, so nothing can print until the last file is done; structural matches
+  can overlap, as `x = $v` and a sequence to the end of a block do from every statement in it, and
+  copies of their code would hold about the square of the block's length.  So a structural match
+  holds which file it was found in, which version of it - as read, or as a replace left it - and
+  where in that version's decoded text; a file a structural match was found in is held, as read
+  and with its changes, and when its matches print, the version they were found in is built and
+  decoded again, once for all of them.  `Hit` is `Copy`, so a field that owns memory, such as a
+  copy of the code, does not compile.  A textual match prints the pattern's own text, so it holds
+  only where it is.
 
 ## Exit codes
 
@@ -229,8 +240,9 @@ the path or argument it concerns, and says what to do where there is something t
   so an edit holds every file it changes until then.  **A changed file is held as its bytes as
   read and the changes each replace made** (`src/changes.rs`), not as a whole copy per edit: the
   stretches each wrote over and what it wrote there.  The whole file after a replace exists only
-  while the run is on that file, for the statements after it to read; the parse check and the
-  writer build each file's new bytes again, one file at a time.  Each replace says what it wrote
+  while the run is on that file, for the statements after it to read; the parse check, the writer
+  and the printing of a match found after a replace build the version they need again, one file
+  at a time.  Each replace says what it wrote
   over - a textual one its matches, a structural one its outermost matches, which hold any nested
   in them - and `Changes::between` checks that everything else is unchanged, taking any stretch
   that is not as changed, so a wrong report can make the changes larger but never wrong.

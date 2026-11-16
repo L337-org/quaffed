@@ -147,7 +147,7 @@ pub fn replace(
                 start: placed[&m.range.start],
                 end: placed[&last_char(text, &m.range)],
             },
-            text: text[m.range.clone()].to_owned(),
+            range: m.range.clone(),
         })
         .collect();
     let outcome = if captured.is_empty() {
