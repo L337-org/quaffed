@@ -45,7 +45,13 @@ that.
   its version moves the counts.
 - **The scenarios are `SCENARIOS` in `scripts/budgets`**, each in a scratch copy of the synthetic
   corpus, always under `/tmp` at the same depth, because a deeper path executes more instructions.
-  A scenario that edits gets a fresh copy, at the same path, before each run of quaff.
+  A scenario that edits gets a fresh copy, at the same path, before each run of quaff.  Every
+  copy is made before the first run and left until its files' newest timestamp is older than the
+  window in which quaff reads a file's bytes again before writing over it (`RACY` in
+  `crates/quaffed/src/identity.rs`, which the harness reads from there, failing as unmeasured if
+  it cannot), so the job waits once, a few seconds, however many runs edit.
+  A file changed within that window is read a second time, which is right, but the budgets
+  measure an edit of files nobody else is editing.
 - **The limits are `budgets.toml`**: `instructions` (Callgrind) and `peak_memory_kib` (GNU time)
   with a margin from `MARGINS`, and `paths_opened`, `bytes_read` and `paths_written` (strace)
   exactly, since a change in any is a change in behaviour.  No path in the project may be opened

@@ -32,21 +32,21 @@ bytes_read = 5_523
 paths_written = 0
 
 [edit]
-instructions = 2_337_300
+instructions = 2_320_400
 peak_memory_kib = 9_300
 paths_opened = 17
 bytes_read = 5_951
 paths_written = 6
 
 [rewrite]
-instructions = 11_615_400
+instructions = 11_513_900
 peak_memory_kib = 10_100
 paths_opened = 17
 bytes_read = 5_951
 paths_written = 8
 
 [delete]
-instructions = 6_920_800
+instructions = 6_688_200
 peak_memory_kib = 10_300
 paths_opened = 17
 bytes_read = 5_951
