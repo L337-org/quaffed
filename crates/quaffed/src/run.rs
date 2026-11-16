@@ -5,7 +5,6 @@
 //! the assertions, and what was not looked at.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fmt;
 use std::fs;
@@ -736,17 +735,16 @@ fn in_bytes(source: &python::Source, edited: &str, over: &[(Range<usize>, Range<
     };
     // Encoding nothing gives the byte-order mark alone, where the file has one.
     let mark = source.encode("").map_or(0, |bytes| bytes.len());
-    // Each offset's place in the bytes, found by spelling the text up to it, piece by piece.
-    let placed = |text: &str, offsets: Vec<usize>| -> Option<HashMap<usize, usize>> {
-        let mut offsets = offsets;
+    // Each offset's place in the bytes, found by spelling the text up to it, piece by piece, in
+    // order: a sorted list of pairs, looked up by binary search.
+    let placed = |text: &str, mut offsets: Vec<usize>| -> Option<Vec<(usize, usize)>> {
         offsets.sort_unstable();
         offsets.dedup();
-        let mut placed = HashMap::with_capacity(offsets.len());
+        let mut placed = Vec::with_capacity(offsets.len());
         let (mut from, mut at) = (0, mark);
         for offset in offsets {
-            let piece = text.get(from..offset)?;
-            at += plain.encode(piece).ok()?.len();
-            placed.insert(offset, at);
+            at += plain.encode(text.get(from..offset)?).ok()?.len();
+            placed.push((offset, at));
             from = offset;
         }
         Some(placed)
@@ -766,11 +764,17 @@ fn in_bytes(source: &python::Source, edited: &str, over: &[(Range<usize>, Range<
     let (Some(old), Some(new)) = (old, new) else {
         return Vec::new();
     };
+    let at = |placed: &[(usize, usize)], offset: usize| {
+        let index = placed
+            .binary_search_by_key(&offset, |&(offset, _)| offset)
+            .expect("every offset was placed");
+        placed[index].1
+    };
     over.iter()
         .map(|(was, now)| {
             (
-                old[&was.start]..old[&was.end],
-                new[&now.start]..new[&now.end],
+                at(&old, was.start)..at(&old, was.end),
+                at(&new, now.start)..at(&new, now.end),
             )
         })
         .collect()
@@ -1410,7 +1414,7 @@ struct Projects {
     contents: Contents,
     /// The project each directory a file was found in belongs to, where finding it meant walking
     /// up from the directory.
-    by_dir: HashMap<PathBuf, usize>,
+    by_dir: std::collections::HashMap<PathBuf, usize>,
 }
 
 /// A project, or the directory that stands in for one where there is none.
@@ -1426,7 +1430,7 @@ impl Projects {
         let mut projects = Projects {
             list: Vec::new(),
             contents: contents.clone(),
-            by_dir: HashMap::new(),
+            by_dir: std::collections::HashMap::new(),
         };
         projects.add(workspace::find(cwd, contents), cwd, cwd);
         projects
