@@ -47,6 +47,10 @@ pub struct Replaced {
 pub struct Edited {
     /// The new text.
     pub text: String,
+    /// For each stretch of the text as it was that the rewrite wrote over, in order, where it was
+    /// and where what was written over it stands in [`Edited::text`].  A match nested in another
+    /// is inside the other's stretch.  Taken as a claim, to be checked, not as certain.
+    pub over: Vec<(Range<usize>, Range<usize>)>,
     /// Each place the rewrite was written as asked but may have changed what the code means.
     pub questioned: Vec<Questioned>,
 }
@@ -251,8 +255,21 @@ fn nested(
         current = done.text;
     }
     questioned.sort_by_key(|q| (q.at.line, q.at.column));
+    // The outermost level's matches hold every deeper one, so its stretches are all that changed,
+    // each mapped back through the levels before it to the text as it was.
+    let (last, before) = maps.split_last().expect("a match makes at least one level");
+    let over = last
+        .iter()
+        .map(|(old, new)| {
+            (
+                backward(before, old.start)..backward(before, old.end),
+                new.clone(),
+            )
+        })
+        .collect();
     Ok(Edited {
         text: current,
+        over,
         questioned,
     })
 }
@@ -1627,12 +1644,30 @@ mod tests {
         let rewrite = compile_rewrite(with, &pattern).expect("the rewrite compiles");
         // As a run does: once the rewrite is compiled.
         let pattern = name_every_hole(&pattern);
-        replace(text, &pattern, None, &rewrite)
+        let edited = replace(text, &pattern, None, &rewrite)
             .expect("the text parses")
             .outcome
             .map_err(|refused| {
                 format!("{}:{}: {}", refused.at.line, refused.at.column, refused.why)
-            })
+            })?;
+        if let Some(edited) = &edited {
+            // What it says it wrote over is all that changed: the text as it was, with each
+            // stretch written over, is the new text.
+            let mut rebuilt = String::new();
+            let mut copied = 0;
+            for (was, now) in &edited.over {
+                rebuilt.push_str(&text[copied..was.start]);
+                rebuilt.push_str(&edited.text[now.clone()]);
+                copied = was.end;
+            }
+            rebuilt.push_str(&text[copied..]);
+            assert_eq!(
+                rebuilt, edited.text,
+                "where the rewrite says it wrote, {:?}",
+                edited.over
+            );
+        }
+        Ok(edited)
     }
 
     /// `text` with `pattern` replaced by `with`, or why it was refused.

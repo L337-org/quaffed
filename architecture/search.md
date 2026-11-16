@@ -226,7 +226,14 @@ the path or argument it concerns, and says what to do where there is something t
   it for the statements after.  With no replace, that is one pass, as for any search.  The
   encoding is decided once, from the file on disk.
 - **Edits are held in memory to the end of the run**, with every changed file's original bytes,
-  so an edit holds every file it changes until then.
+  so an edit holds every file it changes until then.  **A changed file is held as its bytes as
+  read and the changes each replace made** (`src/changes.rs`), not as a whole copy per edit: the
+  stretches each wrote over and what it wrote there.  The whole file after a replace exists only
+  while the run is on that file, for the statements after it to read; the parse check and the
+  writer build each file's new bytes again, one file at a time.  Each replace says what it wrote
+  over - a textual one its matches, a structural one its outermost matches, which hold any nested
+  in them - and `Changes::between` checks that everything else is unchanged, taking any stretch
+  that is not as changed, so a wrong report can make the changes larger but never wrong.
 - **The outcome is decided before anything is printed or written.**  A silent first pass over the
   results finds, statement by statement, whether each count holds, and for a replace whose count
   holds, whether any file's encoding cannot write its replacement and whether a structural

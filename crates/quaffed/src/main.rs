@@ -7,6 +7,7 @@
 //! be asked is in the help, `src/help.rs`; `architecture/search.md` and `architecture/script.md`
 //! describe its design.
 
+mod changes;
 mod cli;
 mod contents;
 mod discover;

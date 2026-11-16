@@ -5,10 +5,12 @@
 //! the assertions, and what was not looked at.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fmt;
 use std::fs;
 use std::io::{self, Read, Write};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use quaffed_encoding::{self as encoding, Encoding, Named, Refusal, python};
@@ -23,6 +25,7 @@ use quaffed_representation::span::{Source, Span, Spanned};
 use quaffed_script::{ErrorKind, lexer, location, parse_source};
 use quaffed_syntax::Pattern;
 
+use crate::changes::{self, Changes};
 use crate::cli::{self, SourceArg, UsageError};
 use crate::contents::Contents;
 use crate::discover;
@@ -583,6 +586,17 @@ fn conclude<'s>(
 ) -> Result<(Outcome, Evaluation<'s>), Failure> {
     let dry_run = options.dry_run;
     let locations = replace_locations(steps, built);
+    #[cfg(test)]
+    CHANGES_HELD.with(|held| {
+        held.set(
+            searched
+                .changed
+                .iter()
+                .flat_map(|file| &file.changes)
+                .map(Changes::held)
+                .sum(),
+        );
+    });
     let verdict =
         Evaluation::new(searched, false, locations.clone()).steps(steps, built, &mut io::sink())?;
     if verdict == Outcome::Success {
@@ -596,7 +610,7 @@ fn conclude<'s>(
                     shown: &file.shown,
                     identity: file.original.identity(),
                     original: &file.original,
-                    edited: &file.edited,
+                    changes: &file.changes,
                 })
                 .collect();
             #[cfg(debug_assertions)]
@@ -640,6 +654,12 @@ fn conclude<'s>(
     Ok((outcome, evaluation))
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many bytes the changes the last run on this thread held, besides the files as read.
+    static CHANGES_HELD: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Refuses edits that would leave a Python file unparseable that parsed before them.  A file
 /// that did not parse before is not refused: the check protects a parse that existed, and a
 /// textual edit needs no parse tree.
@@ -648,7 +668,7 @@ fn refuse_broken(changed: &[Changed], locations: &[Option<String>]) -> Result<()
         .iter()
         .filter(|file| file.python && parses(&file.original).is_ok())
         .filter_map(|file| {
-            parses(&file.edited).err().map(|why| Broken {
+            parses(&file.edited()).err().map(|why| Broken {
                 path: file.shown.clone(),
                 why,
                 by: located(&file.by, locations),
@@ -686,6 +706,64 @@ fn replace_locations(steps: &[Step], built: &Built) -> Vec<Option<String>> {
 }
 
 /// Whether a Python file's bytes parse, decoded as `CPython` decodes them; where and why not.
+/// Stretches an edit wrote over, each where it was in the bytes before and where what was written
+/// stands in those after, as [`Changes::between`] takes them.
+type Over = Vec<(Range<usize>, Range<usize>)>;
+
+/// `over`, stretches a structural rewrite gave in decoded text - from `source`'s text to `edited` -
+/// as the same stretches in the file's bytes before and after.  Every encoding a Python file is
+/// read in spells each character on its own, so a stretch's bytes are its characters' spellings,
+/// after the byte-order mark if there is one.  A stretch that does not fall on characters in
+/// either text is not one a rewrite gives; then nothing is claimed, and the changes are found by
+/// comparing the bytes whole, which is slower but still exact.
+fn in_bytes(source: &python::Source, edited: &str, over: &[(Range<usize>, Range<usize>)]) -> Over {
+    let plain = python::Source {
+        text: String::new(),
+        encoding: source.encoding,
+        byte_order_mark: false,
+    };
+    // Encoding nothing gives the byte-order mark alone, where the file has one.
+    let mark = source.encode("").map_or(0, |bytes| bytes.len());
+    // Each offset's place in the bytes, found by spelling the text up to it, piece by piece.
+    let placed = |text: &str, offsets: Vec<usize>| -> Option<HashMap<usize, usize>> {
+        let mut offsets = offsets;
+        offsets.sort_unstable();
+        offsets.dedup();
+        let mut placed = HashMap::with_capacity(offsets.len());
+        let (mut from, mut at) = (0, mark);
+        for offset in offsets {
+            let piece = text.get(from..offset)?;
+            at += plain.encode(piece).ok()?.len();
+            placed.insert(offset, at);
+            from = offset;
+        }
+        Some(placed)
+    };
+    let old = placed(
+        &source.text,
+        over.iter()
+            .flat_map(|(was, _)| [was.start, was.end])
+            .collect(),
+    );
+    let new = placed(
+        edited,
+        over.iter()
+            .flat_map(|(_, now)| [now.start, now.end])
+            .collect(),
+    );
+    let (Some(old), Some(new)) = (old, new) else {
+        return Vec::new();
+    };
+    over.iter()
+        .map(|(was, now)| {
+            (
+                old[&was.start]..old[&was.end],
+                new[&now.start]..new[&now.end],
+            )
+        })
+        .collect()
+}
+
 fn parses(bytes: &[u8]) -> Result<(), String> {
     let source = python::Source::decode(bytes).map_err(|refusal| refusal.to_string())?;
     structural::search(&source.text, &[])
@@ -1319,7 +1397,7 @@ struct Projects {
     contents: Contents,
     /// The project each directory a file was found in belongs to, where finding it meant walking
     /// up from the directory.
-    by_dir: std::collections::HashMap<PathBuf, usize>,
+    by_dir: HashMap<PathBuf, usize>,
 }
 
 /// A project, or the directory that stands in for one where there is none.
@@ -1335,7 +1413,7 @@ impl Projects {
         let mut projects = Projects {
             list: Vec::new(),
             contents: contents.clone(),
-            by_dir: std::collections::HashMap::new(),
+            by_dir: HashMap::new(),
         };
         projects.add(workspace::find(cwd, contents), cwd, cwd);
         projects
@@ -1817,7 +1895,9 @@ struct Searched {
     binary: usize,
 }
 
-/// A file a replace changed, held in memory until the run is over.
+/// A file a replace changed, held in memory until the run is over: its bytes as read, and the
+/// changes each replace made, from which its new bytes are built when they are checked and
+/// written, one file at a time.
 struct Changed {
     /// Where it is, to write it.
     path: PathBuf,
@@ -1827,10 +1907,17 @@ struct Changed {
     python: bool,
     /// Its bytes as they were read, to write back if writing fails.
     original: crate::contents::Bytes,
-    /// Its bytes after every replace.
-    edited: Vec<u8>,
+    /// What each replace that changed it changed, in order.
+    changes: Vec<Changes>,
     /// The replaces that changed it, by their pattern's index.
     by: Vec<usize>,
+}
+
+impl Changed {
+    /// Its bytes after every replace.
+    fn edited(&self) -> Vec<u8> {
+        changes::applied(&self.original, &self.changes)
+    }
 }
 
 /// Why a file was not searched for a pattern.
@@ -2065,15 +2152,16 @@ impl Searched {
             python,
             binary,
         };
-        let (edited, by) = self.through_batches(&read, plan, applies);
+        let (edited, by, changes) = self.through_batches(&read, plan, applies);
         self.tally(&shown, resolution, &bytes, locale);
-        if let Some(edited) = edited.filter(|edited| edited[..] != bytes[..]) {
+        // Only the changes are kept, not the bytes they made: those are built again when needed.
+        if edited.is_some_and(|edited| edited[..] != bytes[..]) {
             self.changed.push(Changed {
                 path: file.to_path_buf(),
                 shown,
                 python,
                 original: bytes,
-                edited,
+                changes,
                 by,
             });
         }
@@ -2082,17 +2170,20 @@ impl Searched {
 
     /// Takes a file through the run's batches in order, as `applies` says which patterns look at
     /// it: each search on the file as the replaces before it left it.  Returns the file's bytes
-    /// once a replace has changed them, and the replaces that did, by their pattern's index.
+    /// once a replace has changed them, the replaces that did, by their pattern's index, and what
+    /// each changed.
     fn through_batches(
         &mut self,
         read: &ReadFile,
         plan: &Plan,
         applies: &[bool],
-    ) -> (Option<Vec<u8>>, Vec<usize>) {
-        // The file as the replaces so far have left it, once one has changed it.
+    ) -> (Option<Vec<u8>>, Vec<usize>, Vec<Changes>) {
+        // The file as the replaces so far have left it, once one has changed it: whole while the
+        // run is on this file, for the statements after each replace to read.
         let mut edited: Option<Vec<u8>> = None;
-        // The replaces that changed it so far, by their pattern's index.
+        // The replaces that changed it so far, by their pattern's index, and what each changed.
         let mut by: Vec<usize> = Vec::new();
+        let mut changes: Vec<Changes> = Vec::new();
         let mut unparsed = false;
         for batch in &plan.batches {
             let text: &[u8] = edited.as_deref().unwrap_or(read.bytes);
@@ -2138,9 +2229,10 @@ impl Searched {
                     if !applies[*index] {
                         continue;
                     }
-                    if let Some(whole) =
+                    if let Some((whole, over)) =
                         self.replace_in(read.shown, text, read.resolution, *index, pattern, with)
                     {
+                        changes.push(Changes::between(text, &whole, &over));
                         edited = Some(whole);
                         by.push(*index);
                     }
@@ -2162,7 +2254,7 @@ impl Searched {
                         pattern: &plan.compiled[*compiled],
                         rewrite: &plan.rewrites[*rewrite],
                     };
-                    if let Some(whole) = self.rewrite_in(
+                    if let Some((whole, over)) = self.rewrite_in(
                         read.shown,
                         text,
                         &earlier,
@@ -2171,13 +2263,14 @@ impl Searched {
                         read.file,
                         &mut unparsed,
                     ) {
+                        changes.push(Changes::between(text, &whole, &over));
                         edited = Some(whole);
                         by.push(*index);
                     }
                 }
             }
         }
-        (edited, by)
+        (edited, by, changes)
     }
 
     /// Counts a file for the structural patterns that look at it, as `applies` says: a Python
@@ -2353,11 +2446,12 @@ impl Searched {
     }
 
     /// Replaces a structural pattern in a Python file's current bytes, `text`, as `edit` says,
-    /// and returns the file's new bytes if that changed it.  The text is decoded as `CPython`
-    /// decodes it and written back in the same encoding, so that every byte outside the matches
-    /// is as it was.  A file that does not parse is recorded as a search records it; an edit
-    /// that cannot be made as written, or written in the file's encoding, is recorded for the
-    /// run to refuse.
+    /// and returns the file's new bytes if that changed it, with each stretch of `text` it wrote
+    /// over and where it went in them, as [`Changes::between`] takes.  The text is decoded as
+    /// `CPython` decodes it and written back in the same encoding, so that every byte outside the
+    /// matches is as it was.  A file that does not parse is recorded as a search records it; an
+    /// edit that cannot be made as written, or written in the file's encoding, is recorded for
+    /// the run to refuse.
     #[expect(
         clippy::too_many_arguments,
         reason = "the file, the edit and what earlier batches found, as a search has them"
@@ -2371,7 +2465,7 @@ impl Searched {
         plan: &Plan,
         file: &Path,
         unparsed: &mut bool,
-    ) -> Option<Vec<u8>> {
+    ) -> Option<(Vec<u8>, Over)> {
         let index = edit.index;
         let place = plan.filters[index]
             .is_some()
@@ -2428,7 +2522,8 @@ impl Searched {
                             ),
                         ));
                     }
-                    Some(bytes)
+                    let over = in_bytes(&source, &edited.text, &edited.over);
+                    Some((bytes, over))
                 }
                 Err(unencodable) => {
                     self.unwritable[index].push((
@@ -2477,8 +2572,9 @@ impl Searched {
     }
 
     /// Replaces the pattern at `index` with `with` in a file's current bytes, `text`, decided as
-    /// `resolution` says, and returns its new bytes if that changed it.  A file of unknown
-    /// encoding is never edited: its matches are only possible, and reported as in a search.
+    /// `resolution` says, and returns its new bytes if that changed it, with where each
+    /// replacement went, as [`Changes::between`] takes.  A file of unknown encoding is never
+    /// edited: its matches are only possible, and reported as in a search.
     fn replace_in(
         &mut self,
         shown: &Path,
@@ -2487,14 +2583,25 @@ impl Searched {
         index: usize,
         pattern: &TextPattern,
         with: &TextPattern,
-    ) -> Option<Vec<u8>> {
+    ) -> Option<(Vec<u8>, Over)> {
         match resolution {
             Resolution::Known { encoding, body, .. } => {
                 let replaced = search::replace(&text[*body..], *encoding, pattern, with);
-                let edited = self.replaced(shown, index, *encoding, replaced)?;
+                let written = self.replaced(shown, index, *encoding, replaced)?;
                 let mut whole = text[..*body].to_vec();
-                whole.extend_from_slice(&edited);
-                Some(whole)
+                whole.extend_from_slice(&written.bytes);
+                // The replace saw the text after any byte-order mark, which is before it in both.
+                let over = written
+                    .over
+                    .into_iter()
+                    .map(|(was, now)| {
+                        (
+                            was.start + body..was.end + body,
+                            now.start + body..now.end + body,
+                        )
+                    })
+                    .collect();
+                Some((whole, over))
             }
             Resolution::Unknown(reason) => {
                 self.unknown(shown, text, reason, &[(index, pattern)]);
@@ -2512,7 +2619,7 @@ impl Searched {
         index: usize,
         encoding: Encoding,
         replaced: search::Replaced,
-    ) -> Option<Vec<u8>> {
+    ) -> Option<search::Written> {
         let hits = |matches: Vec<Match>| -> Vec<Hit> {
             matches
                 .into_iter()
@@ -3352,6 +3459,95 @@ mod tests {
                 pointer.display()
             );
         }
+    }
+
+    /// A stretch of `text`'s bytes, in `encoding`'s spelling, rewritten: `old` in the file as
+    /// decoded becomes `new`, and the claim is checked to be exactly what changed.
+    fn claimed_in_bytes(file: &[u8], old: &str, new: &str) {
+        let source = python::Source::decode(file).expect("decodes");
+        let at = source.text.find(old).expect("the old text is in the file");
+        let edited = source.text.replacen(old, new, 1);
+        let over = [(at..at + old.len(), at..at + new.len())];
+        let bytes = source.encode(&edited).expect("encodes");
+        let claimed = in_bytes(&source, &edited, &over);
+        assert_eq!(claimed.len(), 1, "{claimed:?}");
+        let (was, now) = &claimed[0];
+        let mut rebuilt = file[..was.start].to_vec();
+        rebuilt.extend_from_slice(&bytes[now.clone()]);
+        rebuilt.extend_from_slice(&file[was.end..]);
+        assert_eq!(rebuilt, bytes, "{claimed:?}");
+        let changes = Changes::between(file, &bytes, &claimed);
+        assert_eq!(changes.held(), now.len());
+    }
+
+    #[test]
+    fn a_rewrites_stretches_are_found_in_the_files_bytes_whatever_its_encoding() {
+        // After a byte-order mark, which comes before every stretch.
+        claimed_in_bytes(
+            b"\xef\xbb\xbfx = 'caf\xc3\xa9'\ny = 2\n",
+            "y = 2",
+            "y = (2)",
+        );
+        // Single-byte: each character one byte, so a decoded offset past "é" is not a byte one.
+        claimed_in_bytes(
+            b"# -*- coding: latin-1 -*-\nx = 'caf\xe9'\ny = 2\n",
+            "y = 2",
+            "y = 'na\u{ef}ve'",
+        );
+        // Multi-byte: "日本" is four bytes in Shift-JIS and six in UTF-8.
+        claimed_in_bytes(
+            b"# -*- coding: shift_jis -*-\nx = '\x93\xfa\x96\x7b'\ny = 2\n",
+            "y = 2",
+            "y = '\u{65e5}'",
+        );
+    }
+
+    #[test]
+    fn a_stretch_off_a_character_boundary_claims_nothing() {
+        let source = python::Source::decode("x = 'é'\n".as_bytes()).unwrap();
+        // Byte 6 is inside "é".
+        assert_eq!(in_bytes(&source, "x = 'é'\n", &[(6..7, 6..7)]), Vec::new());
+    }
+
+    #[test]
+    fn an_edit_holds_what_it_wrote_not_a_copy_of_the_file() {
+        let dir = std::env::temp_dir().join(format!("quaffed-run-held-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join(".git")).unwrap();
+        let mut text = "a = 1\n".repeat(5000);
+        text.push_str("TODO = 2\n");
+        fs::write(dir.join("big.py"), &text).unwrap();
+        let dir = fs::canonicalize(&dir).unwrap();
+        let held = |script: &str| {
+            let outcome = run(
+                vec![SourceArg::Expression {
+                    number: 1,
+                    text: script.to_owned(),
+                }],
+                None,
+                &cli::Options {
+                    dry_run: true,
+                    ..cli::Options::default()
+                },
+                &dir,
+                &mut io::empty(),
+                &mut Vec::new(),
+                &mut Vec::new(),
+            );
+            assert!(outcome.is_ok(), "{script}: {outcome:?}");
+            CHANGES_HELD.with(std::cell::Cell::get)
+        };
+        let textual = held(r#"replace string "TODO" with "DONE" expect 1"#);
+        let structural = held("replace `TODO = $v` with `DONE = $v` expect 1");
+        let both = held(
+            "replace string \"TODO\" with \"DONE\" expect 1\nreplace `DONE = $v` with `DONE = ($v)` expect 1",
+        );
+        let _ = fs::remove_dir_all(&dir);
+        // Each edit holds the bytes it wrote - "DONE", then the match rewritten whole - and none
+        // of the thousands it left as they were.
+        assert_eq!(textual, "DONE".len());
+        assert_eq!(structural, "DONE = 2".len());
+        assert_eq!(both, "DONE".len() + "DONE = (2)".len());
     }
 
     #[test]

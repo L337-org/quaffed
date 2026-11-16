@@ -3,6 +3,8 @@
 
 //! Finding a textual query in one file's bytes.
 
+use std::ops::Range;
+
 use quaffed_representation::program::{TextPart, TextPattern};
 
 use quaffed_encoding::{Encoding, Spelling};
@@ -59,6 +61,16 @@ pub fn search(text: &[u8], encoding: Encoding, pattern: &TextPattern) -> Option<
     Some(positions(text, encoding, &ranges))
 }
 
+/// A file's bytes once every match is replaced, and where each replacement went.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Written {
+    /// The new bytes.
+    pub bytes: Vec<u8>,
+    /// For each match, in order, its bytes in the text replaced and those of what was written
+    /// over it in [`Written::bytes`]; nothing outside them changed.
+    pub over: Vec<(Range<usize>, Range<usize>)>,
+}
+
 /// What replacing a pattern in one file's bytes gives.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Replaced {
@@ -71,7 +83,7 @@ pub enum Replaced {
         /// Each match replaced, in order.
         matches: Vec<Match>,
         /// The text with every match replaced, or `None` with no match.
-        text: Option<Vec<u8>>,
+        text: Option<Written>,
     },
     /// The pattern matched, but the encoding cannot write the replacement: the text named holds
     /// a character it cannot hold, or spells more than one way.
@@ -144,9 +156,11 @@ pub fn replace(
     let breaks = spelled.iter().any(Option::is_none);
     let mut endings = Endings::default();
     let mut edited = Vec::with_capacity(text.len());
+    let mut over = Vec::with_capacity(ranges.len());
     let mut from = 0;
     for &(start, end) in &ranges {
         edited.extend_from_slice(&text[from..start]);
+        let base = edited.len();
         // Found once a match, and only for a replacement that writes a line break.
         let ending = if breaks {
             endings.for_match(&compiled, text, start)
@@ -156,12 +170,16 @@ pub fn replace(
         for bytes in &spelled {
             edited.extend_from_slice(bytes.as_deref().unwrap_or(ending));
         }
+        over.push((start..end, base..edited.len()));
         from = end;
     }
     edited.extend_from_slice(&text[from..]);
     Replaced::Edited {
         matches,
-        text: Some(edited),
+        text: Some(Written {
+            bytes: edited,
+            over,
+        }),
     }
 }
 
@@ -848,8 +866,21 @@ mod tests {
     fn edited(encoding: Encoding, text: &[u8], pattern: &str, with: &str) -> Vec<u8> {
         match replaced(encoding, text, pattern, with) {
             Replaced::Edited {
-                text: Some(text), ..
-            } => text,
+                text: Some(written),
+                ..
+            } => {
+                // Each match's replacement is where it says, and nothing between them changed.
+                let mut rebuilt = Vec::new();
+                let mut copied = 0;
+                for (was, now) in &written.over {
+                    rebuilt.extend_from_slice(&text[copied..was.start]);
+                    rebuilt.extend_from_slice(&written.bytes[now.clone()]);
+                    copied = was.end;
+                }
+                rebuilt.extend_from_slice(&text[copied..]);
+                assert_eq!(rebuilt, written.bytes, "where the replacements went");
+                written.bytes
+            }
             other => panic!("expected an edit, got {other:?}"),
         }
     }

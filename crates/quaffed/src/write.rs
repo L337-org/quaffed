@@ -34,11 +34,12 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
+use crate::changes::{self, Changes};
 use crate::contents::{self, Check};
 use crate::identity::Identity;
 
 /// One file to write: where it is, how a message names it, what it was when read, and its bytes
-/// before and after.
+/// before and the changes that make its bytes after.
 pub struct Edit<'a> {
     /// Where it is.
     pub path: &'a Path,
@@ -48,8 +49,9 @@ pub struct Edit<'a> {
     pub identity: &'a Identity,
     /// Its bytes as they were read, written back if writing fails.
     pub original: &'a [u8],
-    /// Its new bytes.
-    pub edited: &'a [u8],
+    /// The changes each edit made, in order, from which its new bytes are built only while it is
+    /// written, so that a run never holds every file's new bytes at once.
+    pub changes: &'a [Changes],
 }
 
 /// A flush that failed after files were put back, leaving them as they were but perhaps not on
@@ -410,7 +412,8 @@ fn commit_with<T: Target>(
         })?);
     }
     for (written, edit) in edits.iter().enumerate() {
-        if let Err((cause, opened)) = write(&mut open, flush, edit.path, edit.edited) {
+        let edited = changes::applied(edit.original, edit.changes);
+        if let Err((cause, opened)) = write(&mut open, flush, edit.path, &edited) {
             // One that failed once opened may be half-written, so it is put back too; one that
             // could not be opened is untouched, and is not reported as possibly changed.
             let failed = if opened { written + 1 } else { written };
@@ -601,8 +604,14 @@ mod tests {
             shown: Path::new(path),
             identity: &UNCHECKED,
             original: original.as_bytes(),
-            edited: edited.as_bytes(),
+            changes: changed(original.as_bytes(), edited.as_bytes()),
         }
+    }
+
+    /// The one change that makes `original` into `edited`, leaked to outlive the test's edits,
+    /// which borrow it as a run's edits borrow what the run holds.
+    fn changed(original: &[u8], edited: &[u8]) -> &'static [Changes] {
+        Box::leak(Box::new([Changes::between(original, edited, &[])]))
     }
 
     /// Commits `edits` to `disk`, refusing to open the files named in `unopenable`.
@@ -922,7 +931,7 @@ mod tests {
             shown: Path::new("a.txt"),
             identity: &read,
             original: b"a longer original\n",
-            edited: b"short\n",
+            changes: changed(b"a longer original\n", b"short\n"),
         }];
         let result = commit(&edits);
         let after = std::fs::metadata(&file).unwrap();
