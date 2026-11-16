@@ -21,7 +21,9 @@ architecture/performance.md has the reasoning and how to change a limit.
 
 The scenarios run on a scratch copy of corpus/synthetic, made a project root with an empty
 `.git`, so nothing else in the checkout can move a budget.  A scenario that edits gets a fresh
-copy, at the same path, before every run of quaff.  Every trace is kept under DIR
+copy, at the same path, before every run of quaff, made before any run and left to settle, so
+that its files are as old as quaff takes a file nobody is editing to be.  Every trace is kept
+under DIR
 (default target/budgets), each run's under names carrying its index: the callgrind profile and
 its annotated report, the strace log, and a list of every path opened with the bytes read from
 it, which is what a reviewer reads to judge whether a moved budget is still correct behaviour.
@@ -70,7 +72,7 @@ ROOT = Path(__file__).resolve().parent.parent
 # rewritten, lexed and parsed again; delete deletes every assignment across it, so each match's
 # separator or lines are worked out and each file it changes parsed again, which some then fail,
 # so it is refused, exit 9, with nothing written.  A scenario that edits runs on a fresh copy each
-# time, since each run changes it.
+# time, since each run changes it, made before any run and left to settle (make_fresh).
 SCENARIOS = {
     "startup": {"project": "empty", "args": ["TODO"], "exit": 1},
     "search": {"project": "corpus", "args": ["def"], "exit": 0},
@@ -106,6 +108,15 @@ MARGINS = {"instructions": 0.02, "peak_memory_kib": 0.10}
 # peak for a process counts the memory it had before it started quaff.  time's own child starts
 # as a copy of time, far smaller than quaff.
 TIME = "/usr/bin/time"
+
+# How old a file's newest timestamp must be before quaff trusts its metadata to show any later
+# change: RACY in crates/quaffed/src/identity.rs.  A file any newer has its bytes read again and
+# compared before it is written over, as git does for a racily clean file, which is right but is
+# not what an edit of files nobody is editing costs.  So every fresh copy is made up front and
+# left this long, and a little more, before the first run.  Were this to fall below RACY, every
+# edited file would be read twice again, which judge() refuses, so it cannot drift unseen.
+RACY_SECONDS = 2
+SETTLE_MARGIN_SECONDS = 0.5
 
 # A tool's run, so a hung one cannot hang the job.  Valgrind runs quaff many times slower than
 # natively, and the corpus is small.
@@ -150,12 +161,16 @@ def run_all(args):
     names = args.scenario or list(SCENARIOS)
     failures = []
     rows = []
+    if args.repeat < 1:
+        raise Unmeasured(f"--repeat {args.repeat} measures nothing")
     # Always under /tmp, whatever TMPDIR says, and at the same depth: quaff handles each file's
     # absolute path, so a project one directory deeper executes thousands more instructions.
     # The random part of the name is always the same length, and its characters do not matter.
     with tempfile.TemporaryDirectory(prefix="quaffed-budgets-", dir="/tmp") as scratch:
         projects = make_projects(Path(scratch))
-        corpus = ROOT / "corpus" / "synthetic"
+        # Three runs of quaff for each repeat: under callgrind, GNU time and strace.
+        wanted = sum(3 * args.repeat for name in names if SCENARIOS[name].get("fresh"))
+        fresh = iter(make_fresh(Path(scratch), wanted))
         for name in names:
             scenario = SCENARIOS[name]
             project = projects[scenario["project"]]
@@ -168,14 +183,17 @@ def run_all(args):
             limits = budgets.get(name)
             if limits is None:
                 raise Unmeasured(f"budgets.toml has no [{name}] table")
-            if args.repeat < 1:
-                raise Unmeasured(f"--repeat {args.repeat} measures nothing")
             if scenario.get("fresh"):
 
                 def reset(project=project):
+                    copy = next(fresh, None)
+                    if copy is None:
+                        raise Unmeasured(
+                            f"no settled copy left for {project.name!r}; {wanted} were made"
+                        )
                     shutil.rmtree(project)
-                    shutil.copytree(corpus, project)
-                    (project / ".git").mkdir()
+                    # A rename moves the copy's files without touching their timestamps.
+                    copy.rename(project)
 
             else:
 
@@ -260,6 +278,33 @@ def make_projects(scratch):
     for project in projects.values():
         (project / ".git").mkdir()
     return projects
+
+
+def make_fresh(scratch, count):
+    """`count` copies of the synthetic corpus, each a project root, under `scratch`, once the
+    newest timestamp among their files is old enough that quaff trusts their metadata.  Made all
+    at once so the whole job waits once, however many runs edit."""
+    corpus = ROOT / "corpus" / "synthetic"
+    pool = scratch / "fresh"
+    copies = []
+    for i in range(count):
+        copy = pool / f"{i:03}"
+        shutil.copytree(corpus, copy)
+        (copy / ".git").mkdir()
+        copies.append(copy)
+    if not copies:
+        return copies
+    newest = max(
+        max(stat.st_mtime_ns, stat.st_ctime_ns)
+        for copy in copies
+        for path in [copy, *copy.rglob("*")]
+        for stat in [path.lstat()]
+    )
+    settled = newest / 1e9 + RACY_SECONDS + SETTLE_MARGIN_SECONDS
+    wait = settled - time.time()
+    if wait > 0:
+        time.sleep(wait)
+    return copies
 
 
 def measure(name, scenario, binary, project, env, out, index, reset):
