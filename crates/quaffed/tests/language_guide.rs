@@ -21,7 +21,7 @@ use shell::{Ran, run_quaff, split_command};
 /// The note every structural search over the whole project prints for `docs/notes.md`, which
 /// the guide leaves out of every example after the first.
 const TEXT_TIER_NOTE: &str = "quaff: 1 text-tier file not searched for structural patterns, \
-    which apply to Python files only";
+    which apply only to files with structural support";
 
 /// What opens a directive, an HTML comment that says how to run the example after it.
 const DIRECTIVE_OPEN: &str = "<!-- check:";
@@ -605,6 +605,59 @@ fn every_example_in_the_language_guide_is_what_quaff_does() {
          architecture/testing.md says how an example is read:\n\n{}",
         failures.len(),
         failures.join("\n")
+    );
+}
+
+/// The rows of the guide's table of languages, under _Which files_, each written as the help
+/// writes it: `Python (.py, .pyi, .pyw)`.
+fn guide_languages(guide: &str) -> Vec<String> {
+    let mut rows = Vec::new();
+    let mut lines = guide
+        .lines()
+        .skip_while(|line| *line != "| language | files |");
+    lines.next();
+    for line in lines.skip_while(|line| *line == "| --- | --- |") {
+        let Some(row) = line.strip_prefix("| ").and_then(|l| l.strip_suffix(" |")) else {
+            break;
+        };
+        let (language, files) = row
+            .split_once(" | ")
+            .unwrap_or_else(|| panic!("a row of the table of languages without two cells: {line}"));
+        let files: Vec<&str> = files.split(", ").map(|f| f.trim_matches('`')).collect();
+        rows.push(format!("{language} ({})", files.join(", ")));
+    }
+    rows
+}
+
+#[test]
+fn the_guide_lists_the_languages_the_help_does() {
+    let guide = guide_languages(&the_guide());
+    assert!(
+        !guide.is_empty(),
+        "docs/language.md has no table of languages headed | language | files |, so nothing \
+         was checked"
+    );
+    let help = run_quaff(
+        Path::new(env!("CARGO_MANIFEST_DIR")),
+        &["--help".to_owned()],
+        None,
+    );
+    let listed = help
+        .output
+        .lines()
+        .find_map(|line| line.strip_prefix("Structural patterns apply to "))
+        .and_then(|line| line.strip_suffix('.'))
+        .unwrap_or_else(|| {
+            panic!(
+                "the help has no line \"Structural patterns apply to ....\":\n{}",
+                help.output
+            )
+        });
+    assert_eq!(
+        listed,
+        guide.join("; "),
+        "the table of languages under Which files in docs/language.md must list what the help \
+         does, which comes from resolve::LANGUAGES"
     );
 }
 

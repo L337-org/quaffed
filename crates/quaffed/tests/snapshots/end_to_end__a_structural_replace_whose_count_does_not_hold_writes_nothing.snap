@@ -13,4 +13,4 @@ a.py:1:5-1:8: f(1)
 
 ----- stderr -----
 quaff: -e expression 1, at character 1: expected exactly 2 matches of `f($a)` to replace, found 1; nothing was written
-quaff: 1 text-tier file not searched for structural patterns, which apply to Python files only
+quaff: 1 text-tier file not searched for structural patterns, which apply only to files with structural support

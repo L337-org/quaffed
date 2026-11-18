@@ -109,6 +109,9 @@ How the guide is read:
   or that a shell would change, a block showing `[exit N]` with no command, a directive with no
   example after it or naming a file not shown, a `then` with no block after its example showing
   that file, and a file block after the first `##` that no directive adds or shows as a result.
+- **The table of languages under _Which files_ must list what the help does**, row by row as
+  the help's `Structural patterns apply to` line writes them, since the help's comes from the
+  list that decides a file's language.  A guide with no such table fails rather than passing.
 
 ### Adding an example to the guide
 

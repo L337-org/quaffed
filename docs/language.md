@@ -2,7 +2,8 @@
 
 A reference to what `quaff` does, as built: the command line, scripts, textual and structural
 search, what is searched, what is printed, and the edge cases, with examples.  `quaff -h` is the
-short summary.
+short summary.  Structural search and editing apply to the languages listed under [Which
+files](#which-files), and the examples are written in one of them.
 
 The examples run against this small project, a git repository with `src/` and `docs/`:
 
@@ -84,11 +85,12 @@ else:
 ```
 
 In each example, what `quaff` prints to standard output and standard error is shown together,
-with the exit status after it.  Structural examples over the whole project also print the note
-`1 text-tier file not searched for structural patterns, which apply to Python files only`, for
-`docs/notes.md`; after the first, it is left out, and so is the exit status where it is 0.  A
-file's block starts with its path as a `#` line, which is not part of the file, so its first line
-is the one after that.
+with the exit status after it.  Structural examples over the whole project also print, for
+`docs/notes.md`, the note
+`1 text-tier file not searched for structural patterns, which apply only to files with structural support`;
+after the first, it is left out, and so is the exit status where it is 0.  A file's block starts
+with its path as a `#` line, which is not part of the file, so its first line is the one after
+that.
 
 ## Contents
 
@@ -112,7 +114,7 @@ is the one after that.
 ```
 quaff TEXT [PATH]          search the project for TEXT
 quaff -s TEXT [PATH]       the same, with TEXT given as an option
-quaff -p PATTERN [PATH]    search the project's Python files for code shaped like PATTERN
+quaff -p PATTERN [PATH]    search the project's code for code shaped like PATTERN
 quaff -e SCRIPT [PATH]     run the statements in SCRIPT
 quaff -f FILE [PATH]       run the script in FILE; -f - reads it from standard input
 quaff --dry-run ...        print each match an edit would change, but write nothing
@@ -360,8 +362,8 @@ A statement's clauses follow its operand in the order `in`, `where`, `expect`, e
   also one more use of its name: where a pattern and its `where` together would make the search
   grow faster than the square of a list's length, as two names used twice can
   ([Runs of statements](#runs-of-statements)), the statement is refused the same way.
-- **A file a statement leaves out by its path is never parsed for it**, so a Python file quaff
-  cannot parse there cannot [refuse the run](#which-files): leave it out with `in`, or with
+- **A file a statement leaves out by its path is never parsed for it**, so a file there that
+  quaff cannot parse cannot [refuse the run](#which-files): leave it out with `in`, or with
   `where not FILE matches`.
 - **The scope on the command line narrows every statement and never widens one**: a statement
   with an `in` looks only at what is in both.  A note says so where the scope is deeper than the
@@ -376,7 +378,7 @@ The scope on the command line, `in` and `FILE` follow one set of rules.
   or the current directory with no project: from `src/`, `in ":/docs"` is the root's `docs/`.
   Only a leading `:/` counts, and a directory really named `:` is written `./:`.  **An absolute
   path is where it says**, whatever the current directory: `in "/srv/app/"**".py"` is every
-  Python file under `/srv/app`.
+  `.py` file under `/srv/app`.
 - **A glob's leading directory is a directory on disk**, as a path with no wildcard is: its
   text up to the last `/` before any wildcard.  So from `src/`, `"../"**` is every file under
   the parent, `src/` included, as `in ".."` is, though the output prints those as `app.py`
@@ -455,7 +457,7 @@ quaff: -e expression 1, at character 1: expected no matches of "TODO", found 2
   ([Encodings](#encodings)) are noted, but never counted, so `expect none` can hold while a
   possible match exists.  The note says where, and declaring that file's encoding makes it
   count.
-- **An assertion about structure in a scope with no searchable Python fails**, whatever it asks,
+- **An assertion about structure in a scope with nothing it can search fails**, whatever it asks,
   because a count that could not be taken is not a passed one.
 
 ## Replacing text
@@ -524,14 +526,15 @@ Without `--dry-run`, the files are written, and the note is `replaced 5 matches 
   noted, and do not count towards the `expect`, so a replace counts what the same `find` would.
   If a file's encoding cannot hold the replacement, or spells it more than one way, the run is
   refused, exit 9, naming the file, and nothing is written.
-- **A replace that would break a Python file that parsed is refused**, exit 9, naming the file
-  and where it would no longer parse, and nothing is written.  A Python file that did not parse
-  before is still edited, since a textual edit needs no parse.
+- **A replace that would break a file with structural support that parsed is refused**, exit 9,
+  naming the file and where it would no longer parse, and nothing is written.  Such a file that
+  did not parse before is still edited, since a textual edit needs no parse.
 
 ## Structural search
 
-A structural pattern is Python code with holes in it, matched by the shape of the code rather than
-its text: `-p PATTERN`, or a backticked operand in a script.
+A structural pattern is code with holes in it, matched by the shape of the code rather than its
+text: `-p PATTERN`, or a backticked operand in a script.  It applies to files in the languages
+listed under [Which files](#which-files).
 
 ```
 $ quaff -p 'return $x'
@@ -540,7 +543,7 @@ src/app.py:12:5-12:46: return response.ok(render(user, response))
 src/app.py:16:5-17:32: return lookup(request.args["id"], default=None,)
 src/totals.py:4:5-4:25: return subtotal + tax
 src/totals.py:8:5-8:31: return price - price * rate
-quaff: 1 text-tier file not searched for structural patterns, which apply to Python files only
+quaff: 1 text-tier file not searched for structural patterns, which apply only to files with structural support
 [exit 0]
 ```
 
@@ -557,8 +560,8 @@ statement for each, or the definition they decorate after them.
 | `$name...` | one or more consecutive items - arguments, elements, statements - bound to `name` |
 | `$...` | one or more consecutive items, bound to nothing |
 
-**A hole always matches something, never nothing.**  A hole's name is spelt as a Python
-identifier is.
+**A hole always matches something, never nothing.**  A hole's name is spelt as the language
+spells an identifier.
 
 ```
 $ quaff -p 'log.info($msg, $...)'
@@ -617,12 +620,13 @@ quaff: -p, at character 5: the pattern is not Python: unexpected EOF while parsi
 A pattern with no code at all, only whitespace or comments, is refused too, and so is one that
 starts or ends a run of statements with a sequence hole, puts two sequences together in one, or
 whose search could grow faster than the square of a block's or list's length ([Runs of
-statements](#runs-of-statements)).  So is a hole inside a name Python reads as one, such as a
-dotted module name: `import $m` is a hole for the whole name, but `import a.$m` is refused, since
-`a.m` is one name, not two.
+statements](#runs-of-statements)).  So is a hole inside a name the language reads as one, such as
+Python's dotted module name: `import $m` is a hole for the whole name, but `import a.$m` is
+refused, since `a.m` is one name, not two.
 
-**A pattern is parsed as a file is, so it starts at the left margin.**  Code copied from inside a
-function keeps its indentation, which Python refuses at the start of a file, and so does quaff:
+**A pattern is parsed as a file is, so it starts at the left margin.**  In Python, code copied
+from inside a function keeps its indentation, which Python refuses at the start of a file, and so
+does quaff:
 `-p '    f($x)'` is refused with `Unexpected indentation`.  Take the indentation off; a pattern
 matches the same code at any depth.
 
@@ -767,12 +771,19 @@ run of statements or inside a node.
 
 ### Which files
 
-**Structural patterns apply to Python files only**: `.py`, `.pyi` and `.pyw`, decided by the name
-alone.
+**Structural patterns apply to files in the languages quaff parses**, each decided by the file's
+name alone:
+
+| language | files |
+| --- | --- |
+| Python | `.py`, `.pyi`, `.pyw` |
+
+A file in one of these has structural support.
 
 - **Any other file is not applicable**: it is never matched as text instead, and never an error.
   A note counts those not searched, as in every example above.
-- **When nothing in scope is Python, the run says so** rather than reporting nothing found:
+- **When no file in scope has structural support, the run says so** rather than reporting
+  nothing found:
 
   ```
   $ quaff -p 'return response.ok($x)' docs
@@ -780,9 +791,10 @@ alone.
   [exit 1]
   ```
 
-  When Python is in scope but none of it could be searched, because every such file is binary,
-  it says `no Python file in scope could be searched`, and counts the binary files.
-- **A Python file quaff cannot parse refuses the whole run**, exit 9, before anything is printed,
+  When files with structural support are in scope but none could be searched, because every such
+  file is binary, it says `no file in scope with structural support could be searched`, and
+  counts the binary files.
+- **A file with structural support that quaff cannot parse refuses the whole run**, exit 9, before anything is printed,
   because a count that silently skipped a file could not be trusted:
 
   With a directory `broken/` beside `play/` holding only this file:
@@ -795,23 +807,26 @@ alone.
   <!-- check: with broken/bad.py -->
   ```
   $ quaff -p 'wrap($x)' broken
-  quaff: refused: 1 Python file in scope cannot be parsed, so a structural search cannot count matches in it:
+  quaff: refused: 1 file in scope cannot be parsed, so a structural search cannot count matches in it:
     "broken/bad.py": line 1, column 12: Expected a parameter or the end of the parameter list
   To search without it, leave it out of the statement: with `in`, with `where not FILE matches`, such as where not FILE matches "broken/bad.py", or project-wide by listing it in .ignore
   [exit 9]
   ```
 
   A textual search over the same files still runs, since it needs no parse - but not in a run
-  that also holds a structural pattern, since the refusal stops the whole run.  A file Python
-  itself refuses to read - a bad encoding declaration, or a byte its encoding does not have -
-  does not parse either, and nor, to quaff, does one in an encoding Python reads and quaff does
-  not, such as GBK: quaff cannot count matches in it.  A binary Python file, one with a NUL byte
-  in its first 8000 bytes, is skipped and counted with the binary files instead, as any binary
-  file is.
+  that also holds a structural pattern, since the refusal stops the whole run.  A file its
+  language itself refuses to read does not parse either.  A binary file, one with a NUL byte in
+  its first 8000 bytes, is skipped and counted with the binary files instead, as any binary file
+  is.
+
+#### Python
+
 - **A Python file is read as Python reads it**: in the encoding its coding line declares, or
   UTF-8.  An `.editorconfig` or git attribute that says otherwise does not change that, because it
-  does not change what Python runs.  One in an encoding Python reads and quaff does not, such as
-  GBK, refuses a structural search, as above.
+  does not change what Python runs.
+- **A Python file Python refuses to read cannot be parsed**: a bad encoding declaration, or a
+  byte its encoding does not have.  Nor, to quaff, can one in an encoding Python reads and quaff
+  does not, such as GBK.  Either refuses a structural search, as above.
 
 ## Replacing code
 
@@ -820,7 +835,7 @@ the code after `with`, in which the pattern's holes stand for what they captured
 [textual replace](#replacing-text) promises holds: an edit says how many it changes, nothing is
 written unless every count holds, every edit is written at the end of the run or none is,
 `--dry-run` writes nothing, a file is written back in its own encoding, and a replace that would
-break a Python file that parsed is refused, exit 9.
+break a file that parsed is refused, exit 9.
 
 With this file beside the others:
 
@@ -996,8 +1011,8 @@ written.  A replace whose count does not hold says so first, exit 2, as any edit
   cannot hold a line break, and a bytes literal holds ASCII only, so writing such a value would
   change more than the literal's text.
 
-**What may not mean what was meant is written, and questioned.**  A capture written where Python
-reads it together with what surrounds it is written as the template says, since that is what was
+**What may not mean what was meant is written, and questioned.**  A capture written where the
+language reads it together with what surrounds it is written as the template says, since that is what was
 asked for, and a note names the file, where, and the capture.  With this file:
 
 ```python
@@ -1010,7 +1025,7 @@ total = f(x + 1)
 $ quaff -e 'replace `f($a)` with `$a * 2` expect 1'
 calc.py:1:9-1:16: f(x + 1)
 quaff: replaced 1 match in 1 file
-quaff: "calc.py": line 1, column 9: what $a captured, "x + 1", is not code of its own where the rewrite writes it - Python reads it together with what stands around it - so its meaning may have changed: if that is not what was meant, put brackets round the hole in the rewrite, as in ($a)
+quaff: "calc.py": line 1, column 9: what $a captured, "x + 1", is not code of its own where the rewrite writes it - it is read together with what stands around it - so its meaning may have changed: if that is not what was meant, put brackets round the hole in the rewrite, as in ($a)
 [exit 0]
 ```
 
@@ -1139,7 +1154,8 @@ would follow it on its line, the comment would swallow that code, so the edit is
 bytes.  The first of these that applies decides:
 
 1. a byte-order mark;
-2. a Python file's coding line, as Python reads it;
+2. the file's own declaration, where its language has one: a Python file's coding line, as
+   Python reads it;
 3. git's `working-tree-encoding` attribute;
 4. `.editorconfig`'s `charset`;
 5. the bytes being valid UTF-8.
@@ -1191,7 +1207,7 @@ src/app.py:16:5-17:32: return lookup(request.args["id"], default=None,)
 | 5 | a statement or construct this build does not have, or an output other than `-o text` |
 | 6 | a file to be edited changed after quaff read it, or was removed or renamed, so nothing was written |
 | 7 | an I/O error, naming the path and quoting the system's error; an `in` that names nothing there; or edits that could not be written, saying what was left as it was |
-| 9 | a structural search needs a Python file quaff cannot parse, an edit would break a Python file that parses, a file's encoding cannot write a replacement, or a structural replace cannot be made as written - its matches overlap outside each other's holes, it would drop a comment, a trailing comma has no one place to go, a literal cannot hold a value as text, or a rewrite that is only a comment would swallow code after it on its line; or a delete would leave what holds a match without it: the script or the file must change first |
+| 9 | a structural search needs a file quaff cannot parse, an edit would break a file that parses, a file's encoding cannot write a replacement, or a structural replace cannot be made as written - its matches overlap outside each other's holes, it would drop a comment, a trailing comma has no one place to go, a literal cannot hold a value as text, or a rewrite that is only a comment would swallow code after it on its line; or a delete would leave what holds a match without it: the script or the file must change first |
 
 **A run that cannot give an answer - exit 3, 5, 6, 7 or 9 - prints nothing on standard output**, so
 a partial answer never passes for a whole one.  The whole program is read and checked before any
@@ -1276,10 +1292,12 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
   fine inside a node, which starts where it stands, but not in a run of statements, which could
   start anywhere.  Two sequences together inside a node, `f($a..., $b...)`, are fine: the node
   bounds them.
-- **Structural patterns ignore non-Python files rather than falling back to text**, and say so.
-- **A Python file quaff cannot parse stops a structural search** (exit 9): one Python refuses to
-  read, and one Python reads in an encoding quaff does not, such as GBK.  A textual query alone
-  still searches it, but one in the same run as a structural pattern is stopped with it.
+- **Structural patterns ignore files without structural support rather than falling back to
+  text**, and say so.
+- **A file quaff cannot parse stops a structural search** (exit 9), including one its language
+  refuses to read, and a Python file in an encoding Python reads and quaff does not, such as GBK.
+  A textual query alone still searches it, but one in the same run as a structural pattern is
+  stopped with it.
 - **A Python file with no coding line is UTF-8 to a structural search, whatever `.editorconfig`
   or git attributes say**, since that is how Python reads it.  A textual search follows those
   declarations, as listed under [Encodings](#encodings), so with `charset = latin1` for `*.py`,

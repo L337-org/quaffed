@@ -99,6 +99,12 @@ and the reasoning.  These are not enforced, so they are carried here:
 - **One version, in the root `Cargo.toml`.**  Nothing else states it.
 - **Every commit is signed off** (`git commit -s`) under the Developer Certificate of Origin; see
   `CONTRIBUTING.md`.
+- **Write about structural search and editing, never about one language.**  The languages are
+  listed once, in `resolve::LANGUAGES`, which the help prints, and in the language guide's table
+  under _Which files_; anything only one language does is said as that language's.  A sentence
+  that names Python as if it were the only language goes stale the day a second is added.
+  `tests/language_neutral.rs` holds the code to this; the guide, the README and `architecture/`
+  outside an adapter's own page are held to it by review.
 - **Prose is British English in plain ASCII punctuation** - hyphens rather than dashes, straight
   quotes, three full stops rather than an ellipsis character - in documentation, comments,
   commit messages and pull request descriptions.

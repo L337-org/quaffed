@@ -12,4 +12,4 @@ exit_code: 0
 src/app.py:5:1-5:17: handle_request(a)
 
 ----- stderr -----
-quaff: 1 text-tier file not searched for structural patterns, which apply to Python files only
+quaff: 1 text-tier file not searched for structural patterns, which apply only to files with structural support

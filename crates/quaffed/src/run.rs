@@ -203,7 +203,7 @@ impl fmt::Display for Failure {
                     f,
                     "refused: {} in scope cannot be parsed, so a structural search cannot count \
                      matches in {}:",
-                    count(files.len(), "Python file", "Python files"),
+                    count(files.len(), "file", "files"),
                     if files.len() == 1 { "it" } else { "them" }
                 )?;
                 for (path, why) in files {
@@ -290,7 +290,7 @@ fn broken(f: &mut fmt::Formatter<'_>, files: &[Broken]) -> fmt::Result {
     write!(
         f,
         "refused: the edit would leave {} that {} unparseable, so nothing was written:",
-        count(files.len(), "Python file", "Python files"),
+        count(files.len(), "file", "files"),
         if files.len() == 1 { "parses" } else { "parse" }
     )?;
     for file in files {
@@ -3139,8 +3139,8 @@ impl<'s> Evaluation<'s> {
             }
             // Every Python file in scope is binary, which the binary count says.
             Wanted::Structural { .. } if searched.structural_for[index] == 0 => Some(format!(
-                "no Python file in scope could be searched; {} not searched",
-                count(searched.python_for[index], "Python file", "Python files")
+                "no file in scope with structural support could be searched; {} not searched",
+                count(searched.python_for[index], "such file", "such files")
             )),
             _ => None,
         }
@@ -3316,7 +3316,8 @@ fn structural_notes(searched: &Searched, evaluated: &[Searching]) -> Vec<String>
     // With no Python in scope, the run's own message counts these instead.
     if searched.python > 0 && searched.not_applicable > 0 {
         notes.push(format!(
-            "{} not searched for structural patterns, which apply to Python files only",
+            "{} not searched for structural patterns, which apply only to files with \
+             structural support",
             count(searched.not_applicable, "text-tier file", "text-tier files")
         ));
     }
@@ -4074,7 +4075,7 @@ mod tests {
         let message = broken.to_string();
         assert_eq!(broken.exit_code(), 9);
         assert!(
-            message.contains("2 Python files that parse unparseable"),
+            message.contains("2 files that parse unparseable"),
             "{message}"
         );
         assert!(
