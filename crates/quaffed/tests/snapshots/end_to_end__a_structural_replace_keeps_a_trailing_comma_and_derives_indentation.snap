@@ -14,4 +14,4 @@ b.py:2:5-4:11: with lock: a() b()
 
 ----- stderr -----
 quaff: replaced 2 matches in 2 files
-quaff: 1 text-tier file not searched for structural patterns, which apply to Python files only
+quaff: 1 text-tier file not searched for structural patterns, which apply only to files with structural support

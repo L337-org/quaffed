@@ -12,4 +12,4 @@ exit_code: 1
 
 ----- stderr -----
 quaff: no matches for `if $c:\n    return 1`
-quaff: 1 text-tier file not searched for structural patterns, which apply to Python files only
+quaff: 1 text-tier file not searched for structural patterns, which apply only to files with structural support

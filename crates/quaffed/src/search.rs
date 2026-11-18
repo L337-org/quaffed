@@ -528,7 +528,7 @@ mod tests {
             Resolution::Binary => None,
             Resolution::Known { encoding, body, .. } => Some((encoding, body)),
             Resolution::Unknown(_) => Some((Encoding::Unknown8Bit, 0)),
-            Resolution::Refused(refusal) => panic!("only Python is refused: {refusal:?}"),
+            Resolution::Refused(refusal) => panic!("only a coding line is refused: {refusal:?}"),
         }
     }
 

@@ -13,6 +13,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use quaffed_encoding::{self as encoding, Encoding, Named, Refusal, Unproven};
+use quaffed_syntax::Language;
 
 use crate::contents::Contents;
 use crate::editorconfig::EditorConfig;
@@ -46,11 +47,19 @@ impl File<'_> {
     }
 }
 
+/// The extensions that name Python source.
+const PYTHON_EXTENSIONS: &[&str] = &["py", "pyi", "pyw"];
+
+/// Each language quaff parses, with the extensions that name its files: the list the help
+/// gives, and the one [`is_python`] goes by, so that the two cannot disagree.
+pub const LANGUAGES: &[(Language, &[&str])] = &[(quaffed_python::PYTHON, PYTHON_EXTENSIONS)];
+
 /// Whether the file at `path` is Python source, by its name alone, as `architecture/search.md`
 /// lists them: the one rule both an encoding's decision and structural search go by.
 pub fn is_python(path: &Path) -> bool {
     path.extension()
-        .is_some_and(|e| e == "py" || e == "pyi" || e == "pyw")
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| PYTHON_EXTENSIONS.contains(&e))
 }
 
 /// What decides a file's encoding.

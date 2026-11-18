@@ -14,4 +14,4 @@ src/app.py:7:1-7:39: handle_request(handle_request(a, b), c)
 src/app.py:7:16-7:35: handle_request(a, b)
 
 ----- stderr -----
-quaff: 1 text-tier file not searched for structural patterns, which apply to Python files only
+quaff: 1 text-tier file not searched for structural patterns, which apply only to files with structural support

@@ -11,6 +11,6 @@ exit_code: 1
 ----- stdout -----
 
 ----- stderr -----
-quaff: no Python file in scope could be searched; 1 Python file not searched, so `f($a)` was not searched for
-quaff: 1 text-tier file not searched for structural patterns, which apply to Python files only
+quaff: no file in scope with structural support could be searched; 1 such file not searched, so `f($a)` was not searched for
+quaff: 1 text-tier file not searched for structural patterns, which apply only to files with structural support
 quaff: 1 binary file not searched

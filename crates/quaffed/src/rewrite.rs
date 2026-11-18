@@ -1133,7 +1133,7 @@ fn questioned(
                 captured[site.found].range.start,
                 format!(
                     "what ${} captured, {:?}, is not code of its own where the rewrite writes \
-                     it - Python reads it together with what stands around it - so its meaning \
+                     it - it is read together with what stands around it - so its meaning \
                      may have changed: if that is not what was meant, put brackets round the \
                      hole in the rewrite, as in (${})",
                     site.name,

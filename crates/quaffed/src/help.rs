@@ -8,13 +8,32 @@
 //! under _Examples_.  `tests/help_examples.rs` builds the project the examples show and runs every
 //! `$ quaff` line in a fresh copy of it, so an example that stops working fails the build.  The
 //! help's examples section of `architecture/testing.md` says how that test reads the help.
+//!
+//! Nothing here names a language structural patterns apply to: those are listed once, from
+//! [`LANGUAGES`], and the rest is written for every one of them.
+
+use crate::resolve::LANGUAGES;
 
 /// The help, for `-h` and `--help`, and on standard error when no arguments are given.
 pub fn help() -> String {
     format!(
-        "quaff {} - the QUAntiFied File EDitor\n{BODY}",
-        env!("CARGO_PKG_VERSION")
+        "quaff {} - the QUAntiFied File EDitor\n{}",
+        env!("CARGO_PKG_VERSION"),
+        BODY.replace("{languages}", &languages())
     )
+}
+
+/// The languages structural patterns apply to, each with its files' extensions, from the list
+/// that decides a file's language, so that the help cannot fall behind it.
+fn languages() -> String {
+    LANGUAGES
+        .iter()
+        .map(|(language, extensions)| {
+            let extensions: Vec<String> = extensions.iter().map(|e| format!(".{e}")).collect();
+            format!("{language} ({})", extensions.join(", "))
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// What `--version` prints: the version from the workspace manifest.
@@ -24,10 +43,17 @@ pub fn version() -> String {
 
 /// The help after its first line.  Raw, so that the examples read as they are typed.
 const BODY: &str = r#"
+quaff searches and edits the files of a project, by text or by the structure of the code.  Text
+is matched as written, in any file.  A structural pattern is code with holes in it, matched by
+its syntax rather than its text, so whatever its layout, comments or redundant parentheses.
+Every edit says how many matches it expects, and the run writes all of its edits or none.
+
+Structural patterns apply to {languages}.
+
 Usage:
   quaff TEXT [PATH]        search the project for TEXT
   quaff -s TEXT [PATH]     the same, with TEXT given as an option
-  quaff -p PATTERN [PATH]  search the project's Python files for code shaped like PATTERN
+  quaff -p PATTERN [PATH]  search the project's code for code shaped like PATTERN
   quaff -e SCRIPT [PATH]   run the statements in SCRIPT
   quaff -f FILE [PATH]     run the script in FILE; -f - reads it from standard input
   quaff --dry-run ...      print each match an edit would change, but write nothing
@@ -77,12 +103,13 @@ directory, or from the project root - the nearest directory at or above this one
 Files ignored by .gitignore, .ignore or .git/info/exclude are skipped, and so is
 version-control metadata.  Hidden files are searched.
 
-A pattern is Python code in which $name matches any one node - an expression, a statement, an
+A pattern is code in which $name matches any one node - an expression, a statement, an
 argument, a parameter, a name - and $name... one or more items in a row; $_ and $... are the
 same bound to no name.  A hole always matches something, and a name used twice must match the
 same code each time.  Comments, layout and redundant parentheses take no part.  A pattern
-applies to Python files only, and a Python file in scope quaff cannot parse refuses the run.
-An edit that would leave a Python file unparseable is refused, and nothing is written.
+applies only to files in a language listed above, and one of those in scope that quaff cannot
+parse refuses the run.  An edit that would leave such a file unparseable is refused, and
+nothing is written.
 
 Each match prints on its own line as path:line:column-endline:endcolumn: text, with columns
 counted in characters.  Notes go to standard error, prefixed quaff:.  Binary files are not
@@ -114,7 +141,7 @@ that edits is shown as if run on its own:
   | # A lint: run in CI with --dry-run, so that it never writes
   | find `breakpoint()` expect none
 
-Searching:
+Searching text, in any file, comments and strings included:
 
   $ quaff TODO
       every TODO in the project: app.py:5:29-5:32: TODO, then the one in the test
@@ -122,12 +149,19 @@ Searching:
       only those under tests/
   $ quaff -- --dry-run
       text that starts with a dash, after --: the line in checks.quaff
-  $ quaff -s TODO -p 'greet($who)' tests
-      two searches in one run, the second by structure: greet("you")
+  $ quaff 'greet('
+      the text wherever it is written: both calls, and inside def greet( and def test_greet(
+
+Searching code, by its structure:
+
+  $ quaff -p 'greet($who)'
+      only the two calls of greet, whatever they pass it: no definition is a call
   $ quaff -p 'print($a, $b)' :/app.py
       every call of print with two arguments, in app.py from the project root
   $ quaff -o text -p 'print($args...)'
       both calls of print, whatever their arguments
+  $ quaff -s TODO -p 'greet($who)' tests
+      a textual and a structural search in one run, under tests/: the TODO and greet("you")
 
 Asserting, in a script:
 
@@ -147,12 +181,16 @@ Asserting, in a script:
   $ quaff -e 'find `print($x, $y)` where $y matches "name" and FILE contains "app" expect 1'
       a test of what $y matched, and of the path
 
-Editing:
+Editing text:
 
   $ quaff -e 'replace string "hello" with "hi" expect 1'
       prints the match it replaces, and says on standard error how many it replaced
+
+Editing code, keeping what each hole matched:
+
   $ quaff -e 'replace `print($a, $b)` with `logging.info("%s %s", $a, $b)` expect 1'
-      print("hello", name) becomes logging.info("%s %s", "hello", name)
+      print("hello", name) becomes logging.info("%s %s", "hello", name), and the comment after
+      it stays
   $ quaff -e 'delete `print("done")` expect 1'
       deletes the call, and its line with it
   $ quaff --dry-run -e 'delete `print($x)` expect 1'
@@ -170,9 +208,15 @@ The version:
   $ quaff --version
       quaff and its version
 
-Exit status: 0 found, or every assertion held; 1 nothing found, with no assertions; 2 an
-assertion failed; 3 usage or script error; 5 a statement or construct this build does not
-have; 6 a file to be edited changed after it was read, so nothing was written; 7 I/O error;
-9 a Python file a structural search needs cannot be parsed, or an edit would break a Python
-file or cannot be written in a file's encoding.
+Exit status:
+
+  0  found, or every assertion held
+  1  nothing found, with no assertions
+  2  an assertion failed
+  3  usage or script error
+  5  a statement or construct this build does not have
+  6  a file to be edited changed after it was read, so nothing was written
+  7  I/O error
+  9  a file a structural search needs cannot be parsed, or an edit would break a file that
+     parses or cannot be written in the file's encoding
 "#;
