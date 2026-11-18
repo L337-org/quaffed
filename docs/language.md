@@ -794,8 +794,8 @@ A file in one of these has structural support.
   When files with structural support are in scope but none could be searched, because every such
   file is binary, it says `no file in scope with structural support could be searched`, and
   counts the binary files.
-- **A file with structural support that quaff cannot parse refuses the whole run**, exit 9, before anything is printed,
-  because a count that silently skipped a file could not be trusted:
+- **A file with structural support that quaff cannot parse refuses the whole run**, exit 9,
+  before anything is printed, because a count that silently skipped a file could not be trusted:
 
   With a directory `broken/` beside `play/` holding only this file:
 
@@ -1012,8 +1012,8 @@ written.  A replace whose count does not hold says so first, exit 2, as any edit
   change more than the literal's text.
 
 **What may not mean what was meant is written, and questioned.**  A capture written where the
-language reads it together with what surrounds it is written as the template says, since that is what was
-asked for, and a note names the file, where, and the capture.  With this file:
+language reads it together with what surrounds it is written as the template says, since that is
+what was asked for, and a note names the file, where, and the capture.  With this file:
 
 ```python
 # calc.py
@@ -1294,8 +1294,9 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
   bounds them.
 - **Structural patterns ignore files without structural support rather than falling back to
   text**, and say so.
-- **A file quaff cannot parse stops a structural search** (exit 9), including one its language
-  refuses to read, and a Python file in an encoding Python reads and quaff does not, such as GBK.
+- **A file with structural support that quaff cannot parse stops a structural search** (exit 9),
+  including one its language refuses to read, and a Python file in an encoding Python reads and
+  quaff does not, such as GBK.
   A textual query alone still searches it, but one in the same run as a structural pattern is
   stopped with it.
 - **A Python file with no coding line is UTF-8 to a structural search, whatever `.editorconfig`

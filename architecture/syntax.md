@@ -160,6 +160,5 @@ trip checks them over both corpora.
 7. List it, with the extensions that name its files, in `resolve::LANGUAGES`, which the help
    prints, and as a row of the table under _Which files_ in `docs/language.md`, with what only it
    does under a heading of its own there; `tests/language_guide.rs` fails until the two lists
-   agree.  Nothing else quaff says names a language, so the rest of the help, the messages and
-   the guide need no change: `tests/language_neutral.rs` fails on a language's name in the
-   binary's code.
+   agree.  Nothing else quaff says names a language, as `AGENTS.md` asks, so the rest of the
+   help, the messages and the guide need no change.

@@ -163,9 +163,9 @@ file** (`src/structural.rs`, and the file loop in `src/run.rs`):
   about structure that could not be looked for has not passed.
 - **A file with structural support that quaff cannot parse refuses the whole run**, exit 9,
   before anything is printed, because a count that skipped it could not be trusted.  That
-  includes a file its language refuses to read - for Python, one `CPython` refuses - and one in an
-  encoding quaff does not read.  A run with no structural pattern
-  still searches such files as text.
+  includes a file its language refuses to read - for Python, one `CPython` refuses - and one in
+  an encoding quaff does not read.  A run with no structural pattern still searches such files
+  as text.
 - **A binary file with structural support** is skipped and counted, as any binary file is.
 
 **A pattern is compiled before any file is read**, so a pattern the compiler refuses
@@ -256,11 +256,11 @@ the path or argument it concerns, and says what to do where there is something t
   results finds, statement by statement, whether each count holds, and for a replace whose count
   holds, whether any file's encoding cannot write its replacement and whether a structural
   replace cannot be made as written; then every changed file with structural support that
-  parsed must still parse; then the files are written, unless `--dry-run`; and only then are the results printed.
-  So a count that does not hold is told first, exit 2, whatever else is wrong with the edit, and
-  a run refused with exit 6, 7 or 9 prints nothing and writes nothing.  Only a file with structural
-  support that cannot be parsed refuses the run before any count, since a structural count over it cannot be
-  trusted.
+  parsed must still parse; then the files are written, unless `--dry-run`; and only then are the
+  results printed.  So a count that does not hold is told first, exit 2, whatever else is wrong
+  with the edit, and a run refused with exit 6, 7 or 9 prints nothing and writes nothing.  Only a
+  file with structural support that cannot be parsed refuses the run before any count, since a
+  structural count over it cannot be trusted.
 - **Only a file of known encoding is edited**, its replacement spelled in that encoding, a line
   break as the file's own line ending (`search::replace`).  A file of unknown encoding is reported
   as in a search and never touched, so a replace counts what the same `find` counts.
