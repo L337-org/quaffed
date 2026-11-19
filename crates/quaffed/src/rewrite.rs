@@ -3788,6 +3788,11 @@ mod tests {
             ok("$a + 1", "$a - 1", "x = aaa \\\n    + 1\n"),
             "x = aaa \\\n    - 1\n"
         );
+        // And between the match's start and a hole.
+        assert_eq!(
+            ok("1 + $a", "2 - $a", "x = 1 \\\n    + aaa\n"),
+            "x = 2 \\\n    - aaa\n"
+        );
         // Reordered, the template's layout stands.
         assert_eq!(
             ok("$a + $b", "$b + $a", "x = aaa \\\n    + bbb\n"),
