@@ -1730,7 +1730,7 @@ fn render(
     Ok(Rendered {
         text: written,
         code,
-        carried: gaps.into_iter().flatten().collect(),
+        carried: gaps.into_iter().flatten().map(|gap| gap.range).collect(),
         escaped,
     })
 }
@@ -1859,10 +1859,13 @@ impl Job<'_> {
         Ok(level(&template, &in_order(changes)).text)
     }
 
-    /// For each site in order, the file's layout to write before it in place of the template's:
-    /// where the site and the one before it are both code, next to each other inside a bracket
-    /// in the template and in the file, with the same code between them.
-    fn gaps(&self, marked: &Marked) -> Vec<Option<Range<usize>>> {
+    /// For each site in order, the file's layout to write before it in place of the template's,
+    /// where the site and the one before it are both code, next to each other in the template
+    /// and in the file: inside a bracket, with the same code between them, the file's layout
+    /// between them; and between statements, with no code or comment between them, the file's
+    /// blank lines, before the template's own line break and indentation, since the statements
+    /// may be written at another depth.
+    fn gaps(&self, marked: &Marked) -> Vec<Option<Gap>> {
         let sites = self.rewrite.sites();
         let in_bracket = |brackets: &[Bracket], gap: &Range<usize>| {
             brackets
@@ -1901,12 +1904,46 @@ impl Job<'_> {
                     code_tokens(&marked.indented[template_gap.clone()])
                         == code_tokens(&self.text[file_gap.clone()])
                 };
-                (!between_others
-                    && !template_comment
-                    && in_bracket(&marked.own.brackets, &template_gap)
-                    && in_bracket(&self.lexed.brackets, &file_gap)
-                    && same_code())
-                .then_some(file_gap)
+                if between_others || template_comment {
+                    return None;
+                }
+                let in_template = &marked.indented[template_gap.clone()];
+                let in_file = &self.text[file_gap.clone()];
+                match (
+                    in_bracket(&marked.own.brackets, &template_gap),
+                    in_bracket(&self.lexed.brackets, &file_gap),
+                ) {
+                    (true, true) => same_code().then(|| Gap {
+                        text: in_file.to_owned(),
+                        range: file_gap,
+                    }),
+                    (false, false) => {
+                        let file_comment = self
+                            .lexed
+                            .comments
+                            .iter()
+                            .any(|c| file_gap.start <= c.start && c.end <= file_gap.end);
+                        // Each gap runs from the end of one statement's line, through any blank
+                        // lines, to the next statement's indentation.
+                        let (Some(file_last), Some(template_first)) =
+                            (in_file.rfind('\n'), in_template.find('\n'))
+                        else {
+                            return None;
+                        };
+                        (!file_comment
+                            && code_tokens(in_template).is_empty()
+                            && code_tokens(in_file).is_empty())
+                        .then(|| Gap {
+                            text: format!(
+                                "{}{}",
+                                &in_file[..=file_last],
+                                &in_template[template_first + 1..]
+                            ),
+                            range: file_gap,
+                        })
+                    }
+                    _ => None,
+                }
             })
             .collect()
     }
@@ -1917,7 +1954,7 @@ impl Job<'_> {
     fn fill(
         &self,
         marked: &Marked,
-        gaps: &[Option<Range<usize>>],
+        gaps: &[Option<Gap>],
         filler: Option<&str>,
         escaped: &mut Vec<String>,
     ) -> Result<(String, Vec<CodeSite>), String> {
@@ -1927,7 +1964,7 @@ impl Job<'_> {
         for (k, &(place, i)) in marked.at.iter().enumerate() {
             let site = &self.rewrite.sites()[i];
             match &gaps[k] {
-                Some(gap) => out.push_str(&self.text[gap.clone()]),
+                Some(gap) => out.push_str(&gap.text),
                 None => out.push_str(&marked.indented[copied..place]),
             }
             let range = self.capture(&site.name);
@@ -1987,6 +2024,13 @@ impl Job<'_> {
         out.push_str(&marked.indented[copied..]);
         Ok((out, code))
     }
+}
+
+/// The file's layout written between two sites in place of the template's: the stretch of the
+/// file it comes from, and what is written.
+struct Gap {
+    range: Range<usize>,
+    text: String,
 }
 
 /// One match's rewrite, as [`render`] writes it.
@@ -2975,6 +3019,37 @@ mod tests {
                 "fmt(x, \"%s:%s\", y)\n"
             ),
             "fmt(x, \"%s: %s\", y)\n"
+        );
+    }
+
+    #[test]
+    fn blank_lines_between_two_statement_holes_are_the_files() {
+        let text = "class C:\n    def f(self):\n        pass\n\n    def g(self):\n        pass\n";
+        assert_eq!(
+            ok(
+                "class C:\n    $a...\n    $b...",
+                "class D:\n    $a...\n    $b...",
+                text
+            ),
+            "class D:\n    def f(self):\n        pass\n\n    def g(self):\n        pass\n"
+        );
+        // Moved to another depth, the blank lines stand and the template's indentation is used.
+        assert_eq!(
+            ok(
+                "def f():\n    $a...\n    $b...",
+                "def f():\n    if c:\n        $a...\n        $b...",
+                "def f():\n    x = 1\n\n\n    y = 2\n"
+            ),
+            "def f():\n    if c:\n        x = 1\n\n\n        y = 2\n"
+        );
+        // Where code stands between them in the template, its layout stands.
+        assert_eq!(
+            ok(
+                "class C:\n    $a...\n    $b...",
+                "class D:\n    $a...\n    z = 0\n    $b...",
+                text
+            ),
+            "class D:\n    def f(self):\n        pass\n    z = 0\n    def g(self):\n        pass\n"
         );
     }
 
