@@ -304,13 +304,18 @@ the path or argument it concerns, and says what to do where there is something t
   stays the file's, and where as many tokens differ on each side, they are paired one for one.
   A line break of the file's is kept only where it is safe where it is written - inside a
   bracket, counting the template's own and one round the whole match, or continued by a
-  backslash with no comment before it - and the bracket structure must be the same on both
-  sides, or the template's layout stands.  The layout just inside a bracket a stretch closes
-  first or opens last is that bracket's edge, carried with it (`rewrite/layout.rs`).  A stretch
+  backslash with no comment before it - judged by the template's brackets where it is written,
+  so the brackets themselves may change; a line break deleted code leaves with no code after it
+  goes with that code.  The layout just inside a bracket a stretch closes first or opens last,
+  in the template or the file, is that bracket's edge, carried with it (`rewrite/layout.rs`),
+  unless the template keeps that bracket beside it.  A stretch
   is held to the rule between holes (`Job::gaps`) and at the match's ends (`Job::edge_gaps`),
   and checked to lex as the template's would beside the code either side, so a word is never
-  run into a name (`Job::diffed_gap`).  A rewrite that reorders holes, or captures code between
-  them, has no such stretch there, and its template's layout stands.  Where the template ends a
+  run into a name (`Job::diffed_gap`).  The stretches are paired by place, not by hole
+  (`Job::positions`): a rewrite that reorders holes keeps the file's layout between the places
+  they fill, but not a comment there, written about the code beside it, which refuses the edit.
+  Where captures overlap, as one hole written twice does, there are no places to pair, and the
+  template's layout stands.  Where the template ends a
   statement between two holes, outside any bracket, the file's blank lines stand, before the
   template's own line break and indentation, since the statements may move to another depth
   (`Job::statement_gap`);

@@ -1441,14 +1441,15 @@ fn a_structural_replace_writes_back_what_each_hole_captured() {
 #[test]
 fn a_structural_replace_keeps_a_trailing_comma_and_derives_indentation() {
     let project = Project::new(REWRITABLE);
-    // The call a formatter split keeps its trailing comma; the unwrapped body moves out a level.
+    // The call a formatter split keeps its trailing comma, and its arguments their lines though
+    // reordered; the unwrapped body moves out a level.
     assert_quaff_snapshot!(project.quaff(&[
         "-e",
         "replace `f($a, $b)` with `h($b, $a)` expect 1\n\
          replace `with $m:\n    $body...` with `$body...` expect 1",
     ]));
     project.assert_changed(&[
-        ("a.py", b"x = f(1)\ny = h(\n    three, two,\n)\n"),
+        ("a.py", b"x = f(1)\ny = h(\n    three,\n    two,\n)\n"),
         ("b.py", b"if c:\n    a()\n    b()\n"),
     ]);
 }
