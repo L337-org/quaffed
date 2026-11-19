@@ -1,0 +1,15 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "replace `a()` with `b()\nc()` expect 1"
+---
+success: false
+exit_code: 9
+----- stdout -----
+
+----- stderr -----
+quaff: refused: the replace cannot be made as written in 1 file, so nothing was written:
+  "a.py": line 4, column 5: the rewrite here would leave a statement in a block other than the one the match is in, so the code would mean something other than the rewrite says: write this block on lines of its own, one statement to a line, and run the edit again

@@ -1646,6 +1646,49 @@ fn a_structural_replace_that_would_break_a_file_exits_9() {
 }
 
 #[test]
+fn a_structural_replace_gives_statements_sharing_a_line_lines_of_their_own() {
+    let project = Project::new(&[
+        (".git/HEAD", ""),
+        (
+            "a.py",
+            "def f():\n    a(); z()\n\n\nif x: a(); z()\ntail()\n",
+        ),
+    ]);
+    // The block on its header's line moves to lines of its own, and `z()` stays in each block.
+    assert_quaff_snapshot!(project.quaff(&["-e", "replace `a()` with `if c:\n    b()` expect 2"]));
+    project.assert_changed(&[(
+        "a.py",
+        b"def f():\n    if c:\n        b()\n    z()\n\n\nif x:\n    if c:\n        b()\n    z()\ntail()\n",
+    )]);
+}
+
+#[test]
+fn a_block_on_its_headers_line_that_nothing_indents_refuses_lines_exits_9() {
+    let project = Project::new(&[(".git/HEAD", ""), ("a.py", "if x: a(); z()\ntail()\n")]);
+    assert_quaff_snapshot!(project.quaff(&["-e", "replace `a()` with `b()\nc()` expect 1"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_statement_the_layout_cannot_keep_in_its_block_exits_9() {
+    let project = Project::new(&[
+        (".git/HEAD", ""),
+        ("a.py", "def f():\n    pass\nif x: \\\n    a(); z()\n"),
+    ]);
+    assert_quaff_snapshot!(project.quaff(&["-e", "replace `a()` with `b()\nc()` expect 1"]));
+    project.assert_unchanged();
+}
+
+#[test]
+fn a_structural_replace_leaving_a_return_outside_a_function_exits_9() {
+    let project = Project::new(&[(".git/HEAD", ""), ("a.py", "def f():\n    return 1\n")]);
+    assert_quaff_snapshot!(
+        project.quaff(&["-e", "replace `def f(): $b...` with `$b...` expect 1"])
+    );
+    project.assert_unchanged();
+}
+
+#[test]
 fn a_structural_replace_writes_back_in_the_files_encoding() {
     let mut project = Project::new(&[(".git/HEAD", "")]);
     project.add_bytes("l.py", b"# -*- coding: latin-1 -*-\nx = f(\"caf\xe9\")\n");

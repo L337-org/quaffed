@@ -912,7 +912,7 @@ arguments where the template's `, ` stands, but not when the rewrite reorders th
   Inside braces only a bound name may stand, so `${name|upper}` is refused as a value filter
   this build does not have, exit 5.
 - **Indentation is derived, never written.**  A template's later lines take the indentation of the
-  line the match starts on, in the file's own indent unit; captured statements moved to another
+  block the match is in, in the file's own indent unit; captured statements moved to another
   depth are shifted with them, except the lines of a multi-line string, which are part of its
   value.  A captured value that continues a line, inside a bracket or after a backslash, keeps
   its lines as written, since their indentation says nothing of depth: a call's arguments one to
@@ -946,6 +946,46 @@ arguments where the template's `, ` stands, but not when the rewrite reorders th
   ```
 
   Nothing else is reformatted: a project's formatter does the rest.
+- **Statements that share a line are given lines of their own where they need them.**  A
+  statement can follow a semicolon, or, in Python, a block can be written on its header's line, as
+  in `if ready: start(); log()`.  What a rewrite writes there may be more than one line, or start
+  with a statement that holds a block, which cannot follow a semicolon or a colon.  It may also
+  end with such a statement or with a comment, which nothing can follow on its line.  Then the
+  code around it is laid out so that every statement stays in the block it was in.  A block on
+  its header's line moves to lines of its own, indented under the header by the file's indent
+  unit.  A semicolon before the match becomes a line break where the rewrite starts a block, and
+  one after it where the rewrite ends one.  With this file:
+
+  ```python
+  # ready.py
+  def run(ready):
+      if ready: start(); log()
+      done()
+  ```
+
+  <!-- check: with ready.py; then ready.py -->
+  ```
+  $ quaff -e 'replace `start()` with `check()
+  start()` expect 1'
+  ready.py:2:15-2:21: start()
+  quaff: replaced 1 match in 1 file
+  ```
+
+  the block under `if ready:` moves to lines of its own:
+
+  ```python
+  # ready.py
+  def run(ready):
+      if ready:
+          check()
+          start(); log()
+      done()
+  ```
+
+  and `log()` is still only called when `ready` is.  A rewrite of one line of simple statements
+  leaves the line as it is.  The same goes for statements a hole captured: ``replace `def
+  $f($p...): $b...` with `def renamed($p...): $b...` expect 1`` over a function whose body is on
+  lines of its own writes that body indented under the new header, not after its colon.
 - **Line breaks are the file's own**: each line break the template writes is spelled as the
   file's line ending where the match stands, as `$^` writes one in a textual replace, except one
   inside a string, which is part of its value.
@@ -1050,6 +1090,22 @@ written.  A replace whose count does not hold says so first, exit 2, as any edit
   brackets of its own - needs none, and is written as it was.  A sequence hole cannot be kept
   whole by brackets, which would make its items one tuple, so it is refused with advice to write
   it where its items stand apart, as among a call's arguments.
+
+- **Statements that need lines of their own where nothing gives the depth**: a block on its
+  header's line has to be given lines of its own, but neither the file nor the rewrite indents
+  any block, so the indent unit cannot be derived.  Write that block on lines of its own first,
+  or the rewrite's statements on one line separated by `;`.
+- **A statement that would end up in another block**: a check made after the edit, for any
+  layout quaff could not give lines of its own, such as a block on its header's line after a
+  backslash continuation.  Write that block on lines of its own, one statement to a line.
+- **A `return`, `yield`, `await`, `async with`, `async for`, `break` or `continue` left outside
+  what it needs**: Python parses each anywhere, but refuses to run `return` or `yield` outside a
+  function, `await`, `async with`, `async for` or an asynchronous comprehension outside an
+  `async` function, and `break` or `continue` outside a loop.  An `await` in a generator
+  expression needs no `async` function, as in Python.  Unwrapping a function's
+  body with ``replace `def f(): $b...` with `$b...` expect 1`` over a body that returns is refused
+  for this reason.  Only what the edit writes is judged, so a misplaced one already in the file
+  does not stop an edit near it.
 
 ## Deleting code
 
@@ -1243,6 +1299,14 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
   is refused only where that language would read it together with what the rewrite puts beside
   it.  In Python a leading minus binds less tightly than `**`, so `-1` written as `$a ** 2` is
   refused, since it would be read as `-(1 ** 2)`, while `$a * 2` is not; `($a) ** 2` is never.
+- **A block on its header's line is laid out only where the rewrite needs it.**  Over
+  `if ready: start(); log()`, a rewrite of `start()` that is one line of simple statements leaves
+  the line on one line, and one of two lines moves the whole block, `log()` included, to lines of
+  its own.  The statements before the match in that block go with it, on its first line.
+- **A `return` already outside a function is the file's, not the edit's.**  A file can hold one
+  that Python refuses to run, as a notebook's exported code can hold a top-level `await`.  An
+  edit that writes it back through a hole is not refused for it.  Only one more of the same kind
+  than what the edit wrote over held is refused.
 - **Brackets round a tuple's hole keep it one tuple.**  ``replace `return $x` with
   `return wrap(($x))` `` over `return a, b` writes `return wrap((a, b))`, a call with one
   argument, where `wrap($x)` is refused, since it would be a call with two.

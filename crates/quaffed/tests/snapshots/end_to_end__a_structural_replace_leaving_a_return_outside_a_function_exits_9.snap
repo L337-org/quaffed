@@ -1,0 +1,15 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-e"
+    - "replace `def f(): $b...` with `$b...` expect 1"
+---
+success: false
+exit_code: 9
+----- stdout -----
+
+----- stderr -----
+quaff: refused: the replace cannot be made as written in 1 file, so nothing was written:
+  "a.py": line 1, column 1: the rewrite would leave `return` outside a function, which Python parses but refuses to run, so the file would no longer compile: keep `return` inside a function in the rewrite, or narrow the pattern so that it does not match here
