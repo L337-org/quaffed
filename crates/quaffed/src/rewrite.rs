@@ -1312,14 +1312,14 @@ impl Deletion<'_, '_> {
         }
         // At the start or the end of the file, the blank lines at that edge go too, so that none
         // are left there.  Between code, the gap that is left is the wider of the two, so that the
-        // file's own spacing stands: deleting a class's last method leaves the class's gap.
+        // file's own spacing stands: deleting a class's last method leaves the class's gap.  At
+        // a block's edge, the blank lines on its inner side go.
+        let narrower_before = before > 0 && after > 0 && before < after;
         if start == 0 || past == text.len() {
             start..past
         } else if edges.starts && !edges.ends {
             lines.start..past
-        } else if edges.ends && !edges.starts {
-            start..end
-        } else if before > 0 && after > 0 && before < after {
+        } else if edges.ends && !edges.starts || narrower_before {
             start..end
         } else if before > 0 && after > 0 {
             lines.start..past
@@ -1792,6 +1792,7 @@ impl Job<'_> {
         }
         with_markers.push_str(&template[copied..]);
         let with_markers = self.laid_out(with_markers, &markers)?;
+        let with_markers = self.rebracketed(with_markers, &markers);
         let indented = indent_template(
             &with_markers,
             self.base,
@@ -1868,6 +1869,134 @@ impl Job<'_> {
         Ok(level(&template, &in_order(changes)).text)
     }
 
+    /// `template`, with each site a marker from `markers`, given the brackets of the match's own
+    /// that the template cannot write: a bracket round some of a node's children that is no node
+    /// of its own, as round the names a Python `from` import takes, which a pattern ignores and
+    /// so a template cannot say what becomes of.  Where the template has a node of the same kind
+    /// holding the same holes, its children of the kinds the bracket held are put in the file's
+    /// bracket, unless they are in a bracket already, so that the layout inside it can be carried
+    /// as any bracket's is.  A template that does not parse with its markers is left as it is.
+    fn rebracketed(&self, template: String, markers: &[String]) -> String {
+        let found = &self.found.range;
+        let own: Vec<&Bracket> = self
+            .lexed
+            .brackets
+            .iter()
+            .filter(|b| found.start <= b.open && b.close < found.end)
+            .filter(|b| {
+                !self
+                    .found
+                    .captures
+                    .iter()
+                    .any(|c| c.start <= b.open && b.close < c.end)
+            })
+            .collect();
+        if own.is_empty() {
+            return template;
+        }
+        let Ok(parsed) = parse_module(&template) else {
+            return template;
+        };
+        let lexed = lex(&template);
+        let wraps: Vec<Wrap<'_>> = own
+            .into_iter()
+            .filter_map(|bracket| self.wrap(bracket, &template, &parsed, &lexed, markers))
+            .collect();
+        if wraps.is_empty() {
+            return template;
+        }
+        wrapped(&template, wraps)
+    }
+
+    /// Where the template needs `bracket`, the match's own, round a node's children, as
+    /// [`rebracketed`](Job::rebracketed) says: the stretch to wrap, and the bracket's opening
+    /// and closing; `None` where it needs none.
+    fn wrap(
+        &self,
+        bracket: &Bracket,
+        template: &str,
+        parsed: &Arena<'_>,
+        lexed: &Lexed,
+        markers: &[String],
+    ) -> Option<Wrap<'_>> {
+        let arena = self.arena;
+        let found = &self.found.range;
+        let sites = self.rewrite.sites();
+        let inner = bracket.open + 1..bracket.close;
+        // The node the bracket's contents are children of, the deepest holding it all.
+        let parent = arena
+            .nodes_within(found.clone())
+            .filter(|&node| {
+                let range = arena.range(node);
+                range.start <= bracket.open && bracket.close < range.end
+            })
+            .last()?;
+        let held: Vec<NodeId> = arena
+            .children(parent)
+            .filter(|&child| {
+                let range = arena.range(child);
+                inner.start <= range.start && range.end <= inner.end
+            })
+            .collect();
+        if held.is_empty() {
+            return None;
+        }
+        let kinds: Vec<Kind> = held.iter().map(|&child| arena.kind(child)).collect();
+        // Where the template writes each hole the bracket holds.
+        let at: Option<Vec<Range<usize>>> = self
+            .names
+            .iter()
+            .zip(&self.found.captures)
+            .filter(|(_, c)| !c.is_empty() && inner.start <= c.start && c.end <= inner.end)
+            .map(|(name, _)| {
+                let i = sites
+                    .iter()
+                    .position(|site| site.name == *name && !site.in_literal)?;
+                let start = template.find(&markers[i])?;
+                Some(start..start + markers[i].len())
+            })
+            .collect();
+        let at = at.filter(|at| !at.is_empty())?;
+        let counterpart = parsed
+            .nodes()
+            .filter(|&node| parsed.kind(node) == arena.kind(parent))
+            .filter(|&node| {
+                let range = parsed.range(node);
+                at.iter()
+                    .all(|a| range.start <= a.start && a.end <= range.end)
+            })
+            .last()?;
+        // A child the template writes as a hole alone is a name to its parse, whatever it
+        // captured.
+        let children: Vec<Range<usize>> = parsed
+            .children(counterpart)
+            .map(|child| (parsed.kind(child), parsed.range(child)))
+            .filter(|(kind, range)| kinds.contains(kind) || at.contains(range))
+            .map(|(_, range)| range)
+            .collect();
+        let (first, last) = (children.first()?, children.last()?);
+        let span = first.start..last.end;
+        // A bracket of the node's own - inside it, in none of its children - round them.
+        let range = parsed.range(counterpart);
+        let already = lexed.brackets.iter().any(|b| {
+            range.start <= b.open
+                && b.close < range.end
+                && b.open < span.start
+                && span.end <= b.close
+                && !parsed.children(counterpart).any(|child| {
+                    let child = parsed.range(child);
+                    child.start <= b.open && b.close < child.end
+                })
+        });
+        let text = self.text;
+        (!already).then(|| {
+            (
+                span,
+                &text[bracket.open..=bracket.open],
+                &text[bracket.close..=bracket.close],
+            )
+        })
+    }
     /// For each site in order, the file's layout to write before it in place of the template's,
     /// where the site and the one before it are both code, next to each other in the template
     /// and in the file: inside a bracket, with the same code between them, the file's layout
@@ -2184,6 +2313,33 @@ fn comma_before(
     (previous > floor && !matches!(text.as_bytes()[previous - 1], b'(' | b'[' | b'{' | b','))
         .then_some(previous..at)
 }
+
+/// `template` with each of `wraps` put in its brackets.
+fn wrapped(template: &str, mut wraps: Vec<Wrap<'_>>) -> String {
+    wraps.sort_unstable_by_key(|(span, _, _)| span.start);
+    wraps.dedup_by_key(|(span, _, _)| span.start);
+    let mut out = String::with_capacity(template.len() + 2 * wraps.len());
+    let mut copied = 0;
+    // At one offset, closings come before openings, so that stretches side by side stay apart;
+    // of two closings the inner, which started later, comes first, and of two openings the
+    // outer, which ends later.
+    let mut cuts: Vec<(usize, bool, std::cmp::Reverse<usize>, &str)> = Vec::new();
+    for (span, open, close) in &wraps {
+        cuts.push((span.start, true, std::cmp::Reverse(span.end), open));
+        cuts.push((span.end, false, std::cmp::Reverse(span.start), close));
+    }
+    cuts.sort_by_key(|&(at, opening, order, _)| (at, opening, order));
+    for (at, _, _, bracket) in cuts {
+        out.push_str(&template[copied..at]);
+        out.push_str(bracket);
+        copied = at;
+    }
+    out.push_str(&template[copied..]);
+    out
+}
+
+/// A stretch of a template to put in brackets, and the brackets' opening and closing.
+type Wrap<'a> = (Range<usize>, &'a str, &'a str);
 
 /// A stem for site markers that neither the template nor the file contains.
 fn marker_stem(template: &str, text: &str) -> String {
@@ -3197,6 +3353,37 @@ mod tests {
         assert_eq!(
             ok("f($a)", "f($a, 4)", "f(\n    x\n)\n"),
             "f(\n    x, 4\n)\n"
+        );
+    }
+
+    #[test]
+    fn a_bracket_a_pattern_cannot_write_is_kept_with_its_layout() {
+        let text = "from m import (\n    a,\n    e,\n    b,\n)\n";
+        assert_eq!(
+            ok("from m import $n...", "from k import $n...", text),
+            "from k import (\n    a,\n    e,\n    b,\n)\n"
+        );
+        assert_eq!(
+            ok(
+                "from m import $a..., e, $b...",
+                "from m import $a..., g, $b...",
+                text
+            ),
+            "from m import (\n    a,\n    g,\n    b,\n)\n"
+        );
+        // A tuple's brackets are the tuple's, and stay where the template writes the tuple.
+        assert_eq!(
+            ok("x = $a, $b", "y = $a, $b", "x = (\n    1,\n    2,\n)\n"),
+            "y = (\n    1,\n    2,\n)\n"
+        );
+        // Without one in the file, none is added.
+        assert_eq!(
+            ok(
+                "from m import $n...",
+                "from k import $n...",
+                "from m import a, b\n"
+            ),
+            "from k import a, b\n"
         );
     }
 
