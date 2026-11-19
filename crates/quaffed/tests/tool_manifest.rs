@@ -582,9 +582,8 @@ fn without_comment(raw: &str) -> &str {
     }
 }
 
-/// The action every apt install goes through, so the downloads are cached and a restored
-/// package is checked against the index before it is installed.
-const APT_ACTION: &str = ".github/actions/apt-install/action.yaml";
+/// The organisation's shared action every apt install goes through.
+const APT_ACTION: &str = "L337-org/github-workflows/actions/apt-install@";
 
 /// Returns each command in a workflow or action file that installs from apt itself, rather
 /// than through [`APT_ACTION`]: `apt-get`, `apt` or `aptitude` as a word, then `install` as a
@@ -689,17 +688,26 @@ fn no_workflow_installs_from_apt_but_through_the_caching_action() {
     let mut files = Vec::new();
     yaml_files_under(&root.join(".github/workflows"), &mut files);
     yaml_files_under(&root.join(".github/actions"), &mut files);
-    // Finding nothing, or not finding the action, would pass having checked nothing.
+    // Finding nothing, or no workflow using the action, would pass having checked nothing.
     assert!(
         files.iter().any(|f| f.ends_with("premerge.yaml")),
         "the scan did not find .github/workflows/premerge.yaml, so it checked nothing"
     );
+    // A step using it, not a comment naming it.
+    let uses_it = |text: &str| {
+        text.lines().any(|line| {
+            without_comment(line)
+                .trim_start()
+                .trim_start_matches("- ")
+                .starts_with(&format!("uses: {APT_ACTION}"))
+        })
+    };
     assert!(
-        files.iter().any(|f| f.ends_with(APT_ACTION)),
-        "the scan did not find {APT_ACTION}, which every apt install must go through"
+        files.iter().any(|f| uses_it(&read(f))),
+        "no workflow uses {APT_ACTION}, which every apt install must go through"
     );
     let mut violations = Vec::new();
-    for file in files.iter().filter(|f| !f.ends_with(APT_ACTION)) {
+    for file in &files {
         let label = file
             .strip_prefix(&root)
             .unwrap_or(file)
@@ -730,7 +738,7 @@ fn the_apt_check_catches_an_install_and_passes_the_action_and_comments() {
         assert!(found[0].starts_with("fixture.yaml:1: "), "{found:?}");
     }
     for text in [
-        "        uses: ./.github/actions/apt-install",
+        "        uses: L337-org/github-workflows/actions/apt-install@v2",
         "          packages: valgrind strace time musl-tools",
         "        run: sudo apt-get update",
         "    # Valgrind comes from the image, through apt-get install in the action.",

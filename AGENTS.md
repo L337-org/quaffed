@@ -41,7 +41,7 @@ the work instead.  The shared hygiene check that CI runs fails on either.
 |---|---|
 | `Cargo.toml`, `rust-toolchain.toml`, `rustfmt.toml`, anything under `crates/` structurally, or `.github/workflows/` | [architecture/workspace.md](architecture/workspace.md) |
 | adding a workspace member | the checklist in [architecture/workspace.md](architecture/workspace.md) |
-| `tools.toml`, `scripts/install-tools`, `.github/actions/install-tools` or `.github/actions/apt-install`, or adding a verification tool or an apt package | [architecture/tools.md](architecture/tools.md) |
+| `tools.toml`, `scripts/install-tools` or `.github/actions/install-tools`, or adding a verification tool or an apt package | [architecture/tools.md](architecture/tools.md) |
 | `scripts/coverage`, `scripts/coverage-ratchet` or `.github/workflows/coverage.yaml` | the coverage ratchet section of [architecture/testing.md](architecture/testing.md) |
 | `.github/workflows/random-properties.yaml`, or a property test's seed | the property tests section of [architecture/testing.md](architecture/testing.md) |
 | an end-to-end test, or anything that changes what `quaff` prints or how it exits | the snapshot sections of [architecture/testing.md](architecture/testing.md) |
