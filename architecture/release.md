@@ -63,8 +63,12 @@ packaging a release runs.
 Each architecture is built on a machine of that architecture; the script refuses otherwise.
 Timestamps come from the commit, so a re-run of a release can tell an identical package from a
 different one.  **Only Rust is pinned**: the C compiler that builds mimalloc comes from the runner
-image, so a re-run after an image update can build different bytes, and the attach step then
-replaces the package an earlier run of the release attached, with a warning.
+image, so a re-run after an image update can build different bytes.  **Accepted limitation:** the
+attach step replaces a package already on the release when the build differs, with a warning, so
+**Re-run all jobs** on a release that already finished can change a published package.  A tag has
+one release, so a re-run of its run, or publishing it again, is the only way there; refusing would
+need its own check for a run that already succeeded, and the checklist's step 4 already says to
+re-run only the failed jobs, which attach the packages already built.
 
 **The package is compressed with xz, chosen explicitly**, because `dpkg-deb` may otherwise choose
 zstd, which Debian 11's dpkg refuses.
