@@ -296,17 +296,17 @@ fn outermost_over(maps: &[Vec<(Range<usize>, Range<usize>)>]) -> Vec<(Range<usiz
 
 /// Why an edit of `old` into `new` is refused for the first statement or expression it leaves
 /// outside the construct it needs - a `return` outside a function, a `break` outside a loop -
-/// with where the match that wrote it starts in `old`; or `None`.  Each parses anywhere, so neither the parse check
-/// nor the matcher sees it.  Only what the edit wrote, the new side of each of `over`, is
-/// judged, and only beyond as many of the same kind as stood outside in what it wrote over: one
-/// already misplaced and carried through a hole is the file's, not the edit's.  A new text that
-/// does not parse is left to the parse check.
+/// with where the match that wrote it starts in `old`; or `None`.  Each parses anywhere, so
+/// neither the parse check nor the matcher sees it.  Only what the edit wrote, the new side of
+/// each of `over`, is judged, and only beyond as many of the same kind as stood outside in what
+/// it wrote over: one already misplaced and carried through a hole is the file's, not the
+/// edit's.  A new text that does not parse is left to the parse check.
 fn left_outside(
     old: &str,
     new: &str,
     over: &[(Range<usize>, Range<usize>)],
 ) -> Option<(usize, String)> {
-    const KEYWORDS: [&str; 5] = ["return", "yield", "await", "break", "continue"];
+    const KEYWORDS: [&str; 6] = ["return", "yield", "await", "async", "break", "continue"];
     if !over
         .iter()
         .any(|(_, written)| KEYWORDS.iter().any(|k| new[written.clone()].contains(k)))
@@ -336,7 +336,7 @@ fn left_outside(
         .find(|(_, what)| count(&now, what) > count(&was, what))?;
     let needs = match what {
         "return" | "yield" | "yield from" => "a function",
-        "await" => "an async function",
+        "await" | "async with" | "async for" => "an async function",
         _ => "a loop",
     };
     Some((
@@ -728,14 +728,7 @@ fn write_matches(
         written.push(base..out.len());
         copied = found.range.end;
     }
-    copied = write_changes(
-        text,
-        &mut out,
-        copied,
-        &mut changes,
-        text.len() + 1,
-        &mut laid,
-    );
+    copied = write_changes(text, &mut out, copied, &mut changes, text.len(), &mut laid);
     out.push_str(&text[copied..]);
     Ok(Writing {
         out,
@@ -747,9 +740,10 @@ fn write_matches(
     })
 }
 
-/// Writes onto `out` the text from `copied` up to each of `changes` that starts before `until`,
-/// and the change's text in place of its range, recording its old range and its new in `laid`;
-/// returns where copying the text resumes.
+/// Writes onto `out` the text from `copied` up to each of `changes` that starts at or before
+/// `until`, and the change's text in place of its range, recording its old range and its new in
+/// `laid`; returns where copying the text resumes.  A change at a match's start, the empty gap
+/// after a header's colon with no space after it, goes before the match.
 fn write_changes(
     text: &str,
     out: &mut String,
@@ -758,7 +752,7 @@ fn write_changes(
     until: usize,
     laid: &mut Vec<(Range<usize>, Range<usize>)>,
 ) -> usize {
-    while let Some((range, line)) = changes.next_if(|(range, _)| range.start < until) {
+    while let Some((range, line)) = changes.next_if(|(range, _)| range.start <= until) {
         out.push_str(&text[copied..range.start]);
         laid.push((range.clone(), out.len()..out.len() + line.len()));
         out.push_str(&line);
@@ -799,7 +793,8 @@ fn level_edits(
             (old.clone(), moved(new.start)..moved(new.end))
         }))
         .collect();
-    all.sort_by_key(|(old, _)| old.start);
+    // An empty change at a match's start was written before it.
+    all.sort_by_key(|(old, _)| (old.start, old.end));
     all
 }
 
@@ -903,10 +898,10 @@ fn left_block(
 /// rewrite writes a comment there; otherwise the match takes one separator - a comma or a
 /// semicolon - its parent holds next to it, the one after it unless that one is a trailing comma
 /// and there is one before it.  A comma is taken across line breaks, since it separates the item
-/// from its neighbour wherever they fall; a semicolon only from the match's own line.  Everything inside the match goes with it, comments included,
-/// since they describe code that is gone.  A comment the rewrite writes may not have code after
-/// it on its line, which it would swallow.  A result that does not parse is left to the parse
-/// check, which refuses it.
+/// from its neighbour wherever they fall; a semicolon only from the match's own line.
+/// Everything inside the match goes with it, comments included, since they describe code that
+/// is gone.  A comment the rewrite writes may not have code after it on its line, which it would
+/// swallow.  A result that does not parse is left to the parse check, which refuses it.
 fn deleted(
     text: &str,
     arena: &Arena<'_>,
@@ -1800,7 +1795,17 @@ impl Job<'_> {
             else {
                 continue;
             };
-            changes.extend(slot.lay_out(needs, unit, "\n")?.changes);
+            let layout = slot.lay_out(needs, unit, "\n").map_err(|_| {
+                format!(
+                    "what ${} captured needs lines of its own where the rewrite writes it, in a \
+                     block of the rewrite's written on its header's line, but nothing indents a \
+                     block - neither the file nor the rewrite - so the depth to write it at \
+                     cannot be derived: write that block of the rewrite on lines of its own, \
+                     indented under its header",
+                    self.rewrite.sites()[i].name
+                )
+            })?;
+            changes.extend(layout.changes);
         }
         Ok(level(&template, &in_order(changes)).text)
     }
@@ -3182,5 +3187,55 @@ mod tests {
         let text = format!("{UNIT}if x: \\\n    a(); z()\n");
         let why = replaced("a()", "b()\nc()", &text).unwrap_err();
         assert_eq!(why, format!("4:5: {LEFT_BLOCK}"));
+    }
+
+    #[test]
+    fn a_block_with_no_space_after_its_headers_colon_is_laid_out() {
+        assert_eq!(
+            ok("a()", "b()\nc()", &format!("{UNIT}if x:a()\n")),
+            format!("{UNIT}if x:\n  b()\n  c()\n")
+        );
+        assert_eq!(
+            ok("a()", "if c:\n    b()", "if x:a(); z()\n"),
+            "if x:\n    if c:\n        b()\n    z()\n"
+        );
+    }
+
+    #[test]
+    fn a_templates_own_block_that_nothing_indents_is_refused_with_its_own_reason() {
+        let text = "x = 1\ny = 2\nv = 3\nw = 3\n";
+        let why = replaced("x = 1\n$rest...\nw = 3", "if c: $rest...\nw = 3", text).unwrap_err();
+        assert!(
+            why.starts_with(
+                "1:1: what $rest captured needs lines of its own where the rewrite writes it, \
+                 in a block of the rewrite's written on its header's line"
+            ),
+            "{why}"
+        );
+    }
+
+    #[test]
+    fn async_with_and_for_left_outside_an_async_function_are_refused() {
+        let text = "async def main():\n    async with lock:\n        count += 1\n";
+        let why = replaced("async def main(): $b...", "$b...", text).unwrap_err();
+        assert!(
+            why.starts_with("1:1: the rewrite would leave `async with` outside an async function"),
+            "{why}"
+        );
+        let text = "async def main():\n    async for a in b:\n        pass\n";
+        let why = replaced("async def main(): $b...", "def main():\n    $b...", text).unwrap_err();
+        assert!(
+            why.starts_with("1:1: the rewrite would leave `async for` outside an async function"),
+            "{why}"
+        );
+    }
+
+    #[test]
+    fn an_await_in_a_generator_expression_needs_no_async_function() {
+        let text = "async def f():\n    return (await g(x) for x in y)\n";
+        assert_eq!(
+            ok("async def f(): $b...", "def f():\n    $b...", text),
+            "def f():\n    return (await g(x) for x in y)\n"
+        );
     }
 }

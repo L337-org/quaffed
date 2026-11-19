@@ -92,13 +92,16 @@ its kind, and whether the file still parses - is the edit's to check.
 
 ## Statements outside what they need
 
-`misplaced` (`src/scope.rs`) finds each `return` or `yield` outside a function, `await` outside an
-`async` one, and `break` or `continue` outside a loop's body, by walking Ruff's tree with what
-each node stands within.  Ruff's parser accepts all of them, and its own semantic checker needs
-a context the caller keeps for it, so the walk keeps the little it needs itself.  Its doc
-comment lists Python's rules, including the places evaluated outside a construct: a
-comprehension's first iterable, a definition's decorators, defaults and annotations, and a
-loop's `else`.  The edit uses it to refuse code it would leave that Python cannot compile.
+`misplaced` (`src/scope.rs`) finds each `return` or `yield` outside a function; `await`,
+`async with`, `async for` or an asynchronous list, set or dict comprehension outside an `async`
+one; and `break` or `continue` outside a loop's body.  It walks Ruff's tree with what each node
+stands within.  Ruff's parser accepts all of them, and its own semantic checker needs a context
+the caller keeps for it, so the walk keeps the little it needs itself.  Its doc comment lists
+Python's rules, including where they bend: a generator expression may `await` in any function,
+and a comprehension's first iterable, a definition's decorators, defaults and annotations, and
+a loop's `else` are evaluated outside the construct.  The edit uses it to refuse code it would
+leave with one of these out of place.  It covers only these: Python's compiler refuses other
+code the parser accepts, such as a `nonlocal` with no binding, and those are not checked.
 
 ## What a match compares
 

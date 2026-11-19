@@ -2,8 +2,8 @@
 // SPDX-FileCopyrightText: 2026 Gavin Lucas
 
 //! Statements and expressions outside the construct they need: a `return` outside a function, a
-//! `yield` outside one, an `await` outside an `async` one, a `break` or `continue` outside a
-//! loop.
+//! `yield` outside one, an `await`, `async with` or `async for` outside an `async` one, a
+//! `break` or `continue` outside a loop.
 //!
 //! Each parses anywhere a statement or an expression may stand, so the parser accepts a file
 //! holding one in the wrong place, and only Python's compiler refuses it, as a `SyntaxError`.  An
@@ -13,8 +13,11 @@
 //! - `return` needs a function, and a class body between it and the function is not one.
 //! - `yield` and `yield from` need a function or a lambda; a class body or a comprehension
 //!   between is not one, though a comprehension's first iterable is evaluated outside it.
-//! - `await` needs an `async` function, through any comprehension; a lambda, a class body or a
-//!   plain function is not one.
+//! - `await` needs an `async` function, through any list, set or dict comprehension, or a
+//!   generator expression, which may be asynchronous anywhere; a lambda, a class body or a plain
+//!   function is not one.  A generator expression's first iterable is evaluated outside it.
+//! - `async with`, `async for`, and a list, set or dict comprehension with an `async for`, need
+//!   what `await` needs.
 //! - `break` and `continue` need the body of a `for` or `while` loop - not its `else` - with no
 //!   function, lambda or class between.
 //!
@@ -31,7 +34,8 @@ use crate::ParseError;
 /// and where it starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Misplaced {
-    /// `return`, `yield`, `yield from`, `await`, `break` or `continue`.
+    /// `return`, `yield`, `yield from`, `await`, `async with`, `async for`, `break` or
+    /// `continue`.
     pub what: &'static str,
     /// The byte offset in the source where it starts.
     pub offset: usize,
@@ -62,6 +66,7 @@ enum Within {
     Lambda,
     Class,
     Comprehension,
+    Generator,
     Loop,
 }
 
@@ -85,9 +90,10 @@ impl Walk {
             let decided = match (what, within) {
                 ("return", Within::Function { .. })
                 | ("yield", Within::Function { .. } | Within::Lambda)
+                | ("await", Within::Generator)
                 | ("loop", Within::Loop) => Some(true),
                 ("return", Within::Class)
-                | ("yield", Within::Class | Within::Comprehension)
+                | ("yield", Within::Class | Within::Comprehension | Within::Generator)
                 | ("await", Within::Lambda | Within::Class)
                 | ("loop", Within::Function { .. } | Within::Lambda | Within::Class) => Some(false),
                 ("await", Within::Function { is_async }) => Some(*is_async),
@@ -107,13 +113,26 @@ impl Walk {
     }
 
     /// A comprehension's generators and elements: the first iterable where the comprehension
-    /// stands, the rest within it.
-    fn comprehension<'a>(&mut self, generators: &'a [Comprehension], elements: &[&'a Expr]) {
+    /// stands, the rest `within` it.  A list, set or dict comprehension with an `async for` needs
+    /// what `await` needs where it stands, `start`; a generator expression never does.
+    fn comprehension<'a>(
+        &mut self,
+        within: Within,
+        start: &impl Ranged,
+        generators: &'a [Comprehension],
+        elements: &[&'a Expr],
+    ) {
+        if within == Within::Comprehension
+            && generators.iter().any(|g| g.is_async)
+            && !self.allowed("await")
+        {
+            self.found("async for", start);
+        }
         let Some((first, rest)) = generators.split_first() else {
             return;
         };
         self.visit_expr(&first.iter);
-        self.within(Within::Comprehension, |walk| {
+        self.within(within, |walk| {
             walk.visit_expr(&first.target);
             for condition in &first.ifs {
                 walk.visit_expr(condition);
@@ -162,6 +181,9 @@ impl<'a> Visitor<'a> for Walk {
                 self.within(Within::Class, |walk| walk.visit_body(&class.body));
             }
             Stmt::For(each) => {
+                if each.is_async && !self.allowed("await") {
+                    self.found("async for", stmt);
+                }
                 self.visit_expr(&each.target);
                 self.visit_expr(&each.iter);
                 self.within(Within::Loop, |walk| walk.visit_body(&each.body));
@@ -171,6 +193,12 @@ impl<'a> Visitor<'a> for Walk {
                 self.visit_expr(&each.test);
                 self.within(Within::Loop, |walk| walk.visit_body(&each.body));
                 self.visit_body(&each.orelse);
+            }
+            Stmt::With(with) => {
+                if with.is_async && !self.allowed("await") {
+                    self.found("async with", stmt);
+                }
+                walk_stmt(self, stmt);
             }
             Stmt::Return(_) => {
                 if !self.allowed("return") {
@@ -200,13 +228,19 @@ impl<'a> Visitor<'a> for Walk {
                 }
                 self.within(Within::Lambda, |walk| walk.visit_expr(&lambda.body));
             }
-            Expr::ListComp(comp) => self.comprehension(&comp.generators, &[&comp.elt]),
-            Expr::SetComp(comp) => self.comprehension(&comp.generators, &[&comp.elt]),
-            Expr::Generator(comp) => self.comprehension(&comp.generators, &[&comp.elt]),
+            Expr::ListComp(comp) => {
+                self.comprehension(Within::Comprehension, expr, &comp.generators, &[&comp.elt]);
+            }
+            Expr::SetComp(comp) => {
+                self.comprehension(Within::Comprehension, expr, &comp.generators, &[&comp.elt]);
+            }
+            Expr::Generator(comp) => {
+                self.comprehension(Within::Generator, expr, &comp.generators, &[&comp.elt]);
+            }
             Expr::DictComp(comp) => {
                 let mut elements: Vec<&Expr> = comp.key.iter().map(AsRef::as_ref).collect();
                 elements.push(&comp.value);
-                self.comprehension(&comp.generators, &elements);
+                self.comprehension(Within::Comprehension, expr, &comp.generators, &elements);
             }
             Expr::Yield(_) | Expr::YieldFrom(_) => {
                 if !self.allowed("yield") {
@@ -308,6 +342,40 @@ def k():
     [(yield) for z in w]
 ";
         assert_eq!(whats(source), ["await", "await", "break", "yield"]);
+    }
+
+    #[test]
+    fn a_generator_expression_may_await_anywhere_but_not_in_its_first_iterable() {
+        let source = "\
+x = (await a for a in b)
+class C:
+    y = (await a for a in b)
+def f():
+    return ([await a for a in c] for c in b)
+g = lambda: (a async for a in b)
+def h():
+    return (a for a in await b)
+def k():
+    return ((yield) for a in b)
+";
+        assert_eq!(whats(source), ["await", "yield"]);
+    }
+
+    #[test]
+    fn async_with_for_and_comprehensions_need_an_async_function() {
+        let source = "\
+async def ok():
+    async with x:
+        async for a in b:
+            [c async for c in d]
+async with x:
+    pass
+def f():
+    async for a in b:
+        pass
+    return [c async for c in d]
+";
+        assert_eq!(whats(source), ["async with", "async for", "async for"]);
     }
 
     #[test]
