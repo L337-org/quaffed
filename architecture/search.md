@@ -295,22 +295,25 @@ the path or argument it concerns, and says what to do where there is something t
   byte outside the matches is kept.  A character the encoding cannot hold is refused as for a
   textual replace.  Each match is written over with its rewrite: what each hole captured, from the
   matcher, put where the template's sites say (`quaffed_python::compile_rewrite`), each capture
-  widened over brackets that only wrap it (`whole_brackets`); layout inside a bracket is the file's
-  where the template writes none, at a bracket's edges (`rewrite/layout.rs`), between two holes
-  written next to each other over the same code (`Job::gaps`), which holds too between two holes
-  outside a bracket within one logical line - every line break in either gap continued by a
-  backslash, with no comment in it, whose own backslash continues nothing, or the gap inside a
-  bracket round the whole match or the template's own - though the edges of a bracket such a gap
-  opens or closes stay the bracket's, carried with it (`between_edges`).  Where the code between
-  differs but holds as many tokens, the same brackets in the same places, the template's tokens
-  are swapped into the file's layout one for one, with the template's spacing within a line
-  beside a token that changed, unless the result would lex otherwise beside the code either side
-  (`swapped`, `Job::swapped_gap`); and the stretches from the match's start to its first hole and
-  from its last hole to its end are held to the same rules (`Job::edge_gaps`).  Round the comma
-  between a hole and an item the template writes beside it, where the file has a comma there, the
-  layout is the file's too (`Job::item_gaps`);
-  between two statement holes written one after the other, the file's blank lines stand, before
-  the template's own line break and indentation, since the statements may move to another depth;
+  widened over brackets that only wrap it (`whole_brackets`).  **Layout the template does not
+  decide is the file's, by one rule** (`diffed`): each stretch of the template between two
+  anchors - its holes, and the match's start and end - is compared with the file's stretch
+  between the same anchors, token by token, by their longest common run.  The tokens both share
+  keep the file's layout between them, and only what differs is written from the template, with
+  its spacing within a line beside a changed token; a line break at either end of what differs
+  stays the file's, and where as many tokens differ on each side, they are paired one for one.
+  A line break of the file's is kept only where it is safe where it is written - inside a
+  bracket, counting the template's own and one round the whole match, or continued by a
+  backslash with no comment before it - and the bracket structure must be the same on both
+  sides, or the template's layout stands.  The layout just inside a bracket a stretch closes
+  first or opens last is that bracket's edge, carried with it (`rewrite/layout.rs`).  A stretch
+  is held to the rule between holes (`Job::gaps`) and at the match's ends (`Job::edge_gaps`),
+  and checked to lex as the template's would beside the code either side, so a word is never
+  run into a name (`Job::diffed_gap`).  A rewrite that reorders holes, or captures code between
+  them, has no such stretch there, and its template's layout stands.  Where the template ends a
+  statement between two holes, outside any bracket, the file's blank lines stand, before the
+  template's own line break and indentation, since the statements may move to another depth
+  (`Job::statement_gap`);
   a bracket of the match's that no node owns, round some of a node's children, as round a Python
   `from` import's names or a tuple, is put round the children in the same places, counted from
   either end, of the template's node of that kind holding the same holes, unless a bracket of

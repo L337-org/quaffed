@@ -874,15 +874,16 @@ goes for two holes in one expression outside a bracket, where a line break can o
 backslash continues, or one a bracket round the whole match makes meaningless: ``replace
 `$a + $b` with `$a + $b` expect any`` over `x = aaa \` then `+ bbb` on the next line keeps the
 continuation, unless the rewrite takes away the bracket that made the line break safe.  Where the
-code between two holes changes but holds as many tokens, or the code between a hole and the start
-or end of the match does, the template's tokens are written into the file's layout, one for one,
-with the template's spacing within a line beside a token that changed: ``replace `$a + $b` with
-`$a - $b` expect any`` over the same file changes only the second line, and ``replace `f($x, $y)`
-with `g($x + $y)` expect 1`` over a call split after its comma keeps the split.  Where it holds
-more or fewer, as `in` rewritten to `not in`, the template's layout stands.  So does a
-hole beside an item the template writes, where the file has an item there: ``replace
-`f($a..., 3)` with `f($a..., 4)` expect 1`` over a call written one argument to a line changes
-only the last argument's line.  Between two statement holes the template writes one after the
+code between two holes changes, or the code between a hole and the start or end of the match,
+only what changed is written from the template, and the rest keeps the file's layout, with the
+template's spacing within a line beside a token that changed: ``replace `$a + $b` with
+`$a - $b` expect any`` over the same file changes only the second line, ``replace `f($x, $y)`
+with `g($x + $y)` expect 1`` over a call split after its comma keeps the split, and ``replace
+`$a in $b` with `$a not in $b` expect 1`` over `(a` then `in b)` on the next line writes
+`not in` on the second line.  Where the brackets among that code change, the template's layout
+stands there.  The same rule keeps a hole beside an item the template writes, where the file has
+an item there: ``replace `f($a..., 3)` with `f($a..., 4)` expect 1`` over a call written one
+argument to a line changes only the last argument's line.  Between two statement holes the template writes one after the
 other, the file's blank lines stand, before the template's own indentation: rewriting a class as
 `$a...` then `$b...` keeps the blank line between two methods.  Where the template writes a blank
 line there itself, its own layout stands instead.
