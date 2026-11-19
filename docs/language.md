@@ -1354,12 +1354,13 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
   matches that overlap otherwise, such as runs of statements that share some, though a `find` of
   the same pattern counts them, since rewriting one would change the other.
 - **A rewrite drops what no hole captures**, layout and the template's spelling replacing it, but
-  never a comment or a trailing comma: one at a bracket's edge is carried to the rewrite's matching
-  bracket, a comma goes with a bracket the rewrite deletes, a bracket no node owns, as round a
-  Python `from` import's names, is kept round the same items, and any other comment in no
+  never a comment or a trailing comma: one at a bracket's edge is carried to the rewrite's
+  matching bracket, a comma goes with a bracket the rewrite deletes, a bracket no node owns, as
+  round a Python `from` import's names, is kept round the same items, and any other comment in no
   capture refuses the edit.  A rewrite with no code is the exception: it
-  [deletes](#deleting-code), and every comment inside the match goes with it.  A sequence hole captures everything between its
-  first node and its last, and the whole of any bracket that only wraps one of them.
+  [deletes](#deleting-code), and every comment inside the match goes with it.  A sequence hole
+  captures everything between its first node and its last, and the whole of any bracket that only
+  wraps one of them.
 - **A trailing comma and a semicolon between statements are layout**, so `f($a, $b)` matches a
   call a formatter has split over lines and ended with a comma.
 - **Implicitly concatenated plain strings are joined, but f-strings are not**: `"abc"` matches
