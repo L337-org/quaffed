@@ -1707,7 +1707,10 @@ fn render(
         base,
     };
     let marked = job.marked()?;
-    let gaps = job.gaps(&marked);
+    let gaps = Gaps {
+        between: job.gaps(&marked),
+        items: job.item_gaps(&marked),
+    };
     let mut escaped = Vec::new();
     let (written, code) = job.fill(&marked, &gaps, None, &mut escaped)?;
     if rewrite.sites().iter().any(|site| site.in_literal)
@@ -1730,7 +1733,13 @@ fn render(
     Ok(Rendered {
         text: written,
         code,
-        carried: gaps.into_iter().flatten().map(|gap| gap.range).collect(),
+        carried: gaps
+            .between
+            .into_iter()
+            .flatten()
+            .chain(gaps.items.into_iter().map(|(_, gap)| gap))
+            .map(|gap| gap.range)
+            .collect(),
         escaped,
     })
 }
@@ -1948,13 +1957,81 @@ impl Job<'_> {
             .collect()
     }
 
+    /// Stretches of the template, in order, each with the file's layout to write in its place:
+    /// the comma, and the layout round it, between a code site inside a bracket and an item the
+    /// template writes beside it, where the file has a comma in the same place, between what the
+    /// site captured and the code beside it.  The template's item stands where the file's did,
+    /// so the line breaks round it are the file's.  Where the template has a comment there, or
+    /// writes a site beside the site, [`gaps`](Job::gaps) decides instead.
+    fn item_gaps(&self, marked: &Marked) -> Vec<(Range<usize>, Gap)> {
+        let template = marked.indented.as_str();
+        let in_bracket = |brackets: &[Bracket], gap: &Range<usize>| {
+            brackets
+                .iter()
+                .any(|b| b.open < gap.start && gap.end <= b.close)
+        };
+        let markers: Vec<Range<usize>> = marked
+            .at
+            .iter()
+            .map(|&(place, i)| place..place + marked.markers[i].len())
+            .collect();
+        let within = &self.found.range;
+        let mut items = Vec::new();
+        for (marker, &(_, i)) in markers.iter().zip(&marked.at) {
+            let site = &self.rewrite.sites()[i];
+            if site.in_literal {
+                continue;
+            }
+            let capture = self.capture(&site.name);
+            let after = (
+                comma_after(template, marker.end, template.len(), &[]),
+                comma_after(self.text, capture.end, within.end, &self.lexed.comments),
+            );
+            if let (Some(stretch), Some(file)) = after
+                && !markers.iter().any(|m| m.start == stretch.end)
+            {
+                items.push((stretch, file));
+            }
+            let before = (
+                comma_before(template, marker.start, 0, &[]),
+                comma_before(self.text, capture.start, within.start, &self.lexed.comments),
+            );
+            if let (Some(stretch), Some(file)) = before
+                && !markers.iter().any(|m| m.end == stretch.start)
+            {
+                items.push((stretch, file));
+            }
+        }
+        items.retain(|(stretch, file)| {
+            in_bracket(&marked.own.brackets, stretch)
+                && in_bracket(&self.lexed.brackets, file)
+                && !self
+                    .found
+                    .captures
+                    .iter()
+                    .any(|c| !c.is_empty() && c.start < file.end && file.start < c.end)
+        });
+        items.sort_unstable_by_key(|(stretch, _)| stretch.start);
+        items.dedup_by_key(|(stretch, _)| stretch.start);
+        items
+            .into_iter()
+            .map(|(stretch, file)| {
+                let gap = Gap {
+                    text: self.text[file.clone()].to_owned(),
+                    range: file,
+                };
+                (stretch, gap)
+            })
+            .collect()
+    }
+
     /// The template filled: each code site with its capture, moved to its depth, each literal
     /// site with `filler` if given, or else its capture escaped as its string needs, naming each
     /// escaped value's site in `escaped`; with where each code site was written.
     fn fill(
         &self,
         marked: &Marked,
-        gaps: &[Option<Gap>],
+        gaps: &Gaps,
         filler: Option<&str>,
         escaped: &mut Vec<String>,
     ) -> Result<(String, Vec<CodeSite>), String> {
@@ -1963,9 +2040,9 @@ impl Job<'_> {
         let mut copied = 0;
         for (k, &(place, i)) in marked.at.iter().enumerate() {
             let site = &self.rewrite.sites()[i];
-            match &gaps[k] {
+            match &gaps.between[k] {
                 Some(gap) => out.push_str(&gap.text),
-                None => out.push_str(&marked.indented[copied..place]),
+                None => gaps.copy(&mut out, &marked.indented, copied..place),
             }
             let range = self.capture(&site.name);
             let value = if !site.in_literal {
@@ -2021,7 +2098,7 @@ impl Job<'_> {
             out.push_str(&value);
             copied = place + marked.markers[i].len();
         }
-        out.push_str(&marked.indented[copied..]);
+        gaps.copy(&mut out, &marked.indented, copied..marked.indented.len());
         Ok((out, code))
     }
 }
@@ -2031,6 +2108,29 @@ impl Job<'_> {
 struct Gap {
     range: Range<usize>,
     text: String,
+}
+
+/// The file's layout written in place of the template's: between each site and the one before
+/// it, and, as stretches of the template, between a site and an item beside it.
+struct Gaps {
+    between: Vec<Option<Gap>>,
+    items: Vec<(Range<usize>, Gap)>,
+}
+
+impl Gaps {
+    /// `range` of the template onto `out`, with the file's layout in place of each stretch of it
+    /// in `items`.
+    fn copy(&self, out: &mut String, template: &str, range: Range<usize>) {
+        let mut copied = range.start;
+        for (stretch, gap) in &self.items {
+            if range.start <= stretch.start && stretch.end <= range.end {
+                out.push_str(&template[copied..stretch.start]);
+                out.push_str(&gap.text);
+                copied = stretch.end;
+            }
+        }
+        out.push_str(&template[copied..range.end]);
+    }
 }
 
 /// One match's rewrite, as [`render`] writes it.
@@ -2046,6 +2146,44 @@ struct Rendered {
 /// Where a code site was written in a rewrite, whether it is a sequence, the name it writes, and
 /// its index in the template's sites.
 type CodeSite = (Range<usize>, bool, String, usize);
+
+/// From `at` in `text`, the layout, one comma and the layout after it, up to the code that
+/// follows, which must start before `ceiling` and be neither a closing bracket nor a comment:
+/// the separator between an item ending at `at` and the next.  Comments are layout only where
+/// listed in `comments`.
+fn comma_after(
+    text: &str,
+    at: usize,
+    ceiling: usize,
+    comments: &[Range<usize>],
+) -> Option<Range<usize>> {
+    let comma = layout::forward_over_layout(text, at, ceiling, comments);
+    if text.as_bytes().get(comma) != Some(&b',') {
+        return None;
+    }
+    let next = layout::forward_over_layout(text, comma + 1, ceiling, comments);
+    (next < ceiling && !matches!(text.as_bytes()[next], b')' | b']' | b'}' | b'#' | b','))
+        .then_some(at..next)
+}
+
+/// Back from `at` in `text`, the layout, one comma and the layout before it, back to the code
+/// before, which must end after `floor` and be neither an opening bracket nor another comma: the
+/// separator between the item before and one starting at `at`.  Comments are layout only where
+/// listed in `comments`.
+fn comma_before(
+    text: &str,
+    at: usize,
+    floor: usize,
+    comments: &[Range<usize>],
+) -> Option<Range<usize>> {
+    let after_comma = back_over_layout(text, floor, at, comments);
+    if after_comma <= floor || text.as_bytes()[after_comma - 1] != b',' {
+        return None;
+    }
+    let previous = back_over_layout(text, floor, after_comma - 1, comments);
+    (previous > floor && !matches!(text.as_bytes()[previous - 1], b'(' | b'[' | b'{' | b','))
+        .then_some(previous..at)
+}
 
 /// A stem for site markers that neither the template nor the file contains.
 fn marker_stem(template: &str, text: &str) -> String {
@@ -3019,6 +3157,34 @@ mod tests {
                 "fmt(x, \"%s:%s\", y)\n"
             ),
             "fmt(x, \"%s: %s\", y)\n"
+        );
+    }
+
+    #[test]
+    fn layout_between_a_hole_and_an_item_beside_it_is_the_files() {
+        let text = "f(\n    1,\n    2,\n    3,\n)\n";
+        assert_eq!(
+            ok("f($a..., 3)", "f($a..., 4)", text),
+            "f(\n    1,\n    2,\n    4,\n)\n"
+        );
+        assert_eq!(
+            ok("f(1, $a...)", "f(0, $a...)", text),
+            "f(\n    0,\n    2,\n    3,\n)\n"
+        );
+        // With a comment there, the file's stands with it.
+        assert_eq!(
+            ok("f($a, 3)", "g($a, 4)", "f(x,  # why\n  3)\n"),
+            "g(x,  # why\n  4)\n"
+        );
+        // Where the template writes a comment there, its layout stands.
+        assert_eq!(
+            ok("f($a, 3)", "g($a,  # now\n  4)", "f(x,\n  3)\n"),
+            "g(x,  # now\n  4)\n"
+        );
+        // Where the file has no item beside the capture, the template's layout stands.
+        assert_eq!(
+            ok("f($a)", "f($a, 4)", "f(\n    x\n)\n"),
+            "f(\n    x, 4\n)\n"
         );
     }
 
