@@ -2884,6 +2884,18 @@ mod tests {
     }
 
     #[test]
+    fn a_brackets_layout_goes_to_the_outermost_of_brackets_nested_round_the_same_holes() {
+        assert_eq!(
+            ok("f($x)", "g(h($x))", "f(\n    long_argument,\n)\n"),
+            "g(\n    h(long_argument),\n)\n"
+        );
+        assert_eq!(
+            ok("f($x, $y)", "g(h(k($x, $y)))", "f(a,\n  b,)\n"),
+            "g(h(k(a,\n  b)),)\n"
+        );
+    }
+
+    #[test]
     fn a_trailing_comma_that_could_go_to_more_than_one_bracket_is_refused() {
         // Two brackets in the rewrite hold no hole, where the match has one.
         let why = replaced("f([1], $a)", "g([1], [2], $a)", "f([1,], x)\n")
