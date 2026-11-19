@@ -582,9 +582,7 @@ fn without_comment(raw: &str) -> &str {
     }
 }
 
-/// The shared action every apt install goes through, so the downloads are cached, a restored
-/// package is checked against the index before it is installed, and a failing mirror is
-/// retried.
+/// The organisation's shared action every apt install goes through.
 const APT_ACTION: &str = "L337-org/github-workflows/actions/apt-install@";
 
 /// Returns each command in a workflow or action file that installs from apt itself, rather
@@ -695,8 +693,17 @@ fn no_workflow_installs_from_apt_but_through_the_caching_action() {
         files.iter().any(|f| f.ends_with("premerge.yaml")),
         "the scan did not find .github/workflows/premerge.yaml, so it checked nothing"
     );
+    // A step using it, not a comment naming it.
+    let uses_it = |text: &str| {
+        text.lines().any(|line| {
+            without_comment(line)
+                .trim_start()
+                .trim_start_matches("- ")
+                .starts_with(&format!("uses: {APT_ACTION}"))
+        })
+    };
     assert!(
-        files.iter().any(|f| read(f).contains(APT_ACTION)),
+        files.iter().any(|f| uses_it(&read(f))),
         "no workflow uses {APT_ACTION}, which every apt install must go through"
     );
     let mut violations = Vec::new();

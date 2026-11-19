@@ -48,12 +48,9 @@ which caches `~/.quaffed-tools` keyed on `tools.toml`.  The **Verification tools
 installs every `[cargo-install]` entry and checks each version, so a bad pin fails on the pull
 request that introduces it.
 
-**Packages from apt go through the organisation's shared `apt-install` action**
-(`L337-org/github-workflows/actions/apt-install@v2`), which caches the downloaded `.deb` files and
-retries a failing mirror.  The cache changes how fast a package arrives, never which version, and
-each restored file is checked against the SHA-256 the signed index lists before it is installed,
-since apt checks only the size of a file already in its archive.  How it retries, and why, is in
-that repository.
+**Packages from apt go through the organisation's shared `apt-install` action**, in
+`L337-org/github-workflows`, so that every repository installs from apt the same way; what it does,
+and why, is in that repository's README.
 
 ## What the tests enforce
 

@@ -40,9 +40,6 @@ jobs:
             echo "sha=$(git rev-parse HEAD)"
           } >>"$GITHUB_OUTPUT"
 
-      # The release is L337-org's, its tag is v and the workspace version, and below 1.0.0 it is
-      # marked pre-release, read from the release so that ticking the flag and re-running is
-      # enough.
       - name: The release is this repository's, and its tag names the workspace version
         uses: L337-org/github-workflows/actions/release-preflight@v2
         with:
@@ -71,10 +68,27 @@ jobs:
           merge-multiple: true
           path: dist
 
-      # Both architectures by name, so one that did not build fails here rather than going
-      # unnoticed.  A package already attached by an earlier run of this release is replaced if
-      # it differs, since that run failed after attaching it; the action then reads each back
-      # from the release and compares it with the build.
+      # The shared action reads each package back from the release and compares it with the
+      # build, but not what the package says it is, so that is checked here, before attaching.
+      - name: Each package names quaffed, the release's version and its architecture
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          for arch in amd64 arm64; do
+            name="quaffed_${VERSION}_${arch}.deb"
+            if [ ! -f "dist/$name" ]; then
+              echo "::error::$name was not built, so nothing is attached; the package job's output says why" >&2
+              exit 1
+            fi
+            fields="$(dpkg-deb -f "dist/$name" Package Version Architecture | tr '\n' ' ')"
+            if [ "$fields" != "Package: quaffed Version: $VERSION Architecture: $arch " ]; then
+              echo "::error::$name says: $fields" >&2
+              exit 1
+            fi
+            echo "$name: $fields"
+          done
+
+      # Both architectures by name, so one that did not build fails rather than going unnoticed.
       - name: Attach each package to the release
         uses: L337-org/github-workflows/actions/release-attach@v2
         with:
@@ -82,54 +96,12 @@ jobs:
             dist/quaffed_${{ needs.preflight.outputs.version }}_amd64.deb
             dist/quaffed_${{ needs.preflight.outputs.version }}_arm64.deb
 
-  verify:
-    name: The release serves both packages
-    needs: [preflight, publish]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - name: Fetch the built packages
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: deb-*
-          merge-multiple: true
-          path: built
-
-      # Read back from the release itself, not inferred from the publish job's exit status.
-      - name: Each attached package is the one built, at the release's version
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          RELEASE_ID: ${{ github.event.release.id }}
-          VERSION: ${{ needs.preflight.outputs.version }}
-        run: |
-          assets="$(gh api "repos/$REPO/releases/$RELEASE_ID/assets" --paginate --jq '.[] | "\(.id) \(.name)"')"
-          for arch in amd64 arm64; do
-            name="quaffed_${VERSION}_${arch}.deb"
-            id="$(printf '%s\n' "$assets" | awk -v n="$name" '$2 == n { print $1 }')"
-            if [ -z "$id" ]; then
-              echo "::error::the release does not serve $name" >&2
-              exit 1
-            fi
-            gh api -H "Accept: application/octet-stream" "repos/$REPO/releases/assets/$id" >"$RUNNER_TEMP/$name"
-            if ! cmp -s "$RUNNER_TEMP/$name" "built/$name"; then
-              echo "::error::the release serves a $name that differs from the one built" >&2
-              exit 1
-            fi
-            fields="$(dpkg-deb -f "$RUNNER_TEMP/$name" Package Version Architecture | tr '\n' ' ')"
-            if [ "$fields" != "Package: quaffed Version: $VERSION Architecture: $arch " ]; then
-              echo "::error::$name served by the release says: $fields" >&2
-              exit 1
-            fi
-            echo "$name served: $fields"
-          done
-
   # A job killed by its timeout ends as cancelled, which raises no failure notification, so a
   # release that never finished fails the run here instead.
   report-cancelled:
     name: Report a cancelled release
-    needs: [preflight, package, publish, verify]
+    needs: [preflight, package, publish]
     if: always() && contains(needs.*.result, 'cancelled')
     uses: L337-org/github-workflows/.github/workflows/release-cancelled.yaml@v2
     with:
-      job: preflight, package, publish or verify
+      job: preflight, package or publish

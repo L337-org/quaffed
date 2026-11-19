@@ -123,15 +123,11 @@ Locally, `test-deb` needs docker on a host of the package's architecture;
 ## Releasing
 
 `.github/workflows/release.yaml` runs when a release is **published**; pushing a tag ships nothing.
-Its steps are the organisation's shared release actions, from `L337-org/github-workflows`, whose
-README says what each does.  Preflight refuses a release outside `L337-org`, a tag other than `v`
-plus the workspace version, and a version below 1.0.0 not marked as a pre-release.  The release
-builds with `package.yaml` at one commit and attaches the packages only once both architectures
-built.  A package an earlier run of the same release attached is left if identical and replaced if
-not, since preflight lets through only releases that should ship, so one already there means that
-run failed after attaching it.  Each package is then downloaded back from the release and checked
-against the build, and the verify job checks its name, version and architecture.  A job that ends
-as cancelled, as a timeout leaves it, fails the run, so the release reports.
+Its checks and its attaching are the organisation's shared release actions, from
+`L337-org/github-workflows`, whose README says what each does; this repository tags `v` and the
+workspace version.  It builds with `package.yaml` at one commit, checks that each package names
+quaffed, the release's version and its architecture, and attaches them only once both
+architectures built.
 
 ### Checklist
 
