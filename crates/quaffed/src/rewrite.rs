@@ -1127,6 +1127,13 @@ fn line_end(text: &str, offset: usize) -> usize {
         .map_or(text.len(), |at| offset + at)
 }
 
+/// Whether a match's statements start the block they are in, and whether they end it.
+#[derive(Clone, Copy)]
+struct BlockEdges {
+    starts: bool,
+    ends: bool,
+}
+
 /// What one match of a rewrite with no code takes from the file, given what the matches before
 /// it in the same file took.
 struct Deletion<'a, 'text> {
@@ -1185,7 +1192,7 @@ impl Deletion<'_, '_> {
             });
             if alone_before && alone_after {
                 let lines = line_start..(end + 1).min(text.len());
-                return (self.whole_lines(lines), true);
+                return (self.whole_lines(lines, self.block_edges(&matched)), true);
             }
         }
         let before = self.before(found, matched.start, floor, whole_lines);
@@ -1259,7 +1266,11 @@ impl Deletion<'_, '_> {
     /// gone; and the blank lines either side that would otherwise be left as a gap of their own.
     /// Between code, where blank lines stand both before and after, the narrower run goes, so the
     /// wider gap is left; at the start or the end of the file, the blank lines at that edge go.
-    fn whole_lines(&self, lines: Range<usize>) -> Range<usize> {
+    /// `edges` says whether the match starts its block and whether it ends it: a match that
+    /// starts one takes the blank lines after it, which would otherwise open the block, and one
+    /// that ends one takes those before it, which would otherwise close it, leaving those after,
+    /// which part the block from what follows.
+    fn whole_lines(&self, lines: Range<usize>, edges: BlockEdges) -> Range<usize> {
         let text = self.text;
         let indent = |at: usize| {
             let line = &text[at..line_end(text, at)];
@@ -1304,12 +1315,50 @@ impl Deletion<'_, '_> {
         // file's own spacing stands: deleting a class's last method leaves the class's gap.
         if start == 0 || past == text.len() {
             start..past
+        } else if edges.starts && !edges.ends {
+            lines.start..past
+        } else if edges.ends && !edges.starts {
+            start..end
         } else if before > 0 && after > 0 && before < after {
             start..end
         } else if before > 0 && after > 0 {
             lines.start..past
         } else {
             lines.start..end
+        }
+    }
+
+    /// Whether the statements `matched` holds start the block they are in and whether they end
+    /// it, from the list of statements the adapter marks; neither where it holds no statement.
+    fn block_edges(&self, matched: &Range<usize>) -> BlockEdges {
+        let arena = self.arena;
+        let none = BlockEdges {
+            starts: false,
+            ends: false,
+        };
+        // Pre-order, so the first node in a list is the outermost statement the match starts
+        // with; the rest of the match's statements are its siblings in the same list.
+        let Some(first) = arena
+            .nodes_within(matched.clone())
+            .find(|&node| arena.list(node).is_some())
+        else {
+            return none;
+        };
+        let list = arena.list(first);
+        let Some(&parent) = self.parents.get(&first) else {
+            return none;
+        };
+        let mut siblings = arena
+            .children(parent)
+            .filter(|&child| arena.list(child) == list)
+            .map(|child| arena.range(child));
+        let Some(opening) = siblings.next() else {
+            return none;
+        };
+        let closing = siblings.last().unwrap_or_else(|| opening.clone());
+        BlockEdges {
+            starts: opening.start >= matched.start,
+            ends: closing.end <= matched.end,
         }
     }
 
@@ -2258,6 +2307,38 @@ mod tests {
         );
         // With blank lines on one side only, they stay.
         assert_eq!(deleted("b()", "a()\n\nb()\nc()\n"), "a()\n\nc()\n");
+    }
+
+    #[test]
+    fn a_deletion_at_a_blocks_edge_takes_the_blank_lines_on_its_inner_side() {
+        // The first statement takes the blank lines after it, which would open the block.
+        assert_eq!(
+            deleted("x = 1", "def f():\n    x = 1\n\n    y = 2\n"),
+            "def f():\n    y = 2\n"
+        );
+        // The last takes those before it, and leaves those after, which part the block from
+        // what follows.
+        assert_eq!(
+            deleted("x = 1", "def f():\n    a = 0\n\n    x = 1\n\n\nz = 3\n"),
+            "def f():\n    a = 0\n\n\nz = 3\n"
+        );
+        assert_eq!(
+            deleted("x = 1", "if c:\n    a = 0\n\n    x = 1\nelse:\n    b = 1\n"),
+            "if c:\n    a = 0\nelse:\n    b = 1\n"
+        );
+        // A run of statements is judged by its first and its last.
+        assert_eq!(
+            deleted(
+                "x = 1\ny = 2",
+                "def f():\n    x = 1\n    y = 2\n\n    z = 3\n"
+            ),
+            "def f():\n    z = 3\n"
+        );
+        // Inside the block, the rule between code stands.
+        assert_eq!(
+            deleted("x = 1", "def f():\n    a = 0\n\n    x = 1\n\n    y = 2\n"),
+            "def f():\n    a = 0\n\n    y = 2\n"
+        );
     }
 
     #[test]
