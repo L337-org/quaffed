@@ -2048,15 +2048,22 @@ impl Job<'_> {
                 // The code is compared last, token by token, so that whitespace inside a string the
                 // template changes counts, and only where the cheaper checks have passed.
                 // A continuation is layout, and lexed alone at the end of a gap it would be read
-                // as a stray backslash, so it is taken out of both where neither holds a string,
-                // inside which a backslash and line break are the string's.
+                // as a stray backslash, so it is taken out of both where neither holds a string
+                // or a comment, inside which a backslash and line break are the string's, or end
+                // the comment without continuing anything.
+                let gap_comment = self
+                    .lexed
+                    .comments
+                    .iter()
+                    .any(|c| file_gap.start < c.end && c.start < file_gap.end);
                 let same_code = || {
                     let (template, file) = (
                         &marked.indented[template_gap.clone()],
                         &self.text[file_gap.clone()],
                     );
                     code_tokens(template) == code_tokens(file)
-                        || ![template, file].iter().any(|gap| gap.contains(['"', '\'']))
+                        || !gap_comment
+                            && ![template, file].iter().any(|gap| gap.contains(['"', '\'']))
                             && code_tokens(&uncontinued(template))
                                 == code_tokens(&uncontinued(file))
                 };
@@ -2077,11 +2084,14 @@ impl Job<'_> {
                 // stands: a line break in it is one a bracket or a backslash continues, and stays
                 // one where it is written.
                 if (template_bracket || one_logical_line(in_template))
-                    && (one_logical_line(in_file) || file_bracket && enclosed)
+                    && (!gap_comment && one_logical_line(in_file) || file_bracket && enclosed)
                 {
-                    return same_code().then(|| Gap {
-                        text: in_file.to_owned(),
-                        range: file_gap,
+                    return same_code().then(|| {
+                        let (text, kept) = between_edges(in_file, in_template);
+                        Gap {
+                            text,
+                            range: file_gap.start + kept.start..file_gap.start + kept.end,
+                        }
                     });
                 }
                 match (template_bracket, file_bracket) {
@@ -2391,6 +2401,54 @@ fn one_logical_line(text: &str) -> bool {
             _ => false,
         })
         .all(|at| at > 0 && bytes[at - 1] == b'\\')
+}
+
+/// The layout between two holes, `file` and `template` holding the same code: the file's, but
+/// for the edges of a bracket the gap opens or closes, which are the bracket's own layout and
+/// carried with it, so stay the template's here: before a closing bracket the gap starts with,
+/// and after an opening bracket it ends with.  With the stretch of `file` that is kept.
+fn between_edges(file: &str, template: &str) -> (String, Range<usize>) {
+    let brackets = |text: &str| -> Vec<(usize, u8)> {
+        code_tokens(text)
+            .into_iter()
+            .filter(|token| matches!(token.as_bytes(), [b'(' | b'[' | b'{' | b')' | b']' | b'}']))
+            .map(|token| {
+                (
+                    token.as_ptr() as usize - text.as_ptr() as usize,
+                    token.as_bytes()[0],
+                )
+            })
+            .collect()
+    };
+    let (in_file, in_template) = (brackets(file), brackets(template));
+    let (Some(&(first, opening)), Some(&(last, closing))) = (in_file.first(), in_file.last())
+    else {
+        return (file.to_owned(), 0..file.len());
+    };
+    let (Some(&(template_first, _)), Some(&(template_last, _))) =
+        (in_template.first(), in_template.last())
+    else {
+        return (file.to_owned(), 0..file.len());
+    };
+    let start = if matches!(opening, b')' | b']' | b'}') {
+        first
+    } else {
+        0
+    };
+    let end = if matches!(closing, b'(' | b'[' | b'{') {
+        last + 1
+    } else {
+        file.len()
+    };
+    let mut text = String::with_capacity(file.len());
+    if start > 0 {
+        text.push_str(&template[..template_first]);
+    }
+    text.push_str(&file[start..end]);
+    if end < file.len() {
+        text.push_str(&template[template_last + 1..]);
+    }
+    (text, start..end)
 }
 
 /// `text` with each backslash continuing a line, and the line break after it, made a space.
@@ -3520,6 +3578,18 @@ mod tests {
         assert_eq!(
             ok("f($a + $b)", "$a + $b", "x = f(a +\n      b)\n"),
             "x = a + b\n"
+        );
+        // A bracket's edges in such a gap are the bracket's, carried with it, not the gap's: a
+        // comment just inside it is carried once, not refused as written twice.
+        let text = "x = [f(  # c\n    a)]\n";
+        assert_eq!(ok("$f($args...)", "$f($args...)", text), text);
+        // A comment ending in a backslash continues nothing, so the code after it is still
+        // code: the comment is in no capture, and the edit is refused as without the backslash.
+        let why = replaced("$a + -$b", "$a + $b", "x = (a +  # note \\\n     -b)\n")
+            .expect_err("the comment would be dropped");
+        assert!(
+            why.contains("the comment \"# note \\\\\" is in the match"),
+            "{why}"
         );
         // Reordered, or with other code between, the template's layout stands.
         assert_eq!(
