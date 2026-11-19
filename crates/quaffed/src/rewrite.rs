@@ -2523,51 +2523,60 @@ fn one_logical_line(text: &str) -> bool {
 }
 
 /// The layout between two holes, `file` and `template` holding the same code: the file's, but
-/// for the edges of a bracket the gap opens or closes, which are the bracket's own layout and
-/// carried with it, so stay the template's here: before a closing bracket the gap starts with,
-/// and after an opening bracket it ends with.  With the stretch of `file` that is kept.
+/// for the edges of a bracket the gap closes first or opens last, which are the bracket's own
+/// layout and carried with it, so stay the template's here: the layout just before that closing
+/// bracket, after the code before it, and just after that opening bracket, before the code after
+/// it.  With the stretch of `file` that is the file's, from the end of a leading edge to the start
+/// of a trailing one.
 fn between_edges(file: &str, template: &str) -> (String, Range<usize>) {
-    let brackets = |text: &str| -> Vec<(usize, u8)> {
-        code_tokens(text)
-            .into_iter()
-            .filter(|token| matches!(token.as_bytes(), [b'(' | b'[' | b'{' | b')' | b']' | b'}']))
-            .map(|token| {
-                (
-                    token.as_ptr() as usize - text.as_ptr() as usize,
-                    token.as_bytes()[0],
-                )
-            })
-            .collect()
+    let (ours, theirs) = (layout_free_tokens(file), layout_free_tokens(template));
+    let whole = (file.to_owned(), 0..file.len());
+    if ours.is_empty() || ours.len() != theirs.len() {
+        return whole;
+    }
+    let offset = |text: &str, token: &str| token.as_ptr() as usize - text.as_ptr() as usize;
+    // The layout before token `i`, after the token before it, in `text`.
+    let before = |text: &str, tokens: &[&str], i: usize| -> Range<usize> {
+        let from = i
+            .checked_sub(1)
+            .map_or(0, |p| offset(text, tokens[p]) + tokens[p].len());
+        from..offset(text, tokens[i])
     };
-    let (in_file, in_template) = (brackets(file), brackets(template));
-    let (Some(&(first, opening)), Some(&(last, closing))) = (in_file.first(), in_file.last())
-    else {
-        return (file.to_owned(), 0..file.len());
+    // The layout after token `i`, before the token after it, in `text`.
+    let after = |text: &str, tokens: &[&str], i: usize| -> Range<usize> {
+        let from = offset(text, tokens[i]) + tokens[i].len();
+        from..tokens.get(i + 1).map_or(text.len(), |n| offset(text, n))
     };
-    let (Some(&(template_first, _)), Some(&(template_last, _))) =
-        (in_template.first(), in_template.last())
-    else {
-        return (file.to_owned(), 0..file.len());
-    };
-    let start = if matches!(opening, b')' | b']' | b'}') {
-        first
-    } else {
-        0
-    };
-    let end = if matches!(closing, b'(' | b'[' | b'{') {
-        last + 1
-    } else {
-        file.len()
-    };
+    let is = |token: &str, set: &[&str]| set.contains(&token);
+    let closing = ours
+        .iter()
+        .position(|t| is(t, &["(", "[", "{", ")", "]", "}"]));
+    let opening = ours
+        .iter()
+        .rposition(|t| is(t, &["(", "[", "{", ")", "]", "}"]));
+    let leading = closing
+        .filter(|&i| is(ours[i], &[")", "]", "}"]))
+        .map(|i| (before(file, &ours, i), before(template, &theirs, i)));
+    let trailing = opening
+        .filter(|&i| is(ours[i], &["(", "[", "{"]))
+        .map(|i| (after(file, &ours, i), after(template, &theirs, i)));
     let mut text = String::with_capacity(file.len());
-    if start > 0 {
-        text.push_str(&template[..template_first]);
+    let mut copied = 0;
+    for (in_file, in_template) in leading.iter().chain(trailing.iter()) {
+        text.push_str(&file[copied..in_file.start]);
+        text.push_str(&template[in_template.clone()]);
+        copied = in_file.end;
     }
-    text.push_str(&file[start..end]);
-    if end < file.len() {
-        text.push_str(&template[template_last + 1..]);
-    }
-    (text, start..end)
+    text.push_str(&file[copied..]);
+    let start = leading
+        .as_ref()
+        .filter(|(edge, _)| edge.start == 0)
+        .map_or(0, |(edge, _)| edge.end);
+    let end = trailing
+        .as_ref()
+        .filter(|(edge, _)| edge.end == file.len())
+        .map_or(file.len(), |(edge, _)| edge.start);
+    (text, start..end.max(start))
 }
 
 /// The code tokens of `text` without a backslash continuing a line, which a lexer given a
@@ -3788,6 +3797,10 @@ mod tests {
             ok("$a + 1", "$a - 1", "x = aaa \\\n    + 1\n"),
             "x = aaa \\\n    - 1\n"
         );
+        // Between a hole and the match's end, where code stands before the closing bracket,
+        // only the layout just before the bracket is its edge: a split after the comma stays.
+        let text = "x = g('n',\n      None)\n";
+        assert_eq!(ok("$f($args..., None)", "$f($args..., None)", text), text);
         // And between the match's start and a hole.
         assert_eq!(
             ok("1 + $a", "2 - $a", "x = 1 \\\n    + aaa\n"),
