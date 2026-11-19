@@ -17,22 +17,30 @@
 //! `$a * 2` - is refused: the code would mean something other than the template says, and adding
 //! brackets would write something other than the template, so the message shows where brackets
 //! round the hole make the template mean what it says.
+//!
+//! Statements written where the code around them shares their line - after a semicolon, or in a
+//! block on its header's line - are given lines of their own where they need them, as
+//! [`lines`] lays them out, so that each stays in the block it was in; an outcome that leaves one
+//! in another block is refused.  So is an edit that leaves a `return`, `yield`, `await`, `break`
+//! or `continue` outside the construct it needs, which Python parses but cannot compile.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use quaffed_python::{
-    Bracket, Lexed, ParseError, Rewrite, code_tokens, lex, parse_module, token_kinds,
+    Bracket, Lexed, ParseError, Rewrite, code_tokens, lex, misplaced, parse_module, token_kinds,
 };
 use quaffed_syntax::{Arena, Captured, Kind, NodeId, Pattern, find_captured, find_where_captured};
 
 use crate::search::{Match, Position};
 
 mod layout;
+mod lines;
 
 use crate::structural::{Found, Unparsed, Where, last_char, positions, unparsed};
 use layout::{After, Before, WrittenSite};
+use lines::{LEFT_BLOCK, Needs, Placed, Slot};
 
 /// What replacing a pattern in one file found and did.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -257,23 +265,88 @@ fn nested(
         current = done.text;
     }
     questioned.sort_by_key(|q| (q.at.line, q.at.column));
-    // The outermost level's matches hold every deeper one, so its stretches are all that changed,
-    // each mapped back through the levels before it to the text as it was.
+    let over = outermost_over(&maps);
+    if let Some((offset, why)) = left_outside(text, &current, &over) {
+        return Err(Refused {
+            at: at(offset),
+            why,
+        });
+    }
+    Ok(Edited {
+        text: current,
+        over,
+        questioned,
+    })
+}
+
+/// What the levels in `maps` wrote over in the text as it was.  The outermost level's matches
+/// hold every deeper one, so its stretches are all that changed, each mapped back through the
+/// levels before it.
+fn outermost_over(maps: &[Vec<(Range<usize>, Range<usize>)>]) -> Vec<(Range<usize>, Range<usize>)> {
     let (last, before) = maps.split_last().expect("a match makes at least one level");
-    let over = last
-        .iter()
+    last.iter()
         .map(|(old, new)| {
             (
                 backward(before, old.start)..backward(before, old.end),
                 new.clone(),
             )
         })
-        .collect();
-    Ok(Edited {
-        text: current,
-        over,
-        questioned,
-    })
+        .collect()
+}
+
+/// Why an edit of `old` into `new` is refused for the first statement or expression it leaves
+/// outside the construct it needs - a `return` outside a function, a `break` outside a loop -
+/// with where the match that wrote it starts in `old`; or `None`.  Each parses anywhere, so neither the parse check
+/// nor the matcher sees it.  Only what the edit wrote, the new side of each of `over`, is
+/// judged, and only beyond as many of the same kind as stood outside in what it wrote over: one
+/// already misplaced and carried through a hole is the file's, not the edit's.  A new text that
+/// does not parse is left to the parse check.
+fn left_outside(
+    old: &str,
+    new: &str,
+    over: &[(Range<usize>, Range<usize>)],
+) -> Option<(usize, String)> {
+    const KEYWORDS: [&str; 5] = ["return", "yield", "await", "break", "continue"];
+    if !over
+        .iter()
+        .any(|(_, written)| KEYWORDS.iter().any(|k| new[written.clone()].contains(k)))
+    {
+        return None;
+    }
+    // Each found in a stretch the edit wrote over, on its new side or its old, with where that
+    // stretch starts in `old`.
+    let inside = |found: &[quaffed_python::Misplaced], new_side: bool| {
+        found
+            .iter()
+            .filter_map(|m| {
+                over.iter()
+                    .find(|(was, now)| if new_side { now } else { was }.contains(&m.offset))
+                    .map(|(was, _)| (was.start, m.what))
+            })
+            .collect::<Vec<_>>()
+    };
+    let now = inside(&misplaced(new).ok()?, true);
+    if now.is_empty() {
+        return None;
+    }
+    let was = inside(&misplaced(old).ok()?, false);
+    let count = |found: &[(usize, &str)], what: &str| found.iter().filter(|f| f.1 == what).count();
+    let &(offset, what) = now
+        .iter()
+        .find(|(_, what)| count(&now, what) > count(&was, what))?;
+    let needs = match what {
+        "return" | "yield" | "yield from" => "a function",
+        "await" => "an async function",
+        _ => "a loop",
+    };
+    Some((
+        offset,
+        format!(
+            "the rewrite would leave `{what}` outside {needs}, which Python parses but refuses \
+             to run, so the file would no longer compile: keep `{what}` inside {needs} in the \
+             rewrite, or narrow the pattern so that it does not match here"
+        ),
+    ))
 }
 
 /// `captured` with each capture widened to the whole of the code it stands for.  A node's range
@@ -514,54 +587,15 @@ fn rewritten(
     // A comment at the edge of one of the match's own brackets is carried with it, or refused,
     // once the rewrite is written; any other the rewrite does not write back is refused here.
     let edges = layout::edge_comments(&before);
-    let mut out = String::with_capacity(text.len());
-    let mut copied = 0;
-    // Where each match's rewrite, and each code site in it, was written in `out`: checked once
-    // the whole file is written.
-    let mut written: Vec<Range<usize>> = Vec::with_capacity(captured.len());
-    let mut written_sites: Vec<WrittenSite> = Vec::new();
-    // Values escaped to stay text in a string, at their match's start, to be questioned.
-    let mut escapes: Vec<(usize, String)> = Vec::new();
-    for (index, found) in captured.iter().enumerate() {
-        let rendered =
-            render(text, found, names, rewrite, lexed).map_err(|why| (found.range.start, why))?;
-        if let Some(comment) = dropped_comment(lexed, found, &edges, &rendered, rewrite, names) {
-            return Err((
-                comment.start,
-                format!(
-                    "the comment {:?} is in the match but in no capture the rewrite writes back, \
-                     so the edit would drop it: capture it with a sequence hole, such as \
-                     $args..., or narrow the pattern so that it does not match here",
-                    &text[comment.clone()]
-                ),
-            ));
-        }
-        for name in &rendered.escaped {
-            escapes.push((found.range.start, escaped_note(text, found, names, name)));
-        }
-        out.push_str(&text[copied..found.range.start]);
-        let base = out.len();
-        for (range, sequence, name, site) in rendered.code {
-            written_sites.push(WrittenSite {
-                range: base + range.start..base + range.end,
-                found: index,
-                sequence,
-                name,
-                site,
-            });
-        }
-        out.push_str(&rendered.text);
-        written.push(base..out.len());
-        copied = found.range.end;
-    }
-    out.push_str(&text[copied..]);
-    let edits = |written: &[Range<usize>]| -> Vec<(Range<usize>, Range<usize>)> {
-        captured
-            .iter()
-            .zip(written)
-            .map(|(found, new)| (found.range.clone(), new.clone()))
-            .collect()
-    };
+    let Writing {
+        out,
+        written,
+        written_sites,
+        escapes,
+        laid,
+        slots,
+    } = write_matches(&before, rewrite, &edges)?;
+    let edits = |now: &[Range<usize>]| level_edits(captured, &written, now, &laid);
     // A file that no longer parses is left to the parse check, which refuses it.
     let Ok(out_arena) = parse_module(&out) else {
         return Ok(Level {
@@ -570,6 +604,7 @@ fn rewritten(
             questioned: escapes,
         });
     };
+    left_block(captured, &slots, &written, &edits(&written), &out_arena)?;
     let after = After {
         text: &out,
         arena: &out_arena,
@@ -606,6 +641,258 @@ fn rewritten(
     })
 }
 
+/// The file once every match is written over, as [`write_matches`] writes it.
+struct Writing {
+    out: String,
+    /// Where each match's rewrite was written in `out`.
+    written: Vec<Range<usize>>,
+    /// Where each code site in each rewrite was written in `out`.
+    written_sites: Vec<WrittenSite>,
+    /// Values escaped to stay text in a string, at their match's start, to be questioned.
+    escapes: Vec<(usize, String)>,
+    /// Where each change laid out round the matches was made: its old range and its new.
+    laid: Vec<(Range<usize>, Range<usize>)>,
+    /// Where each match shares its line with other code, as [`laid_out`] found.
+    slots: Vec<Option<Slot>>,
+}
+
+/// The text of `before` with each match written over with its rendering of `rewrite`, and the
+/// text round them laid out as [`laid_out`] decides; or why not, at an offset of the text.  A
+/// comment in `edges`, at the edge of one of the match's own brackets, is carried with it once
+/// the whole file is written; any other the rewrite does not write back is refused here.
+fn write_matches(
+    before: &Before<'_>,
+    rewrite: &Rewrite,
+    edges: &[Range<usize>],
+) -> Result<Writing, (usize, String)> {
+    let Before {
+        text,
+        arena,
+        lexed,
+        captured,
+        names,
+    } = *before;
+    let mut out = String::with_capacity(text.len());
+    let mut copied = 0;
+    // Where each match's rewrite, and each code site in it, was written in `out`: checked once
+    // the whole file is written.
+    let mut written: Vec<Range<usize>> = Vec::with_capacity(captured.len());
+    let mut written_sites: Vec<WrittenSite> = Vec::new();
+    // Values escaped to stay text in a string, at their match's start, to be questioned.
+    let mut escapes: Vec<(usize, String)> = Vec::new();
+    let Laid {
+        slots,
+        bases,
+        changes,
+    } = laid_out(before, rewrite)?;
+    let mut changes = changes.into_iter().peekable();
+    // Where each change to the text around the matches was made: its old range and its new.
+    let mut laid: Vec<(Range<usize>, Range<usize>)> = Vec::new();
+    for (index, found) in captured.iter().enumerate() {
+        let rendered = render(text, arena, found, names, rewrite, lexed, &bases[index])
+            .map_err(|why| (found.range.start, why))?;
+        if let Some(comment) = dropped_comment(lexed, found, edges, &rendered, rewrite, names) {
+            return Err((
+                comment.start,
+                format!(
+                    "the comment {:?} is in the match but in no capture the rewrite writes back, \
+                     so the edit would drop it: capture it with a sequence hole, such as \
+                     $args..., or narrow the pattern so that it does not match here",
+                    &text[comment.clone()]
+                ),
+            ));
+        }
+        for name in &rendered.escaped {
+            escapes.push((found.range.start, escaped_note(text, found, names, name)));
+        }
+        copied = write_changes(
+            text,
+            &mut out,
+            copied,
+            &mut changes,
+            found.range.start,
+            &mut laid,
+        );
+        out.push_str(&text[copied..found.range.start]);
+        let base = out.len();
+        for (range, sequence, name, site) in rendered.code {
+            written_sites.push(WrittenSite {
+                range: base + range.start..base + range.end,
+                found: index,
+                sequence,
+                name,
+                site,
+            });
+        }
+        out.push_str(&rendered.text);
+        written.push(base..out.len());
+        copied = found.range.end;
+    }
+    copied = write_changes(
+        text,
+        &mut out,
+        copied,
+        &mut changes,
+        text.len() + 1,
+        &mut laid,
+    );
+    out.push_str(&text[copied..]);
+    Ok(Writing {
+        out,
+        written,
+        written_sites,
+        escapes,
+        laid,
+        slots,
+    })
+}
+
+/// Writes onto `out` the text from `copied` up to each of `changes` that starts before `until`,
+/// and the change's text in place of its range, recording its old range and its new in `laid`;
+/// returns where copying the text resumes.
+fn write_changes(
+    text: &str,
+    out: &mut String,
+    mut copied: usize,
+    changes: &mut std::iter::Peekable<std::vec::IntoIter<(Range<usize>, String)>>,
+    until: usize,
+    laid: &mut Vec<(Range<usize>, Range<usize>)>,
+) -> usize {
+    while let Some((range, line)) = changes.next_if(|(range, _)| range.start < until) {
+        out.push_str(&text[copied..range.start]);
+        laid.push((range.clone(), out.len()..out.len() + line.len()));
+        out.push_str(&line);
+        copied = range.end;
+    }
+    copied
+}
+
+/// A level's edits, in order: each match in `captured` written at `written`, now at `now` once
+/// layout is carried, and each change in `laid` round them.  Carrying layout changes text only
+/// inside what a match's rewrite wrote, so a change after a match moves as that match's end
+/// does.
+fn level_edits(
+    captured: &[Captured],
+    written: &[Range<usize>],
+    now: &[Range<usize>],
+    laid: &[(Range<usize>, Range<usize>)],
+) -> Vec<(Range<usize>, Range<usize>)> {
+    let shift = |at: usize| -> isize {
+        written
+            .iter()
+            .zip(now)
+            .take_while(|(old, _)| old.end <= at)
+            .last()
+            .map_or(0, |(old, new)| {
+                new.end.cast_signed() - old.end.cast_signed()
+            })
+    };
+    let mut all: Vec<(Range<usize>, Range<usize>)> = captured
+        .iter()
+        .zip(now)
+        .map(|(found, new)| (found.range.clone(), new.clone()))
+        .chain(laid.iter().map(|(old, new)| {
+            let moved = |at: usize| {
+                at.checked_add_signed(shift(new.start))
+                    .expect("carrying layout never moves text before its start")
+            };
+            (old.clone(), moved(new.start)..moved(new.end))
+        }))
+        .collect();
+    all.sort_by_key(|(old, _)| old.start);
+    all
+}
+
+/// Each match's layout, as [`laid_out`] decides it: where it shares its line with other code,
+/// and the indentation of the block it is in, and the changes to the text around the matches
+/// that give their rewrites lines of their own, in order.
+struct Laid {
+    slots: Vec<Option<Slot>>,
+    bases: Vec<String>,
+    changes: Vec<(Range<usize>, String)>,
+}
+
+/// The layout of every match in `before`, decided before any is written, since laying out a
+/// block on its header's line changes text before the first match in it; or why a match cannot
+/// be laid out, at its start.  A match that shares its line is rendered once at no depth, so
+/// that it parses alone, to see what it needs of the line.
+fn laid_out(before: &Before<'_>, rewrite: &Rewrite) -> Result<Laid, (usize, String)> {
+    let Before {
+        text,
+        arena,
+        lexed,
+        captured,
+        names,
+    } = *before;
+    let template_unit = lex(rewrite.text()).indent_unit;
+    let unit = lexed.indent_unit.as_deref().or(template_unit.as_deref());
+    let mut slots = Vec::with_capacity(captured.len());
+    let mut bases = Vec::with_capacity(captured.len());
+    let mut changes = Vec::new();
+    for found in captured {
+        let slot = Slot::find(text, arena, lexed, &found.range);
+        let base = match &slot {
+            None => line_indent(text, found.range.start),
+            Some(slot) => {
+                let alone = render(text, arena, found, names, rewrite, lexed, "")
+                    .map_err(|why| (found.range.start, why))?;
+                let ending = line_ending(text, found.range.start);
+                let layout = slot
+                    .lay_out(Needs::of_text(&alone.text), unit, ending)
+                    .map_err(|why| (found.range.start, why.to_owned()))?;
+                changes.extend(layout.changes);
+                layout.indent
+            }
+        };
+        slots.push(slot);
+        bases.push(base);
+    }
+    Ok(Laid {
+        slots,
+        bases,
+        changes: in_order(changes),
+    })
+}
+
+/// The backstop for a layout nothing in [`lines`] foresaw: refuses, at the match's start, the
+/// first match of `captured` with a slot whose rewrite, written at `written` in the new text
+/// parsed as `arena`, leaves a statement it wrote at its top level, or one beside it on its
+/// line, in a block other than the one the match stood in.  `edits` take an offset of the old
+/// text to the new.  A statement beside it that another match rewrote is that match's to answer
+/// for.
+fn left_block(
+    captured: &[Captured],
+    slots: &[Option<Slot>],
+    written: &[Range<usize>],
+    edits: &[(Range<usize>, Range<usize>)],
+    arena: &Arena<'_>,
+) -> Result<(), (usize, String)> {
+    let maps = [edits.to_vec()];
+    let moved = |at: usize| forward(&maps, at);
+    for ((found, slot), written) in captured.iter().zip(slots).zip(written) {
+        let Some(slot) = slot else { continue };
+        let beside = slot
+            .beside
+            .iter()
+            .filter(|b| {
+                !captured
+                    .iter()
+                    .any(|c| c.range.start < b.end && b.start < c.range.end)
+            })
+            .map(|b| moved(b.start))
+            .collect();
+        let placed = Placed {
+            slot,
+            written: written.clone(),
+            beside,
+        };
+        if !placed.stays(arena, moved) {
+            return Err((found.range.start, LEFT_BLOCK.to_owned()));
+        }
+    }
+    Ok(())
+}
+
 /// `text`, parsed as `arena`, with every match in `captured`, none overlapping, deleted by a
 /// rewrite with no code: each written over with the rewrite's comment, if it has one, or with
 /// nothing.
@@ -639,8 +926,9 @@ fn deleted(
     let mut writes: Vec<String> = Vec::with_capacity(captured.len());
     let mut escapes: Vec<(usize, String)> = Vec::new();
     for found in captured {
-        let rendered =
-            render(text, found, names, rewrite, lexed).map_err(|why| (found.range.start, why))?;
+        let base = line_indent(text, found.range.start);
+        let rendered = render(text, arena, found, names, rewrite, lexed, &base)
+            .map_err(|why| (found.range.start, why))?;
         for name in &rendered.escaped {
             escapes.push((found.range.start, escaped_note(text, found, names, name)));
         }
@@ -736,6 +1024,15 @@ fn deleted(
         questioned: escapes,
         ..level(text, &parts)
     })
+}
+
+/// `changes` in order of where they start, each range once: two matches can ask for the same
+/// change, as two statements on a block's header line both ask for the block to be given lines
+/// of its own.
+fn in_order(mut changes: Vec<(Range<usize>, String)>) -> Vec<(Range<usize>, String)> {
+    changes.sort_by_key(|(range, _)| range.start);
+    changes.dedup_by(|a, b| a.0 == b.0);
+    changes
 }
 
 /// `text` with each of `parts` written over its range, which are in order and do not overlap, and
@@ -1342,21 +1639,30 @@ impl CodeIndex {
 /// there: inside a bracket a line break means nothing, so it is kept as written.  A value written
 /// into a string is escaped as the string needs to hold it as text; one that cannot be, or that
 /// still changes the literal's token structure, is refused, with why.
+///
+/// `base` is the indentation of the block the match is in, which its later lines take: the
+/// match's line's, unless [`lines`] lays the match out on lines of its own.  A capture of
+/// statements the template writes where they need lines of their own is given them in the
+/// template, as [`lines`] lays them out, or refused where it cannot.
 fn render(
     text: &str,
+    arena: &Arena<'_>,
     found: &Captured,
     names: &[&str],
     rewrite: &Rewrite,
     lexed: &Lexed,
+    base: &str,
 ) -> Result<Rendered, String> {
     let job = Job {
         text,
+        arena,
         found,
         names,
         rewrite,
         lexed,
+        base,
     };
-    let marked = job.marked();
+    let marked = job.marked()?;
     let gaps = job.gaps(&marked);
     let mut escaped = Vec::new();
     let (written, code) = job.fill(&marked, &gaps, None, &mut escaped)?;
@@ -1388,10 +1694,13 @@ fn render(
 /// One match to render, with what rendering it reads.
 struct Job<'a> {
     text: &'a str,
+    arena: &'a Arena<'a>,
     found: &'a Captured,
     names: &'a [&'a str],
     rewrite: &'a Rewrite,
     lexed: &'a Lexed,
+    /// The indentation of the block the match is in.
+    base: &'a str,
 }
 
 /// The template with each site a marker that lexes as a name, indented for where the match
@@ -1415,7 +1724,7 @@ impl Job<'_> {
         self.found.captures[index].clone()
     }
 
-    fn marked(&self) -> Marked {
+    fn marked(&self) -> Result<Marked, String> {
         let template = self.rewrite.text();
         let stem = marker_stem(template, self.text);
         let markers: Vec<String> = (0..self.rewrite.sites().len())
@@ -1429,9 +1738,10 @@ impl Job<'_> {
             copied = site.written.end;
         }
         with_markers.push_str(&template[copied..]);
+        let with_markers = self.laid_out(with_markers, &markers)?;
         let indented = indent_template(
             &with_markers,
-            &line_indent(self.text, self.found.range.start),
+            self.base,
             line_ending(self.text, self.found.range.start),
             self.lexed,
         );
@@ -1444,12 +1754,55 @@ impl Job<'_> {
             })
             .collect();
         at.sort_unstable();
-        Marked {
+        Ok(Marked {
             own: lex(&indented),
             indented,
             markers,
             at,
+        })
+    }
+
+    /// `template`, with each site a marker from `markers`, laid out for the statements its code
+    /// sites write: where what a site captured needs lines of its own and the template writes
+    /// it beside other code on its line, the template is laid out round it as [`lines`] does a
+    /// file, in the template's own indentation, or the file's where the template indents
+    /// nothing.  A template that does not parse with its markers is left as it is, for the
+    /// checks on the file to judge.
+    fn laid_out(&self, template: String, markers: &[String]) -> Result<String, String> {
+        let needs: Vec<(usize, Needs)> = self
+            .rewrite
+            .sites()
+            .iter()
+            .enumerate()
+            .filter(|(_, site)| !site.in_literal)
+            .filter_map(|(i, site)| {
+                let needs = Needs::of(self.text, self.arena, self.lexed, &self.capture(&site.name));
+                needs.any().then_some((i, needs))
+            })
+            .collect();
+        if needs.is_empty() {
+            return Ok(template);
         }
+        let Ok(arena) = parse_module(&template) else {
+            return Ok(template);
+        };
+        let lexed = lex(&template);
+        let unit = lexed
+            .indent_unit
+            .as_deref()
+            .or(self.lexed.indent_unit.as_deref());
+        let mut changes = Vec::new();
+        for (i, needs) in needs {
+            let at = template
+                .find(&markers[i])
+                .expect("each marker is written once");
+            let Some(slot) = Slot::find(&template, &arena, &lexed, &(at..at + markers[i].len()))
+            else {
+                continue;
+            };
+            changes.extend(slot.lay_out(needs, unit, "\n")?.changes);
+        }
+        Ok(level(&template, &in_order(changes)).text)
     }
 
     /// For each site in order, the file's layout to write before it in place of the template's:
@@ -1525,11 +1878,12 @@ impl Job<'_> {
             }
             let range = self.capture(&site.name);
             let value = if !site.in_literal {
-                // On the template's first line, the line is the file's, up to the match.
+                // On the template's first line, the line is the file's, up to the match, in the
+                // block the match is in.
                 let base = if out.contains(['\n', '\r']) {
                     line_indent(&out, out.len())
                 } else {
-                    line_indent(self.text, self.found.range.start)
+                    self.base.to_owned()
                 };
                 moved(self.text, &range, &base, self.lexed)
             } else if let Some(filler) = filler {
@@ -2609,5 +2963,224 @@ mod tests {
             why.starts_with("1:7: once the matches inside another match here are rewritten"),
             "{why}"
         );
+    }
+
+    /// A function indenting by two spaces, ahead of each case's own code, so the file has an
+    /// indent unit to give a block on its header's line.
+    const UNIT: &str = "def u():\n  pass\n";
+
+    #[test]
+    fn a_block_on_its_headers_line_gets_lines_of_its_own_for_several_statements() {
+        // Under each header, both statements the rewrite writes, and the one after the match,
+        // stay in the block; the line after it stays outside.
+        for header in [
+            "if x",
+            "while x",
+            "for i in r",
+            "with x",
+            "class C",
+            "def f()",
+        ] {
+            let text = format!("{UNIT}{header}: a(); z()\ntail()\n");
+            assert_eq!(
+                ok("a()", "b()\nc()", &text),
+                format!("{UNIT}{header}:\n  b()\n  c(); z()\ntail()\n"),
+                "under {header:?}"
+            );
+        }
+        let text = format!("{UNIT}if x:\n  pass\nelse: a(); z()\ntail()\n");
+        assert_eq!(
+            ok("a()", "b()\nc()", &text),
+            format!("{UNIT}if x:\n  pass\nelse:\n  b()\n  c(); z()\ntail()\n")
+        );
+    }
+
+    #[test]
+    fn a_compound_statement_in_a_block_on_its_headers_line_gets_lines_and_ends_its_own() {
+        // The template indents by four, the file by two: its block takes the file's unit.
+        for header in [
+            "if x",
+            "while x",
+            "for i in r",
+            "with x",
+            "class C",
+            "def f()",
+        ] {
+            let text = format!("{UNIT}{header}: y(); a(); z()\ntail()\n");
+            assert_eq!(
+                ok("a()", "if c:\n    b()", &text),
+                format!("{UNIT}{header}:\n  y()\n  if c:\n    b()\n  z()\ntail()\n"),
+                "under {header:?}"
+            );
+        }
+        let text = format!("{UNIT}if x:\n  pass\nelse: a(); z()\n");
+        assert_eq!(
+            ok("a()", "if c:\n    b()", &text),
+            format!("{UNIT}if x:\n  pass\nelse:\n  if c:\n    b()\n  z()\n")
+        );
+    }
+
+    #[test]
+    fn a_header_continued_over_lines_indents_its_block_from_its_first() {
+        let text = format!("{UNIT}if (x and\n        y): a()\n");
+        assert_eq!(
+            ok("a()", "b()\nc()", &text),
+            format!("{UNIT}if (x and\n        y):\n  b()\n  c()\n")
+        );
+    }
+
+    #[test]
+    fn a_statement_after_the_match_stays_out_of_a_block_the_rewrite_ends_with() {
+        // In an indented block too, not only one on its header's line.
+        let text = "def f():\n    a(); z()\n";
+        assert_eq!(
+            ok("a()", "if c:\n    b()", text),
+            "def f():\n    if c:\n        b()\n    z()\n"
+        );
+        assert_eq!(
+            ok("a()", "if c: b()", text),
+            "def f():\n    if c: b()\n    z()\n"
+        );
+        // A comment the rewrite ends with would swallow it.
+        assert_eq!(
+            ok("a()", "b()  # note", text),
+            "def f():\n    b()  # note\n    z()\n"
+        );
+        // A rewrite that is one line of simple statements leaves the line as it is.
+        assert_eq!(ok("a()", "b()", text), "def f():\n    b(); z()\n");
+        assert_eq!(
+            ok("a()", "b()\nc()", text),
+            "def f():\n    b()\n    c(); z()\n"
+        );
+    }
+
+    #[test]
+    fn a_compound_statement_after_a_semicolon_starts_a_line_of_its_own() {
+        let text = "def f():\n    y(); a()\n";
+        assert_eq!(
+            ok("a()", "if c:\n    b()", text),
+            "def f():\n    y()\n    if c:\n        b()\n"
+        );
+    }
+
+    #[test]
+    fn matches_beside_each_other_share_the_layout() {
+        let text = format!("{UNIT}if x: y(); a(); a(); z()\nelse: a()\n");
+        assert_eq!(
+            ok("a()", "b()\nc()", &text),
+            format!("{UNIT}if x:\n  y(); b()\n  c(); b()\n  c(); z()\nelse:\n  b()\n  c()\n")
+        );
+        let text = "def f():\n    a(); a()\n";
+        assert_eq!(
+            ok("a()", "if c:\n    b()", text),
+            "def f():\n    if c:\n        b()\n    if c:\n        b()\n"
+        );
+    }
+
+    #[test]
+    fn a_block_on_its_headers_line_is_refused_lines_where_nothing_indents_a_block() {
+        let why = replaced("a()", "b()\nc()", "if x: a(); z()\ntail()\n").unwrap_err();
+        assert!(
+            why.starts_with("1:7: the match is in a block written on its header's line"),
+            "{why}"
+        );
+        // The rewrite's own indentation is a unit to use.
+        assert_eq!(
+            ok("a()", "if c:\n    b()", "if x: a()\n"),
+            "if x:\n    if c:\n        b()\n"
+        );
+        // One line of simple statements needs none.
+        assert_eq!(ok("a()", "b(); c()", "if x: a()\n"), "if x: b(); c()\n");
+    }
+
+    #[test]
+    fn statements_a_template_writes_after_a_colon_get_lines_of_their_own() {
+        let text = "def f(p):\n  x = 1\n  return x\n";
+        assert_eq!(
+            ok("def f($p...): $b...", "def g($p...): $b...", text),
+            "def g(p):\n  x = 1\n  return x\n"
+        );
+        // A compound statement after a semicolon there opens the whole block.
+        let text = "def f():\n  if a:\n    b()\n";
+        assert_eq!(
+            ok("def f(): $b...", "def f(): x = 1; $b...", text),
+            "def f():\n  x = 1\n  if a:\n    b()\n"
+        );
+        // In a block of the template's own, it starts a line of its own.
+        assert_eq!(
+            ok("def f(): $b...", "def f():\n    x = 1; $b...", text),
+            "def f():\n  x = 1\n  if a:\n    b()\n"
+        );
+        // Captured from a one-line body, they fit on the template's line.
+        assert_eq!(
+            ok(
+                "def f($p...): $b...",
+                "def g($p...): $b...",
+                "def f(p): x = 1; return x\n"
+            ),
+            "def g(p): x = 1; return x\n"
+        );
+    }
+
+    #[test]
+    fn an_edit_leaving_a_statement_outside_what_it_needs_is_refused() {
+        for (text, what, needs) in [
+            ("def f():\n    return 1\n", "return", "a function"),
+            ("def f():\n    yield 1\n", "yield", "a function"),
+            (
+                "async def f():\n    await x\n",
+                "await",
+                "an async function",
+            ),
+        ] {
+            let pattern = if what == "await" {
+                "async def f(): $b..."
+            } else {
+                "def f(): $b..."
+            };
+            let why = replaced(pattern, "$b...", text).unwrap_err();
+            assert_eq!(
+                why,
+                format!(
+                    "1:1: the rewrite would leave `{what}` outside {needs}, which Python parses \
+                     but refuses to run, so the file would no longer compile: keep `{what}` \
+                     inside {needs} in the rewrite, or narrow the pattern so that it does not \
+                     match here"
+                )
+            );
+        }
+        let text = "for i in r:\n    if x:\n        break\n    continue\n";
+        let why = replaced("for $i in $r: $b...", "$b...", text).unwrap_err();
+        assert!(
+            why.starts_with("1:1: the rewrite would leave `break` outside a loop"),
+            "{why}"
+        );
+        // Moved but still inside what it needs, it is accepted.
+        assert_eq!(
+            ok(
+                "def f(): $b...",
+                "def g():\n    $b...",
+                "def f():\n    return 1\n"
+            ),
+            "def g():\n    return 1\n"
+        );
+    }
+
+    #[test]
+    fn a_statement_already_outside_what_it_needs_is_the_files_not_the_edits() {
+        // A top-level await, as a notebook's exported script has, carried through a hole.
+        assert_eq!(
+            ok("print($x)", "log($x)", "print(await x)\n"),
+            "log(await x)\n"
+        );
+    }
+
+    #[test]
+    fn a_statement_the_layout_cannot_keep_in_its_block_is_refused() {
+        // After a backslash, the block on its header's line has no colon before it to lay out
+        // from, so the rewrite's second line would leave the block.
+        let text = format!("{UNIT}if x: \\\n    a(); z()\n");
+        let why = replaced("a()", "b()\nc()", &text).unwrap_err();
+        assert_eq!(why, format!("4:5: {LEFT_BLOCK}"));
     }
 }

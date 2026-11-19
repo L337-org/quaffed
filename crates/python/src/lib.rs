@@ -14,6 +14,7 @@ mod lex;
 mod parse;
 mod pattern;
 mod rewrite;
+mod scope;
 
 pub use kinds::all_kinds;
 pub use lex::{Bracket, Lexed, StringPart, code_tokens, escaped, lex, token_kinds};
@@ -24,3 +25,4 @@ pub use parse::{
 pub use pattern::{PatternError, compile_pattern};
 pub use quaffed_syntax::Kind;
 pub use rewrite::{Rewrite, RewriteError, Site, compile_rewrite};
+pub use scope::{Misplaced, misplaced};

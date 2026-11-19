@@ -301,7 +301,20 @@ the path or argument it concerns, and says what to do where there is something t
   escaped as Python's literal needs (`quaffed_python::escaped`), and questioned.  **What the user
   did not write is derived, never guessed**: the indentation of the template's later lines and of
   captured code moved to another depth, from the file's indent unit; the file's own line ending for
-  the template's line breaks; and the trailing commas a pattern ignores.  **What the pattern ignored
+  the template's line breaks; and the trailing commas a pattern ignores.  **Statements that share
+  a line are given lines of their own where they need them** (`src/rewrite/lines.rs`): a match
+  that is a run of statements after a semicolon or after a block header's colon, and a statement
+  capture the template writes there, may need more than one line, or start or end with a compound
+  statement, or end with a comment.  Then the block on its header's line is moved to lines of its
+  own, a semicolon before the match becomes a line break where it starts a block, and one after it
+  where it ends one, each line at the depth of the block the statement is in, and the template's
+  later lines take that depth, not the depth of the line the match shares.  Every match's layout is
+  decided before any is written, since opening a block changes text before the first match in it,
+  and the changes are reported as stretches written over as the matches are.  The indent unit is
+  the file's, else the rewrite's, else the edit is refused.  **A backstop then checks the
+  outcome**: every statement the rewrite writes at its top level, and each beside the match on
+  its line, must stand in the block the match stood in, or the edit is refused; it is what stops a
+  layout nobody foresaw, as a header continued by a backslash.  **What the pattern ignored
   must survive or the edit is refused**, exit 9, naming the file and where: a comment no capture
   writes back, unless it stands at the edge of one of the match's own brackets and is carried with
   it, and a trailing comma whose place in the rewrite cannot be told.  Both are carried in
@@ -325,7 +338,14 @@ the path or argument it concerns, and says what to do where there is something t
   first or last item may stand inside them; and a tuple's are its own, so a capture of a bare tuple
   stands whole in the template's brackets only where they make a node of the captured kind, never a
   call's.  A sequence is told to stand where its items stand apart instead, since brackets round
-  it make a tuple.  A refusal is decided in the silent first pass, once its replace's count holds.
+  it make a tuple.  **An edit that leaves a `return`, `yield`, `await`, `break` or `continue`
+  outside the construct it needs** is refused too, once every level is written: Python parses
+  each anywhere and only its compiler refuses it, so neither the parse check nor the matcher would
+  see it.  `quaffed_python::misplaced` finds them; only those in what the edit wrote are judged,
+  and only beyond as many of the same kind as were outside in what it wrote over, so one already
+  in the file and carried through a hole is the file's.  A text search for the five words skips
+  the extra parse for an edit that writes none of them.  A refusal is decided in the silent first
+  pass, once its replace's count holds.
 - **A rewrite with no code deletes** (`deleted`), and the rules above about what the pattern ignored
   do not apply to it: everything inside a match goes with it, comments included, since they describe
   code that is gone.  Nothing in such a template says where the code around a match goes, so each
