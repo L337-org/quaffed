@@ -318,8 +318,13 @@ the path or argument it concerns, and says what to do where there is something t
   refused**: matches that overlap outside each other's holes, and an interpolation that changes the
   token structure of the literal it is written into, found by lexing the rewrite with the values and
   with a filler, because each would change something the script did not ask for.  **A capture that
-  is no longer one node**, or a run of them, once the file is written, is written as the template
-  says and questioned in a note, since the template is what was asked for.  A refusal is decided in
+  is no longer one node**, or a run of them, once the file is written, is refused too
+  (`regrouped`): the code would mean something other than the template says, and adding brackets
+  would write something other than the template, so the message shows the template's line with
+  brackets round the hole.  Brackets that only wrap an item belong to no node, so a sequence's
+  first or last item may stand inside them; and a tuple's are its own, so a capture of a bare tuple
+  stands whole in the template's brackets only where they make a node of the captured kind, never a
+  call's.  A refusal is decided in
   the silent first pass, once its replace's count holds.
 - **A rewrite with no code deletes** (`deleted`), and the rules above about what the pattern ignored
   do not apply to it: everything inside a match goes with it, comments included, since they describe

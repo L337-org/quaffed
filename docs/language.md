@@ -1010,36 +1010,44 @@ written.  A replace whose count does not hold says so first, exit 2, as any edit
 - **A value a literal cannot hold as text**: a raw string cannot escape its own quote, a comment
   cannot hold a line break, and a bytes literal holds ASCII only, so writing such a value would
   change more than the literal's text.
+- **A capture the code around it would read as part of itself**: written back as text, `x + 1`
+  where the rewrite says `$a * 2` would be read as `x + (1 * 2)`, so the code would mean something
+  other than the rewrite says.  The same goes for a sign, `-$a`, an attribute, `$a.double()`, a
+  call, `$f()`, a subscript, `$a[0]`, and a tuple written where one argument goes, `wrap($x)`
+  over `return a, b`.  quaff does not add brackets of its own, since that would write something
+  other than the rewrite; put brackets round the hole in the rewrite instead, as the message
+  shows.  With this file:
 
-**What may not mean what was meant is written, and questioned.**  A capture written where the
-language reads it together with what surrounds it is written as the template says, since that is
-what was asked for, and a note names the file, where, and the capture.  With this file:
+  ```python
+  # calc.py
+  total = f(x + 1)
+  ```
 
-```python
-# calc.py
-total = f(x + 1)
-```
+  <!-- check: with calc.py -->
+  ```
+  $ quaff -e 'replace `f($a)` with `$a * 2` expect 1'
+  quaff: refused: the replace cannot be made as written in 1 file, so nothing was written:
+    "calc.py": line 1, column 9: what $a captured, "x + 1", would not be code of its own where the rewrite writes it - it would be read together with what stands around it, so the code would mean something other than the rewrite says: put brackets round the hole in the rewrite, as in "($a) * 2"
+  [exit 9]
+  ```
 
-<!-- check: with calc.py; then calc.py -->
-```
-$ quaff -e 'replace `f($a)` with `$a * 2` expect 1'
-calc.py:1:9-1:16: f(x + 1)
-quaff: replaced 1 match in 1 file
-quaff: "calc.py": line 1, column 9: what $a captured, "x + 1", is not code of its own where the rewrite writes it - it is read together with what stands around it - so its meaning may have changed: if that is not what was meant, put brackets round the hole in the rewrite, as in ($a)
-[exit 0]
-```
+  <!-- check: with calc.py; then calc.py -->
+  ```
+  $ quaff -e 'replace `f($a)` with `($a) * 2` expect 1'
+  calc.py:1:9-1:16: f(x + 1)
+  quaff: replaced 1 match in 1 file
+  [exit 0]
+  ```
 
-leaves:
+  leaves:
 
-```python
-# calc.py
-total = x + 1 * 2
-```
+  ```python
+  # calc.py
+  total = (x + 1) * 2
+  ```
 
-which Python reads as `x + (1 * 2)`.  If that is not what was meant, a further replace can put it
-right; put brackets round the hole in the rewrite, `($a) * 2`, and it is written as one piece of
-code.  `return wrap($x)` over `return a, b` is questioned the same way, since it calls `wrap` with
-two arguments.
+  A capture that is one piece of code wherever it goes - a name, a call, a literal, or code in
+  brackets of its own - needs none, and is written as it was.
 
 ## Deleting code
 
@@ -1229,6 +1237,9 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
   quaff would have written over is gone, so the run is refused as for any other change.
 - **A match replaced by the same text counts as replaced**, towards the `expect` and the note,
   but changes no bytes, so nothing is written to its file.
+- **Brackets round a tuple's hole keep it one tuple.**  ``replace `return $x` with
+  `return wrap(($x))` `` over `return a, b` writes `return wrap((a, b))`, a call with one
+  argument, where `wrap($x)` is refused, since it would be a call with two.
 
 - **An empty program is an error, not an empty answer.**  `-e "$CHECKS"` with the variable unset
   exits 3, naming the sources, rather than searching for nothing and exiting 1.
