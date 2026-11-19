@@ -2430,9 +2430,7 @@ fn diffed(
     let (ours, theirs) = (layout_free_tokens(file), layout_free_tokens(template));
     let bracket = |token: &str| matches!(token, "(" | "[" | "{" | ")" | "]" | "}");
     let (n, m) = (ours.len(), theirs.len());
-    // A stretch between holes holds a few tokens; the bound keeps the table small whatever a
-    // match holds at its edges.
-    if n.saturating_mul(m) > 4096 {
+    if n.saturating_mul(m) > MOST_COMPARED {
         return None;
     }
     let matched = common_run(&ours, &theirs);
@@ -2538,6 +2536,12 @@ fn diffed(
     copied.retain(|range| !range.is_empty());
     Some((out, copied))
 }
+
+/// The most tokens [`diffed`] compares, as the product of a stretch's tokens in the file and in
+/// the template, which is the size of its table: a stretch between holes holds a few tokens, and
+/// the bound keeps the table small whatever a match holds at its edges.  A longer stretch takes
+/// the template's layout.
+const MOST_COMPARED: usize = 4096;
 
 /// For each of `theirs`, the one of `ours` it is paired with in their longest common run of
 /// equal tokens, if any.
