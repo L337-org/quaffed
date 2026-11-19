@@ -1116,9 +1116,9 @@ fn regrouped(
     let code = CodeIndex::of(arena);
     let lexed = lex(out);
     let site = sites.iter().find(|site| {
-        let range = unwrapped(out, &lexed, &site.range);
-        let whole = code.whole(&site.range)
-            || code.whole(&range)
+        let whole = unwrapped(out, &lexed, &site.range)
+            .iter()
+            .any(|range| code.whole(range))
             || (site.sequence && is_run(out, &lexed, &code, &site.range));
         // A tuple's own brackets are part of it, so one the rewrite brackets, `wrap(($x))`, is
         // whole only with them.  Brackets that make some other node - a call's, in `wrap($x)` -
@@ -1139,20 +1139,21 @@ fn regrouped(
     ))
 }
 
-/// `range` of `text`, lexed as `lexed`, inside any brackets that only wrap it, layout inside them
-/// aside: what a capture that took such brackets stands for.
-fn unwrapped(text: &str, lexed: &Lexed, range: &Range<usize>) -> Range<usize> {
-    let mut range = range.clone();
-    while let Some(b) = lexed
-        .brackets
-        .iter()
-        .find(|b| b.open == range.start && b.close + 1 == range.end)
-    {
+/// `range` of `text`, lexed as `lexed`, and each stretch inside the brackets at its ends, layout
+/// inside them aside, in turn, outermost first: what a capture that took brackets wrapping it may
+/// stand for.  Which brackets only wrap it is not known here - `([1, 2])` is a list in wrapping
+/// brackets, whose own are not - so every layer is given, for the caller to find its node among.
+fn unwrapped(text: &str, lexed: &Lexed, range: &Range<usize>) -> Vec<Range<usize>> {
+    let mut layers = vec![range.clone()];
+    while let Some(b) = lexed.brackets.iter().find(|b| {
+        let range = &layers[layers.len() - 1];
+        b.open == range.start && b.close + 1 == range.end
+    }) {
         let start = layout::forward_over_layout(text, b.open + 1, b.close, &lexed.comments);
         let end = back_over_layout(text, start, b.close, &lexed.comments);
-        range = start..end;
+        layers.push(start..end);
     }
-    range
+    layers
 }
 
 /// Whether `range` of `text`, lexed as `lexed` and indexed as `code`, is a run of sibling nodes.
@@ -1215,16 +1216,20 @@ fn rebracketed(
         .iter()
         .position(|name| *name == site.name)
         .expect("every site's name was asked for");
-    let capture = unwrapped(
+    let layers = unwrapped(
         before.text,
         before.lexed,
         &before.captured[site.found].captures[index],
     );
-    let captured_kinds: Vec<Kind> = before
-        .arena
-        .nodes_within(capture.clone())
-        .filter(|&node| before.arena.range(node) == capture)
-        .map(|node| before.arena.kind(node))
+    let captured_kinds: Vec<Kind> = layers
+        .iter()
+        .flat_map(|layer| {
+            before
+                .arena
+                .nodes_within(layer.clone())
+                .filter(move |&node| before.arena.range(node) == *layer)
+                .map(|node| before.arena.kind(node))
+        })
         .collect();
     wrapped.iter().any(|range| {
         code.kinds(range)
@@ -2342,6 +2347,13 @@ mod tests {
         // Only the line of a longer template that holds the hole is shown, without its indent.
         let why = replaced("f($a)", "g(\n    $a * 2,\n)", "y = f(x + 1)\n").expect_err("regrouped");
         assert!(why.ends_with("as in \"($a) * 2,\""), "{why}");
+        // Brackets that only wrap a capture are its own, but not those of the code inside them.
+        let text = "mock_kalls = ([call(), call('foo')])\n";
+        assert_eq!(ok("$x = $y", "$x = $y", text), text);
+        assert_eq!(
+            ok("f($a)", "$a * 2", "y = f(([a, b]))\n"),
+            "y = ([a, b]) * 2\n"
+        );
         // Nothing is said of a capture that is one piece of code wherever it goes - a name, a
         // call, a literal, or one in brackets of its own - and its text is written as it was.
         for (text, out) in [
