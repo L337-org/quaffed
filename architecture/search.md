@@ -301,9 +301,14 @@ the path or argument it concerns, and says what to do where there is something t
   outside a bracket within one logical line - every line break in either gap continued by a
   backslash, with no comment in it, whose own backslash continues nothing, or the gap inside a
   bracket round the whole match or the template's own - though the edges of a bracket such a gap
-  opens or closes stay the bracket's, carried with it (`between_edges`); and round the comma
-  between a hole and an item the template writes beside it, where the file has a comma there
-  (`Job::item_gaps`);
+  opens or closes stay the bracket's, carried with it (`between_edges`).  Where the code between
+  differs but holds as many tokens, the same brackets in the same places, the template's tokens
+  are swapped into the file's layout one for one, with the template's spacing within a line
+  beside a token that changed, unless the result would lex otherwise beside the code either side
+  (`swapped`, `Job::swapped_gap`); and the stretches from the match's start to its first hole and
+  from its last hole to its end are held to the same rules (`Job::edge_gaps`).  Round the comma
+  between a hole and an item the template writes beside it, where the file has a comma there, the
+  layout is the file's too (`Job::item_gaps`);
   between two statement holes written one after the other, the file's blank lines stand, before
   the template's own line break and indentation, since the statements may move to another depth;
   a bracket of the match's that no node owns, round some of a node's children, as round a Python

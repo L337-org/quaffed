@@ -1716,9 +1716,16 @@ fn render(
         base,
     };
     let marked = job.marked()?;
+    let mut items = job.item_gaps(&marked);
+    // A stretch at the match's start or end replaces any item stretch inside it.
+    for (stretch, gap) in job.edge_gaps(&marked) {
+        items.retain(|(item, _)| item.end <= stretch.start || stretch.end <= item.start);
+        items.push((stretch, gap));
+    }
+    items.sort_unstable_by_key(|(stretch, _)| stretch.start);
     let gaps = Gaps {
         between: job.gaps(&marked),
-        items: job.item_gaps(&marked),
+        items,
     };
     let mut escaped = Vec::new();
     let (written, code) = job.fill(&marked, &gaps, None, &mut escaped)?;
@@ -2086,13 +2093,14 @@ impl Job<'_> {
                 if (template_bracket || one_logical_line(in_template))
                     && (!gap_comment && one_logical_line(in_file) || file_bracket && enclosed)
                 {
-                    return same_code().then(|| {
+                    if same_code() {
                         let (text, kept) = between_edges(in_file, in_template);
-                        Gap {
+                        return Some(Gap {
                             text,
                             range: file_gap.start + kept.start..file_gap.start + kept.end,
-                        }
-                    });
+                        });
+                    }
+                    return self.swapped_gap(file_gap, in_template);
                 }
                 match (template_bracket, file_bracket) {
                     (false, false) => {
@@ -2128,6 +2136,120 @@ impl Job<'_> {
                 }
             })
             .collect()
+    }
+
+    /// The file's stretch `file_gap` with each code token in it swapped for the template's in
+    /// the same place, where `template` holds as many, the brackets among them the same: the
+    /// template's code in the file's layout, so that a token the rewrite changes keeps the line
+    /// breaks round it.  `None` where they differ in number, or where the swapped tokens would
+    /// read otherwise beside the code either side, as a word written against a name would.
+    fn swapped_gap(&self, file_gap: Range<usize>, template: &str) -> Option<Gap> {
+        let file = &self.text[file_gap.clone()];
+        let swapped = swapped(file, template)?;
+        let text = self.text;
+        // What stands either side, only as far as it could run into a token: a word's or a
+        // number's character as `a`, a dot as itself, anything else, a quote included, as
+        // nothing, so that a string or comment the stretch starts or ends beside is not read.
+        let stand_in = |c: Option<char>| match c {
+            Some(c) if c.is_alphanumeric() || c == '_' => Some('a'),
+            Some('.') => Some('.'),
+            _ => None,
+        };
+        let before = stand_in(text[..file_gap.start].chars().next_back());
+        let after = stand_in(text[file_gap.end..].chars().next());
+        let beside = |middle: &str| {
+            let mut stretch = String::new();
+            stretch.extend(before);
+            stretch.push_str(middle);
+            stretch.extend(after);
+            stretch
+        };
+        if layout_free_tokens(&beside(&swapped)) != layout_free_tokens(&beside(template)) {
+            return None;
+        }
+        let (written, _) = between_edges(&swapped, template);
+        let (_, kept) = between_edges(file, file);
+        Some(Gap {
+            text: written,
+            range: file_gap.start + kept.start..file_gap.start + kept.end,
+        })
+    }
+
+    /// The stretches of the template before its first code site and after its last, each with
+    /// the file's layout to write in its place, where the file's stretch from the match's start
+    /// to what that site captured, or from what the last captured to the match's end, holds the
+    /// same code, or as many tokens to swap, and both stay within one logical line as
+    /// [`gaps`](Job::gaps) requires between two sites.
+    fn edge_gaps(&self, marked: &Marked) -> Vec<(Range<usize>, Gap)> {
+        let sites = self.rewrite.sites();
+        let template = marked.indented.as_str();
+        let found = &self.found.range;
+        let (Some(&(first_place, first)), Some(&(last_place, last))) =
+            (marked.at.first(), marked.at.last())
+        else {
+            return Vec::new();
+        };
+        let enclosed = self
+            .lexed
+            .brackets
+            .iter()
+            .any(|b| b.open < found.start && found.end <= b.close);
+        let others_in = |gap: &Range<usize>| {
+            self.found
+                .captures
+                .iter()
+                .any(|c| !c.is_empty() && c.start < gap.end && gap.start < c.end)
+        };
+        let comment_in = |gap: &Range<usize>| {
+            self.lexed
+                .comments
+                .iter()
+                .any(|c| gap.start < c.end && c.start < gap.end)
+        };
+        let mut edges = Vec::new();
+        let mut consider = |stretch: Range<usize>, file_gap: Range<usize>| {
+            let in_template = &template[stretch.clone()];
+            let in_file = &self.text[file_gap.clone()];
+            if in_template == in_file
+                || others_in(&file_gap)
+                || marked
+                    .own
+                    .comments
+                    .iter()
+                    .any(|c| stretch.start < c.end && c.start < stretch.end)
+            {
+                return;
+            }
+            let file_line = !comment_in(&file_gap) && one_logical_line(in_file)
+                || enclosed && !in_file.is_empty();
+            if !(one_logical_line(in_template) && file_line) {
+                return;
+            }
+            let gap = if layout_free_tokens(in_template) == layout_free_tokens(in_file) {
+                let (text, kept) = between_edges(in_file, in_template);
+                Some(Gap {
+                    text,
+                    range: file_gap.start + kept.start..file_gap.start + kept.end,
+                })
+            } else {
+                self.swapped_gap(file_gap, in_template)
+            };
+            edges.extend(gap.map(|gap| (stretch, gap)));
+        };
+        if !sites[first].in_literal {
+            let capture = self.capture(&sites[first].name);
+            if !capture.is_empty() && found.start <= capture.start {
+                consider(0..first_place, found.start..capture.start);
+            }
+        }
+        if !sites[last].in_literal {
+            let capture = self.capture(&sites[last].name);
+            let end = last_place + marked.markers[last].len();
+            if !capture.is_empty() && capture.end <= found.end {
+                consider(end..template.len(), capture.end..found.end);
+            }
+        }
+        edges
     }
 
     /// Stretches of the template, in order, each with the file's layout to write in its place:
@@ -2449,6 +2571,62 @@ fn between_edges(file: &str, template: &str) -> (String, Range<usize>) {
         text.push_str(&template[template_last + 1..]);
     }
     (text, start..end)
+}
+
+/// The code tokens of `text` without a backslash continuing a line, which a lexer given a
+/// stretch ending in one reads as a token of its own.
+fn layout_free_tokens(text: &str) -> Vec<&str> {
+    code_tokens(text)
+        .into_iter()
+        .filter(|token| !token.trim_start().starts_with('\\'))
+        .collect()
+}
+
+/// `file` with each of its code tokens swapped for the one in the same place in `template`,
+/// where both hold as many, and their brackets are the same and in the same places; `None`
+/// otherwise.  Beside a token that changes, the spacing within a line is the template's, which
+/// wrote that token, and a line break, or a backslash continuing one, stays the file's.
+fn swapped(file: &str, template: &str) -> Option<String> {
+    let (ours, theirs) = (layout_free_tokens(file), layout_free_tokens(template));
+    if ours.is_empty() || ours.len() != theirs.len() {
+        return None;
+    }
+    let bracket = |token: &str| matches!(token, "(" | "[" | "{" | ")" | "]" | "}");
+    if ours
+        .iter()
+        .zip(&theirs)
+        .any(|(a, b)| (bracket(a) || bracket(b)) && a != b)
+    {
+        return None;
+    }
+    // The layout before each token and after the last, in each text.
+    let spaces = |text: &str, tokens: &[&str]| -> Vec<Range<usize>> {
+        let mut at = 0;
+        let mut out = Vec::with_capacity(tokens.len() + 1);
+        for token in tokens {
+            let start = token.as_ptr() as usize - text.as_ptr() as usize;
+            out.push(at..start);
+            at = start + token.len();
+        }
+        out.push(at..text.len());
+        out
+    };
+    let (file_spaces, template_spaces) = (spaces(file, &ours), spaces(template, &theirs));
+    let changed = |i: usize| ours.get(i).zip(theirs.get(i)).is_some_and(|(a, b)| a != b);
+    let mut out = String::with_capacity(file.len());
+    for (i, space) in file_spaces.iter().enumerate() {
+        let in_file = &file[space.clone()];
+        let beside_change = changed(i) || i > 0 && changed(i - 1);
+        if beside_change && !in_file.contains(['\n', '\r']) {
+            out.push_str(&template[template_spaces[i].clone()]);
+        } else {
+            out.push_str(in_file);
+        }
+        if let Some(token) = theirs.get(i) {
+            out.push_str(token);
+        }
+    }
+    Some(out)
 }
 
 /// `text` with each backslash continuing a line, and the line break after it, made a space.
@@ -3444,7 +3622,7 @@ mod tests {
     }
 
     #[test]
-    fn layout_between_two_holes_is_the_files_where_the_code_between_is_the_same() {
+    fn layout_between_two_holes_is_the_files_where_the_code_between_matches_token_for_token() {
         // Inside a bracket a line break means nothing, so the file's stands, with its comment.
         assert_eq!(
             ok(
@@ -3460,8 +3638,20 @@ mod tests {
         );
         // Reordered, there is no layout of the file's between them, so the template's stands.
         assert_eq!(ok("f($x, $y)", "g($y, $x)", "f(a,\n  b)\n"), "g(b, a)\n");
-        // Nor where the code between differs.
-        assert_eq!(ok("f($x, $y)", "g($x + $y)", "f(a,\n  b)\n"), "g(a + b)\n");
+        // Where the code between differs but holds as many tokens, the template's tokens are
+        // written into the file's layout, with the template's spacing within a line beside
+        // them.
+        assert_eq!(
+            ok("f($x, $y)", "g($x + $y)", "f(a,\n  b)\n"),
+            "g(a +\n  b)\n"
+        );
+        // Where it holds more or fewer, the template's layout stands.
+        assert_eq!(
+            ok("f($x, $y)", "g($x not in $y)", "f(a,\n  b)\n"),
+            "g(a not in b)\n"
+        );
+        // A word swapped in beside a name is spaced from it, never run into it.
+        assert_eq!(ok("$a - $b", "$a and $b", "x = a-b\n"), "x = a and b\n");
         // Whitespace inside a string between them is code, not layout: the template's stands.
         assert_eq!(
             ok(
@@ -3591,14 +3781,20 @@ mod tests {
             why.contains("the comment \"# note \\\\\" is in the match"),
             "{why}"
         );
-        // Reordered, or with other code between, the template's layout stands.
+        // With other code between, token for token, the continuation stays; between a hole and
+        // the match's end too.
+        assert_eq!(
+            ok("$a + $b", "$a - $b", "x = aaa \\\n    + bbb\n"),
+            "x = aaa \\\n    - bbb\n"
+        );
+        assert_eq!(
+            ok("$a + 1", "$a - 1", "x = aaa \\\n    + 1\n"),
+            "x = aaa \\\n    - 1\n"
+        );
+        // Reordered, the template's layout stands.
         assert_eq!(
             ok("$a + $b", "$b + $a", "x = aaa \\\n    + bbb\n"),
             "x = bbb + aaa\n"
-        );
-        assert_eq!(
-            ok("$a + $b", "$a - $b", "x = aaa \\\n    + bbb\n"),
-            "x = aaa - bbb\n"
         );
     }
 

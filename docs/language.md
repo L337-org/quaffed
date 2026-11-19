@@ -873,7 +873,13 @@ arguments where the template's `, ` stands, but not when the rewrite reorders th
 goes for two holes in one expression outside a bracket, where a line break can only be one a
 backslash continues, or one a bracket round the whole match makes meaningless: ``replace
 `$a + $b` with `$a + $b` expect any`` over `x = aaa \` then `+ bbb` on the next line keeps the
-continuation, unless the rewrite takes away the bracket that made the line break safe.  So does a
+continuation, unless the rewrite takes away the bracket that made the line break safe.  Where the
+code between two holes changes but holds as many tokens, or the code between a hole and the start
+or end of the match does, the template's tokens are written into the file's layout, one for one,
+with the template's spacing within a line beside a token that changed: ``replace `$a + $b` with
+`$a - $b` expect any`` over the same file changes only the second line, and ``replace `f($x, $y)`
+with `g($x + $y)` expect 1`` over a call split after its comma keeps the split.  Where it holds
+more or fewer, as `in` rewritten to `not in`, the template's layout stands.  So does a
 hole beside an item the template writes, where the file has an item there: ``replace
 `f($a..., 3)` with `f($a..., 4)` expect 1`` over a call written one argument to a line changes
 only the last argument's line.  Between two statement holes the template writes one after the
