@@ -1316,7 +1316,10 @@ impl Deletion<'_, '_> {
         // a block's edge, the blank lines on its inner side go, unless a comment stands at the
         // edge, between the match and the block's header or its end: the comment is then the
         // edge, and the gap is between it and code.
-        let comment_at = |at: usize| text[at..line_end(text, at)].trim_start().starts_with('#');
+        // A comment indented less than the match stands outside its block, so is no edge of it.
+        let comment_at = |at: usize| {
+            text[at..line_end(text, at)].trim_start().starts_with('#') && indent(at) >= base
+        };
         let starts = edges.starts
             && !(start > 0 && comment_at(text[..start - 1].rfind('\n').map_or(0, |at| at + 1)));
         let ends = edges.ends && !(past < text.len() && comment_at(past));
@@ -1879,9 +1882,11 @@ impl Job<'_> {
     /// that the template cannot write: a bracket round some of a node's children that is no node
     /// of its own, as round the names a Python `from` import takes, which a pattern ignores and
     /// so a template cannot say what becomes of.  Where the template has a node of the same kind
-    /// holding the same holes, its children of the kinds the bracket held are put in the file's
-    /// bracket, unless they are in a bracket already, so that the layout inside it can be carried
-    /// as any bracket's is.  A template that does not parse with its markers is left as it is.
+    /// holding the same holes, its children in the places the bracket's stood - after as many
+    /// before it, and before as many after it, as in the file - are put in the file's bracket,
+    /// unless a bracket of the node's own holds them already, as a subscript's or a call's does,
+    /// so that the layout inside it can be carried as any bracket's is.  A template that does
+    /// not parse with its markers is left as it is.
     fn rebracketed(&self, template: String, markers: &[String]) -> String {
         let found = &self.found.range;
         let own: Vec<&Bracket> = self
@@ -1937,17 +1942,18 @@ impl Job<'_> {
                 range.start <= bracket.open && bracket.close < range.end
             })
             .last()?;
-        let held: Vec<NodeId> = arena
+        // Which of the parent's children the bracket holds, by position: how many stand before
+        // it and how many after, so that the template's children in the same places are found
+        // however many a sequence hole writes.
+        let inside: Vec<bool> = arena
             .children(parent)
-            .filter(|&child| {
+            .map(|child| {
                 let range = arena.range(child);
                 inner.start <= range.start && range.end <= inner.end
             })
             .collect();
-        if held.is_empty() {
-            return None;
-        }
-        let kinds: Vec<Kind> = held.iter().map(|&child| arena.kind(child)).collect();
+        let before = inside.iter().position(|&held| held)?;
+        let after = inside.iter().rev().position(|&held| held)?;
         // Where the template writes each hole the bracket holds.
         let at: Option<Vec<Range<usize>>> = self
             .names
@@ -1972,15 +1978,12 @@ impl Job<'_> {
                     .all(|a| range.start <= a.start && a.end <= range.end)
             })
             .last()?;
-        // A child the template writes as a hole alone is a name to its parse, whatever it
-        // captured.
         let children: Vec<Range<usize>> = parsed
             .children(counterpart)
-            .map(|child| (parsed.kind(child), parsed.range(child)))
-            .filter(|(kind, range)| kinds.contains(kind) || at.contains(range))
-            .map(|(_, range)| range)
+            .map(|child| parsed.range(child))
             .collect();
-        let (first, last) = (children.first()?, children.last()?);
+        let held = children.get(before..children.len().checked_sub(after)?)?;
+        let (first, last) = (held.first()?, held.last()?);
         let span = first.start..last.end;
         // A bracket of the node's own - inside it, in none of its children - round them.
         let range = parsed.range(counterpart);
@@ -2074,7 +2077,11 @@ impl Job<'_> {
                         else {
                             return None;
                         };
+                        // Blank lines the template writes there are layout of its own, which
+                        // stands.
+                        let template_blank = in_template.rfind('\n') != Some(template_first);
                         (!file_comment
+                            && !template_blank
                             && code_tokens(in_template).is_empty()
                             && code_tokens(in_file).is_empty())
                         .then(|| Gap {
@@ -2682,6 +2689,14 @@ mod tests {
         assert_eq!(
             deleted("x = 1", "def f():\n    # why\n    x = 1\n\n    y = 2\n"),
             "def f():\n    # why\n\n    y = 2\n"
+        );
+        // A comment indented less than the match is outside the block, so is no edge of it.
+        assert_eq!(
+            deleted(
+                "x = 1",
+                "def f():\n    a = 0\n\n    x = 1\n# end of f\nz = 2\n"
+            ),
+            "def f():\n    a = 0\n# end of f\nz = 2\n"
         );
         // Inside the block, the rule between code stands.
         assert_eq!(
@@ -3387,6 +3402,10 @@ mod tests {
             ok("x = $a, $b", "y = $a, $b", "x = (\n    1,\n    2,\n)\n"),
             "y = (\n    1,\n    2,\n)\n"
         );
+        // A subscript's brackets are its own: the template's stand, and none is added round it.
+        assert_eq!(ok("a[$i]", "b[$i]", "a[i]\n"), "b[i]\n");
+        assert_eq!(ok("$x[$i]", "$x[$i]", "a[i]\n"), "a[i]\n");
+        assert_eq!(ok("f(a[$i])", "g(b[$i])", "f(a[i])\n"), "g(b[i])\n");
         // Without one in the file, none is added.
         assert_eq!(
             ok(
@@ -3417,6 +3436,15 @@ mod tests {
                 "def f():\n    x = 1\n\n\n    y = 2\n"
             ),
             "def f():\n    if c:\n        x = 1\n\n\n        y = 2\n"
+        );
+        // Where the template writes a blank line there, its layout stands.
+        assert_eq!(
+            ok(
+                "class C:\n    $a\n    $b",
+                "class D:\n    $a\n\n    $b",
+                "class C:\n    x = 1\n\n    y = 2\n"
+            ),
+            "class D:\n    x = 1\n\n    y = 2\n"
         );
         // Where code stands between them in the template, its layout stands.
         assert_eq!(

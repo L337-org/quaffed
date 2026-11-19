@@ -302,9 +302,11 @@ the path or argument it concerns, and says what to do where there is something t
   between two statement holes written one after the other, the file's blank lines stand, before
   the template's own line break and indentation, since the statements may move to another depth;
   a bracket of the match's that no node owns, round some of a node's children, as round a Python
-  `from` import's names or a tuple, is put round the same children of the template's node of
-  that kind holding the same holes before the template is filled (`Job::rebracketed`), so that
-  its layout is carried as any bracket's is; and a value written into a string is escaped as
+  `from` import's names or a tuple, is put round the children in the same places, counted from
+  either end, of the template's node of that kind holding the same holes, unless a bracket of
+  that node's own holds them, as a subscript's does, before the template is filled
+  (`Job::rebracketed`), so that its layout is carried as any bracket's is; and a value written
+  into a string is escaped as
   Python's literal needs (`quaffed_python::escaped`), and questioned.  **What the user did not
   write is derived, never guessed**: the indentation of the template's later lines and of
   captured code moved to another depth, from the file's indent unit; the file's own line ending for
