@@ -32,38 +32,21 @@ jobs:
         run: rustup toolchain install
 
       # The version is resolved once, here, and every later job builds this one commit.
-      - name: The release is this repository's, and its tag names the workspace version
+      - name: Read the workspace version and the release's commit
         id: check
-        env:
-          OWNER: ${{ github.repository_owner }}
-          TAG: ${{ github.event.release.tag_name }}
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          RELEASE_ID: ${{ github.event.release.id }}
         run: |
-          if [ "$OWNER" != "L337-org" ]; then
-            echo "::error::this release was published from repository owner '$OWNER', not L337-org, so nothing is built" >&2
-            exit 1
-          fi
-          version="$(scripts/workspace-version)"
-          if [ "$TAG" != "v$version" ]; then
-            echo "::error::the release's tag is '$TAG' but the workspace declares $version, so the tag must be v$version" >&2
-            exit 1
-          fi
-          # Below 1.0.0 every release is for trying out, and the pre-release flag keeps it off
-          # anything a user might install from by accident.  Read from the release now rather
-          # than from the event, because a re-run replays the original event: this way, ticking
-          # the flag and re-running is enough.
-          prerelease="$(gh api "repos/$REPO/releases/$RELEASE_ID" --jq .prerelease)"
-          if [ "${version%%.*}" = "0" ] && [ "$prerelease" != "true" ]; then
-            echo "::error::$version is below 1.0.0, so its release must be marked as a pre-release; edit release $RELEASE_ID, tick pre-release, and re-run this workflow" >&2
-            exit 1
-          fi
           {
-            echo "version=$version"
+            echo "version=$(scripts/workspace-version)"
             echo "sha=$(git rev-parse HEAD)"
           } >>"$GITHUB_OUTPUT"
-          echo "Releasing $version from $(git rev-parse HEAD)"
+
+      # The release is L337-org's, its tag is v and the workspace version, and below 1.0.0 it is
+      # marked pre-release, read from the release so that ticking the flag and re-running is
+      # enough.
+      - name: The release is this repository's, and its tag names the workspace version
+        uses: L337-org/github-workflows/actions/release-preflight@v2
+        with:
+          version: ${{ steps.check.outputs.version }}
 
   package:
     name: Package
@@ -88,59 +71,16 @@ jobs:
           merge-multiple: true
           path: dist
 
-      # Uploads go to the release ID from the triggering event rather than a lookup by tag.  An
-      # asset already attached is compared rather than replaced: identical is a re-run and is
-      # skipped, different stops, because a published asset is never replaced.
-      # Only assets GitHub reports as fully uploaded count as attached; one left "open" by an
-      # interrupted upload is reported separately, because deleting it, not a new version, is
-      # the fix for that.
+      # Both architectures by name, so one that did not build fails here rather than going
+      # unnoticed.  A package already attached by an earlier run of this release is replaced if
+      # it differs, since that run failed after attaching it; the action then reads each back
+      # from the release and compares it with the build.
       - name: Attach each package to the release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          RELEASE_ID: ${{ github.event.release.id }}
-          VERSION: ${{ needs.preflight.outputs.version }}
-        run: |
-          assets="$(gh api "repos/$REPO/releases/$RELEASE_ID/assets" --paginate --jq '.[] | "\(.id) \(.name) \(.state)"')"
-          for arch in amd64 arm64; do
-            name="quaffed_${VERSION}_${arch}.deb"
-            file="dist/$name"
-            unfinished="$(printf '%s\n' "$assets" | awk -v n="$name" '$2 == n && $3 != "uploaded" { print $1 " (" $3 ")" }')"
-            if [ -n "$unfinished" ]; then
-              echo "::error::release $RELEASE_ID has an unfinished upload of $name, asset $unfinished, probably from an interrupted earlier run.  Delete that asset from the release and re-run" >&2
-              exit 1
-            fi
-            if [ ! -f "$file" ]; then
-              echo "::error::$name was not built, so nothing is attached; the package job's output says why" >&2
-              exit 1
-            fi
-          done
-          for arch in amd64 arm64; do
-            name="quaffed_${VERSION}_${arch}.deb"
-            file="dist/$name"
-            existing="$(printf '%s\n' "$assets" | awk -v n="$name" '$2 == n { print $1 }')"
-            if [ -n "$existing" ]; then
-              gh api -H "Accept: application/octet-stream" "repos/$REPO/releases/assets/$existing" >"$RUNNER_TEMP/existing.deb"
-              if cmp -s "$file" "$RUNNER_TEMP/existing.deb"; then
-                echo "$name is already attached and identical; skipped"
-                continue
-              fi
-              echo "::error::$name is already attached and differs from this build ($(sha256sum <"$RUNNER_TEMP/existing.deb" | cut -c1-12) against $(sha256sum <"$file" | cut -c1-12)).  A published asset is never replaced.  If nothing changed but the runner image, whose C compiler builds mimalloc, the rebuild can differ on that alone; either way, release a new version" >&2
-              exit 1
-            fi
-            # GitHub's response is kept, because on a refusal its body is what says why.
-            if ! curl --fail-with-body --silent --show-error --max-time 300 \
-              -H "Authorization: Bearer $GH_TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              -H "Content-Type: application/vnd.debian.binary-package" \
-              --data-binary "@$file" \
-              --output "$RUNNER_TEMP/upload.json" \
-              "https://uploads.github.com/repos/$REPO/releases/$RELEASE_ID/assets?name=$name"; then
-              echo "::error::uploading $name to release $RELEASE_ID failed; GitHub said: $(cat "$RUNNER_TEMP/upload.json" 2>/dev/null)" >&2
-              exit 1
-            fi
-            echo "$name attached, sha256 $(sha256sum <"$file" | cut -d' ' -f1)"
-          done
+        uses: L337-org/github-workflows/actions/release-attach@v2
+        with:
+          files: >-
+            dist/quaffed_${{ needs.preflight.outputs.version }}_amd64.deb
+            dist/quaffed_${{ needs.preflight.outputs.version }}_arm64.deb
 
   verify:
     name: The release serves both packages
@@ -183,3 +123,13 @@ jobs:
             fi
             echo "$name served: $fields"
           done
+
+  # A job killed by its timeout ends as cancelled, which raises no failure notification, so a
+  # release that never finished fails the run here instead.
+  report-cancelled:
+    name: Report a cancelled release
+    needs: [preflight, package, publish, verify]
+    if: always() && contains(needs.*.result, 'cancelled')
+    uses: L337-org/github-workflows/.github/workflows/release-cancelled.yaml@v2
+    with:
+      job: preflight, package, publish or verify

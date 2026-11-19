@@ -63,8 +63,8 @@ packaging a release runs.
 Each architecture is built on a machine of that architecture; the script refuses otherwise.
 Timestamps come from the commit, so a re-run of a release can tell an identical package from a
 different one.  **Only Rust is pinned**: the C compiler that builds mimalloc comes from the runner
-image, so a re-run after an image update can build different bytes, and the attach step then stops
-rather than replace the published package.
+image, so a re-run after an image update can build different bytes, and the attach step then
+replaces the package an earlier run of the release attached, with a warning.
 
 **The package is compressed with xz, chosen explicitly**, because `dpkg-deb` may otherwise choose
 zstd, which Debian 11's dpkg refuses.
@@ -123,11 +123,15 @@ Locally, `test-deb` needs docker on a host of the package's architecture;
 ## Releasing
 
 `.github/workflows/release.yaml` runs when a release is **published**; pushing a tag ships nothing.
-It refuses a release outside `L337-org`, a tag other than `v` plus the workspace version, and a
-version below 1.0.0 not marked as a pre-release.  It builds with `package.yaml` at one commit,
-attaches the packages only once both architectures built, and never replaces a published package:
-one already attached is skipped if identical and stops the run if not.  Then it downloads each back
-from the release and checks it is the one built.
+Its steps are the organisation's shared release actions, from `L337-org/github-workflows`, whose
+README says what each does.  Preflight refuses a release outside `L337-org`, a tag other than `v`
+plus the workspace version, and a version below 1.0.0 not marked as a pre-release.  The release
+builds with `package.yaml` at one commit and attaches the packages only once both architectures
+built.  A package an earlier run of the same release attached is left if identical and replaced if
+not, since preflight lets through only releases that should ship, so one already there means that
+run failed after attaching it.  Each package is then downloaded back from the release and checked
+against the build, and the verify job checks its name, version and architecture.  A job that ends
+as cancelled, as a timeout leaves it, fails the run, so the release reports.
 
 ### Checklist
 
@@ -136,8 +140,8 @@ from the release and checks it is the one built.
    and write the notes by hand on top of the generated ones.
 3. Publish it, then watch the Release workflow to the end: the first run after a change to it is
    the test of that change.
-4. If a job failed, read why and re-run it; the attach step skips what is already there, and
-   preflight reads the pre-release flag from the release itself.  If the cause is a defect, fix it
-   and release a new version: a published package is never replaced.
+4. If a job failed, read why and re-run it: the attach step leaves an identical package and
+   replaces a different one, and preflight reads the pre-release flag from the release itself.  If
+   the cause is a defect in what was built, fix it and release a new version.
 
 A failed release run is posted to Slack (`workspace.md`).

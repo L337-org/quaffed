@@ -45,7 +45,7 @@ jobs:
         run: rustup toolchain install
 
       - name: Install the musl C toolchain and lintian
-        uses: ./.github/actions/apt-install
+        uses: L337-org/github-workflows/actions/apt-install@v2
         with:
           packages: musl-tools lintian
 

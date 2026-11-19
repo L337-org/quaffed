@@ -48,16 +48,19 @@ which caches `~/.quaffed-tools` keyed on `tools.toml`.  The **Verification tools
 installs every `[cargo-install]` entry and checks each version, so a bad pin fails on the pull
 request that introduces it.
 
-**Packages from apt go through `.github/actions/apt-install`**, which caches the downloaded `.deb`
-files.  The cache changes how fast a package arrives, never which version, and each restored file
-is checked against the SHA-256 the signed index lists before it is installed, since apt checks
-only the size of a file already in its archive.
+**Packages from apt go through the organisation's shared `apt-install` action**
+(`L337-org/github-workflows/actions/apt-install@v2`), which caches the downloaded `.deb` files and
+retries a failing mirror.  The cache changes how fast a package arrives, never which version, and
+each restored file is checked against the SHA-256 the signed index lists before it is installed,
+since apt checks only the size of a file already in its archive.  How it retries, and why, is in
+that repository.
 
 ## What the tests enforce
 
 `crates/quaffed/tests/tool_manifest.rs`, in the ordinary run: the manifest is well formed; the
 script reads it exactly as the test does; no workflow or local action installs a tool another way,
-names a toolchain or a manifest tool's version, or installs from apt except `apt-install`; and
+names a toolchain or a manifest tool's version, or installs from apt except through the shared
+`apt-install`; and
 `gungraun-runner` and `gungraun` are pinned to one version, because gungraun refuses a mismatched
 runner.  The script is tested under macOS's bash 3.2, the oldest it supports.
 
