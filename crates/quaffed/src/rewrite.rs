@@ -1125,16 +1125,26 @@ fn regrouped(
         // do not count, so the node they close must be the kind of code that was captured.
         !whole && !rebracketed(before, &code, out, &lexed, site)
     })?;
+    // Brackets round a sequence make its items one tuple, which is not what it captured either,
+    // so it is told to stand where its items stand apart instead.
+    let remedy = if site.sequence {
+        "write the hole where its items stand apart from what is around it, as among a call's \
+         arguments, since brackets round it would make them one tuple"
+            .to_owned()
+    } else {
+        format!(
+            "put brackets round the hole in the rewrite, as in {:?}",
+            bracketed(rewrite, site.site)
+        )
+    };
     Some((
         before.captured[site.found].range.start,
         format!(
             "what ${} captured, {:?}, would not be code of its own where the rewrite writes it - \
              it would be read together with what stands around it, so the code would mean \
-             something other than the rewrite says: put brackets round the hole in the rewrite, \
-             as in {:?}",
+             something other than the rewrite says: {remedy}",
             site.name,
             &out[site.range.clone()],
-            bracketed(rewrite, site.site)
         ),
     ))
 }
@@ -2343,7 +2353,14 @@ mod tests {
         // A sequence is a run of code, so it may stand as several, but only as siblings: here the
         // first would become part of `1 + a`.
         assert_eq!(ok("f($xs...)", "g($xs...)", "f(a, b)\n"), "g(a, b)\n");
-        assert!(replaced("f($xs...)", "f(1 + $xs...)", "f(a, b)\n").is_err());
+        let why = replaced("f($xs...)", "f(1 + $xs...)", "f(a, b)\n").expect_err("regrouped");
+        assert!(
+            why.ends_with(
+                "write the hole where its items stand apart from what is around it, as among a \
+                 call's arguments, since brackets round it would make them one tuple"
+            ),
+            "{why}"
+        );
         // Only the line of a longer template that holds the hole is shown, without its indent.
         let why = replaced("f($a)", "g(\n    $a * 2,\n)", "y = f(x + 1)\n").expect_err("regrouped");
         assert!(why.ends_with("as in \"($a) * 2,\""), "{why}");

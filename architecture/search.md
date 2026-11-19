@@ -324,8 +324,8 @@ the path or argument it concerns, and says what to do where there is something t
   brackets round the hole.  Brackets that only wrap an item belong to no node, so a sequence's
   first or last item may stand inside them; and a tuple's are its own, so a capture of a bare tuple
   stands whole in the template's brackets only where they make a node of the captured kind, never a
-  call's.  A refusal is decided in
-  the silent first pass, once its replace's count holds.
+  call's.  A sequence is told to stand where its items stand apart instead, since brackets round
+  it make a tuple.  A refusal is decided in the silent first pass, once its replace's count holds.
 - **A rewrite with no code deletes** (`deleted`), and the rules above about what the pattern ignored
   do not apply to it: everything inside a match goes with it, comments included, since they describe
   code that is gone.  Nothing in such a template says where the code around a match goes, so each

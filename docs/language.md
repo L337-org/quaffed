@@ -1047,7 +1047,9 @@ written.  A replace whose count does not hold says so first, exit 2, as any edit
   ```
 
   A capture that is one piece of code wherever it goes - a name, a call, a literal, or code in
-  brackets of its own - needs none, and is written as it was.
+  brackets of its own - needs none, and is written as it was.  A sequence hole cannot be kept
+  whole by brackets, which would make its items one tuple, so it is refused with advice to write
+  it where its items stand apart, as among a call's arguments.
 
 ## Deleting code
 
@@ -1237,6 +1239,8 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
   quaff would have written over is gone, so the run is refused as for any other change.
 - **A match replaced by the same text counts as replaced**, towards the `expect` and the note,
   but changes no bytes, so nothing is written to its file.
+- **A negative number is a sign and a number**, not a literal of its own, so `-1` captured and
+  written as `$a ** 2` is refused, since it would be read as `-(1 ** 2)`; `($a) ** 2` is not.
 - **Brackets round a tuple's hole keep it one tuple.**  ``replace `return $x` with
   `return wrap(($x))` `` over `return a, b` writes `return wrap((a, b))`, a call with one
   argument, where `wrap($x)` is refused, since it would be a call with two.
