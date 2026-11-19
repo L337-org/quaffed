@@ -314,9 +314,10 @@ the path or argument it concerns, and says what to do where there is something t
   run into a name (`Job::diffed_gap`).  **Accepted limitation:** a stretch is compared only
   where its tokens in the file and in the template multiply to no more than `MOST_COMPARED`,
   since the table grows with that product; a longer stretch between two anchors takes the
-  template's layout, and may join lines it did not change.  The stretches are paired by place, not by hole
-  (`Job::positions`): a rewrite that reorders holes keeps the file's layout between the places
-  they fill, but not a comment there, written about the code beside it, which refuses the edit.
+  template's layout, and may join lines it did not change.  The stretches are paired by place,
+  not by hole (`Job::positions`): a rewrite that reorders holes keeps the file's layout between
+  the places they fill, but not a comment there, written about the code beside it, which
+  refuses the edit.
   Where captures overlap, as one hole written twice does, there are no places to pair, and the
   template's layout stands; a hole whose capture is empty has no place of its own, so the
   template's layout stands beside it alone.  Where the template ends a
