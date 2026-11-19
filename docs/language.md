@@ -874,7 +874,8 @@ hole beside an item the template writes, where the file has an item there: ``rep
 `f($a..., 3)` with `f($a..., 4)` expect 1`` over a call written one argument to a line changes
 only the last argument's line.  Between two statement holes the template writes one after the
 other, the file's blank lines stand, before the template's own indentation: rewriting a class as
-`$a...` then `$b...` keeps the blank line between two methods.
+`$a...` then `$b...` keeps the blank line between two methods.  Where the template writes a blank
+line there itself, its own layout stands instead.
 
 - **A name the pattern does not bind is an error**, exit 3, before any file is read: `$_`, `$...`,
   a typo, or a name the pattern spells as a sequence written as one node, or the other way round.
@@ -1173,10 +1174,10 @@ otherwise be left behind, and nothing else:
   file neither starts nor ends with them.  At the start or the end of a block, the blank lines on
   its inner side go, so the block neither starts nor ends with them, and those after it, which
   part it from what follows, stay; where a comment stands between the match and the block's edge,
-  the comment is the edge, and the rule between code applies.  Otherwise, with blank lines on one
-  side only, they stay.  A
-  decorator is a match of its own, so ``delete `@retry($n)` expect 1`` takes the decorator's line
-  and leaves the definition.
+  indented at least as deeply as the match, the comment is the edge, and the rule between code
+  applies.  A comment indented less is outside the block.  Otherwise, with blank lines on one side
+  only, they stay.  A decorator is a match of its own, so ``delete `@retry($n)` expect 1`` takes
+  the decorator's line and leaves the definition.
 - **Otherwise it takes one separator its parent holds next to it**: the comma after a list item
   or argument, or the one before it where it is the last, and the semicolon after a statement
   sharing its line, or the one before it.  ``delete `debug` expect 1`` over
@@ -1356,8 +1357,8 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
   never a comment or a trailing comma: one at a bracket's edge is carried to the rewrite's matching
   bracket, a comma goes with a bracket the rewrite deletes, a bracket no node owns, as round a
   Python `from` import's names, is kept round the same items, and any other comment in no
-  capture refuses the edit.  A rewrite with no code is the exception: it [deletes](#deleting-code), and
-  every comment inside the match goes with it.  A sequence hole captures everything between its
+  capture refuses the edit.  A rewrite with no code is the exception: it
+  [deletes](#deleting-code), and every comment inside the match goes with it.  A sequence hole captures everything between its
   first node and its last, and the whole of any bracket that only wraps one of them.
 - **A trailing comma and a semicolon between statements are layout**, so `f($a, $b)` matches a
   call a formatter has split over lines and ended with a comma.
