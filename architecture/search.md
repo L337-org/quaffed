@@ -311,7 +311,10 @@ the path or argument it concerns, and says what to do where there is something t
   unless the template keeps that bracket beside it.  A stretch
   is held to the rule between holes (`Job::gaps`) and at the match's ends (`Job::edge_gaps`),
   and checked to lex as the template's would beside the code either side, so a word is never
-  run into a name (`Job::diffed_gap`).  The stretches are paired by place, not by hole
+  run into a name (`Job::diffed_gap`).  **Accepted limitation:** a stretch is compared only
+  where its tokens in the file and in the template multiply to at most 4,096, since the table
+  grows with that product; a longer stretch between two anchors takes the template's layout, and
+  may join lines it did not change.  The stretches are paired by place, not by hole
   (`Job::positions`): a rewrite that reorders holes keeps the file's layout between the places
   they fill, but not a comment there, written about the code beside it, which refuses the edit.
   Where captures overlap, as one hole written twice does, there are no places to pair, and the
