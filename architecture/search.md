@@ -313,13 +313,13 @@ the path or argument it concerns, and says what to do where there is something t
   match's layout is decided before any is written, since opening a block changes text before the
   first match in it, and the changes are reported as stretches written over as the matches are.
   The indent unit is the file's, else the rewrite's; with neither, the depth is not guessed and
-  the edit is refused.  **A backstop then checks the outcome**: every statement the rewrite writes at its top
-  level, and each beside the match on its line, must stand in the block the match stood in, or
-  the edit is refused; it is what stops a layout nobody foresaw, as a Python header continued by
-  a backslash.  **What the pattern ignored
-  must survive or the edit is refused**, exit 9, naming the file and where: a comment no capture
-  writes back, unless it stands at the edge of one of the match's own brackets and is carried with
-  it, and a trailing comma whose place in the rewrite cannot be told.  Both are carried in
+  the edit is refused.  **A backstop then checks the outcome**: every statement the rewrite
+  writes at its top level, and each beside the match on its line, must stand in the block the
+  match stood in, or the edit is refused; it is what stops a layout nobody foresaw, as a Python
+  header continued by a backslash.  **What the pattern ignored must survive or the edit is
+  refused**, exit 9, naming the file and where: a comment no capture writes back, unless it
+  stands at the edge of one of the match's own brackets and is carried with it, and a trailing
+  comma whose place in the rewrite cannot be told.  Both are carried in
   `src/rewrite/layout.rs`.  A trailing comma the pattern ignores is one the arena keeps no token
   for, so the matcher and the edit agree on it (`ignored_by_matcher`); it is carried to the bracket
   in the rewrite that holds the same holes as its own, brackets paired from the lexer's
@@ -346,8 +346,8 @@ the path or argument it concerns, and says what to do where there is something t
   Python, `quaffed_python::misplaced` finds what it covers, listed in `python.md`; only what the
   edit wrote is judged, and only beyond as many of the same kind as were outside in what it wrote
   over, so one already in the file and carried through a hole is the file's.  A text search for
-  the keywords involved skips the extra parse for an edit that writes none of them.  A refusal is decided in the silent first
-  pass, once its replace's count holds.
+  the keywords involved skips the extra parse for an edit that writes none of them.  A refusal
+  is decided in the silent first pass, once its replace's count holds.
 - **A rewrite with no code deletes** (`deleted`), and the rules above about what the pattern ignored
   do not apply to it: everything inside a match goes with it, comments included, since they describe
   code that is gone.  Nothing in such a template says where the code around a match goes, so each
