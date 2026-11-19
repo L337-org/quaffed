@@ -1046,7 +1046,7 @@ written.  A replace whose count does not hold says so first, exit 2, as any edit
   total = (x + 1) * 2
   ```
 
-  A capture that is one piece of code wherever it goes - a name, a call, a literal, or code in
+  A capture that stays one piece of code where it is written - a name or a call, say, or code in
   brackets of its own - needs none, and is written as it was.  A sequence hole cannot be kept
   whole by brackets, which would make its items one tuple, so it is refused with advice to write
   it where its items stand apart, as among a call's arguments.
@@ -1217,7 +1217,7 @@ src/app.py:16:5-17:32: return lookup(request.args["id"], default=None,)
 | 5 | a statement or construct this build does not have, or an output other than `-o text` |
 | 6 | a file to be edited changed after quaff read it, or was removed or renamed, so nothing was written |
 | 7 | an I/O error, naming the path and quoting the system's error; an `in` that names nothing there; or edits that could not be written, saying what was left as it was |
-| 9 | a structural search needs a file quaff cannot parse, an edit would break a file that parses, a file's encoding cannot write a replacement, or a structural replace cannot be made as written - its matches overlap outside each other's holes, it would drop a comment, a trailing comma has no one place to go, a literal cannot hold a value as text, or a rewrite that is only a comment would swallow code after it on its line; or a delete would leave what holds a match without it: the script or the file must change first |
+| 9 | a structural search needs a file quaff cannot parse, an edit would break a file that parses, a file's encoding cannot write a replacement, or a structural replace cannot be made as written - its matches overlap outside each other's holes, it would drop a comment, a trailing comma has no one place to go, a literal cannot hold a value as text, a capture would be read together with the code the rewrite writes around it, or a rewrite that is only a comment would swallow code after it on its line; or a delete would leave what holds a match without it: the script or the file must change first |
 
 **A run that cannot give an answer - exit 3, 5, 6, 7 or 9 - prints nothing on standard output**, so
 a partial answer never passes for a whole one.  The whole program is read and checked before any
@@ -1239,8 +1239,10 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
   quaff would have written over is gone, so the run is refused as for any other change.
 - **A match replaced by the same text counts as replaced**, towards the `expect` and the note,
   but changes no bytes, so nothing is written to its file.
-- **A negative number is a sign and a number**, not a literal of its own, so `-1` captured and
-  written as `$a ** 2` is refused, since it would be read as `-(1 ** 2)`; `($a) ** 2` is not.
+- **What is refused follows the edited file's language**, not a list of kinds of code: a capture
+  is refused only where that language would read it together with what the rewrite puts beside
+  it.  In Python a leading minus binds less tightly than `**`, so `-1` written as `$a ** 2` is
+  refused, since it would be read as `-(1 ** 2)`, while `$a * 2` is not; `($a) ** 2` is never.
 - **Brackets round a tuple's hole keep it one tuple.**  ``replace `return $x` with
   `return wrap(($x))` `` over `return a, b` writes `return wrap((a, b))`, a call with one
   argument, where `wrap($x)` is refused, since it would be a call with two.
