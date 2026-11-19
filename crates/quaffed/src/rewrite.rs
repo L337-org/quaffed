@@ -2047,23 +2047,44 @@ impl Job<'_> {
                     .any(|c| template_gap.start <= c.start && c.end <= template_gap.end);
                 // The code is compared last, token by token, so that whitespace inside a string the
                 // template changes counts, and only where the cheaper checks have passed.
+                // A continuation is layout, and lexed alone at the end of a gap it would be read
+                // as a stray backslash, so it is taken out of both where neither holds a string,
+                // inside which a backslash and line break are the string's.
                 let same_code = || {
-                    code_tokens(&marked.indented[template_gap.clone()])
-                        == code_tokens(&self.text[file_gap.clone()])
+                    let (template, file) = (
+                        &marked.indented[template_gap.clone()],
+                        &self.text[file_gap.clone()],
+                    );
+                    code_tokens(template) == code_tokens(file)
+                        || ![template, file].iter().any(|gap| gap.contains(['"', '\'']))
+                            && code_tokens(&uncontinued(template))
+                                == code_tokens(&uncontinued(file))
                 };
                 if between_others || template_comment {
                     return None;
                 }
                 let in_template = &marked.indented[template_gap.clone()];
                 let in_file = &self.text[file_gap.clone()];
-                match (
-                    in_bracket(&marked.own.brackets, &template_gap),
-                    in_bracket(&self.lexed.brackets, &file_gap),
-                ) {
-                    (true, true) => same_code().then(|| Gap {
+                let template_bracket = in_bracket(&marked.own.brackets, &template_gap);
+                let file_bracket = in_bracket(&self.lexed.brackets, &file_gap);
+                // Where the rewrite is written, the gap is inside a bracket if the template's is,
+                // or if one round the whole match is: a line break there means nothing.
+                let enclosed = template_bracket
+                    || self.lexed.brackets.iter().any(|b| {
+                        b.open < self.found.range.start && self.found.range.end <= b.close
+                    });
+                // Within one logical line, as two holes in one expression are, the file's layout
+                // stands: a line break in it is one a bracket or a backslash continues, and stays
+                // one where it is written.
+                if (template_bracket || one_logical_line(in_template))
+                    && (one_logical_line(in_file) || file_bracket && enclosed)
+                {
+                    return same_code().then(|| Gap {
                         text: in_file.to_owned(),
                         range: file_gap,
-                    }),
+                    });
+                }
+                match (template_bracket, file_bracket) {
                     (false, false) => {
                         let file_comment = self
                             .lexed
@@ -2299,8 +2320,12 @@ fn comma_after(
     ceiling: usize,
     comments: &[Range<usize>],
 ) -> Option<Range<usize>> {
+    if at >= ceiling {
+        return None;
+    }
     let comma = layout::forward_over_layout(text, at, ceiling, comments);
-    if text.as_bytes().get(comma) != Some(&b',') {
+    // A comma at or past the ceiling is outside what may be read: past the match.
+    if comma >= ceiling || text.as_bytes()[comma] != b',' {
         return None;
     }
     let next = layout::forward_over_layout(text, comma + 1, ceiling, comments);
@@ -2353,6 +2378,27 @@ fn wrapped(template: &str, mut wraps: Vec<Wrap<'_>>) -> String {
 
 /// A stretch of a template to put in brackets, and the brackets' opening and closing.
 type Wrap<'a> = (Range<usize>, &'a str, &'a str);
+
+/// Whether every line break in `text` continues a line, a backslash before it, so that `text`
+/// stays within one logical line.
+fn one_logical_line(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    // Each line break, `\r\n`, `\n` or a lone `\r`, by where it starts.
+    (0..bytes.len())
+        .filter(|&at| match bytes[at] {
+            b'\n' => at == 0 || bytes[at - 1] != b'\r',
+            b'\r' => true,
+            _ => false,
+        })
+        .all(|at| at > 0 && bytes[at - 1] == b'\\')
+}
+
+/// `text` with each backslash continuing a line, and the line break after it, made a space.
+fn uncontinued(text: &str) -> String {
+    text.replace("\\\r\n", " ")
+        .replace("\\\n", " ")
+        .replace("\\\r", " ")
+}
 
 /// A stem for site markers that neither the template nor the file contains.
 fn marker_stem(template: &str, text: &str) -> String {
@@ -2480,16 +2526,25 @@ fn moved(text: &str, range: &Range<usize>, base: &str, lexed: &Lexed) -> String 
     out
 }
 
-/// Back from `at` in `text`, no further than `floor`, over whitespace and comments: where the
-/// code before them ends.
+/// Back from `at` in `text`, no further than `floor`, over whitespace, comments and backslashes
+/// continuing a line: where the code before them ends.
 fn back_over_layout(text: &str, floor: usize, at: usize, comments: &[Range<usize>]) -> usize {
     let mut at = at;
     loop {
         at = floor + text[floor..at].trim_end().len();
-        match comments.iter().find(|comment| comment.end == at) {
-            Some(comment) => at = comment.start,
-            None => return at,
+        if let Some(comment) = comments.iter().find(|comment| comment.end == at) {
+            at = comment.start;
+            continue;
         }
+        // A backslash continuing the line is layout too: one the trim stopped at, with a line
+        // break after it.
+        let continued = at > floor
+            && text.as_bytes()[at - 1] == b'\\'
+            && matches!(text.as_bytes().get(at), Some(b'\n' | b'\r'));
+        if !continued {
+            return at;
+        }
+        at -= 1;
     }
 }
 
@@ -3295,14 +3350,20 @@ mod tests {
     #[test]
     fn a_value_continued_from_the_line_before_keeps_its_lines() {
         // After a backslash the value's indentation says nothing of depth, so where the
-        // template writes it on the line of `=`, its later lines stay as they were.
+        // template writes it on the line of `=`, as where the code before it changes, its later
+        // lines stay as they were.
         let text = "expected = \\\n    [('a', 'b')] + \\\n    more\n";
         assert_eq!(
-            ok("$x = $y", "$x = $y", text),
-            "expected = [('a', 'b')] + \\\n    more\n"
+            ok("$x = $y", "$x: object = $y", text),
+            "expected: object = [('a', 'b')] + \\\n    more\n"
         );
         let text = "x = \\\n    [1,\n     2]\n";
-        assert_eq!(ok("$x = $y", "$x = $y", text), "x = [1,\n     2]\n");
+        assert_eq!(
+            ok("$x = $y", "$x: object = $y", text),
+            "x: object = [1,\n     2]\n"
+        );
+        // Where it does not, the continuation is the file's, and stays.
+        assert_eq!(ok("$x = $y", "$x = $y", text), text);
     }
 
     #[test]
@@ -3375,6 +3436,9 @@ mod tests {
             ok("f($a, 3)", "g($a,  # now\n  4)", "f(x,\n  3)\n"),
             "g(x,  # now\n  4)\n"
         );
+        // A comma after the match is outside it, and is never read as one beside a hole.
+        assert_eq!(ok("$a + $b", "$a + $b", "f(n + 1, 2)\n"), "f(n + 1, 2)\n");
+        assert_eq!(ok("$a + $b", "$a - $b", "f(n + 1, 2)\n"), "f(n - 1, 2)\n");
         // Where the file has no item beside the capture, the template's layout stands.
         assert_eq!(
             ok("f($a)", "f($a, 4)", "f(\n    x\n)\n"),
@@ -3414,6 +3478,57 @@ mod tests {
                 "from m import a, b\n"
             ),
             "from k import a, b\n"
+        );
+    }
+
+    #[test]
+    fn a_line_continued_by_a_backslash_stays_continued() {
+        // Between two holes outside a bracket, where the code between is the same.
+        assert_eq!(
+            ok("$x[$i]", "$x[$i]", "b = bbbbb \\\n    [ccc]\n"),
+            "b = bbbbb \\\n    [ccc]\n"
+        );
+        assert_eq!(
+            ok("$a + $b", "$a + $b", "x = aaa \\\n    + bbb\n"),
+            "x = aaa \\\n    + bbb\n"
+        );
+        assert_eq!(
+            ok("$f.$g($a)", "$f.$g($a)", "x = obj \\\n    .meth(1)\n"),
+            "x = obj \\\n    .meth(1)\n"
+        );
+        // A gap that ends with the continuation, after the operator.
+        assert_eq!(
+            ok("$a + $b", "$a + $b", "x = aaa + \\\nbbb\n"),
+            "x = aaa + \\\nbbb\n"
+        );
+        assert_eq!(
+            ok("$a + $b", "$a + $b", "x = aaa \\\r\n    + bbb\r\n"),
+            "x = aaa \\\r\n    + bbb\r\n"
+        );
+        // At a bracket's edge, where it is layout.
+        assert_eq!(
+            ok("$x[$i]", "$x[$i]", "b = bbbbb[\n    ccc \\\n]\n"),
+            "b = bbbbb[\n    ccc \\\n]\n"
+        );
+        // Inside a bracket round the whole match, a line break between holes stands too; where
+        // the rewrite takes that bracket away, it would end the statement, so the template's
+        // layout stands.
+        assert_eq!(
+            ok("$a + $b", "$a + $b", "x = (\n    a + b +\n    c\n)\n"),
+            "x = (\n    a + b +\n    c\n)\n"
+        );
+        assert_eq!(
+            ok("f($a + $b)", "$a + $b", "x = f(a +\n      b)\n"),
+            "x = a + b\n"
+        );
+        // Reordered, or with other code between, the template's layout stands.
+        assert_eq!(
+            ok("$a + $b", "$b + $a", "x = aaa \\\n    + bbb\n"),
+            "x = bbb + aaa\n"
+        );
+        assert_eq!(
+            ok("$a + $b", "$a - $b", "x = aaa \\\n    + bbb\n"),
+            "x = aaa - bbb\n"
         );
     }
 

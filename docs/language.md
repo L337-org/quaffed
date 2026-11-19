@@ -869,7 +869,11 @@ exactly as written, the brackets that only wrap it included; everything else com
 template, exactly as written, its comments included.  Layout the template does not decide - line
 breaks and comments inside a bracket, where they mean nothing - is the file's: `$args...` keeps
 everything between the arguments it captured, and `$a, $b` keep the line break between the two
-arguments where the template's `, ` stands, but not when the rewrite reorders them.  So does a
+arguments where the template's `, ` stands, but not when the rewrite reorders them.  The same
+goes for two holes in one expression outside a bracket, where a line break can only be one a
+backslash continues, or one a bracket round the whole match makes meaningless: ``replace
+`$a + $b` with `$a + $b` expect any`` over `x = aaa \` then `+ bbb` on the next line keeps the
+continuation, unless the rewrite takes away the bracket that made the line break safe.  So does a
 hole beside an item the template writes, where the file has an item there: ``replace
 `f($a..., 3)` with `f($a..., 4)` expect 1`` over a call written one argument to a line changes
 only the last argument's line.  Between two statement holes the template writes one after the

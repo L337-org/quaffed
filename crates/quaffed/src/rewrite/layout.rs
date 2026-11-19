@@ -541,8 +541,8 @@ fn edges(before: &Before<'_>, bracket: &Bracket) -> Edges {
     }
 }
 
-/// Forward from `at` in `text`, no further than `ceiling`, over whitespace and comments: where
-/// the code after them starts.
+/// Forward from `at` in `text`, no further than `ceiling`, over whitespace, comments and
+/// backslashes continuing a line: where the code after them starts.
 pub(super) fn forward_over_layout(
     text: &str,
     at: usize,
@@ -553,8 +553,17 @@ pub(super) fn forward_over_layout(
     loop {
         let rest = &text[at..ceiling];
         at += rest.len() - rest.trim_start().len();
-        match comments.iter().find(|comment| comment.start == at) {
-            Some(comment) => at = comment.end,
+        if let Some(comment) = comments.iter().find(|comment| comment.start == at) {
+            at = comment.end;
+            continue;
+        }
+        // A backslash continuing the line is layout too.
+        let rest = &text[at..ceiling];
+        match ["\\\r\n", "\\\n", "\\\r"]
+            .iter()
+            .find(|continuation| rest.starts_with(**continuation))
+        {
+            Some(continuation) => at += continuation.len(),
             None => return at,
         }
     }

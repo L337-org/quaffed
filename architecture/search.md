@@ -297,7 +297,10 @@ the path or argument it concerns, and says what to do where there is something t
   matcher, put where the template's sites say (`quaffed_python::compile_rewrite`), each capture
   widened over brackets that only wrap it (`whole_brackets`); layout inside a bracket is the file's
   where the template writes none, at a bracket's edges (`rewrite/layout.rs`), between two holes
-  written next to each other over the same code (`Job::gaps`), and round the comma between a hole
+  written next to each other over the same code (`Job::gaps`), which holds too between two holes
+  outside a bracket within one logical line - every line break in either gap continued by a
+  backslash, or the gap inside a bracket round the whole match or the template's own - and round
+  the comma between a hole
   and an item the template writes beside it, where the file has a comma there (`Job::item_gaps`);
   between two statement holes written one after the other, the file's blank lines stand, before
   the template's own line break and indentation, since the statements may move to another depth;
