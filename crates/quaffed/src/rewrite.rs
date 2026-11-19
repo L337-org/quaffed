@@ -1127,6 +1127,13 @@ fn line_end(text: &str, offset: usize) -> usize {
         .map_or(text.len(), |at| offset + at)
 }
 
+/// Whether a match's statements start the block they are in, and whether they end it.
+#[derive(Clone, Copy)]
+struct BlockEdges {
+    starts: bool,
+    ends: bool,
+}
+
 /// What one match of a rewrite with no code takes from the file, given what the matches before
 /// it in the same file took.
 struct Deletion<'a, 'text> {
@@ -1185,7 +1192,7 @@ impl Deletion<'_, '_> {
             });
             if alone_before && alone_after {
                 let lines = line_start..(end + 1).min(text.len());
-                return (self.whole_lines(lines), true);
+                return (self.whole_lines(lines, self.block_edges(&matched)), true);
             }
         }
         let before = self.before(found, matched.start, floor, whole_lines);
@@ -1259,7 +1266,11 @@ impl Deletion<'_, '_> {
     /// gone; and the blank lines either side that would otherwise be left as a gap of their own.
     /// Between code, where blank lines stand both before and after, the narrower run goes, so the
     /// wider gap is left; at the start or the end of the file, the blank lines at that edge go.
-    fn whole_lines(&self, lines: Range<usize>) -> Range<usize> {
+    /// `edges` says whether the match starts its block and whether it ends it: a match that
+    /// starts one takes the blank lines after it, which would otherwise open the block, and one
+    /// that ends one takes those before it, which would otherwise close it, leaving those after,
+    /// which part the block from what follows.
+    fn whole_lines(&self, lines: Range<usize>, edges: BlockEdges) -> Range<usize> {
         let text = self.text;
         let indent = |at: usize| {
             let line = &text[at..line_end(text, at)];
@@ -1301,15 +1312,62 @@ impl Deletion<'_, '_> {
         }
         // At the start or the end of the file, the blank lines at that edge go too, so that none
         // are left there.  Between code, the gap that is left is the wider of the two, so that the
-        // file's own spacing stands: deleting a class's last method leaves the class's gap.
+        // file's own spacing stands: deleting a class's last method leaves the class's gap.  At
+        // a block's edge, the blank lines on its inner side go, unless a comment stands at the
+        // edge, between the match and the block's header or its end: the comment is then the
+        // edge, and the gap is between it and code.
+        // A comment indented less than the match stands outside its block, so is no edge of it.
+        let comment_at = |at: usize| {
+            text[at..line_end(text, at)].trim_start().starts_with('#') && indent(at) >= base
+        };
+        let starts = edges.starts
+            && !(start > 0 && comment_at(text[..start - 1].rfind('\n').map_or(0, |at| at + 1)));
+        let ends = edges.ends && !(past < text.len() && comment_at(past));
+        let narrower_before = before > 0 && after > 0 && before < after;
         if start == 0 || past == text.len() {
             start..past
-        } else if before > 0 && after > 0 && before < after {
+        } else if starts && !ends {
+            lines.start..past
+        } else if ends && !starts || narrower_before {
             start..end
         } else if before > 0 && after > 0 {
             lines.start..past
         } else {
             lines.start..end
+        }
+    }
+
+    /// Whether the statements `matched` holds start the block they are in and whether they end
+    /// it, from the list of statements the adapter marks; neither where it holds no statement.
+    fn block_edges(&self, matched: &Range<usize>) -> BlockEdges {
+        let arena = self.arena;
+        let none = BlockEdges {
+            starts: false,
+            ends: false,
+        };
+        // Pre-order, so the first node in a list is the outermost statement the match starts
+        // with; the rest of the match's statements are its siblings in the same list.
+        let Some(first) = arena
+            .nodes_within(matched.clone())
+            .find(|&node| arena.list(node).is_some())
+        else {
+            return none;
+        };
+        let list = arena.list(first);
+        let Some(&parent) = self.parents.get(&first) else {
+            return none;
+        };
+        let mut siblings = arena
+            .children(parent)
+            .filter(|&child| arena.list(child) == list)
+            .map(|child| arena.range(child));
+        let Some(opening) = siblings.next() else {
+            return none;
+        };
+        let closing = siblings.last().unwrap_or_else(|| opening.clone());
+        BlockEdges {
+            starts: opening.start >= matched.start,
+            ends: closing.end <= matched.end,
         }
     }
 
@@ -1658,7 +1716,10 @@ fn render(
         base,
     };
     let marked = job.marked()?;
-    let gaps = job.gaps(&marked);
+    let gaps = Gaps {
+        between: job.gaps(&marked),
+        items: job.item_gaps(&marked),
+    };
     let mut escaped = Vec::new();
     let (written, code) = job.fill(&marked, &gaps, None, &mut escaped)?;
     if rewrite.sites().iter().any(|site| site.in_literal)
@@ -1681,7 +1742,13 @@ fn render(
     Ok(Rendered {
         text: written,
         code,
-        carried: gaps.into_iter().flatten().collect(),
+        carried: gaps
+            .between
+            .into_iter()
+            .flatten()
+            .chain(gaps.items.into_iter().map(|(_, gap)| gap))
+            .map(|gap| gap.range)
+            .collect(),
         escaped,
     })
 }
@@ -1734,6 +1801,7 @@ impl Job<'_> {
         }
         with_markers.push_str(&template[copied..]);
         let with_markers = self.laid_out(with_markers, &markers)?;
+        let with_markers = self.rebracketed(with_markers, &markers);
         let indented = indent_template(
             &with_markers,
             self.base,
@@ -1810,10 +1878,141 @@ impl Job<'_> {
         Ok(level(&template, &in_order(changes)).text)
     }
 
-    /// For each site in order, the file's layout to write before it in place of the template's:
-    /// where the site and the one before it are both code, next to each other inside a bracket
-    /// in the template and in the file, with the same code between them.
-    fn gaps(&self, marked: &Marked) -> Vec<Option<Range<usize>>> {
+    /// `template`, with each site a marker from `markers`, given the brackets of the match's own
+    /// that the template cannot write: a bracket round some of a node's children that is no node
+    /// of its own, as round the names a Python `from` import takes, which a pattern ignores and
+    /// so a template cannot say what becomes of.  Where the template has a node of the same kind
+    /// holding the same holes, its children in the places the bracket's stood - after as many
+    /// before it, and before as many after it, as in the file - are put in the file's bracket,
+    /// unless a bracket of the node's own holds them already, as a subscript's or a call's does,
+    /// so that the layout inside it can be carried as any bracket's is.  A template that does
+    /// not parse with its markers is left as it is.
+    fn rebracketed(&self, template: String, markers: &[String]) -> String {
+        let found = &self.found.range;
+        let own: Vec<&Bracket> = self
+            .lexed
+            .brackets
+            .iter()
+            .filter(|b| found.start <= b.open && b.close < found.end)
+            .filter(|b| {
+                !self
+                    .found
+                    .captures
+                    .iter()
+                    .any(|c| c.start <= b.open && b.close < c.end)
+            })
+            .collect();
+        if own.is_empty() {
+            return template;
+        }
+        let Ok(parsed) = parse_module(&template) else {
+            return template;
+        };
+        let lexed = lex(&template);
+        let wraps: Vec<Wrap<'_>> = own
+            .into_iter()
+            .filter_map(|bracket| self.wrap(bracket, &template, &parsed, &lexed, markers))
+            .collect();
+        if wraps.is_empty() {
+            return template;
+        }
+        wrapped(&template, wraps)
+    }
+
+    /// Where the template needs `bracket`, the match's own, round a node's children, as
+    /// [`rebracketed`](Job::rebracketed) says: the stretch to wrap, and the bracket's opening
+    /// and closing; `None` where it needs none.
+    fn wrap(
+        &self,
+        bracket: &Bracket,
+        template: &str,
+        parsed: &Arena<'_>,
+        lexed: &Lexed,
+        markers: &[String],
+    ) -> Option<Wrap<'_>> {
+        let arena = self.arena;
+        let found = &self.found.range;
+        let sites = self.rewrite.sites();
+        let inner = bracket.open + 1..bracket.close;
+        // The node the bracket's contents are children of, the deepest holding it all.
+        let parent = arena
+            .nodes_within(found.clone())
+            .filter(|&node| {
+                let range = arena.range(node);
+                range.start <= bracket.open && bracket.close < range.end
+            })
+            .last()?;
+        // Which of the parent's children the bracket holds, by position: how many stand before
+        // it and how many after, so that the template's children in the same places are found
+        // however many a sequence hole writes.
+        let inside: Vec<bool> = arena
+            .children(parent)
+            .map(|child| {
+                let range = arena.range(child);
+                inner.start <= range.start && range.end <= inner.end
+            })
+            .collect();
+        let before = inside.iter().position(|&held| held)?;
+        let after = inside.iter().rev().position(|&held| held)?;
+        // Where the template writes each hole the bracket holds.
+        let at: Option<Vec<Range<usize>>> = self
+            .names
+            .iter()
+            .zip(&self.found.captures)
+            .filter(|(_, c)| !c.is_empty() && inner.start <= c.start && c.end <= inner.end)
+            .map(|(name, _)| {
+                let i = sites
+                    .iter()
+                    .position(|site| site.name == *name && !site.in_literal)?;
+                let start = template.find(&markers[i])?;
+                Some(start..start + markers[i].len())
+            })
+            .collect();
+        let at = at.filter(|at| !at.is_empty())?;
+        let counterpart = parsed
+            .nodes()
+            .filter(|&node| parsed.kind(node) == arena.kind(parent))
+            .filter(|&node| {
+                let range = parsed.range(node);
+                at.iter()
+                    .all(|a| range.start <= a.start && a.end <= range.end)
+            })
+            .last()?;
+        let children: Vec<Range<usize>> = parsed
+            .children(counterpart)
+            .map(|child| parsed.range(child))
+            .collect();
+        let held = children.get(before..children.len().checked_sub(after)?)?;
+        let (first, last) = (held.first()?, held.last()?);
+        let span = first.start..last.end;
+        // A bracket of the node's own - inside it, in none of its children - round them.
+        let range = parsed.range(counterpart);
+        let already = lexed.brackets.iter().any(|b| {
+            range.start <= b.open
+                && b.close < range.end
+                && b.open < span.start
+                && span.end <= b.close
+                && !parsed.children(counterpart).any(|child| {
+                    let child = parsed.range(child);
+                    child.start <= b.open && b.close < child.end
+                })
+        });
+        let text = self.text;
+        (!already).then(|| {
+            (
+                span,
+                &text[bracket.open..=bracket.open],
+                &text[bracket.close..=bracket.close],
+            )
+        })
+    }
+    /// For each site in order, the file's layout to write before it in place of the template's,
+    /// where the site and the one before it are both code, next to each other in the template
+    /// and in the file: inside a bracket, with the same code between them, the file's layout
+    /// between them; and between statements, with no code or comment between them, the file's
+    /// blank lines, before the template's own line break and indentation, since the statements
+    /// may be written at another depth.
+    fn gaps(&self, marked: &Marked) -> Vec<Option<Gap>> {
         let sites = self.rewrite.sites();
         let in_bracket = |brackets: &[Bracket], gap: &Range<usize>| {
             brackets
@@ -1852,12 +2051,118 @@ impl Job<'_> {
                     code_tokens(&marked.indented[template_gap.clone()])
                         == code_tokens(&self.text[file_gap.clone()])
                 };
-                (!between_others
-                    && !template_comment
-                    && in_bracket(&marked.own.brackets, &template_gap)
-                    && in_bracket(&self.lexed.brackets, &file_gap)
-                    && same_code())
-                .then_some(file_gap)
+                if between_others || template_comment {
+                    return None;
+                }
+                let in_template = &marked.indented[template_gap.clone()];
+                let in_file = &self.text[file_gap.clone()];
+                match (
+                    in_bracket(&marked.own.brackets, &template_gap),
+                    in_bracket(&self.lexed.brackets, &file_gap),
+                ) {
+                    (true, true) => same_code().then(|| Gap {
+                        text: in_file.to_owned(),
+                        range: file_gap,
+                    }),
+                    (false, false) => {
+                        let file_comment = self
+                            .lexed
+                            .comments
+                            .iter()
+                            .any(|c| file_gap.start <= c.start && c.end <= file_gap.end);
+                        // Each gap runs from the end of one statement's line, through any blank
+                        // lines, to the next statement's indentation.
+                        let (Some(file_last), Some(template_first)) =
+                            (in_file.rfind('\n'), in_template.find('\n'))
+                        else {
+                            return None;
+                        };
+                        // Blank lines the template writes there are layout of its own, which
+                        // stands.
+                        let template_blank = in_template.rfind('\n') != Some(template_first);
+                        (!file_comment
+                            && !template_blank
+                            && code_tokens(in_template).is_empty()
+                            && code_tokens(in_file).is_empty())
+                        .then(|| Gap {
+                            text: format!(
+                                "{}{}",
+                                &in_file[..=file_last],
+                                &in_template[template_first + 1..]
+                            ),
+                            range: file_gap,
+                        })
+                    }
+                    _ => None,
+                }
+            })
+            .collect()
+    }
+
+    /// Stretches of the template, in order, each with the file's layout to write in its place:
+    /// the comma, and the layout round it, between a code site inside a bracket and an item the
+    /// template writes beside it, where the file has a comma in the same place, between what the
+    /// site captured and the code beside it.  The template's item stands where the file's did,
+    /// so the line breaks round it are the file's.  Where the template has a comment there, or
+    /// writes a site beside the site, [`gaps`](Job::gaps) decides instead.
+    fn item_gaps(&self, marked: &Marked) -> Vec<(Range<usize>, Gap)> {
+        let template = marked.indented.as_str();
+        let in_bracket = |brackets: &[Bracket], gap: &Range<usize>| {
+            brackets
+                .iter()
+                .any(|b| b.open < gap.start && gap.end <= b.close)
+        };
+        let markers: Vec<Range<usize>> = marked
+            .at
+            .iter()
+            .map(|&(place, i)| place..place + marked.markers[i].len())
+            .collect();
+        let within = &self.found.range;
+        let mut items = Vec::new();
+        for (marker, &(_, i)) in markers.iter().zip(&marked.at) {
+            let site = &self.rewrite.sites()[i];
+            if site.in_literal {
+                continue;
+            }
+            let capture = self.capture(&site.name);
+            let after = (
+                comma_after(template, marker.end, template.len(), &[]),
+                comma_after(self.text, capture.end, within.end, &self.lexed.comments),
+            );
+            if let (Some(stretch), Some(file)) = after
+                && !markers.iter().any(|m| m.start == stretch.end)
+            {
+                items.push((stretch, file));
+            }
+            let before = (
+                comma_before(template, marker.start, 0, &[]),
+                comma_before(self.text, capture.start, within.start, &self.lexed.comments),
+            );
+            if let (Some(stretch), Some(file)) = before
+                && !markers.iter().any(|m| m.end == stretch.start)
+            {
+                items.push((stretch, file));
+            }
+        }
+        items.retain(|(stretch, file)| {
+            in_bracket(&marked.own.brackets, stretch)
+                && in_bracket(&self.lexed.brackets, file)
+                && !self
+                    .found
+                    .captures
+                    .iter()
+                    .any(|c| !c.is_empty() && c.start < file.end && file.start < c.end)
+        });
+        items.sort_unstable_by_key(|(stretch, _)| stretch.start);
+        items.dedup_by_key(|(stretch, _)| stretch.start);
+        items
+            .into_iter()
+            .map(|(stretch, file)| {
+                let gap = Gap {
+                    text: self.text[file.clone()].to_owned(),
+                    range: file,
+                };
+                (stretch, gap)
             })
             .collect()
     }
@@ -1868,7 +2173,7 @@ impl Job<'_> {
     fn fill(
         &self,
         marked: &Marked,
-        gaps: &[Option<Range<usize>>],
+        gaps: &Gaps,
         filler: Option<&str>,
         escaped: &mut Vec<String>,
     ) -> Result<(String, Vec<CodeSite>), String> {
@@ -1877,9 +2182,9 @@ impl Job<'_> {
         let mut copied = 0;
         for (k, &(place, i)) in marked.at.iter().enumerate() {
             let site = &self.rewrite.sites()[i];
-            match &gaps[k] {
-                Some(gap) => out.push_str(&self.text[gap.clone()]),
-                None => out.push_str(&marked.indented[copied..place]),
+            match &gaps.between[k] {
+                Some(gap) => out.push_str(&gap.text),
+                None => gaps.copy(&mut out, &marked.indented, copied..place),
             }
             let range = self.capture(&site.name);
             let value = if !site.in_literal {
@@ -1935,8 +2240,38 @@ impl Job<'_> {
             out.push_str(&value);
             copied = place + marked.markers[i].len();
         }
-        out.push_str(&marked.indented[copied..]);
+        gaps.copy(&mut out, &marked.indented, copied..marked.indented.len());
         Ok((out, code))
+    }
+}
+
+/// The file's layout written between two sites in place of the template's: the stretch of the
+/// file it comes from, and what is written.
+struct Gap {
+    range: Range<usize>,
+    text: String,
+}
+
+/// The file's layout written in place of the template's: between each site and the one before
+/// it, and, as stretches of the template, between a site and an item beside it.
+struct Gaps {
+    between: Vec<Option<Gap>>,
+    items: Vec<(Range<usize>, Gap)>,
+}
+
+impl Gaps {
+    /// `range` of the template onto `out`, with the file's layout in place of each stretch of it
+    /// in `items`.
+    fn copy(&self, out: &mut String, template: &str, range: Range<usize>) {
+        let mut copied = range.start;
+        for (stretch, gap) in &self.items {
+            if range.start <= stretch.start && stretch.end <= range.end {
+                out.push_str(&template[copied..stretch.start]);
+                out.push_str(&gap.text);
+                copied = stretch.end;
+            }
+        }
+        out.push_str(&template[copied..range.end]);
     }
 }
 
@@ -1953,6 +2288,71 @@ struct Rendered {
 /// Where a code site was written in a rewrite, whether it is a sequence, the name it writes, and
 /// its index in the template's sites.
 type CodeSite = (Range<usize>, bool, String, usize);
+
+/// From `at` in `text`, the layout, one comma and the layout after it, up to the code that
+/// follows, which must start before `ceiling` and be neither a closing bracket nor a comment:
+/// the separator between an item ending at `at` and the next.  Comments are layout only where
+/// listed in `comments`.
+fn comma_after(
+    text: &str,
+    at: usize,
+    ceiling: usize,
+    comments: &[Range<usize>],
+) -> Option<Range<usize>> {
+    let comma = layout::forward_over_layout(text, at, ceiling, comments);
+    if text.as_bytes().get(comma) != Some(&b',') {
+        return None;
+    }
+    let next = layout::forward_over_layout(text, comma + 1, ceiling, comments);
+    (next < ceiling && !matches!(text.as_bytes()[next], b')' | b']' | b'}' | b'#' | b','))
+        .then_some(at..next)
+}
+
+/// Back from `at` in `text`, the layout, one comma and the layout before it, back to the code
+/// before, which must end after `floor` and be neither an opening bracket nor another comma: the
+/// separator between the item before and one starting at `at`.  Comments are layout only where
+/// listed in `comments`.
+fn comma_before(
+    text: &str,
+    at: usize,
+    floor: usize,
+    comments: &[Range<usize>],
+) -> Option<Range<usize>> {
+    let after_comma = back_over_layout(text, floor, at, comments);
+    if after_comma <= floor || text.as_bytes()[after_comma - 1] != b',' {
+        return None;
+    }
+    let previous = back_over_layout(text, floor, after_comma - 1, comments);
+    (previous > floor && !matches!(text.as_bytes()[previous - 1], b'(' | b'[' | b'{' | b','))
+        .then_some(previous..at)
+}
+
+/// `template` with each of `wraps` put in its brackets.
+fn wrapped(template: &str, mut wraps: Vec<Wrap<'_>>) -> String {
+    wraps.sort_unstable_by_key(|(span, _, _)| span.start);
+    wraps.dedup_by_key(|(span, _, _)| span.start);
+    let mut out = String::with_capacity(template.len() + 2 * wraps.len());
+    let mut copied = 0;
+    // At one offset, closings come before openings, so that stretches side by side stay apart;
+    // of two closings the inner, which started later, comes first, and of two openings the
+    // outer, which ends later.
+    let mut cuts: Vec<(usize, bool, std::cmp::Reverse<usize>, &str)> = Vec::new();
+    for (span, open, close) in &wraps {
+        cuts.push((span.start, true, std::cmp::Reverse(span.end), open));
+        cuts.push((span.end, false, std::cmp::Reverse(span.start), close));
+    }
+    cuts.sort_by_key(|&(at, opening, order, _)| (at, opening, order));
+    for (at, _, _, bracket) in cuts {
+        out.push_str(&template[copied..at]);
+        out.push_str(bracket);
+        copied = at;
+    }
+    out.push_str(&template[copied..]);
+    out
+}
+
+/// A stretch of a template to put in brackets, and the brackets' opening and closing.
+type Wrap<'a> = (Range<usize>, &'a str, &'a str);
 
 /// A stem for site markers that neither the template nor the file contains.
 fn marker_stem(template: &str, text: &str) -> String {
@@ -2258,6 +2658,51 @@ mod tests {
         );
         // With blank lines on one side only, they stay.
         assert_eq!(deleted("b()", "a()\n\nb()\nc()\n"), "a()\n\nc()\n");
+    }
+
+    #[test]
+    fn a_deletion_at_a_blocks_edge_takes_the_blank_lines_on_its_inner_side() {
+        // The first statement takes the blank lines after it, which would open the block.
+        assert_eq!(
+            deleted("x = 1", "def f():\n    x = 1\n\n    y = 2\n"),
+            "def f():\n    y = 2\n"
+        );
+        // The last takes those before it, and leaves those after, which part the block from
+        // what follows.
+        assert_eq!(
+            deleted("x = 1", "def f():\n    a = 0\n\n    x = 1\n\n\nz = 3\n"),
+            "def f():\n    a = 0\n\n\nz = 3\n"
+        );
+        assert_eq!(
+            deleted("x = 1", "if c:\n    a = 0\n\n    x = 1\nelse:\n    b = 1\n"),
+            "if c:\n    a = 0\nelse:\n    b = 1\n"
+        );
+        // A run of statements is judged by its first and its last.
+        assert_eq!(
+            deleted(
+                "x = 1\ny = 2",
+                "def f():\n    x = 1\n    y = 2\n\n    z = 3\n"
+            ),
+            "def f():\n    z = 3\n"
+        );
+        // A comment at the block's edge is the edge, so the rule between code stands.
+        assert_eq!(
+            deleted("x = 1", "def f():\n    # why\n    x = 1\n\n    y = 2\n"),
+            "def f():\n    # why\n\n    y = 2\n"
+        );
+        // A comment indented less than the match is outside the block, so is no edge of it.
+        assert_eq!(
+            deleted(
+                "x = 1",
+                "def f():\n    a = 0\n\n    x = 1\n# end of f\nz = 2\n"
+            ),
+            "def f():\n    a = 0\n# end of f\nz = 2\n"
+        );
+        // Inside the block, the rule between code stands.
+        assert_eq!(
+            deleted("x = 1", "def f():\n    a = 0\n\n    x = 1\n\n    y = 2\n"),
+            "def f():\n    a = 0\n\n    y = 2\n"
+        );
     }
 
     #[test]
@@ -2621,6 +3066,18 @@ mod tests {
     }
 
     #[test]
+    fn a_brackets_layout_goes_to_the_outermost_of_brackets_nested_round_the_same_holes() {
+        assert_eq!(
+            ok("f($x)", "g(h($x))", "f(\n    long_argument,\n)\n"),
+            "g(\n    h(long_argument),\n)\n"
+        );
+        assert_eq!(
+            ok("f($x, $y)", "g(h(k($x, $y)))", "f(a,\n  b,)\n"),
+            "g(h(k(a,\n  b)),)\n"
+        );
+    }
+
+    #[test]
     fn a_trailing_comma_that_could_go_to_more_than_one_bracket_is_refused() {
         // Two brackets in the rewrite hold no hole, where the match has one.
         let why = replaced("f([1], $a)", "g([1], [2], $a)", "f([1,], x)\n")
@@ -2894,6 +3351,109 @@ mod tests {
                 "fmt(x, \"%s:%s\", y)\n"
             ),
             "fmt(x, \"%s: %s\", y)\n"
+        );
+    }
+
+    #[test]
+    fn layout_between_a_hole_and_an_item_beside_it_is_the_files() {
+        let text = "f(\n    1,\n    2,\n    3,\n)\n";
+        assert_eq!(
+            ok("f($a..., 3)", "f($a..., 4)", text),
+            "f(\n    1,\n    2,\n    4,\n)\n"
+        );
+        assert_eq!(
+            ok("f(1, $a...)", "f(0, $a...)", text),
+            "f(\n    0,\n    2,\n    3,\n)\n"
+        );
+        // With a comment there, the file's stands with it.
+        assert_eq!(
+            ok("f($a, 3)", "g($a, 4)", "f(x,  # why\n  3)\n"),
+            "g(x,  # why\n  4)\n"
+        );
+        // Where the template writes a comment there, its layout stands.
+        assert_eq!(
+            ok("f($a, 3)", "g($a,  # now\n  4)", "f(x,\n  3)\n"),
+            "g(x,  # now\n  4)\n"
+        );
+        // Where the file has no item beside the capture, the template's layout stands.
+        assert_eq!(
+            ok("f($a)", "f($a, 4)", "f(\n    x\n)\n"),
+            "f(\n    x, 4\n)\n"
+        );
+    }
+
+    #[test]
+    fn a_bracket_a_pattern_cannot_write_is_kept_with_its_layout() {
+        let text = "from m import (\n    a,\n    e,\n    b,\n)\n";
+        assert_eq!(
+            ok("from m import $n...", "from k import $n...", text),
+            "from k import (\n    a,\n    e,\n    b,\n)\n"
+        );
+        assert_eq!(
+            ok(
+                "from m import $a..., e, $b...",
+                "from m import $a..., g, $b...",
+                text
+            ),
+            "from m import (\n    a,\n    g,\n    b,\n)\n"
+        );
+        // A tuple's brackets are the tuple's, and stay where the template writes the tuple.
+        assert_eq!(
+            ok("x = $a, $b", "y = $a, $b", "x = (\n    1,\n    2,\n)\n"),
+            "y = (\n    1,\n    2,\n)\n"
+        );
+        // A subscript's brackets are its own: the template's stand, and none is added round it.
+        assert_eq!(ok("a[$i]", "b[$i]", "a[i]\n"), "b[i]\n");
+        assert_eq!(ok("$x[$i]", "$x[$i]", "a[i]\n"), "a[i]\n");
+        assert_eq!(ok("f(a[$i])", "g(b[$i])", "f(a[i])\n"), "g(b[i])\n");
+        // Without one in the file, none is added.
+        assert_eq!(
+            ok(
+                "from m import $n...",
+                "from k import $n...",
+                "from m import a, b\n"
+            ),
+            "from k import a, b\n"
+        );
+    }
+
+    #[test]
+    fn blank_lines_between_two_statement_holes_are_the_files() {
+        let text = "class C:\n    def f(self):\n        pass\n\n    def g(self):\n        pass\n";
+        assert_eq!(
+            ok(
+                "class C:\n    $a...\n    $b...",
+                "class D:\n    $a...\n    $b...",
+                text
+            ),
+            "class D:\n    def f(self):\n        pass\n\n    def g(self):\n        pass\n"
+        );
+        // Moved to another depth, the blank lines stand and the template's indentation is used.
+        assert_eq!(
+            ok(
+                "def f():\n    $a...\n    $b...",
+                "def f():\n    if c:\n        $a...\n        $b...",
+                "def f():\n    x = 1\n\n\n    y = 2\n"
+            ),
+            "def f():\n    if c:\n        x = 1\n\n\n        y = 2\n"
+        );
+        // Where the template writes a blank line there, its layout stands.
+        assert_eq!(
+            ok(
+                "class C:\n    $a\n    $b",
+                "class D:\n    $a\n\n    $b",
+                "class C:\n    x = 1\n\n    y = 2\n"
+            ),
+            "class D:\n    x = 1\n\n    y = 2\n"
+        );
+        // Where code stands between them in the template, its layout stands.
+        assert_eq!(
+            ok(
+                "class C:\n    $a...\n    $b...",
+                "class D:\n    $a...\n    z = 0\n    $b...",
+                text
+            ),
+            "class D:\n    def f(self):\n        pass\n    z = 0\n    def g(self):\n        pass\n"
         );
     }
 

@@ -170,6 +170,16 @@ const CASES: &[Case] = &[
     // change what lies next to each match, and nothing else.
     Case {
         operation: "delete",
+        exercises: "statements at a block's start and end, beside blank lines",
+        find: r#"find `super().setUp()` in "cpython/Lib/test/test_zoneinfo/test_zoneinfo.py""#,
+        edit: r#"delete `super().setUp()` in "cpython/Lib/test/test_zoneinfo/test_zoneinfo.py""#,
+        languages: &["Python"],
+        outcome: Outcome::Edits,
+        parsed_only: true,
+        deletes: true,
+    },
+    Case {
+        operation: "delete",
         exercises: "statements alone on their lines, the comments inside them included",
         find: "find `__all__ = $x`",
         edit: "delete `__all__ = $x`",
@@ -370,6 +380,9 @@ const IDENTITIES: &[&str] = &[
     "$x = $y",
     "return $x",
     "$f($args...)",
+    // A sequence capture beside an item the template writes, and a bracket no node owns.
+    "$f($args..., None)",
+    "from $m import $names...",
 ];
 
 /// Renames there and back: a pattern, the name in it renamed, the new name, and the pattern

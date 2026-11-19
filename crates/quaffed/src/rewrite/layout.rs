@@ -298,6 +298,14 @@ fn edits(before: &Before<'_>, after: &After<'_>) -> Result<Vec<Edit>, LayoutRefu
                 }
                 continue;
             }
+            // Where the match has one such bracket and the rewrite wraps what it held in more,
+            // each inside the one before, the outermost stands where the match's did, and holds
+            // the rest.
+            let outermost = (same == 1).then(|| enclosing_all(&counterparts)).flatten();
+            if let Some(partner) = outermost {
+                changes.extend(carrying.to(partner)?);
+                continue;
+            }
             if counterparts.len() != same {
                 if !edges.must_be_placed() {
                     continue;
@@ -567,6 +575,17 @@ fn own_brackets<'a>(before: &Before<'a>) -> Vec<Vec<&'a Bracket>> {
                 .collect()
         })
         .collect()
+}
+
+/// The one of `brackets` that holds all the others, if they are nested one inside the next.
+fn enclosing_all<'a>(brackets: &[&'a Bracket]) -> Option<&'a Bracket> {
+    let mut sorted = brackets.to_vec();
+    sorted.sort_unstable_by_key(|b| b.open);
+    sorted
+        .windows(2)
+        .all(|pair| pair[0].open < pair[1].open && pair[1].close < pair[0].close)
+        .then(|| sorted.first().copied())
+        .flatten()
 }
 
 /// Whether `bracket` stands wholly inside `range`.

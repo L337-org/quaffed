@@ -296,10 +296,19 @@ the path or argument it concerns, and says what to do where there is something t
   textual replace.  Each match is written over with its rewrite: what each hole captured, from the
   matcher, put where the template's sites say (`quaffed_python::compile_rewrite`), each capture
   widened over brackets that only wrap it (`whole_brackets`); layout inside a bracket is the file's
-  where the template writes none, at a bracket's edges (`rewrite/layout.rs`) and between two holes
-  written next to each other over the same code (`Job::gaps`); and a value written into a string is
-  escaped as Python's literal needs (`quaffed_python::escaped`), and questioned.  **What the user
-  did not write is derived, never guessed**: the indentation of the template's later lines and of
+  where the template writes none, at a bracket's edges (`rewrite/layout.rs`), between two holes
+  written next to each other over the same code (`Job::gaps`), and round the comma between a hole
+  and an item the template writes beside it, where the file has a comma there (`Job::item_gaps`);
+  between two statement holes written one after the other, the file's blank lines stand, before
+  the template's own line break and indentation, since the statements may move to another depth;
+  a bracket of the match's that no node owns, round some of a node's children, as round a Python
+  `from` import's names or a tuple, is put round the children in the same places, counted from
+  either end, of the template's node of that kind holding the same holes, unless a bracket of
+  that node's own holds them, as a subscript's does, before the template is filled
+  (`Job::rebracketed`), so that its layout is carried as any bracket's is; and a value written
+  into a string is escaped as
+  Python's literal needs (`quaffed_python::escaped`), and questioned.  **What the user did not
+  write is derived, never guessed**: the indentation of the template's later lines and of
   captured code moved to another depth, from the file's indent unit; the file's own line ending for
   the template's line breaks; and the trailing commas a pattern ignores.  **Statements that share
   a line are given lines of their own where they need them** (`src/rewrite/lines.rs`), where the
@@ -324,8 +333,10 @@ the path or argument it concerns, and says what to do where there is something t
   for, so the matcher and the edit agree on it (`ignored_by_matcher`); it is carried to the bracket
   in the rewrite that holds the same holes as its own, brackets paired from the lexer's
   (`quaffed_python::Lexed::brackets`), goes with its bracket where the rewrite has none that does,
-  and is refused where the rewrite has some but a different number from the match, or where the
-  comma would be a token where it lands, as a tuple's is.  A bracket inside what a hole matched is
+  goes to the outermost where the match has one and the rewrite has several nested one inside the
+  next, since the outermost stands where the match's did, and is refused where the rewrite has some
+  but a different number from the match otherwise, or where the comma would be a token where it
+  lands, as a tuple's is.  A bracket inside what a hole matched is
   the hole's, so a replace's unnamed holes are given names no script can spell (`name_every_hole`)
   and captured as named ones are.  **Matches nested in one another's holes are rewritten in
   levels**, the most deeply nested first, each level an ordinary rewrite of the text the one before
@@ -354,7 +365,9 @@ the path or argument it concerns, and says what to do where there is something t
   match takes what would otherwise be left as debris, and nothing else: its whole lines where it
   stands alone on them, with a trailing comment and the line break, the comment lines indented into
   a block it ends with, and of the blank lines either side, the narrower run, or those at the start
-  or end of the file (`Deletion::whole_lines`); or else one comma its parent node holds next to it,
+  or end of the file, or those on the inner side of a block's start or end, which the statement
+  lists the adapter marks tell (`Deletion::block_edges`), unless a comment stands at that edge
+  (`Deletion::whole_lines`); or else one comma its parent node holds next to it,
   across line breaks, or one semicolon on its own line (`Deletion`).  Asking the parent is what
   keeps a comma belonging to a neighbouring expression from being taken, and a comma in a comment,
   or with a comment between it and the match, is never taken.  A run of list items, each taking the

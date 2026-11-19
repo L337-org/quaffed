@@ -869,7 +869,13 @@ exactly as written, the brackets that only wrap it included; everything else com
 template, exactly as written, its comments included.  Layout the template does not decide - line
 breaks and comments inside a bracket, where they mean nothing - is the file's: `$args...` keeps
 everything between the arguments it captured, and `$a, $b` keep the line break between the two
-arguments where the template's `, ` stands, but not when the rewrite reorders them.
+arguments where the template's `, ` stands, but not when the rewrite reorders them.  So does a
+hole beside an item the template writes, where the file has an item there: ``replace
+`f($a..., 3)` with `f($a..., 4)` expect 1`` over a call written one argument to a line changes
+only the last argument's line.  Between two statement holes the template writes one after the
+other, the file's blank lines stand, before the template's own indentation: rewriting a class as
+`$a...` then `$b...` keeps the blank line between two methods.  Where the template writes a blank
+line there itself, its own layout stands instead.
 
 - **A name the pattern does not bind is an error**, exit 3, before any file is read: `$_`, `$...`,
   a typo, or a name the pattern spells as a sequence written as one node, or the other way round.
@@ -997,9 +1003,18 @@ arguments where the template's `, ` stands, but not when the rewrite reorders th
   `f($a, g($b))` with `h($a, k($b))` expect 1`` over `f(x, g(y,))` leaves `h(x, k(y,))`.  Brackets
   holding no hole correspond by their order.  Where the rewrite has no bracket holding what the
   comma's did, it deleted or split that bracket, and the comma goes with it: ``replace `wrap($x)`
-  with `$x` expect 1`` over `wrap(a,)` leaves `a`.  A bracket a hole matched is the hole's, written
-  back with its own comma or dropped with it, `$_` and `$...` included, and one the rewrite leaves
-  empty has nothing for a comma to trail.
+  with `$x` expect 1`` over `wrap(a,)` leaves `a`.  Where the match has one bracket holding them
+  and the rewrite wraps them in several, each inside the one before, the outermost stands where
+  the match's did, and takes the comma: ``replace `f($x)` with `g(h($x))` expect 1`` over
+  `f(x,)` leaves `g(h(x),)`.  A bracket a hole matched is the hole's, written back with its own
+  comma or dropped with it, `$_` and `$...` included, and one the rewrite leaves empty has
+  nothing for a comma to trail.
+- **A bracket no node owns is kept**: the parentheses round the names a Python `from` import
+  takes, or round a tuple, are layout a pattern ignores, so the template cannot write them, and
+  where the file has them, they are put round the same items of the rewrite, with the layout
+  inside them.
+  ``replace `from m import $n...` with `from k import $n...` expect 1`` over an import whose names
+  are parenthesised over several lines changes only its first line.
 - **Layout at a bracket's edges is the file's** where the template writes none there: a call laid
   out one argument to a line stays so when it is renamed, and where the template writes layout of
   its own at an edge, it stands.
@@ -1020,8 +1035,9 @@ written.  A replace whose count does not hold says so first, exit 2, as any edit
   can overlap the next, and rewriting either would change the other, so a replace of them is
   refused, naming both.  Narrow the pattern so that its matches cannot overlap.
 - **A trailing comma with no one place to go**: where the rewrite has some brackets holding the same
-  holes as the comma's, but a different number from the match, more or fewer, so which one it
-  belongs to is not known, or where the comma would change what the code means there, as in a
+  holes as the comma's, but a different number from the match, more or fewer, and not one nested
+  inside the next round a single bracket of the match's, so which one it belongs to is not known,
+  or where the comma would change what the code means there, as in a
   bracketed expression, where it would make a tuple.  ``replace `max($a, $b)` with
   `($a if $a > $b else $b)` expect 1`` over a call to `max` that ends `y,` is refused.  Narrow the
   pattern so that it does not match there, or take the comma out first.
@@ -1038,7 +1054,7 @@ written.  A replace whose count does not hold says so first, exit 2, as any edit
 
   <!-- check: with app.py -->
   ```
-  $ quaff -e 'replace `load($p, $s)` with `load($p, strict=$s)` expect 1'
+  $ quaff -e 'replace `load($p, $s)` with `load($s, $p)` expect 1'
   quaff: refused: the replace cannot be made as written in 1 file, so nothing was written:
     "app.py": line 2, column 12: the comment "# the user's file" is in the match but in no capture the rewrite writes back, so the edit would drop it: capture it with a sequence hole, such as $args..., or narrow the pattern so that it does not match here
   [exit 9]
@@ -1155,9 +1171,13 @@ otherwise be left behind, and nothing else:
   before and after it, the narrower run goes too, so the wider gap is left: deleting a function
   between two others leaves one gap, not two, and deleting a class's last method leaves the gap
   after the class.  At the start or the end of the file, the blank lines at that edge go, so the
-  file neither starts nor ends with them.  With blank lines on one side only, they stay.  A
-  decorator is a match of its own, so ``delete `@retry($n)` expect 1`` takes the decorator's line
-  and leaves the definition.
+  file neither starts nor ends with them.  At the start or the end of a block, the blank lines on
+  its inner side go, so the block neither starts nor ends with them, and those after it, which
+  part it from what follows, stay; where a comment stands between the match and the block's edge,
+  indented at least as deeply as the match, the comment is the edge, and the rule between code
+  applies.  A comment indented less is outside the block.  Otherwise, with blank lines on one side
+  only, they stay.  A decorator is a match of its own, so ``delete `@retry($n)` expect 1`` takes
+  the decorator's line and leaves the definition.
 - **Otherwise it takes one separator its parent holds next to it**: the comma after a list item
   or argument, or the one before it where it is the last, and the semicolon after a statement
   sharing its line, or the one before it.  ``delete `debug` expect 1`` over
@@ -1334,11 +1354,13 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
   matches that overlap otherwise, such as runs of statements that share some, though a `find` of
   the same pattern counts them, since rewriting one would change the other.
 - **A rewrite drops what no hole captures**, layout and the template's spelling replacing it, but
-  never a comment or a trailing comma: one at a bracket's edge is carried to the rewrite's matching
-  bracket, a comma goes with a bracket the rewrite deletes, and any other comment in no capture
-  refuses the edit.  A rewrite with no code is the exception: it [deletes](#deleting-code), and
-  every comment inside the match goes with it.  A sequence hole captures everything between its
-  first node and its last, and the whole of any bracket that only wraps one of them.
+  never a comment or a trailing comma: one at a bracket's edge is carried to the rewrite's
+  matching bracket, a comma goes with a bracket the rewrite deletes, a bracket no node owns, as
+  round a Python `from` import's names, is kept round the same items, and any other comment in no
+  capture refuses the edit.  A rewrite with no code is the exception: it
+  [deletes](#deleting-code), and every comment inside the match goes with it.  A sequence hole
+  captures everything between its first node and its last, and the whole of any bracket that only
+  wraps one of them.
 - **A trailing comma and a semicolon between statements are layout**, so `f($a, $b)` matches a
   call a formatter has split over lines and ended with a comma.
 - **Implicitly concatenated plain strings are joined, but f-strings are not**: `"abc"` matches
