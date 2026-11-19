@@ -45,13 +45,14 @@ pub(super) struct After<'a> {
 }
 
 /// Where a code site was written in the file's new text, the match it belongs to, whether it is
-/// a sequence, and the name it writes.
+/// a sequence, the name it writes, and which of the template's sites it is.
 #[derive(Debug, Clone)]
 pub(super) struct WrittenSite {
     pub range: Range<usize>,
     pub found: usize,
     pub sequence: bool,
     pub name: String,
+    pub site: usize,
 }
 
 /// The new text with the layout carried, and where each match's rewrite and each code site now

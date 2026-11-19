@@ -14,8 +14,9 @@
 //! cannot hold is refused.  A refused edit changes nothing in the file.
 //!
 //! A capture written where Python reads it together with what surrounds it - `x + 1` into
-//! `$a * 2` - is written as the template says, and the edit is questioned rather than refused:
-//! the template is what was asked for, and a question can be answered by a further edit.
+//! `$a * 2` - is refused: the code would mean something other than the template says, and adding
+//! brackets would write something other than the template, so the message shows where brackets
+//! round the hole make the template mean what it says.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -24,7 +25,7 @@ use std::ops::Range;
 use quaffed_python::{
     Bracket, Lexed, ParseError, Rewrite, code_tokens, lex, parse_module, token_kinds,
 };
-use quaffed_syntax::{Arena, Captured, NodeId, Pattern, find_captured, find_where_captured};
+use quaffed_syntax::{Arena, Captured, Kind, NodeId, Pattern, find_captured, find_where_captured};
 
 use crate::search::{Match, Position};
 
@@ -51,7 +52,8 @@ pub struct Edited {
     /// and where what was written over it stands in [`Edited::text`].  A match nested in another
     /// is inside the other's stretch.  Taken as a claim, to be checked, not as certain.
     pub over: Vec<(Range<usize>, Range<usize>)>,
-    /// Each place the rewrite was written as asked but may have changed what the code means.
+    /// Each place a value was escaped to stay text in the string the rewrite writes it into:
+    /// written as asked, but questioned, in case the code was meant to run.
     pub questioned: Vec<Questioned>,
 }
 
@@ -539,12 +541,13 @@ fn rewritten(
         }
         out.push_str(&text[copied..found.range.start]);
         let base = out.len();
-        for (range, sequence, name) in rendered.code {
+        for (range, sequence, name, site) in rendered.code {
             written_sites.push(WrittenSite {
                 range: base + range.start..base + range.end,
                 found: index,
                 sequence,
                 name,
+                site,
             });
         }
         out.push_str(&rendered.text);
@@ -573,29 +576,33 @@ fn rewritten(
         written: &written,
         sites: &written_sites,
     };
-    Ok(match layout::carry(&before, &after)? {
-        Some(carried) => {
-            let arena =
-                parse_module(&carried.text).expect("layout is carried only where it parses");
-            Level {
-                questioned: [
-                    escapes,
-                    questioned(captured, &carried.text, &arena, &carried.sites),
-                ]
-                .concat(),
-                edits: edits(&carried.written),
-                text: carried.text,
-            }
-        }
-        None => Level {
-            questioned: [
-                escapes,
-                questioned(captured, &out, &out_arena, &written_sites),
-            ]
-            .concat(),
-            edits: edits(&written),
-            text: out,
-        },
+    let carried = layout::carry(&before, &after)?;
+    let carried_arena;
+    let (text, arena, sites, written) = if let Some(carried) = &carried {
+        carried_arena =
+            parse_module(&carried.text).expect("layout is carried only where it parses");
+        (
+            carried.text.as_str(),
+            &carried_arena,
+            carried.sites.as_slice(),
+            carried.written.as_slice(),
+        )
+    } else {
+        (
+            out.as_str(),
+            &out_arena,
+            written_sites.as_slice(),
+            written.as_slice(),
+        )
+    };
+    if let Some(refused) = regrouped(&before, (text, arena), sites, rewrite) {
+        return Err(refused);
+    }
+    let edits = edits(written);
+    Ok(Level {
+        questioned: escapes,
+        edits,
+        text: carried.map_or(out, |carried| carried.text),
     })
 }
 
@@ -1093,56 +1100,173 @@ fn escaped_note(text: &str, found: &Captured, names: &[&str], name: &str) -> Str
     )
 }
 
-/// Each capture in `out`, the file's new text parsed as `arena`, written where Python reads it
-/// with what surrounds it - `x + 1` into `$a * 2` - so that its meaning may have changed: each
-/// code site should still be code of its own, one node, or for a sequence a run of them.  Each
-/// is named at its match's start in the text the matches were found in.
-fn questioned(
-    captured: &[Captured],
-    out: &str,
-    arena: &Arena<'_>,
+/// The first capture in `after`, the file's new text, written where Python reads it with what
+/// surrounds it - `x + 1` into `$a * 2` - so that the code would mean something other than the
+/// template says: each code site should still be code of its own, one node, or for a sequence a
+/// run of them.  It is refused, named at its match's start in `before`, the text the matches were
+/// found in, with the template as it would work: brackets round the hole.  Brackets are not added
+/// here, since that would write something other than the template.
+fn regrouped(
+    before: &Before<'_>,
+    after: (&str, &Arena<'_>),
     sites: &[WrittenSite],
-) -> Vec<(usize, String)> {
+    rewrite: &Rewrite,
+) -> Option<(usize, String)> {
+    let (out, arena) = after;
     let code = CodeIndex::of(arena);
     let lexed = lex(out);
-    // A capture that took the brackets wrapping it stands whole if what they wrap does, layout
-    // inside them aside.
-    let unwrapped = |range: &Range<usize>| {
-        let mut range = range.clone();
-        while let Some(b) = lexed
-            .brackets
+    let site = sites.iter().find(|site| {
+        let whole = unwrapped(out, &lexed, &site.range)
             .iter()
-            .find(|b| b.open == range.start && b.close + 1 == range.end)
-        {
-            let start = layout::forward_over_layout(out, b.open + 1, b.close, &lexed.comments);
-            let end = back_over_layout(out, start, b.close, &lexed.comments);
-            range = start..end;
-        }
-        range
+            .any(|range| code.whole(range))
+            || (site.sequence && is_run(out, &lexed, &code, &site.range));
+        // A tuple's own brackets are part of it, so one the rewrite brackets, `wrap(($x))`, is
+        // whole only with them.  Brackets that make some other node - a call's, in `wrap($x)` -
+        // do not count, so the node they close must be the kind of code that was captured.
+        !whole && !rebracketed(before, &code, out, &lexed, site)
+    })?;
+    // Brackets round a sequence make its items one tuple, which is not what it captured either,
+    // so it is told to stand where its items stand apart instead.
+    let remedy = if site.sequence {
+        "write the hole where its items stand apart from what is around it, as among a call's \
+         arguments, since brackets round it would make them one tuple"
+            .to_owned()
+    } else {
+        format!(
+            "put brackets round the hole in the rewrite, as in {:?}",
+            bracketed(rewrite, site.site)
+        )
     };
-    sites
+    Some((
+        before.captured[site.found].range.start,
+        format!(
+            "what ${} captured, {:?}, would not be code of its own where the rewrite writes it - \
+             it would be read together with what stands around it, so the code would mean \
+             something other than the rewrite says: {remedy}",
+            site.name,
+            &out[site.range.clone()],
+        ),
+    ))
+}
+
+/// `range` of `text`, lexed as `lexed`, and each stretch inside the brackets at its ends, layout
+/// inside them aside, in turn, outermost first: what a capture that took brackets wrapping it may
+/// stand for.  Which brackets only wrap it is not known here - `([1, 2])` is a list in wrapping
+/// brackets, whose own are not - so every layer is given, for the caller to find its node among.
+fn unwrapped(text: &str, lexed: &Lexed, range: &Range<usize>) -> Vec<Range<usize>> {
+    let mut layers = vec![range.clone()];
+    while let Some(b) = lexed.brackets.iter().find(|b| {
+        let range = &layers[layers.len() - 1];
+        b.open == range.start && b.close + 1 == range.end
+    }) {
+        let start = layout::forward_over_layout(text, b.open + 1, b.close, &lexed.comments);
+        let end = back_over_layout(text, start, b.close, &lexed.comments);
+        layers.push(start..end);
+    }
+    layers
+}
+
+/// Whether `range` of `text`, lexed as `lexed` and indexed as `code`, is a run of sibling nodes.
+/// Its first and last items may each have taken brackets that only wrap them, which no node's
+/// range includes, so each place it could start and end, inside any such brackets, is tried.
+fn is_run(text: &str, lexed: &Lexed, code: &CodeIndex, range: &Range<usize>) -> bool {
+    let mut starts = vec![range.start];
+    while let Some(b) = lexed
+        .brackets
         .iter()
-        .filter(|site| {
-            let range = unwrapped(&site.range);
-            !(code.whole(&site.range)
-                || code.whole(&range)
-                || (site.sequence && code.run(&site.range)))
+        .find(|b| b.open == starts[starts.len() - 1])
+    {
+        starts.push(layout::forward_over_layout(
+            text,
+            b.open + 1,
+            b.close,
+            &lexed.comments,
+        ));
+    }
+    let mut ends = vec![range.end];
+    while let Some(b) = lexed
+        .brackets
+        .iter()
+        .find(|b| b.close + 1 == ends[ends.len() - 1])
+    {
+        ends.push(back_over_layout(text, b.open + 1, b.close, &lexed.comments));
+    }
+    starts.iter().any(|&start| {
+        ends.iter()
+            .any(|&end| start <= end && code.run(&(start..end)))
+    })
+}
+
+/// Whether `site`, written into `out`, lexed as `lexed` and indexed as `code`, stands whole once
+/// the brackets round it with only layout between are taken in: some such bracketed stretch is a
+/// node of a kind the capture's code, in `before`, was too.
+fn rebracketed(
+    before: &Before<'_>,
+    code: &CodeIndex,
+    out: &str,
+    lexed: &Lexed,
+    site: &WrittenSite,
+) -> bool {
+    let mut range = site.range.clone();
+    let mut wrapped = Vec::new();
+    while let Some(b) = lexed.brackets.iter().find(|b| {
+        b.open < range.start
+            && range.end <= b.close
+            && layout::forward_over_layout(out, b.open + 1, b.close, &lexed.comments) == range.start
+            && back_over_layout(out, range.end, b.close, &lexed.comments) == range.end
+    }) {
+        range = b.open..b.close + 1;
+        wrapped.push(range.clone());
+    }
+    if wrapped.is_empty() {
+        return false;
+    }
+    let index = before
+        .names
+        .iter()
+        .position(|name| *name == site.name)
+        .expect("every site's name was asked for");
+    let layers = unwrapped(
+        before.text,
+        before.lexed,
+        &before.captured[site.found].captures[index],
+    );
+    let captured_kinds: Vec<Kind> = layers
+        .iter()
+        .flat_map(|layer| {
+            before
+                .arena
+                .nodes_within(layer.clone())
+                .filter(move |&node| before.arena.range(node) == *layer)
+                .map(|node| before.arena.kind(node))
         })
-        .map(|site| {
-            (
-                captured[site.found].range.start,
-                format!(
-                    "what ${} captured, {:?}, is not code of its own where the rewrite writes \
-                     it - it is read together with what stands around it - so its meaning \
-                     may have changed: if that is not what was meant, put brackets round the \
-                     hole in the rewrite, as in (${})",
-                    site.name,
-                    &out[site.range.clone()],
-                    site.name
-                ),
-            )
-        })
-        .collect()
+        .collect();
+    wrapped.iter().any(|range| {
+        code.kinds(range)
+            .iter()
+            .any(|kind| captured_kinds.contains(kind))
+    })
+}
+
+/// The line of `rewrite`'s template that holds its `site`th site, with brackets round the site,
+/// without its indentation, which a message has no use for.
+fn bracketed(rewrite: &Rewrite, site: usize) -> String {
+    let text = rewrite.text();
+    let written = &rewrite.sites()[site].written;
+    let start = text[..written.start]
+        .rfind(['\n', '\r'])
+        .map_or(0, |i| i + 1);
+    let end = text[written.end..]
+        .find(['\n', '\r'])
+        .map_or(text.len(), |i| written.end + i);
+    format!(
+        "{}({}){}",
+        &text[start..written.start],
+        &text[written.clone()],
+        &text[written.end..end]
+    )
+    .trim()
+    .to_owned()
 }
 
 /// How many of `names` the rewrite writes: they come first, the pattern's other names after.
@@ -1157,7 +1281,7 @@ fn rewrite_names(rewrite: &Rewrite, names: &[&str]) -> usize {
 /// rather than searched for: every node's range, and for each offset the parents of the nodes
 /// that start or end there.
 struct CodeIndex {
-    ranges: HashSet<(usize, usize)>,
+    ranges: HashMap<(usize, usize), Vec<Kind>>,
     starting: HashMap<usize, Vec<Option<NodeId>>>,
     ending: HashMap<usize, Vec<Option<NodeId>>>,
 }
@@ -1165,14 +1289,18 @@ struct CodeIndex {
 impl CodeIndex {
     fn of(arena: &Arena<'_>) -> CodeIndex {
         let mut index = CodeIndex {
-            ranges: HashSet::new(),
+            ranges: HashMap::new(),
             starting: HashMap::new(),
             ending: HashMap::new(),
         };
         let mut walk = vec![(arena.root(), None)];
         while let Some((node, parent)) = walk.pop() {
             let range = arena.range(node);
-            index.ranges.insert((range.start, range.end));
+            index
+                .ranges
+                .entry((range.start, range.end))
+                .or_default()
+                .push(arena.kind(node));
             index.starting.entry(range.start).or_default().push(parent);
             index.ending.entry(range.end).or_default().push(parent);
             walk.extend(arena.children(node).map(|child| (child, Some(node))));
@@ -1182,7 +1310,14 @@ impl CodeIndex {
 
     /// Whether `range` is exactly one node.
     fn whole(&self, range: &Range<usize>) -> bool {
-        self.ranges.contains(&(range.start, range.end))
+        self.ranges.contains_key(&(range.start, range.end))
+    }
+
+    /// The kinds of the nodes that are exactly `range`, none if no node is.
+    fn kinds(&self, range: &Range<usize>) -> &[Kind] {
+        self.ranges
+            .get(&(range.start, range.end))
+            .map_or(&[], Vec::as_slice)
     }
 
     /// Whether `range` is a run of sibling nodes: one starting where it starts and one ending
@@ -1435,6 +1570,7 @@ impl Job<'_> {
                     out.len()..out.len() + value.len(),
                     sequence,
                     site.name.clone(),
+                    i,
                 ));
             }
             out.push_str(&value);
@@ -1455,8 +1591,9 @@ struct Rendered {
     escaped: Vec<String>,
 }
 
-/// Where a code site was written in a rewrite, whether it is a sequence, and the name it writes.
-type CodeSite = (Range<usize>, bool, String);
+/// Where a code site was written in a rewrite, whether it is a sequence, the name it writes, and
+/// its index in the template's sites.
+type CodeSite = (Range<usize>, bool, String, usize);
 
 /// A stem for site markers that neither the template nor the file contains.
 fn marker_stem(template: &str, text: &str) -> String {
@@ -2160,44 +2297,93 @@ mod tests {
     }
 
     #[test]
-    fn a_capture_python_would_read_with_its_surroundings_is_written_and_questioned() {
-        let done = written("f($a)", "$a * 2", "y = f(x + 1)\n");
-        assert_eq!(done.text, "y = x + 1 * 2\n");
-        let [questioned] = done.questioned.as_slice() else {
-            panic!("{:?}", done.questioned);
-        };
-        assert_eq!((questioned.at.line, questioned.at.column), (1, 5));
-        assert!(
-            questioned
-                .why
-                .starts_with("what $a captured, \"x + 1\", is not code of its own"),
-            "{}",
-            questioned.why
-        );
-        // Brackets in the rewrite keep it whole.
-        let done = written("f($a)", "($a) * 2", "y = f(x + 1)\n");
-        assert_eq!(done.text, "y = (x + 1) * 2\n");
-        assert_eq!(done.questioned, []);
-        // A tuple's own brackets are not part of it, so it becomes two arguments.
-        let done = written(
+    fn a_capture_python_would_read_with_its_surroundings_is_refused() {
+        // Each place an operator, a sign, an attribute, a call or a subscript would take in part
+        // of what the hole captured, with the rewrite that works.
+        for (pattern, with, text, capture, works) in [
+            ("dbl($a)", "$a * 2", "r = dbl(a + b)\n", "a + b", "($a) * 2"),
+            ("dbl($a)", "$a ** 2", "r = dbl(-a)\n", "-a", "($a) ** 2"),
+            // Python reads a leading minus as binding less tightly than `**`.
+            ("dbl($a)", "$a ** 2", "r = dbl(-1)\n", "-1", "($a) ** 2"),
+            (
+                "dbl($a)",
+                "$a.double()",
+                "r = dbl(a + b)\n",
+                "a + b",
+                "($a).double()",
+            ),
+            ("neg($a)", "-$a", "r = neg(a - b)\n", "a - b", "-($a)"),
+            (
+                "one($f)",
+                "$f()",
+                "r = one(lambda: 0)\n",
+                "lambda: 0",
+                "($f)()",
+            ),
+            ("dbl($a)", "$a[0]", "r = dbl(a or b)\n", "a or b", "($a)[0]"),
+        ] {
+            let why = replaced(pattern, with, text).expect_err(with);
+            assert!(
+                why.starts_with(&format!(
+                    "1:5: what ${} captured, {capture:?}, would not be code of its own",
+                    &with[with.find('$').unwrap() + 1..][..1]
+                )),
+                "{why}"
+            );
+            assert!(why.ends_with(&format!("as in {works:?}")), "{why}");
+            // And as the message says, it is written with the brackets, meaning what it says.
+            let works = ok(pattern, works, text);
+            assert!(works.contains(&format!("({capture})")), "{works}");
+        }
+        // A bare tuple written where one argument goes would be two.
+        let why = replaced(
             "return $x",
             "return wrap($x)",
             "def f():\n    return a, b\n",
-        );
-        assert_eq!(done.text, "def f():\n    return wrap(a, b)\n");
-        assert_eq!(done.questioned.len(), 1);
-        // A sequence is a run of code, so it may stand as several.
-        let done = written("f($xs...)", "g($xs...)", "f(a, b)\n");
+        )
+        .expect_err("two arguments");
+        assert!(why.starts_with("2:5: what $x captured, \"a, b\""), "{why}");
+        assert!(why.ends_with("as in \"return wrap(($x))\""), "{why}");
         assert_eq!(
-            (done.text.as_str(), done.questioned.len()),
-            ("g(a, b)\n", 0)
+            ok(
+                "return $x",
+                "return wrap(($x))",
+                "def f():\n    return a, b\n"
+            ),
+            "def f():\n    return wrap((a, b))\n"
         );
-        // But only as siblings: here the first becomes part of `1 + a`.
-        let done = written("f($xs...)", "f(1 + $xs...)", "f(a, b)\n");
+        // A sequence is a run of code, so it may stand as several, but only as siblings: here the
+        // first would become part of `1 + a`.
+        assert_eq!(ok("f($xs...)", "g($xs...)", "f(a, b)\n"), "g(a, b)\n");
+        let why = replaced("f($xs...)", "f(1 + $xs...)", "f(a, b)\n").expect_err("regrouped");
+        assert!(
+            why.ends_with(
+                "write the hole where its items stand apart from what is around it, as among a \
+                 call's arguments, since brackets round it would make them one tuple"
+            ),
+            "{why}"
+        );
+        // Only the line of a longer template that holds the hole is shown, without its indent.
+        let why = replaced("f($a)", "g(\n    $a * 2,\n)", "y = f(x + 1)\n").expect_err("regrouped");
+        assert!(why.ends_with("as in \"($a) * 2,\""), "{why}");
+        // Brackets that only wrap a capture are its own, but not those of the code inside them.
+        let text = "mock_kalls = ([call(), call('foo')])\n";
+        assert_eq!(ok("$x = $y", "$x = $y", text), text);
         assert_eq!(
-            (done.text.as_str(), done.questioned.len()),
-            ("f(1 + a, b)\n", 1)
+            ok("f($a)", "$a * 2", "y = f(([a, b]))\n"),
+            "y = ([a, b]) * 2\n"
         );
+        // Nothing is said of a capture that is one piece of code wherever it goes - a name, a
+        // call, a literal, or one in brackets of its own - and its text is written as it was.
+        for (text, out) in [
+            ("y = f(x)\n", "y = x * 2\n"),
+            ("y = f(g(x))\n", "y = g(x) * 2\n"),
+            ("y = f(1)\n", "y = 1 * 2\n"),
+            ("y = f((x + 1))\n", "y = (x + 1) * 2\n"),
+        ] {
+            let done = written("f($a)", "$a * 2", text);
+            assert_eq!((done.text.as_str(), done.questioned.len()), (out, 0));
+        }
     }
 
     #[test]
@@ -2236,15 +2422,9 @@ mod tests {
             ),
             "def f():\n    x()\n    y()\n"
         );
-        // What the inner rewrite questions is named where it was.
-        let done = written("f($a)", "$a * 2", "y = f(f(x + 1))\n");
-        assert_eq!(done.text, "y = x + 1 * 2 * 2\n");
-        let at: Vec<(usize, usize)> = done
-            .questioned
-            .iter()
-            .map(|q| (q.at.line, q.at.column))
-            .collect();
-        assert_eq!(at, [(1, 5), (1, 7)], "{:?}", done.questioned);
+        // What the inner rewrite refuses is named where it was.
+        let why = replaced("f($a)", "$a * 2", "y = f(f(x + 1))\n").expect_err("regrouped");
+        assert!(why.starts_with("1:7: what $a captured, \"x + 1\""), "{why}");
     }
 
     #[test]

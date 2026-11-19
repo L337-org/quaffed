@@ -5,7 +5,7 @@ members = ["crates/*"]
 # The one place the version is declared.  Every member inherits it with
 # `version.workspace = true`, so there is nothing to keep in agreement.
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.98"
 license = "GPL-3.0-or-later"

@@ -1546,10 +1546,44 @@ fn a_value_a_string_cannot_hold_as_text_exits_9() {
 }
 
 #[test]
-fn a_capture_python_would_read_with_its_surroundings_is_written_and_questioned() {
+fn a_capture_python_would_read_with_its_surroundings_exits_9() {
     let project = Project::new(&[(".git/HEAD", ""), ("calc.py", "total = f(x + 1)\n")]);
     assert_quaff_snapshot!(project.quaff(&["-e", "replace `f($a)` with `$a * 2` expect 1"]));
-    project.assert_changed(&[("calc.py", b"total = x + 1 * 2\n")]);
+    project.assert_unchanged();
+    // Each place an operator, a sign, an attribute, a call or a tuple's comma would take in part
+    // of the capture is refused, and nothing is written.
+    let text =
+        "r = dbl(a + b)\nr = neg(a - b)\nv = one(lambda: 0)\n\n\ndef f():\n    return a, b\n";
+    let project = Project::new(&[(".git/HEAD", ""), ("calc.py", text)]);
+    for (script, capture, works) in [
+        ("replace `dbl($a)` with `$a * 2`", "a + b", "($a) * 2"),
+        (
+            "replace `dbl($a)` with `$a.double()`",
+            "a + b",
+            "($a).double()",
+        ),
+        ("replace `neg($a)` with `-$a`", "a - b", "-($a)"),
+        ("replace `one($f)` with `$f()`", "lambda: 0", "($f)()"),
+        (
+            "replace `return $x` with `return wrap($x)`",
+            "a, b",
+            "return wrap(($x))",
+        ),
+    ] {
+        let output = project
+            .quaff(&["-e", &format!("{script} expect any")])
+            .output()
+            .expect("quaff runs");
+        assert_eq!(output.status.code(), Some(9), "{script}: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(&format!(
+                "captured, {capture:?}, would not be code of its own"
+            )) && stderr.contains(&format!("as in {works:?}")),
+            "{script}: {stderr}"
+        );
+        project.assert_unchanged();
+    }
 }
 
 #[test]
