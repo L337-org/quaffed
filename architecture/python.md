@@ -43,7 +43,9 @@ a file's bytes the same way.
    uses.
 2. **Let the grammar decide.**  The result is parsed, as an expression if it is one and otherwise
    as statements, and a placeholder is a hole when a node spans exactly it, the outermost where
-   several do.  One that no node spans, or only a string's literal text, is inside a string or a
+   several do.  A lambda's parameters have no brackets, so with one parameter the list and the
+   parameter have one range; the list is passed over (`BARE_LIST`), so that one hole is one
+   parameter, as in every list with brackets.  One that no node spans, or only a string's literal text, is inside a string or a
    comment: it is put back as written and the pattern parsed again.  A hole merged into a name,
    `x$a`, is put back too and fails to parse; one inside a dotted module name, `import a.$m`, is
    refused as `PatternError::InsideAName`.
@@ -55,6 +57,16 @@ pattern's own.  Only one decorator: a definition's decorators are not marked as 
 of them could not be kept to one definition's, and several are refused
 (`PatternError::SeveralDecorators`).  A rewrite template may be a decorator alone too, parsed the
 same way for its sites.
+
+**Which places are lists is Python's** (`src/lists.rs`): a block's statements, a call's
+arguments, the parameters on each side of a `/` or `*`, and the rest that `lists`'s doc comment
+names, read from the fields of Ruff's tree for the pattern.  A sequence hole must be one of a
+list's items, and is refused elsewhere (`PatternError::NotInAList`), since in a place that holds
+one node it would also take whatever optional syntax follows it there.  Two sequence holes that
+are consecutive items of one list are refused (`PatternError::SequencesTogether`), since nothing
+says how many items each takes.  This is decided as the pattern compiles, from a parse of its
+own text, so the arena and the matcher are unchanged; the engine's own refusal of two sequences
+together in a run of statements (`syntax.md`) stays as its guard.
 
 `compile_pattern`'s doc comment lists what it refuses, including the two limits `syntax.md` sets
 and one name used for both a node and a sequence.  An error from Ruff is placed in the pattern as
@@ -158,6 +170,10 @@ for this reason; a pull request from that group starts the checklist below, not 
    `cargo test -p quaffed-python`: a kind the synthetic corpus does not produce fails its coverage
    check, so add Python that produces it (`corpus.md`), and a change in where Ruff's root
    starts or ends fails `ruffs_root_spans_the_text_but_blank_lines_before_an_expression`.
+   A new field holding a list of nodes - a `Vec`, `ThinVec` or boxed slice of them - goes in
+   `src/lists.rs` if its items can stand one after another with only a separator between them,
+   with a case in `a_sequence_stands_only_as_items_of_a_list` (`tests/matching.rs`); otherwise
+   a sequence hole there is refused, which is the safe default.
 4. **Run the round trip and the CPython oracle** over the real-world corpus, as the Real-world
    corpus CI job does (`corpus.md`): `scripts/fetch-corpus` with the oracle's Python, the
    round trip, then `scripts/count-structural` and `real_world_matches.rs`.
