@@ -2103,39 +2103,36 @@ impl Job<'_> {
                     return self.swapped_gap(file_gap, in_template);
                 }
                 match (template_bracket, file_bracket) {
-                    (false, false) => {
-                        let file_comment = self
-                            .lexed
-                            .comments
-                            .iter()
-                            .any(|c| file_gap.start <= c.start && c.end <= file_gap.end);
-                        // Each gap runs from the end of one statement's line, through any blank
-                        // lines, to the next statement's indentation.
-                        let (Some(file_last), Some(template_first)) =
-                            (in_file.rfind('\n'), in_template.find('\n'))
-                        else {
-                            return None;
-                        };
-                        // Blank lines the template writes there are layout of its own, which
-                        // stands.
-                        let template_blank = in_template.rfind('\n') != Some(template_first);
-                        (!file_comment
-                            && !template_blank
-                            && code_tokens(in_template).is_empty()
-                            && code_tokens(in_file).is_empty())
-                        .then(|| Gap {
-                            text: format!(
-                                "{}{}",
-                                &in_file[..=file_last],
-                                &in_template[template_first + 1..]
-                            ),
-                            range: file_gap,
-                        })
-                    }
+                    (false, false) => self.statement_gap(file_gap, in_template),
                     _ => None,
                 }
             })
             .collect()
+    }
+
+    /// Between two statement holes, `file_gap` in the file and `template` the template's gap:
+    /// the file's blank lines, before the template's own line break and indentation, where
+    /// neither has code there, the file no comment and the template no blank line of its own.
+    fn statement_gap(&self, file_gap: Range<usize>, template: &str) -> Option<Gap> {
+        let file = &self.text[file_gap.clone()];
+        let file_comment = self
+            .lexed
+            .comments
+            .iter()
+            .any(|c| file_gap.start <= c.start && c.end <= file_gap.end);
+        // Each gap runs from the end of one statement's line, through any blank lines, to the
+        // next statement's indentation.
+        let (file_last, template_first) = (file.rfind('\n')?, template.find('\n')?);
+        // Blank lines the template writes there are layout of its own, which stands.
+        let template_blank = template.rfind('\n') != Some(template_first);
+        (!file_comment
+            && !template_blank
+            && code_tokens(template).is_empty()
+            && code_tokens(file).is_empty())
+        .then(|| Gap {
+            text: format!("{}{}", &file[..=file_last], &template[template_first + 1..]),
+            range: file_gap,
+        })
     }
 
     /// The file's stretch `file_gap` with each code token in it swapped for the template's in
