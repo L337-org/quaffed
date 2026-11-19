@@ -136,8 +136,9 @@ architectures built.
    and write the notes by hand on top of the generated ones.
 3. Publish it, then watch the Release workflow to the end: the first run after a change to it is
    the test of that change.
-4. If a job failed, read why and re-run it: the attach step leaves an identical package and
-   replaces a different one, and preflight reads the pre-release flag from the release itself.  If
+4. If a job failed, read why and use **Re-run failed jobs**, which attaches the packages already
+   built; **Re-run all jobs** builds them again, and after a runner-image update can build
+   different bytes.  Preflight reads the pre-release flag from the release itself.  If
    the cause is a defect in what was built, fix it and release a new version.
 
 A failed release run is posted to Slack (`workspace.md`).
