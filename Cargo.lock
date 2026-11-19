@@ -746,7 +746,7 @@ dependencies = [
 
 [[package]]
 name = "quaffed"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ignore",
  "insta",
@@ -764,14 +764,14 @@ dependencies = [
 
 [[package]]
 name = "quaffed-encoding"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "memchr",
 ]
 
 [[package]]
 name = "quaffed-python"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "gungraun",
  "proptest",
@@ -785,11 +785,11 @@ dependencies = [
 
 [[package]]
 name = "quaffed-representation"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "quaffed-script"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "proptest",
  "quaffed-representation",
@@ -797,7 +797,7 @@ dependencies = [
 
 [[package]]
 name = "quaffed-syntax"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "insta",
  "proptest",
