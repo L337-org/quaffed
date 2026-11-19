@@ -2303,6 +2303,8 @@ mod tests {
         for (pattern, with, text, capture, works) in [
             ("dbl($a)", "$a * 2", "r = dbl(a + b)\n", "a + b", "($a) * 2"),
             ("dbl($a)", "$a ** 2", "r = dbl(-a)\n", "-a", "($a) ** 2"),
+            // A negative number is a sign and a number, not a literal of its own.
+            ("dbl($a)", "$a ** 2", "r = dbl(-1)\n", "-1", "($a) ** 2"),
             (
                 "dbl($a)",
                 "$a.double()",
