@@ -1313,13 +1313,19 @@ impl Deletion<'_, '_> {
         // At the start or the end of the file, the blank lines at that edge go too, so that none
         // are left there.  Between code, the gap that is left is the wider of the two, so that the
         // file's own spacing stands: deleting a class's last method leaves the class's gap.  At
-        // a block's edge, the blank lines on its inner side go.
+        // a block's edge, the blank lines on its inner side go, unless a comment stands at the
+        // edge, between the match and the block's header or its end: the comment is then the
+        // edge, and the gap is between it and code.
+        let comment_at = |at: usize| text[at..line_end(text, at)].trim_start().starts_with('#');
+        let starts = edges.starts
+            && !(start > 0 && comment_at(text[..start - 1].rfind('\n').map_or(0, |at| at + 1)));
+        let ends = edges.ends && !(past < text.len() && comment_at(past));
         let narrower_before = before > 0 && after > 0 && before < after;
         if start == 0 || past == text.len() {
             start..past
-        } else if edges.starts && !edges.ends {
+        } else if starts && !ends {
             lines.start..past
-        } else if edges.ends && !edges.starts || narrower_before {
+        } else if ends && !starts || narrower_before {
             start..end
         } else if before > 0 && after > 0 {
             lines.start..past
@@ -2671,6 +2677,11 @@ mod tests {
                 "def f():\n    x = 1\n    y = 2\n\n    z = 3\n"
             ),
             "def f():\n    z = 3\n"
+        );
+        // A comment at the block's edge is the edge, so the rule between code stands.
+        assert_eq!(
+            deleted("x = 1", "def f():\n    # why\n    x = 1\n\n    y = 2\n"),
+            "def f():\n    # why\n\n    y = 2\n"
         );
         // Inside the block, the rule between code stands.
         assert_eq!(
