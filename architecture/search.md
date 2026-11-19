@@ -315,7 +315,8 @@ the path or argument it concerns, and says what to do where there is something t
   (`Job::positions`): a rewrite that reorders holes keeps the file's layout between the places
   they fill, but not a comment there, written about the code beside it, which refuses the edit.
   Where captures overlap, as one hole written twice does, there are no places to pair, and the
-  template's layout stands.  Where the template ends a
+  template's layout stands; a hole whose capture is empty has no place of its own, so the
+  template's layout stands beside it alone.  Where the template ends a
   statement between two holes, outside any bracket, the file's blank lines stand, before the
   template's own line break and indentation, since the statements may move to another depth
   (`Job::statement_gap`);

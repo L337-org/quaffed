@@ -2087,30 +2087,28 @@ impl Job<'_> {
     /// For each site in the template's order, the capture standing in the same place among the
     /// code sites' captures in the file's order: a rewrite that writes its holes in another order
     /// keeps the file's layout between the places, whichever hole fills each.  `None` for a site
-    /// written into a literal, and for every site where the captures are empty or overlap, as one
-    /// hole written twice does.
+    /// written into a literal, and for one whose capture is empty, which has no place of its own;
+    /// and for every site where the other captures overlap, as one hole written twice does.
     fn positions(&self, marked: &Marked) -> Vec<Option<Range<usize>>> {
         let sites = self.rewrite.sites();
-        let code: Vec<Range<usize>> = marked
+        let placed = |i: usize| !sites[i].in_literal && !self.capture(&sites[i].name).is_empty();
+        let mut ordered: Vec<Range<usize>> = marked
             .at
             .iter()
-            .filter(|&&(_, i)| !sites[i].in_literal)
+            .filter(|&&(_, i)| placed(i))
             .map(|&(_, i)| self.capture(&sites[i].name))
             .collect();
-        let mut ordered = code.clone();
         ordered.sort_unstable_by_key(|range| range.start);
-        let apart = ordered.iter().all(|range| !range.is_empty())
-            && ordered.windows(2).all(|pair| pair[0].end <= pair[1].start);
+        let apart = ordered.windows(2).all(|pair| pair[0].end <= pair[1].start);
         let mut next = ordered.into_iter();
         marked
             .at
             .iter()
             .map(|&(_, i)| {
-                if sites[i].in_literal {
+                if !placed(i) {
                     return None;
                 }
-                let place = next.next();
-                place.filter(|_| apart)
+                next.next().filter(|_| apart)
             })
             .collect()
     }
