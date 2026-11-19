@@ -869,13 +869,29 @@ exactly as written, the brackets that only wrap it included; everything else com
 template, exactly as written, its comments included.  Layout the template does not decide - line
 breaks and comments inside a bracket, where they mean nothing - is the file's: `$args...` keeps
 everything between the arguments it captured, and `$a, $b` keep the line break between the two
-arguments where the template's `, ` stands, but not when the rewrite reorders them.  So does a
-hole beside an item the template writes, where the file has an item there: ``replace
-`f($a..., 3)` with `f($a..., 4)` expect 1`` over a call written one argument to a line changes
-only the last argument's line.  Between two statement holes the template writes one after the
-other, the file's blank lines stand, before the template's own indentation: rewriting a class as
-`$a...` then `$b...` keeps the blank line between two methods.  Where the template writes a blank
-line there itself, its own layout stands instead.
+arguments where the template's `, ` stands.  The same goes for two holes in one expression
+outside a bracket, where a line break can only be one a
+backslash continues, or one a bracket round the whole match makes meaningless: ``replace
+`$a + $b` with `$a + $b` expect any`` over `x = aaa \` then `+ bbb` on the next line keeps the
+continuation, unless the rewrite takes away the bracket that made the line break safe.  Where the
+code between two holes changes, or the code between a hole and the start or end of the match,
+only what changed is written from the template, and the rest keeps the file's layout, with the
+template's spacing within a line beside a token that changed: ``replace `$a + $b` with
+`$a - $b` expect any`` over the same file changes only the second line, ``replace `f($x, $y)`
+with `g($x + $y)` expect 1`` over a call split after its comma keeps the split, and ``replace
+`$a in $b` with `$a not in $b` expect 1`` over `(a` then `in b)` on the next line writes
+`not in` on the second line.  The brackets among that code may change too: ``replace `$x[$i]`
+with `$x.get($i)` expect 1`` over `y = d \` then `[k]` keeps the continuation.  A line break
+deleted code leaves with nothing after it goes with that code.  The same rule keeps a hole
+beside an item the template writes, where the file has an item there: ``replace `f($a..., 3)`
+with `f($a..., 4)` expect 1`` over a call written one argument to a line changes only the last
+argument's line.  A rewrite that reorders holes keeps the layout between the places they fill,
+whichever hole fills each, but not a comment there, which was written about the code beside it:
+such an edit is refused, as any that would drop a comment is.
+Between two statement holes the template writes one after the other, the file's blank lines
+stand, before the template's own indentation: rewriting a class as `$a...` then `$b...` keeps the
+blank line between two methods.  Where the template writes a blank line there itself, its own
+layout stands instead.
 
 - **A name the pattern does not bind is an error**, exit 3, before any file is read: `$_`, `$...`,
   a typo, or a name the pattern spells as a sequence written as one node, or the other way round.

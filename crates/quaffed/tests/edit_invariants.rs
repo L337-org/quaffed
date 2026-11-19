@@ -383,6 +383,10 @@ const IDENTITIES: &[&str] = &[
     // A sequence capture beside an item the template writes, and a bracket no node owns.
     "$f($args..., None)",
     "from $m import $names...",
+    // Two holes outside a bracket, where a line may be continued by a backslash, and an operator
+    // inside an argument list, beside a comma outside the match.
+    "$x[$i]",
+    "$a + $b",
 ];
 
 /// Renames there and back: a pattern, the name in it renamed, the new name, and the pattern
