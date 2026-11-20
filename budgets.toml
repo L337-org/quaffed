@@ -11,43 +11,43 @@
 #   paths_written    exactly how many paths in the project it opens to write
 
 [startup]
-instructions = 251_700
+instructions = 267_000
 peak_memory_kib = 6_500
 paths_opened = 1
 bytes_read = 0
 paths_written = 0
 
 [search]
-instructions = 1_034_200
-peak_memory_kib = 6_500
+instructions = 1_362_200
+peak_memory_kib = 11_300
 paths_opened = 17
 bytes_read = 5_951
 paths_written = 0
 
 [scope]
-instructions = 866_900
-peak_memory_kib = 6_500
+instructions = 1_162_700
+peak_memory_kib = 11_300
 paths_opened = 12
 bytes_read = 5_523
 paths_written = 0
 
 [edit]
-instructions = 2_320_400
-peak_memory_kib = 9_300
+instructions = 2_741_500
+peak_memory_kib = 12_100
 paths_opened = 17
 bytes_read = 5_951
 paths_written = 6
 
 [rewrite]
-instructions = 11_513_900
-peak_memory_kib = 10_100
+instructions = 15_686_700
+peak_memory_kib = 22_000
 paths_opened = 17
 bytes_read = 5_951
 paths_written = 8
 
 [delete]
-instructions = 6_688_200
-peak_memory_kib = 10_300
+instructions = 7_457_400
+peak_memory_kib = 17_400
 paths_opened = 17
 bytes_read = 5_951
 paths_written = 0
