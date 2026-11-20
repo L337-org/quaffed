@@ -6,8 +6,8 @@ which the engine reaches a language**.  Each language's adapter parses with its 
 builds an arena; the engine - matching, rewriting, the invariant checks - reads arenas and never a
 parser's own types.  So this crate depends on no parser, and a second language's adapter depends
 on it rather than on the Python adapter or its parser; `tests/no_dependencies.rs` fails on any
-dependency it does not name.  The one it names is `quaffed-encoding`, quaff's own reading of a
-file's bytes, which a front end answers in.
+dependency its `ALLOWED` does not name, which is where a dependency that is not a parser, such
+as quaff's own reading of a file's bytes, is added deliberately.
 
 ## The shape
 
@@ -168,9 +168,10 @@ sees an adapter's type.  Every question but `claims` takes text rather than a fi
 questions can be asked of code embedded in another language's file once a scope can name it.
 
 **A question added later has a default answer**, so every language already written compiles
-unchanged.  A default is given only where an honest one exists: no encoding declared, nothing
-written into a string, so such an edit is refused, and no construct that needs another around it.
-A language with only a parser implements the rest and takes those.  A type an adapter builds is
+unchanged.  A default is given only where an honest one exists, such as declaring no encoding,
+and one that leaves something undone makes the engine refuse rather than guess: writing nothing
+into a string refuses such an edit.  A language with only a parser implements the questions that
+have no default and takes the rest.  A type an adapter builds is
 built through a constructor where its fields may grow (`Rewrite::new`, `CompileError::new`);
 every crate is in one workspace, so any other change to what crosses is a compile error in the
 adapters, fixed in the same change.
@@ -201,8 +202,11 @@ means where files of several languages are in scope.
    reader does, and describe the rule in `encoding.md` beside Python's.
 8. Add its front end to `LANGUAGES` in `crates/quaffed/src/languages.rs`, its adapter to the
    binary's `Cargo.toml`, and the adapter's crate name to `ADAPTERS` in
-   `crates/quaffed/tests/adapter_containment.rs`, which fails until the two agree.  The test in
-   `languages.rs` fails if any file name is claimed by two languages.  Nothing else in the binary
+   `crates/quaffed/tests/adapter_containment.rs`, which fails on a `quaffed-*` dependency of the
+   binary that is in neither its `ADAPTERS` nor its `ENGINE`.  The test in `languages.rs` fails
+   if a language claims a file named by another's extensions; a front end that overrides
+   `claims` beyond its extensions needs a test of its own that it claims no other language's
+   files.  Nothing else in the binary
    changes: every file is found among `LANGUAGES`, and every pattern is compiled for each.
 9. List it, with the extensions that name its files, as a row of the table under _Which files_ in
    `docs/language.md`, with what only it does under a heading of its own there;

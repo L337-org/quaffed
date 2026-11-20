@@ -93,9 +93,9 @@ pub enum Failure {
     },
     /// The files to search could not all be found.  Exit 7.
     Discovery(discover::Error),
-    /// A structural search needs Python files quaff cannot parse - ones that do not parse, and
-    /// ones in an encoding Python reads and quaff does not - so the run is refused: a count that
-    /// left them out could not be trusted.  Exit 9.
+    /// A structural search needs files quaff cannot parse - ones that do not parse in their
+    /// language, and ones in an encoding their language reads and quaff does not - so the run is
+    /// refused: a count that left them out could not be trusted.  Exit 9.
     Unparseable {
         /// Each such file, as the user would recognise it, and why it cannot be parsed.
         files: Vec<(PathBuf, String)>,
@@ -106,8 +106,8 @@ pub enum Failure {
         /// Each such file, and what it cannot write.
         files: Vec<Unwritable>,
     },
-    /// The edits would leave Python files that parsed unparseable, so the run is refused and
-    /// nothing written.  Exit 9.
+    /// The edits would leave files that parsed in their language unparseable, so the run is
+    /// refused and nothing written.  Exit 9.
     BrokenByEdit {
         /// Each such file.
         files: Vec<Broken>,
@@ -125,7 +125,7 @@ pub enum Failure {
     Write(write::Failure),
 }
 
-/// A Python file an edit would leave unparseable.
+/// A file an edit would leave unparseable in its language.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Broken {
     /// The file, as the user would recognise it.
@@ -285,7 +285,7 @@ fn leave_out(first: Option<&Path>) -> String {
     format!("with `in`, with `where not FILE matches`{example}")
 }
 
-/// The refusal of edits that would leave Python files unparseable.
+/// The refusal of edits that would leave files unparseable in their language.
 fn broken(f: &mut fmt::Formatter<'_>, files: &[Broken]) -> fmt::Result {
     write!(
         f,
@@ -471,6 +471,7 @@ fn run_in(
     // Every `where` is compiled and checked, as every pattern is, before discovery looks at a
     // file, so that a script error is reported as one however large or unreadable the tree.
     filters(&searching, &mut compiled, roots, &built)?;
+    rewrites_read(&compiled, &planned_rewrites, &built)?;
     let mut scoping = Scoping::new(narrow.as_deref(), &cwd);
     let scoped: Vec<Scoped> = searching
         .iter()
@@ -489,8 +490,8 @@ fn run_in(
         locale.as_ref(),
     )?;
     // A structural search over files it cannot parse would give a count that cannot be trusted,
-    // whether Python could parse them or not, so the whole run is refused, naming each, before
-    // anything is printed.
+    // whether their language could parse them or not, so the whole run is refused, naming each,
+    // before anything is printed.
     if !searched.unparsed.is_empty() {
         return Err(Failure::Unparseable {
             files: searched.unparsed.clone(),
@@ -565,6 +566,33 @@ fn unread(errors: &[(&dyn FrontEnd, CompileError)], span: Span, built: &Built) -
     }
 }
 
+/// Each rewrite, checked against the languages that read its pattern: one that none of them reads
+/// stops the run, with what each said.  Checked when the rewrites are compiled, and again once
+/// the `where`s have left a pattern unread in the languages that cannot read them.
+fn rewrites_read(
+    compiled: &[Compiled],
+    planned_rewrites: &[PlannedRewrite],
+    built: &Built,
+) -> Result<(), Failure> {
+    for (index, (_, span, compiled_at)) in planned_rewrites.iter().enumerate() {
+        let reading: Vec<&Compiled> = compiled
+            .iter()
+            .filter(|c| c.patterns[*compiled_at].is_some())
+            .collect();
+        let errors: Vec<(&dyn FrontEnd, CompileError)> = reading
+            .iter()
+            .filter_map(|c| match &c.rewrites[index] {
+                Some(Err(err)) => Some((c.language, err.clone())),
+                _ => None,
+            })
+            .collect();
+        if !reading.is_empty() && errors.len() == reading.len() {
+            return Err(unread(&errors, *span, built));
+        }
+    }
+    Ok(())
+}
+
 /// Every structural pattern compiled for each of `languages`, and every rewrite template against
 /// the pattern whose captures it writes back, before any file is read.  A pattern no language
 /// reads stops the run before it looks at anything, as does a rewrite no language that reads its
@@ -600,26 +628,16 @@ fn compile(
             return Err(unread(&errors, *span, built));
         }
     }
-    for (written, span, compiled_at) in planned_rewrites {
-        let mut errors = Vec::new();
+    for (written, _, compiled_at) in planned_rewrites {
         for for_language in &mut compiled {
             let language = for_language.language;
             let rewrite = for_language.patterns[*compiled_at]
                 .as_ref()
                 .map(|pattern| language.compile_rewrite(written, pattern));
-            if let Some(Err(err)) = &rewrite {
-                errors.push((language, err.clone()));
-            }
             for_language.rewrites.push(rewrite);
         }
-        let reading = compiled
-            .iter()
-            .filter(|c| c.patterns[*compiled_at].is_some())
-            .count();
-        if errors.len() == reading {
-            return Err(unread(&errors, *span, built));
-        }
     }
+    rewrites_read(&compiled, planned_rewrites, built)?;
     // A replace's unnamed holes are named once its rewrite is compiled, which reports `$_` in a
     // rewrite as the unnamed hole it is, so that each match says where they matched too.
     for for_language in &mut compiled {
@@ -660,7 +678,7 @@ fn pause(marker: &Path) -> Result<(), Failure> {
 /// run - and prints its results, in that order.
 ///
 /// The outcome is decided before anything is printed or written, so that a replace whose
-/// replacement a file cannot hold, an edit that breaks a Python file, or a file that cannot be
+/// replacement a file cannot hold, an edit that breaks a file's parse, or a file that cannot be
 /// written refuses the whole run with nothing written and nothing printed: a run that gives no
 /// answer prints nothing.  An assertion that fails is an answer, so its results print, and nothing
 /// is written.
@@ -755,8 +773,8 @@ thread_local! {
     static HELD: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Refuses edits that would leave a file in a language quaff parses unparseable that parsed before
-/// them.  A file
+/// Refuses edits that would leave a file in a language quaff parses unparseable that parsed
+/// before them.  A file
 /// that did not parse before is not refused: the check protects a parse that existed, and a
 /// textual edit needs no parse tree.
 fn refuse_broken(searched: &Searched, locations: &[Option<String>]) -> Result<(), Failure> {
@@ -811,8 +829,8 @@ fn replace_locations(steps: &[Step], built: &Built) -> Vec<Option<String>> {
 type Over = Vec<(Range<usize>, Range<usize>)>;
 
 /// `over`, stretches a structural rewrite gave in decoded text - from `source`'s text to `edited` -
-/// as the same stretches in the file's bytes before and after.  Every encoding a Python file is
-/// read in spells each character on its own, so a stretch's bytes are its characters' spellings,
+/// as the same stretches in the file's bytes before and after.  Every encoding quaff decodes a
+/// file in spells each character on its own, so a stretch's bytes are its characters' spellings,
 /// after the byte-order mark if there is one.  A stretch that does not fall on characters in
 /// either text is not one a rewrite gives; then nothing is claimed, and the changes are one
 /// stretch from the first byte that differs to the last - exact, but holding about a whole copy of
@@ -1136,8 +1154,8 @@ type Planned<'p> = (Vec<Step<'p>>, Vec<(&'p str, Span)>, Vec<PlannedRewrite<'p>>
 enum Wanted<'p> {
     /// A textual pattern, matched in every text file.
     Text(&'p TextPattern),
-    /// A structural pattern, matched in every Python file: as written, and where its compiled
-    /// form is in the run's list of them.
+    /// A structural pattern, matched in every file whose language reads it: as written, and
+    /// where its compiled forms are in the run's list of them.
     Structural { written: &'p str, compiled: usize },
 }
 
@@ -2121,12 +2139,12 @@ struct Searched {
     /// The patterns, by their index, that structural matches were found for in the file being
     /// searched, whose last entry in [`Searched::matches`] is that file's: it must be held.
     cited: Vec<usize>,
-    /// For each structural pattern, the Python files an earlier replace left unparseable, though
+    /// For each structural pattern, the files an earlier replace left unparseable, though
     /// they parse on disk, with where and why: the pattern cannot be searched for in them, and
     /// the edit is refused.
     broken: Vec<Vec<(PathBuf, String, Vec<usize>)>>,
-    /// Python files `CPython` refuses to read whatever they hold, so are searched for nothing, by
-    /// the paths a message shows, with why.
+    /// Files whose own declared encoding their language's reader refuses, whatever they hold, so
+    /// are searched for nothing, by the paths a message shows, with why.
     refused: Vec<(PathBuf, Refusal)>,
     /// Files of unknown encoding that read cleanly in the locale's encoding, which a message
     /// mentions as a hint, and that encoding's name as the locale spells it.
@@ -2232,7 +2250,8 @@ fn batches<'p>(
 }
 
 /// A file as it was read for the run: where it is, the path a message shows, its bytes on disk,
-/// how its encoding was decided, and whether it is Python and whether binary.
+/// how its encoding was decided, what the run's patterns compile to in its language, and whether
+/// it is binary.
 struct ReadFile<'a> {
     file: &'a Path,
     shown: &'a Path,
@@ -2720,7 +2739,8 @@ impl Searched {
         ));
     }
 
-    /// Searches a Python file's current bytes, `text`, for a batch's structural patterns.
+    /// Searches a file's current bytes, `text`, for a batch's structural patterns, as `compiled`
+    /// has them for its language.
     /// `unparsed` says whether an earlier batch found the file unparseable, so that it is counted
     /// as such once however many batches search it.  `on_disk` is the file as it is on
     /// disk when an earlier replace has changed it: if that parses and `text` does not, the edit
@@ -2798,9 +2818,9 @@ impl Searched {
         self.not_parsed(language, shown, why, earlier, &indices, unparsed);
     }
 
-    /// Records that a Python file could not be parsed for the patterns at `indices`, `why`: as
-    /// broken by an earlier replace, if it parses on disk and a replace changed it, and otherwise
-    /// as a file that cannot be parsed, once however many batches find it so.
+    /// Records that a file could not be parsed in `language` for the patterns at `indices`, `why`:
+    /// as broken by an earlier replace, if it parses on disk and a replace changed it, and
+    /// otherwise as a file that cannot be parsed, once however many batches find it so.
     fn not_parsed(
         &mut self,
         language: &dyn FrontEnd,
@@ -2823,13 +2843,13 @@ impl Searched {
         }
     }
 
-    /// Replaces a structural pattern in a Python file's current bytes, `text`, as `edit` says,
-    /// and returns the file's new bytes if that changed it, with each stretch of `text` it wrote
-    /// over and where it went in them, as [`Changes::between`] takes.  The text is decoded as
-    /// `CPython` decodes it and written back in the same encoding, so that every byte outside the
-    /// matches is as it was.  A file that does not parse is recorded as a search records it; an
-    /// edit that cannot be made as written, or written in the file's encoding, is recorded for
-    /// the run to refuse.
+    /// Replaces a structural pattern in a file's current bytes, `text`, as `edit` says, and
+    /// returns the file's new bytes if that changed it, with each stretch of `text` it wrote over
+    /// and where it went in them, as [`Changes::between`] takes.  The text is decoded as the
+    /// file's language decodes it and written back in the same encoding, so that every byte
+    /// outside the matches is as it was.  A file that does not parse is recorded as a search
+    /// records it; an edit that cannot be made as written, or written in the file's encoding, is
+    /// recorded for the run to refuse.
     #[expect(
         clippy::too_many_arguments,
         reason = "the file, the edit and what earlier batches found, as a search has them"
@@ -2880,6 +2900,7 @@ impl Searched {
                     edit,
                     filter.as_ref(),
                     err,
+                    unparsed,
                 );
                 return None;
             }
@@ -2960,19 +2981,19 @@ impl Searched {
         edit: &Rewriting,
         filter: Option<&structural::Where>,
         err: &CompileError,
+        unparsed: &mut bool,
     ) {
         let index = edit.index;
         let found = match structural::search(language, text, &[(edit.pattern, filter)]) {
             Ok(mut found) => found.swap_remove(0),
-            Err(unparsed) => {
-                let mut unparsed_once = false;
+            Err(why) => {
                 self.not_parsed(
                     language,
                     shown,
-                    unparsed_at(&unparsed),
+                    unparsed_at(&why),
                     earlier,
                     &[index],
-                    &mut unparsed_once,
+                    unparsed,
                 );
                 return;
             }
@@ -2992,8 +3013,8 @@ impl Searched {
         self.cite(index, shown, earlier.version, found);
     }
 
-    /// Counts a file once by what it is: binary, refused by `CPython`, or of unknown encoding that
-    /// reads cleanly in the locale's, for the hint.
+    /// Counts a file once by what it is: binary, refused by its language's reader, or of unknown
+    /// encoding that reads cleanly in the locale's, for the hint.
     fn tally(
         &mut self,
         shown: &Path,
@@ -3126,8 +3147,6 @@ impl Searched {
     }
 }
 
-/// The patterns in `batch`, each by its index among all the run's patterns, that look at a file,
-/// as `applies` says by that index: the batch itself, uncopied, when they all do.
 /// `filter`, a statement's `where`, decided for a file at `place` and for what a match binds.
 fn deciding<'f>(filter: &'f filter::Filter, place: &'f scope::Place) -> structural::Where<'f> {
     let found = filter::Found::default();
@@ -3157,6 +3176,8 @@ fn reads<'b>(
     }
 }
 
+/// The patterns in `batch`, each by its index among all the run's patterns, that look at a file,
+/// as `applies` says by that index: the batch itself, uncopied, when they all do.
 fn applying<'b, T: Copy>(batch: &'b [(usize, T)], applies: &[bool]) -> Cow<'b, [(usize, T)]> {
     if batch.iter().all(|&(i, _)| applies[i]) {
         Cow::Borrowed(batch)
@@ -3165,7 +3186,7 @@ fn applying<'b, T: Copy>(batch: &'b [(usize, T)], applies: &[bool]) -> Cow<'b, [
     }
 }
 
-/// Where and why a Python file does not parse, as a message gives it.
+/// Where and why a file does not parse in its language, as a message gives it.
 fn unparsed_at(unparsed: &structural::Unparsed) -> String {
     format!(
         "line {}, column {}: {}",
@@ -3348,7 +3369,7 @@ impl<'s> Evaluation<'s> {
         Ok(())
     }
 
-    /// Refuses the run if the next `patterns` patterns need a Python file an earlier replace
+    /// Refuses the run if the next `patterns` patterns need a file an earlier replace
     /// left unparseable: the edit broke it, so they cannot be searched for in it.
     fn refuse_broken_for(&self, patterns: usize) -> Result<(), Failure> {
         let mut files: Vec<Broken> = Vec::new();
@@ -3407,7 +3428,8 @@ impl<'s> Evaluation<'s> {
     }
 
     /// Why `pattern`, the run's pattern at `index`, could not be looked for anywhere, if that is
-    /// so: a structural pattern whose scope holds no Python file, or none that could be searched.
+    /// so: a structural pattern whose scope holds no file in a language that reads it, or none
+    /// that could be searched.
     fn nothing_applicable(&self, index: usize, pattern: Wanted) -> Option<String> {
         let searched = self.searched;
         match pattern {
@@ -3439,7 +3461,7 @@ impl<'s> Evaluation<'s> {
                     ),
                 },
             ),
-            // Every Python file in scope is binary, which the binary count says.
+            // Every file in scope whose language reads it is binary, which the binary count says.
             Wanted::Structural { .. } if searched.structural_for[index] == 0 => Some(format!(
                 "no file in scope with structural support could be searched; {} not searched",
                 count(searched.supported_for[index], "such file", "such files")
@@ -3496,8 +3518,9 @@ fn expected(count: Count) -> String {
 
 /// A note for everything not looked at, or looked at without certainty, so that nothing is
 /// silently left out: per pattern evaluated, the files it was not searched in and its possible
-/// matches; then the Python files `CPython` refuses, the files that read cleanly in the locale's
-/// encoding, and what discovery, classification and the project's declarations passed over.
+/// matches; then the files their language's reader refuses, the files that read cleanly in the
+/// locale's encoding, and what discovery, classification and the project's declarations passed
+/// over.
 fn skipped(
     searched: &Searched,
     evaluated: &[Searching],
@@ -3601,9 +3624,10 @@ fn skipped(
     notes
 }
 
-/// The notes for structural patterns, once for the run however many there are: the text-tier
-/// files they do not apply to, where some Python is in scope - with none, the search or the
-/// assertion already counted them.
+/// The notes for structural patterns, once for the run however many there are, where some file
+/// in scope has structural support for one - with none, the search or the assertion already
+/// counted them: the text-tier files they do not apply to, and the files whose language cannot
+/// read one of them.
 fn structural_notes(searched: &Searched, evaluated: &[Searching]) -> Vec<String> {
     let mut notes = Vec::new();
     if !evaluated
@@ -4508,6 +4532,17 @@ mod tests {
     /// parses Python and Toy.
     fn in_two_languages(name: &str, script: &str, files: &[(&str, &str)]) -> TwoLanguages {
         use crate::languages::{PYTHON, TOY};
+        in_languages(&[PYTHON, TOY], name, script, files)
+    }
+
+    /// Runs `script` over `files`, each a path and its text, in a fresh directory, as a run that
+    /// parses `languages`.
+    fn in_languages(
+        languages: &[&'static dyn FrontEnd],
+        name: &str,
+        script: &str,
+        files: &[(&str, &str)],
+    ) -> TwoLanguages {
         let dir = std::env::temp_dir().join(format!(
             "quaffed-two-languages-{name}-{}",
             std::process::id()
@@ -4521,7 +4556,7 @@ mod tests {
         let dir = fs::canonicalize(&dir).unwrap();
         let (mut out, mut notes) = (Vec::new(), Vec::new());
         let outcome = run_in(
-            &[PYTHON, TOY],
+            languages,
             vec![SourceArg::Expression {
                 number: 1,
                 text: script.to_owned(),
@@ -4694,6 +4729,11 @@ mod tests {
             &[("b.toy", "g = lambda: f(2)\n"), ("c.txt", "g\n")],
         );
         assert!(
+            matches!(ran.outcome, Ok(Outcome::NothingFound)),
+            "{:?}",
+            ran.outcome
+        );
+        assert!(
             ran.notes.contains(
                 "no file in scope is in a language that reads it; 1 file in another language \
                  and 1 text-tier file not searched"
@@ -4794,6 +4834,60 @@ mod tests {
             ran.out.contains("a.py") && !ran.out.contains("b.toy"),
             "{}",
             ran.out
+        );
+    }
+
+    #[test]
+    fn a_where_no_language_reading_the_pattern_can_read_is_refused() {
+        let ran = in_two_languages(
+            "where-none",
+            "find `f($x)` where $x matches `g(`",
+            &[("a.py", "f(1)\n")],
+        );
+        assert!(
+            matches!(
+                &ran.outcome,
+                Err(Failure::Script { message, .. }) if !message.contains("as Toy")
+            ),
+            "the first language's error alone: {:?}",
+            ran.outcome
+        );
+    }
+
+    #[test]
+    fn a_rewrite_is_checked_again_once_a_where_leaves_its_pattern_unread() {
+        use crate::languages::{PLAIN, TOY};
+        // Toy reads the pattern and the `where` but not the rewrite; Plain reads the pattern and
+        // the rewrite but not the `where`.  Once the `where` leaves Plain out, no language that
+        // reads the pattern reads the rewrite, so the run stops before reading any file.
+        let ran = in_languages(
+            &[TOY, PLAIN],
+            "rewrite-after-where",
+            "replace `f($x)` with `lambda: $x` where $x matches `yielded` expect 1",
+            &[("a.toy", "f(yielded)\n"), ("b.plain", "f(yielded)\n")],
+        );
+        assert!(
+            matches!(
+                &ran.outcome,
+                Err(Failure::Script { message, .. }) if message.contains("`lambda` is not Toy")
+            ),
+            "{:?}",
+            ran.outcome
+        );
+        assert_eq!(ran.after, ["f(yielded)\n", "f(yielded)\n"]);
+    }
+
+    #[test]
+    fn a_file_unparseable_for_a_search_and_an_unwritable_rewrite_is_named_once() {
+        let ran = in_two_languages(
+            "unparsed-once",
+            "find `f($x)`\nreplace `f($x)` with `lambda: $x` expect any",
+            &[("a.py", "f(1)\n"), ("b.toy", "f(2\n")],
+        );
+        assert!(
+            matches!(&ran.outcome, Err(Failure::Unparseable { files }) if files.len() == 1),
+            "{:?}",
+            ran.outcome
         );
     }
 }

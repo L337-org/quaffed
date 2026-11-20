@@ -16,6 +16,36 @@ use std::path::{Path, PathBuf};
 /// Every language adapter crate, as Rust code names it.
 const ADAPTERS: &[&str] = &["quaffed_python"];
 
+/// The workspace's crates the binary depends on that are not a language's adapter: the engine's
+/// own.  Any other `quaffed-*` dependency must be in [`ADAPTERS`], so that a new adapter cannot
+/// be depended on, and named anywhere, without this test reading for it.
+const ENGINE: &[&str] = &[
+    "quaffed-encoding",
+    "quaffed-representation",
+    "quaffed-script",
+    "quaffed-syntax",
+];
+
+/// The `quaffed-*` crates `manifest` declares as dependencies, by name, in any section.
+fn workspace_dependencies(manifest: &str) -> Vec<String> {
+    manifest
+        .lines()
+        .map(str::trim)
+        .filter_map(|line| {
+            let key = line
+                .trim_start_matches('[')
+                .split(['=', ' ', ']'])
+                .next()
+                .unwrap_or_default()
+                .rsplit('.')
+                .next()
+                .unwrap_or_default()
+                .trim_matches(['"', '\'']);
+            key.starts_with("quaffed-").then(|| key.to_owned())
+        })
+        .collect()
+}
+
 /// The one file allowed to name them, under `src/`.
 const REGISTRY: &str = "languages.rs";
 
@@ -81,6 +111,18 @@ fn the_registry_names_every_adapter_the_binary_depends_on() {
     let manifest = fs::read_to_string(root.join("Cargo.toml")).expect("reading Cargo.toml");
     let registry =
         fs::read_to_string(root.join("src").join(REGISTRY)).expect("reading the registry");
+    let depended: Vec<String> = workspace_dependencies(&manifest);
+    let unknown: Vec<&String> = depended
+        .iter()
+        .filter(|name| {
+            !ENGINE.contains(&name.as_str()) && !ADAPTERS.contains(&name.replace('-', "_").as_str())
+        })
+        .collect();
+    assert!(
+        unknown.is_empty(),
+        "Cargo.toml depends on {unknown:?}, neither an engine crate nor in ADAPTERS: add a \
+         language's adapter to ADAPTERS, or an engine crate to ENGINE, in this test"
+    );
     for adapter in ADAPTERS {
         let package = adapter.replace('_', "-");
         assert!(
@@ -94,6 +136,19 @@ fn the_registry_names_every_adapter_the_binary_depends_on() {
             "src/{REGISTRY} does not name {adapter}"
         );
     }
+}
+
+#[test]
+fn a_workspace_dependency_is_found_however_it_is_declared() {
+    assert_eq!(
+        workspace_dependencies(
+            "[package]\nname = \"quaffed\"\n[dependencies]\n\
+             quaffed-python = { path = \"../python\" }\n\
+             \"quaffed-rust\" = { path = \"../rust\" }\nmemchr = \"=2\"\n\
+             [dependencies.quaffed-go]\npath = \"../go\"\n"
+        ),
+        ["quaffed-python", "quaffed-rust", "quaffed-go"]
+    );
 }
 
 #[test]

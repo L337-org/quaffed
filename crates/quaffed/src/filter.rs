@@ -120,7 +120,6 @@ impl Filter {
 
 fn tree(
     language: &dyn FrontEnd,
-
     filter: &Spanned<Written>,
     roots: Roots,
     outer: &[&str],

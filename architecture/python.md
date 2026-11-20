@@ -8,6 +8,13 @@ Ruff warns "will have frequent breaking changes", is absorbed here and reaches n
 
 ## What it offers
 
+- **`Python`**: Python's front end, the `FrontEnd` (`syntax.md`) the engine reaches Python
+  through, answering each question from what follows, and the coding line and decoding from
+  `quaffed-encoding` (`src/front.rs`).  `crates/quaffed/src/languages.rs` is the only file of
+  the binary that names it.  The types that cross it - `Lexed`, `StringPart`, `Bracket`,
+  `Rewrite`, `Site`, `Misplaced` and `ParseError` - are `quaffed-syntax`'s, which the functions
+  below return; `PatternError` and `RewriteError` stay here, and cross as a `CompileError` of
+  message and place.
 - **`parse_module`**, **`parse_expression`** and **`parse_ipython`**: source parsed into a syntax
   arena (`syntax.md`) of language `PYTHON`.  Source that does not parse is `ParseError::Invalid`,
   with Ruff's message verbatim and the byte offset; text too long for an arena is

@@ -5,8 +5,9 @@
 //!
 //! Everything else reaches a language through [`FrontEnd`], and a run finds each file's among
 //! [`LANGUAGES`] by the file's name, so a language is added by adding its front end there and
-//! nothing else in the binary changes.  `tests/adapter_containment.rs` fails if any other file of
-//! the binary names an adapter crate.  `architecture/syntax.md` lists what a new language implements.
+//! nothing else in the binary changes.  `tests/adapter_containment.rs` fails if any other file
+//! of the binary names an adapter crate.  `architecture/syntax.md` lists what a new language
+//! implements.
 
 #[cfg(test)]
 use std::path::Path;
@@ -36,27 +37,48 @@ pub(crate) static PYTHON: &dyn FrontEnd = &quaffed_python::Python;
 /// does not can be written.  It answers no question that has a default, so it holds the
 /// defaults too.
 #[cfg(test)]
-pub(crate) static TOY: &dyn FrontEnd = &Toy;
+pub(crate) static TOY: &dyn FrontEnd = &Toy {
+    name: "Toy",
+    extensions: &["toy"],
+    refuses: "lambda",
+};
 
+/// A third language for tests, as [`TOY`] but claiming `.plain` files and reading nothing
+/// holding `yield`, so that each of two languages can read what the other cannot.
 #[cfg(test)]
-struct Toy;
+pub(crate) static PLAIN: &dyn FrontEnd = &Toy {
+    name: "Plain",
+    extensions: &["plain"],
+    refuses: "yield",
+};
+
+/// A test language: Python's front end under the name `name`, claiming files by `extensions`,
+/// that reads no pattern or rewrite holding `refuses`.
+#[cfg(test)]
+struct Toy {
+    name: &'static str,
+    extensions: &'static [&'static str],
+    refuses: &'static str,
+}
 
 #[cfg(test)]
 impl Toy {
-    /// Why Toy cannot read `text`, if it holds `lambda`.
-    fn refused(text: &str) -> Option<quaffed_syntax::CompileError> {
-        text.find("lambda")
-            .map(|at| quaffed_syntax::CompileError::new("`lambda` is not Toy".to_owned(), Some(at)))
+    /// Why it cannot read `text`, if it holds the word it refuses.
+    fn refused(&self, text: &str) -> Option<quaffed_syntax::CompileError> {
+        text.find(self.refuses).map(|at| {
+            let message = format!("`{}` is not {}", self.refuses, self.name);
+            quaffed_syntax::CompileError::new(message, Some(at))
+        })
     }
 }
 
 #[cfg(test)]
 impl FrontEnd for Toy {
     fn language(&self) -> quaffed_syntax::Language {
-        quaffed_syntax::Language::new("Toy")
+        quaffed_syntax::Language::new(self.name)
     }
     fn extensions(&self) -> &'static [&'static str] {
-        &["toy"]
+        self.extensions
     }
     fn decode(&self, bytes: &[u8]) -> Result<quaffed_encoding::Source, quaffed_encoding::Refusal> {
         PYTHON.decode(bytes)
@@ -71,14 +93,16 @@ impl FrontEnd for Toy {
         &self,
         text: &str,
     ) -> Result<quaffed_syntax::Pattern, quaffed_syntax::CompileError> {
-        Toy::refused(text).map_or_else(|| PYTHON.compile_pattern(text), Err)
+        self.refused(text)
+            .map_or_else(|| PYTHON.compile_pattern(text), Err)
     }
     fn compile_rewrite(
         &self,
         text: &str,
         pattern: &quaffed_syntax::Pattern,
     ) -> Result<quaffed_syntax::Rewrite, quaffed_syntax::CompileError> {
-        Toy::refused(text).map_or_else(|| PYTHON.compile_rewrite(text, pattern), Err)
+        self.refused(text)
+            .map_or_else(|| PYTHON.compile_rewrite(text, pattern), Err)
     }
     fn lex(&self, text: &str) -> quaffed_syntax::Lexed {
         PYTHON.lex(text)

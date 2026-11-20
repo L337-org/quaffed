@@ -9,9 +9,8 @@
 //!
 //! A question added later is a method with a default answer, so every language already written
 //! compiles unchanged and takes the default.  A default is given only where an honest one
-//! exists - a language that declares no encoding, has no construct that needs another around
-//! it, or has no way to write a value into a string - and it never claims more than the language
-//! was asked to support.  `architecture/syntax.md` describes the interface and what a new
+//! exists, such as a language that declares no encoding, and it never claims more than the
+//! language was asked to support.  `architecture/syntax.md` describes the interface and what a new
 //! language implements.
 
 use std::fmt;
