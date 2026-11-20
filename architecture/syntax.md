@@ -206,8 +206,8 @@ means where files of several languages are in scope.
    binary that is in neither its `ADAPTERS` nor its `ENGINE`.  The test in `languages.rs` fails
    if a language claims a file named by another's extensions; a front end that overrides
    `claims` beyond its extensions needs a test of its own that it claims no other language's
-   files.  Nothing else in the binary
-   changes: every file is found among `LANGUAGES`, and every pattern is compiled for each.
+   files.  Nothing else in the binary changes: every file is found among `LANGUAGES`, and every
+   pattern is compiled for each.
 9. List it, with the extensions that name its files, as a row of the table under _Which files_ in
    `docs/language.md`, with what only it does under a heading of its own there;
    `tests/language_guide.rs` fails until the table agrees with the help, which prints

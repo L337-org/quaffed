@@ -32,16 +32,21 @@ fn workspace_dependencies(manifest: &str) -> Vec<String> {
         .lines()
         .map(str::trim)
         .filter_map(|line| {
+            let header = line.starts_with('[');
             let key = line
                 .trim_start_matches('[')
                 .split(['=', ' ', ']'])
                 .next()
-                .unwrap_or_default()
-                .rsplit('.')
-                .next()
-                .unwrap_or_default()
-                .trim_matches(['"', '\'']);
-            key.starts_with("quaffed-").then(|| key.to_owned())
+                .unwrap_or_default();
+            // A table header names the crate last, `[dependencies.quaffed-go]`; a key names it
+            // first, `quaffed-go.path = ...`.
+            let name = if header {
+                key.rsplit('.').next()
+            } else {
+                key.split('.').next()
+            };
+            let name = name.unwrap_or_default().trim_matches(['"', '\'']);
+            name.starts_with("quaffed-").then(|| name.to_owned())
         })
         .collect()
 }
@@ -145,9 +150,16 @@ fn a_workspace_dependency_is_found_however_it_is_declared() {
             "[package]\nname = \"quaffed\"\n[dependencies]\n\
              quaffed-python = { path = \"../python\" }\n\
              \"quaffed-rust\" = { path = \"../rust\" }\nmemchr = \"=2\"\n\
-             [dependencies.quaffed-go]\npath = \"../go\"\n"
+             [dependencies.quaffed-go]\npath = \"../go\"\n\
+             [dev-dependencies]\nquaffed-c.path = \"../c\"\nquaffed-d.workspace = true\n"
         ),
-        ["quaffed-python", "quaffed-rust", "quaffed-go"]
+        [
+            "quaffed-python",
+            "quaffed-rust",
+            "quaffed-go",
+            "quaffed-c",
+            "quaffed-d"
+        ]
     );
 }
 
