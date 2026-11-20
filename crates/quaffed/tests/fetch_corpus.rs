@@ -406,8 +406,7 @@ fn a_failed_download_names_the_url_and_leaves_nothing_behind() {
         "{err}"
     );
     let left: Vec<_> = fs::read_dir(&dest)
-        .map(|entries| entries.map(|e| e.expect("an entry").path()).collect())
-        .unwrap_or_default();
+        .map_or_default(|entries| entries.map(|e| e.expect("an entry").path()).collect());
     assert!(left.is_empty(), "left behind: {left:?}");
 }
 
