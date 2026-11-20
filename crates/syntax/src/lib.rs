@@ -15,8 +15,8 @@ mod matching;
 mod pattern;
 
 pub use front::{
-    Bracket, CompileError, Declared, DeclaredEncoding, FrontEnd, Lexed, Misplaced, ParseError,
-    Refused, Rewrite, Site, StringPart,
+    Bracket, CompileError, Declared, DeclaredEncoding, Editing, FrontEnd, Lexed, Misplaced,
+    ParseError, Refused, Rewrite, Site, StringPart,
 };
 
 pub use matching::{
@@ -194,8 +194,10 @@ impl<'text> Arena<'text> {
         self.node(node).kind
     }
 
-    /// The list among its parent's children `node` belongs to, a block's statements, or `None`
-    /// if the adapter marked none.  Two siblings in one list share it.
+    /// The list among its parent's children `node` belongs to, or `None` if the adapter marked
+    /// none.  Two siblings in one list share it.  In an arena a front end parses, a list is a
+    /// block's statements and nothing else, so a node in one is a statement: editing asks that
+    /// rather than any kind's name.  A pattern's lifted nodes are its one other list.
     #[must_use]
     pub fn list(&self, node: NodeId) -> Option<u32> {
         match self.node(node).list {
@@ -476,8 +478,8 @@ impl<'text> Builder<'text> {
         });
     }
 
-    /// Begins a list among the open node's children - a block's statements - which every child
-    /// entered until [`end_list`](Builder::end_list) belongs to.
+    /// Begins a list among the open node's children - a block's statements, and nothing else -
+    /// which every child entered until [`end_list`](Builder::end_list) belongs to.
     pub fn begin_list(&mut self) {
         self.lists.push((self.next_list, self.open.len()));
         self.next_list += 1;

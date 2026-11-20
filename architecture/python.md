@@ -30,6 +30,12 @@ Ruff warns "will have frequent breaking changes", is absorbed here and reaches n
   Ruff's lexer, so that the engine never names a token kind (`src/lex.rs`).
 - **`escaped`**: a value written into a string part so that the literal holds it as text, or
   `None` where it cannot, as Python's string syntax decides (`src/lex.rs`).
+- **Python's rules for editing**, as the front end's `Editing` (`src/front.rs`): a list, a tuple
+  and a call's arguments may lose an item, but not a set, since `{}` is a dict; a tuple of one
+  item keeps its comma; items are separated by a comma and statements sharing a line by a
+  semicolon; a backslash continues a line; a block may follow its header's colon on the header's
+  line; a round bracket only groups; and the words `misplaced` finds.  Its kinds are named from
+  Ruff's `NodeKind`, never spelled.
 - **`kinds_in_module`**, **`kinds_in_expression`**, **`kinds_in_ipython`** and **`all_kinds`**:
   the kinds an arena holds, and every kind the pinned Ruff knows, which the synthetic corpus's
   coverage check reads.
@@ -146,7 +152,8 @@ value is its content as the script language defines it for comparing, an implici
 joined; an f-string's parts are compared one by one and not joined.
 
 Each statement list Ruff's walk visits - a module's, a function's, a branch's, an `else` or a
-`finally` - is marked as a list, so `$body...` never takes in an `else:` clause.
+`finally` - is marked as a list, so `$body...` never takes in an `else:` clause.  Nothing else is
+marked, so a node in a list is a statement, as editing asks (`syntax.md`).
 
 ## The kind list is held to Ruff's enum by the compiler
 

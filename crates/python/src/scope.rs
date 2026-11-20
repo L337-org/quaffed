@@ -68,8 +68,14 @@ struct Walk {
 
 impl Walk {
     fn found(&mut self, what: &'static str, node: &impl Ranged) {
+        let needs = match what {
+            "return" | "yield" | "yield from" => "a function",
+            "await" | "async with" | "async for" => "an async function",
+            _ => "a loop",
+        };
         self.found.push(Misplaced {
             what,
+            needs,
             offset: node.start().to_usize(),
         });
     }

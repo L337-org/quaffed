@@ -95,7 +95,7 @@ pub fn search(
         .collect())
 }
 
-/// Why `text` did not parse, placed in it: where Ruff's error starts, or the start of the
+/// Why `text` did not parse, placed in it: where the parser's error starts, or the start of the
 /// file for text too long to parse at all.
 pub(crate) fn unparsed(text: &str, err: ParseError) -> Unparsed {
     match err {

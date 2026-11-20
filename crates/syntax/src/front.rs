@@ -19,7 +19,7 @@ use std::path::Path;
 
 use quaffed_encoding::{Source, SourceEncoding};
 
-use crate::{Arena, Language, Pattern, TooLong};
+use crate::{Arena, Kind, Language, Pattern, TooLong};
 
 /// A language, as the engine reaches it: which files are its own, how they are read, and how a
 /// pattern or a rewrite in it is compiled.
@@ -33,6 +33,14 @@ pub trait FrontEnd: Sync {
 
     /// The extensions that name its files, without the dot, as the help lists them.
     fn extensions(&self) -> &'static [&'static str];
+
+    /// Every kind of node its arenas hold, as its parser names them: what the engine never
+    /// spells, which a test in the binary holds it to.
+    fn kinds(&self) -> &'static [Kind];
+
+    /// The language's rules for statements, lists and layout, as an edit needs them.  There is
+    /// no default: every language states its own.
+    fn editing(&self) -> &'static Editing;
 
     /// Whether the file at `path` is one of this language's, by its name alone.
     fn claims(&self, path: &Path) -> bool {
@@ -292,13 +300,56 @@ pub struct Bracket {
 }
 
 /// A statement or expression outside the construct it needs: what it is, as the language spells
-/// it, and where it starts.
+/// it, what it needs, and where it starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Misplaced {
     /// What it is, as the language spells it, such as `break`.
     pub what: &'static str,
+    /// What it needs to stand inside, as a message names it after "outside", such as "a loop".
+    pub needs: &'static str,
     /// The byte offset in the text where it starts.
     pub offset: usize,
+}
+
+/// A language's rules for statements, lists and layout, which decide how an edit is turned into
+/// text: what the arena does not say, since it holds only kinds, ranges and tokens.
+///
+/// What the arena does say is asked of it instead.  A statement is a node in one of the
+/// statement lists the adapter marks, and a statement holds a block where a statement stands
+/// inside it.  What an empty block needs is the language's own parse check, which refuses an
+/// edit that leaves one its language does not allow.
+///
+/// Its fields are public and it has no constructor, so a field added later is a compile error in
+/// every adapter until each states it: there is no honest default for any of them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Editing {
+    /// The kinds whose items a deletion may simply leave out where it takes no separator, the
+    /// rest standing as they were: in Python, `[debug]` becomes `[]`.  A kind left out is one
+    /// where what is left would parse and mean something else, so such a deletion is refused.
+    pub droppable_items: &'static [Kind],
+    /// The kinds that need a separator after their only item, which without one would be that
+    /// item alone: Python's tuple, `(a,)`.  A deletion that leaves one item writes it.
+    pub lone_item_separated: &'static [Kind],
+    /// What separates the items of a list: Python's comma.  A deletion takes it across line
+    /// breaks, since it separates an item from its neighbour wherever the lines fall.
+    pub item_separator: char,
+    /// What separates statements sharing a line, if anything does: Python's semicolon.  A
+    /// deletion takes it only from the match's own line.
+    pub statement_separator: Option<char>,
+    /// What continues a line onto the next when written just before its line break, if anything
+    /// does: Python's backslash.  A line break after it is layout, not the end of a statement.
+    pub line_continuation: Option<char>,
+    /// What ends a header whose block may be written on the header's own line, as in Python's
+    /// `if x: a()`, where indentation decides blocks.  `None` for a language whose blocks are
+    /// not decided by layout: statements sharing a line are then never given lines of their own.
+    pub header_block_opener: Option<char>,
+    /// The bracket that only groups, which a node's range leaves out where it wraps one: Python's
+    /// round bracket.  Every other bracket belongs to the node it opens.
+    pub grouping_bracket: char,
+    /// The words that can stand outside the construct they need, as [`FrontEnd::misplaced`]
+    /// finds them, which a text search looks for in what an edit wrote before the parse it asks
+    /// for: an edit that writes none of them leaves none outside.
+    pub misplaceable: &'static [&'static str],
 }
 
 /// A compiled rewrite template: the template as written, and where in it each captured name is
