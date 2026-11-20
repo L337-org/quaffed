@@ -107,18 +107,18 @@ delimiter.
 
 **Locations** (`src/location.rs`) name the source: a file or `<stdin>` by line and column, an
 `-e` expression or a `-p` pattern by character.  Lines and columns count from 1, columns in
-characters.  The command line (`crates/quaffed/src/run.rs`) drops a leading byte-order mark
-before parsing, so the parser never sees one and line 1, column 1 is the first visible
+characters.  The command line (`crates/quaffed/src/run/sources.rs`) drops a leading byte-order
+mark before parsing, so the parser never sees one and line 1, column 1 is the first visible
 character.
 
 ## Running a script
 
-The command line (`crates/quaffed/src/run.rs`) parses every source into one `Program`, runs the
-checker, then refuses anything this build cannot yet run, each exit 5 at where it was written.
-`delete` is planned as a structural `replace` whose rewrite is empty, with no behaviour of its
-own (`replacing`).  It compiles every backticked pattern, and every rewrite against its pattern,
-so one that is not a pattern, or a rewrite that names what its pattern does not bind, is exit 3
-there too.  Only then does it look at a file.  Every file is read once, and taken through the
+The command line (`crates/quaffed/src/run/sources.rs`) parses every source into one `Program`
+and runs the checker.  Planning (`src/run/plan.rs`) then refuses anything this build cannot yet
+run, each exit 5 at where it was written.  `delete` is planned as a structural `replace` whose
+rewrite is empty, with no behaviour of its own (`replacing`).  It compiles every backticked
+pattern, and every rewrite against its pattern, so one that is not a pattern, or a rewrite that
+names what its pattern does not bind, is exit 3 there too.  Only then does it look at a file.  Every file is read once, and taken through the
 statements in order, so a statement sees the edits before it; the statements are then evaluated
 in order over the results.  Editing, output, notes, assertion failures and exit codes are in
 `search.md`.
@@ -135,7 +135,7 @@ program a script parses to.
 2. Parse it in `src/parser.rs`, removing it from `NOT_IN_THIS_BUILD` or the matching list.
 3. Add unit tests for the form and for each way it can be malformed, with what each says.
 4. Extend the statement generator in `tests/properties.rs` so layout invariance covers it.
-5. When it becomes runnable, remove its refusal from `plan` in `crates/quaffed/src/run.rs`, and
+5. When it becomes runnable, remove its refusal from `steps` in `crates/quaffed/src/run/plan.rs`, and
    replace its end-to-end snapshot in `each_construct_not_built_yet_exits_5_naming_it` with one
    that runs it.
 6. Update this page, `search.md` where it changes the output or the exit codes, and

@@ -1,0 +1,1367 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 Gavin Lucas
+
+//! Execution: each file searched for the patterns that look at it, batch by batch, with its
+//! edits held, not written.
+//!
+//! The fourth phase.  In: the [`Plan`] and the [`Files`].  Out: what was [`Searched`] for, which
+//! evaluation and reporting read.
+
+use std::borrow::Cow;
+use std::ops::Range;
+use std::path::{Path, PathBuf};
+
+use quaffed_encoding::{self as encoding, Encoding, Named};
+use quaffed_representation::program::TextPattern;
+use quaffed_syntax::{CompileError, FrontEnd, Pattern, Refused, Rewrite};
+
+use super::{
+    compile::Compiled,
+    failure::Failure,
+    plan::{Plan, Replacement, Wanted},
+    report::name_of,
+    scoping::{Files, Projects, ToSearch},
+};
+
+/// Searches each of `files` for the patterns of `plan` that look at it, in order, holding the
+/// edits its replaces make, not writing them.
+///
+/// # Errors
+///
+/// Returns a [`Failure`] for a file that cannot be read, or whose encoding's declarations cannot
+/// be, and refuses the run for files a structural search needs that quaff cannot parse: a count
+/// that left them out could not be trusted.
+pub(super) fn execute(plan: &Plan, files: &mut Files) -> Result<Searched, Failure> {
+    let patterns: Vec<Wanted> = plan.searching.iter().map(|s| s.pattern).collect();
+    let locale = locale();
+    let searched = search_files(
+        &files.to_search,
+        scope::Roots {
+            cwd: &files.cwd,
+            root: &files.root,
+        },
+        &patterns,
+        &plan.replacements,
+        &plan.compiled,
+        &mut files.projects,
+        locale.as_ref(),
+    )?;
+    // A structural search over files it cannot parse would give a count that cannot be trusted,
+    // whether their language could parse them or not, so the whole run is refused, naming each,
+    // before anything is printed.
+    if !searched.unparsed.is_empty() {
+        return Err(Failure::Unparseable {
+            files: searched.unparsed.clone(),
+        });
+    }
+    Ok(searched)
+}
+use crate::changes::{self, Changes};
+use crate::filter;
+use crate::output;
+use crate::resolve::{self, Declarations, Resolution, Unknown};
+use crate::rewrite;
+use crate::scope;
+use crate::search::{self, Match};
+use crate::structural;
+
+/// Stretches an edit wrote over, each where it was in the bytes before and where what was written
+/// stands in those after, as [`Changes::between`] takes them.
+type Over = Vec<(Range<usize>, Range<usize>)>;
+
+/// `over`, stretches a structural rewrite gave in decoded text - from `source`'s text to `edited` -
+/// as the same stretches in the file's bytes before and after.  Every encoding quaff decodes a
+/// file in spells each character on its own, so a stretch's bytes are its characters' spellings,
+/// after the byte-order mark if there is one.  A stretch that does not fall on characters in
+/// either text is not one a rewrite gives; then nothing is claimed, and the changes are one
+/// stretch from the first byte that differs to the last - exact, but holding about a whole copy of
+/// the file for the rest of the run, as a run did before changes were held as stretches.
+pub(super) fn in_bytes(
+    source: &encoding::Source,
+    edited: &str,
+    over: &[(Range<usize>, Range<usize>)],
+) -> Over {
+    let plain = encoding::Source {
+        text: String::new(),
+        encoding: source.encoding,
+        byte_order_mark: false,
+    };
+    // Encoding nothing gives the byte-order mark alone, where the file has one.
+    let mark = source.encode("").map_or(0, |bytes| bytes.len());
+    // Each offset's place in the bytes, found by spelling the text up to it, piece by piece, in
+    // order: a sorted list of pairs, looked up by binary search.
+    let placed = |text: &str, mut offsets: Vec<usize>| -> Option<Vec<(usize, usize)>> {
+        offsets.sort_unstable();
+        offsets.dedup();
+        let mut placed = Vec::with_capacity(offsets.len());
+        let (mut from, mut at) = (0, mark);
+        for offset in offsets {
+            at += plain.encode(text.get(from..offset)?).ok()?.len();
+            placed.push((offset, at));
+            from = offset;
+        }
+        Some(placed)
+    };
+    let old = placed(
+        &source.text,
+        over.iter()
+            .flat_map(|(was, _)| [was.start, was.end])
+            .collect(),
+    );
+    let new = placed(
+        edited,
+        over.iter()
+            .flat_map(|(_, now)| [now.start, now.end])
+            .collect(),
+    );
+    let (Some(old), Some(new)) = (old, new) else {
+        return Vec::new();
+    };
+    let at = |placed: &[(usize, usize)], offset: usize| {
+        let index = placed
+            .binary_search_by_key(&offset, |&(offset, _)| offset)
+            .expect("every offset was placed");
+        placed[index].1
+    };
+    over.iter()
+        .map(|(was, now)| {
+            (
+                at(&old, was.start)..at(&old, was.end),
+                at(&new, now.start)..at(&new, now.end),
+            )
+        })
+        .collect()
+}
+
+/// Whether a file's bytes parse in `language`, decoded as the language decodes them; where and why
+/// not.
+pub(super) fn parses(language: &dyn FrontEnd, bytes: &[u8]) -> Result<(), String> {
+    let source = language
+        .decode(bytes)
+        .map_err(|refusal| refusal.to_string())?;
+    structural::search(language, &source.text, &[])
+        .map(|_| ())
+        .map_err(|unparsed| unparsed_at(&unparsed))
+}
+
+/// The encoding the user's locale names, if it names one other than UTF-8 that quaff reads, from
+/// `LC_ALL`, `LC_CTYPE` or `LANG`, the first that is set, as `setlocale` reads them.
+///
+/// Used only for a hint in a message, never to decide anything: a locale describes the user's
+/// terminal, not the project, and the same command must give the same answer on every machine.
+pub(super) fn locale() -> Option<(String, Encoding)> {
+    let value = ["LC_ALL", "LC_CTYPE", "LANG"]
+        .iter()
+        .find_map(|name| std::env::var(name).ok().filter(|v| !v.is_empty()))?;
+    let codeset = value.split_once('.')?.1;
+    let codeset = codeset.split('@').next().unwrap_or(codeset);
+    match encoding::named(codeset) {
+        Named::Read(Encoding::Utf8) | Named::Unread(_) | Named::Unknown => None,
+        Named::Read(encoding) => Some((codeset.to_owned(), encoding)),
+    }
+}
+
+/// One match a search found, and for a structural one where the code it covers is, which is
+/// printed in place of the pattern's text.
+///
+/// `Copy`, so that it cannot own memory: a run holds every match until it prints, and a copy of
+/// each match's code would make that the square of a block's length where the matches overlap.
+#[derive(Clone, Copy)]
+pub(super) struct Hit {
+    pub(super) at: Match,
+    pub(super) code: Option<Code>,
+}
+
+// A field that owns memory, such as a `String` of the matched code, would not be `Copy`: what a
+// match covers is read from the file it was found in when it is printed.
+const _: () = {
+    const fn holds_no_memory<T: Copy>() {}
+    holds_no_memory::<Hit>();
+};
+
+/// Where a structural match's code is: in which of the files the run holds, in which version of
+/// it - as read, or as a replace left it - and where in that version's decoded text.  Held rather
+/// than a copy of the code, since many long matches can overlap, and copies of them all would
+/// hold far more than the code itself.
+#[derive(Clone, Copy)]
+pub(super) struct Code {
+    pub(super) held: usize,
+    pub(super) version: usize,
+    pub(super) start: usize,
+    pub(super) end: usize,
+}
+
+/// What the run holds of a file until it ends, because a replace changed it or a structural match
+/// was found in it: whichever is smaller of the file and the code its matches cover.
+pub(super) enum Held {
+    /// The whole file: its bytes as read, and what each replace that changed it changed, in
+    /// order, from which any version of it is built.  A file a replace changed is always held
+    /// so, since it is checked and written from these.
+    File {
+        original: crate::contents::Bytes,
+        changes: Vec<Changes>,
+        /// Its language, if quaff parses it, which decodes it for a structural match's code.
+        language: Option<&'static dyn FrontEnd>,
+    },
+    /// The code the structural matches found in a file no replace changed cover, one match's
+    /// after another, where that is less than the file: a few short matches in a large file, as
+    /// most searches find.  Each match's [`Code`] is where its code stands in this.
+    Copied(String),
+}
+
+impl Held {
+    /// The file's bytes as read and the changes made to it, for a file held whole, as every file
+    /// a replace changed is.
+    pub(super) fn file(&self) -> (&crate::contents::Bytes, &[Changes]) {
+        match self {
+            Held::File {
+                original, changes, ..
+            } => (original, changes),
+            Held::Copied(_) => unreachable!("a file a replace changed is held whole"),
+        }
+    }
+
+    /// The decoded text a match's [`Code`] places it in: the version it was found in, built and
+    /// decoded again, for a file held whole, and the copies for one whose matches were copied.
+    pub(super) fn text(&self, version: usize) -> Cow<'_, str> {
+        match self {
+            Held::File {
+                original,
+                changes,
+                language,
+            } => {
+                let bytes = if version == 0 {
+                    Cow::Borrowed(&original[..])
+                } else {
+                    Cow::Owned(changes::applied(original, &changes[..version]))
+                };
+                let source = language
+                    .expect("a file a structural match was found in has a language")
+                    .decode(&bytes)
+                    .expect("a version a match was found in decoded then");
+                Cow::Owned(source.text)
+            }
+            Held::Copied(copies) => Cow::Borrowed(copies),
+        }
+    }
+
+    /// How many bytes it holds.
+    #[cfg(test)]
+    pub(super) fn size(&self) -> usize {
+        match self {
+            Held::File {
+                original, changes, ..
+            } => original.len() + changes.iter().map(Changes::held).sum::<usize>(),
+            Held::Copied(copies) => copies.len(),
+        }
+    }
+}
+
+/// What searching every file for every pattern found.
+pub(super) struct Searched {
+    /// For each pattern, the files with matches, in discovery order.
+    pub(super) matches: Vec<Vec<(PathBuf, Vec<Hit>)>>,
+    /// Files a structural search needs that quaff cannot parse, by the paths a message shows,
+    /// with where and why.
+    pub(super) unparsed: Vec<(PathBuf, String)>,
+    /// Files in a language quaff parses in some structural pattern's scope, binary ones included.
+    pub(super) supported: usize,
+    /// Other files in some structural pattern's scope, which have no structure quaff reads.
+    pub(super) not_applicable: usize,
+    /// Files in a language quaff parses in the scope of some structural pattern the language
+    /// cannot read, binary ones aside, so not searched for it.
+    pub(super) unread: usize,
+    /// For each pattern, the files in a language quaff parses in its scope, binary ones included:
+    /// none for a textual one.
+    pub(super) supported_for: Vec<usize>,
+    /// For each pattern, the files in a language quaff parses searched for it.
+    pub(super) structural_for: Vec<usize>,
+    /// For each pattern, the other files in its scope, which it does not apply to.
+    pub(super) not_applicable_for: Vec<usize>,
+    /// For each pattern, the files in its scope in a language quaff parses that cannot read it,
+    /// binary ones aside.
+    pub(super) unread_for: Vec<usize>,
+    /// For each pattern, the files of unknown encoding holding bytes it would match, by the
+    /// paths a message shows, with the lines they are on and why the encoding is unknown.  Never
+    /// counted, and never edited.
+    pub(super) possible: Vec<Vec<(PathBuf, Vec<usize>, Unknown)>>,
+    /// For each pattern, the files not searched for it because it has no one spelling there,
+    /// by the paths a message shows, and why.
+    pub(super) unspelled: Vec<Vec<(PathBuf, Unspelled)>>,
+    /// For each replaced pattern, the files whose encoding cannot write its replacement, by the
+    /// paths a message shows, with the encoding as `CPython` names its codec, the text it cannot
+    /// write, and whether it spells that text more than one way rather than not at all.
+    pub(super) unwritable: Vec<Vec<(PathBuf, &'static str, String, bool)>>,
+    /// For each structural replace, the files it cannot be made in as written, by the paths a
+    /// message shows, with where and why: refused once its count holds, as an edit its files'
+    /// encodings cannot write is, so that a count that does not hold is told first.
+    pub(super) edits_refused: Vec<Vec<(PathBuf, String)>>,
+    /// For each structural replace, the places it was made as written but may have changed what
+    /// the code means, by the paths a message shows, with where and why: noted only for the
+    /// statements the run reached.
+    pub(super) questioned: Vec<Vec<(PathBuf, String)>>,
+    /// Every file a replace changed, held until the run ends.
+    pub(super) changed: Vec<Changed>,
+    /// Every file the run holds until it ends, which a [`Changed`] or a [`Code`] names by its place
+    /// here.
+    pub(super) held: Vec<Held>,
+    /// The patterns, by their index, that structural matches were found for in the file being
+    /// searched, whose last entry in [`Searched::matches`] is that file's: it must be held.
+    cited: Vec<usize>,
+    /// For each structural pattern, the files an earlier replace left unparseable, though
+    /// they parse on disk, with where and why: the pattern cannot be searched for in them, and
+    /// the edit is refused.
+    pub(super) broken: Vec<Vec<(PathBuf, String, Vec<usize>)>>,
+    /// Files whose own declared encoding their language's reader refuses, whatever they hold, so
+    /// are searched for nothing, by the paths a message shows, with why.
+    pub(super) refused: Vec<(PathBuf, Refused)>,
+    /// Files of unknown encoding that read cleanly in the locale's encoding, which a message
+    /// mentions as a hint, and that encoding's name as the locale spells it.
+    pub(super) hinted: Vec<PathBuf>,
+    pub(super) hint: Option<String>,
+    /// Where the project's version control system declares encodings, for the hint.
+    pub(super) declares_in: Option<&'static str>,
+    /// Binary files, counted once whatever the number of patterns.
+    pub(super) binary: usize,
+}
+
+/// A file a replace changed, held in memory until the run is over: by its place among the files
+/// held, whose new bytes are built when they are checked and written, one file at a time.
+pub(super) struct Changed {
+    /// Where it is, to write it.
+    pub(super) path: PathBuf,
+    /// The path a message shows.
+    pub(super) shown: PathBuf,
+    /// Its language, if quaff parses it: then it must still parse if it parsed before.
+    pub(super) language: Option<&'static dyn FrontEnd>,
+    /// Its place in [`Searched::held`].
+    pub(super) held: usize,
+    /// The replaces that changed it, by their pattern's index.
+    pub(super) by: Vec<usize>,
+}
+
+/// Why a file was not searched for a pattern.
+#[derive(Clone)]
+pub(super) enum Unspelled {
+    /// Its encoding is known and spells a character of the pattern more than one way.
+    Ambiguous(Encoding),
+    /// Its encoding is unknown and the pattern is not ASCII.
+    Unknown(Unknown),
+}
+
+/// The run's patterns in the batches a file is searched in: the patterns between two replaces are
+/// searched in one pass over the file as it then is, and each replace changes it for the
+/// patterns after.  With no replace, every pattern is in one batch.
+enum Batch<'p> {
+    /// Search for these, by their index among all the run's patterns: the textual ones, and the
+    /// structural ones with their compiled pattern's index.
+    Search {
+        textual: Vec<(usize, &'p TextPattern)>,
+        structural: Vec<(usize, usize)>,
+    },
+    /// Replace the pattern at this index with this text.
+    Replace {
+        index: usize,
+        pattern: &'p TextPattern,
+        with: &'p TextPattern,
+    },
+    /// Replace the structural pattern at this index, compiled at `compiled`, with the rewrite at
+    /// `rewrite`.
+    Rewrite {
+        index: usize,
+        compiled: usize,
+        rewrite: usize,
+    },
+}
+
+/// `patterns` in batches, `replacements` naming each one's replacement, if it is replaced.
+fn batches<'p>(
+    patterns: &[Wanted<'p>],
+    replacements: &[Option<Replacement<'p>>],
+) -> Vec<Batch<'p>> {
+    let mut batches = Vec::new();
+    let mut textual = Vec::new();
+    let mut structural = Vec::new();
+    for (index, (wanted, with)) in patterns.iter().zip(replacements).enumerate() {
+        if with.is_some() && (!textual.is_empty() || !structural.is_empty()) {
+            batches.push(Batch::Search {
+                textual: std::mem::take(&mut textual),
+                structural: std::mem::take(&mut structural),
+            });
+        }
+        match (wanted, with) {
+            (Wanted::Text(pattern), Some(Replacement::Text(with))) => {
+                batches.push(Batch::Replace {
+                    index,
+                    pattern,
+                    with,
+                });
+            }
+            (Wanted::Structural { compiled, .. }, Some(Replacement::Structural(rewrite))) => {
+                batches.push(Batch::Rewrite {
+                    index,
+                    compiled: *compiled,
+                    rewrite: *rewrite,
+                });
+            }
+            (Wanted::Text(pattern), None) => textual.push((index, *pattern)),
+            (Wanted::Structural { compiled, .. }, None) => structural.push((index, *compiled)),
+            _ => unreachable!("a replace replaces text with text, and a pattern with a pattern"),
+        }
+    }
+    if !textual.is_empty() || !structural.is_empty() {
+        batches.push(Batch::Search {
+            textual,
+            structural,
+        });
+    }
+    batches
+}
+
+/// A file as it was read for the run: where it is, the path a message shows, its bytes on disk,
+/// how its encoding was decided, what the run's patterns compile to in its language, and whether
+/// it is binary.
+struct ReadFile<'a> {
+    pub(super) file: &'a Path,
+    pub(super) shown: &'a Path,
+    pub(super) bytes: &'a [u8],
+    resolution: &'a Resolution,
+    /// What the run's patterns compile to in its language, if quaff parses it.
+    pub(super) compiled: Option<&'a Compiled>,
+    pub(super) binary: bool,
+}
+
+/// A structural replace as a file is edited by it: its pattern's index among the run's patterns,
+/// the compiled pattern, and its rewrite.
+struct Rewriting<'a> {
+    pub(super) index: usize,
+    pub(super) pattern: &'a Pattern,
+    /// The rewrite, or why the file's language cannot read it.
+    pub(super) rewrite: &'a Result<Rewrite, CompileError>,
+}
+
+/// What earlier replaces did to a file: its bytes on disk if they changed it, which did, by
+/// their pattern's index, and so which version of it is being searched, for a match to say where
+/// it was found.
+struct Earlier<'a> {
+    on_disk: Option<&'a [u8]>,
+    pub(super) by: &'a [usize],
+    pub(super) version: Version,
+}
+
+/// A version of a file: the place among the files held it is given if it is held, and how many
+/// replaces changed it before it.
+#[derive(Clone, Copy)]
+struct Version {
+    pub(super) held: usize,
+    pub(super) number: usize,
+}
+
+/// What a file is searched for: the batches of patterns, the compiled structural patterns, and
+/// whether there is any.
+struct Work<'p> {
+    batches: Vec<Batch<'p>>,
+    /// The structural patterns, rewrites and `where`s, compiled for each language.
+    compiled: &'p [Compiled],
+    /// The structural patterns, by their index among all the run's patterns, with their place
+    /// among the compiled ones.
+    structural: Vec<(usize, usize)>,
+    /// Where a file's path, as a `FILE` test sees it, is worked out from.
+    roots: scope::Roots<'p>,
+}
+
+/// Searches each of `files` for each of `patterns`, in order, replacing as `replacements` says,
+/// reading each file once and deciding its encoding from what declares it.  A pattern after a
+/// replace is searched for in the file as the replace left it; the edits are held, not written.
+pub(super) fn search_files(
+    files: &[ToSearch],
+    roots: scope::Roots,
+    patterns: &[Wanted],
+    replacements: &[Option<Replacement>],
+    compiled: &[Compiled],
+    projects: &mut Projects,
+    locale: Option<&(String, Encoding)>,
+) -> Result<Searched, Failure> {
+    let cwd = roots.cwd;
+    let batches = batches(patterns, replacements);
+    let structural = patterns
+        .iter()
+        .enumerate()
+        .filter_map(|(i, wanted)| match wanted {
+            Wanted::Structural { compiled, .. } => Some((i, *compiled)),
+            Wanted::Text(_) => None,
+        })
+        .collect();
+    let mut searched = Searched {
+        matches: (0..patterns.len()).map(|_| Vec::new()).collect(),
+        unparsed: Vec::new(),
+        supported: 0,
+        not_applicable: 0,
+        unread: 0,
+        supported_for: vec![0; patterns.len()],
+        structural_for: vec![0; patterns.len()],
+        not_applicable_for: vec![0; patterns.len()],
+        unread_for: vec![0; patterns.len()],
+        possible: vec![Vec::new(); patterns.len()],
+        unspelled: vec![Vec::new(); patterns.len()],
+        unwritable: vec![Vec::new(); patterns.len()],
+        edits_refused: vec![Vec::new(); patterns.len()],
+        questioned: vec![Vec::new(); patterns.len()],
+        changed: Vec::new(),
+        held: Vec::new(),
+        cited: Vec::new(),
+        broken: vec![Vec::new(); patterns.len()],
+        refused: Vec::new(),
+        hinted: Vec::new(),
+        hint: locale.map(|(name, _)| name.clone()),
+        declares_in: projects.list[0]
+            .declarations
+            .workspace
+            .as_ref()
+            .map(|w| w.declares_encodings_in()),
+        binary: 0,
+    };
+    let work = Work {
+        batches,
+        compiled,
+        structural,
+        roots,
+    };
+    for file in files {
+        let declarations = &mut projects.list[file.project].declarations;
+        searched.file(&file.path, cwd, &work, declarations, locale, &file.applies)?;
+    }
+    Ok(searched)
+}
+
+impl Searched {
+    /// How many bytes what the run holds until it prints comes to: every match, each a fixed
+    /// size, and every file held, as read and as each replace changed it.  The code a match covers
+    /// is not among them, since it is read from the file when the match is printed.
+    #[cfg(test)]
+    pub(super) fn held_for_printing(&self) -> usize {
+        let hits: usize = self
+            .matches
+            .iter()
+            .flatten()
+            .map(|(_, hits)| hits.len())
+            .sum();
+        let files: usize = self.held.iter().map(Held::size).sum();
+        hits * std::mem::size_of::<Hit>() + files
+    }
+
+    /// Searches one file for the run's patterns that look at it, as `applies` says by their
+    /// index, batch by batch, holding its edits.  A file no pattern looks at is not read.
+    fn file(
+        &mut self,
+        file: &Path,
+        cwd: &Path,
+        work: &Work,
+        declarations: &mut Declarations,
+        locale: Option<&(String, Encoding)>,
+        applies: &[bool],
+    ) -> Result<(), Failure> {
+        if !applies.contains(&true) {
+            return Ok(());
+        }
+        let shown = output::relative(file, cwd);
+        let bytes = declarations
+            .contents
+            .read(file)
+            .map_err(|cause| Failure::Io {
+                doing: "reading",
+                path: shown.clone(),
+                cause,
+            })?;
+        // The file's language, by its name, and its patterns, rewrites and `where`s compiled for
+        // it.
+        let compiled = work.compiled.iter().find(|c| c.language.claims(file));
+        let language = compiled.map(|c| c.language);
+        // Decided once, from the file as it is on disk, whatever the number of patterns.
+        let resolution = resolve::resolve(
+            &resolve::File {
+                path: file,
+                bytes: &bytes,
+                language,
+            },
+            declarations,
+        )
+        .map_err(|err| Failure::Io {
+            doing: "reading the encoding declarations in",
+            path: output::relative(&err.path, cwd),
+            cause: err.cause,
+        })?;
+        let binary = matches!(resolution, Resolution::Binary);
+        self.count_for_structure(work, applies, compiled, binary);
+        let read = ReadFile {
+            file,
+            shown: &shown,
+            bytes: &bytes,
+            resolution: &resolution,
+            compiled,
+            binary,
+        };
+        self.cited.clear();
+        let (edited, by, changes) = self.through_batches(&read, work, applies);
+        self.tally(&shown, resolution, &bytes, locale);
+        // Only the changes are kept, not the bytes they made: those are built again when needed.
+        let differs = edited.is_some_and(|edited| edited[..] != bytes[..]);
+        if differs {
+            self.changed.push(Changed {
+                path: file.to_path_buf(),
+                shown,
+                language,
+                held: self.held.len(),
+                by,
+            });
+        }
+        // The place a match found here was given is this one, taken only if something needs it.
+        if differs || (!self.cited.is_empty() && !changes.is_empty()) {
+            self.held.push(Held::File {
+                original: bytes,
+                changes,
+                language,
+            });
+        } else if !self.cited.is_empty() {
+            let held = self.copied_or_whole(bytes, language);
+            self.held.push(held);
+        }
+        Ok(())
+    }
+
+    /// Takes a file through the run's batches in order, as `applies` says which patterns look at
+    /// it: each search on the file as the replaces before it left it.  Returns the file's bytes
+    /// once a replace has changed them, the replaces that did, by their pattern's index, and what
+    /// each changed.
+    fn through_batches(
+        &mut self,
+        read: &ReadFile,
+        work: &Work,
+        applies: &[bool],
+    ) -> (Option<Vec<u8>>, Vec<usize>, Vec<Changes>) {
+        // The file as the replaces so far have left it, once one has changed it: whole while the
+        // run is on this file, for the statements after each replace to read.
+        let mut edited: Option<Vec<u8>> = None;
+        // The replaces that changed it so far, by their pattern's index, and what each changed.
+        let mut by: Vec<usize> = Vec::new();
+        let mut changes: Vec<Changes> = Vec::new();
+        let mut unparsed = false;
+        for batch in &work.batches {
+            let text: &[u8] = edited.as_deref().unwrap_or(read.bytes);
+            // On disk, if an edit has changed it, to tell a file that never parsed from one an
+            // edit broke.
+            let earlier = Earlier {
+                on_disk: edited.is_some().then_some(read.bytes),
+                by: &by,
+                version: Version {
+                    held: self.held.len(),
+                    number: changes.len(),
+                },
+            };
+            match batch {
+                Batch::Search {
+                    textual,
+                    structural,
+                } => {
+                    let textual = applying(textual, applies);
+                    let structural = reads(read.compiled, applying(structural, applies));
+                    if let Some(compiled) = read.compiled
+                        && !structural.is_empty()
+                        && !read.binary
+                    {
+                        self.structural_batch(
+                            compiled,
+                            read.shown,
+                            text,
+                            &earlier,
+                            &structural,
+                            work,
+                            read.file,
+                            &mut unparsed,
+                        );
+                    }
+                    match read.resolution {
+                        Resolution::Known { encoding, body, .. } => {
+                            self.known(read.shown, &text[*body..], *encoding, &textual);
+                        }
+                        Resolution::Unknown(reason) => {
+                            self.unknown(read.shown, text, reason, &textual);
+                        }
+                        Resolution::Binary | Resolution::Refused(_) => {}
+                    }
+                }
+                Batch::Replace {
+                    index,
+                    pattern,
+                    with,
+                } => {
+                    if !applies[*index] {
+                        continue;
+                    }
+                    if let Some((whole, over)) =
+                        self.replace_in(read.shown, text, read.resolution, *index, pattern, with)
+                    {
+                        changes.push(Changes::between(text, &whole, &over));
+                        edited = Some(whole);
+                        by.push(*index);
+                    }
+                }
+                Batch::Rewrite {
+                    index,
+                    compiled: at,
+                    rewrite,
+                } => {
+                    let Some(compiled) = read
+                        .compiled
+                        .filter(|c| applies[*index] && !read.binary && c.patterns[*at].is_some())
+                    else {
+                        continue;
+                    };
+                    let edit = Rewriting {
+                        index: *index,
+                        pattern: compiled.patterns[*at]
+                            .as_ref()
+                            .expect("rewritten only where the language reads the pattern"),
+                        rewrite: compiled.rewrites[*rewrite]
+                            .as_ref()
+                            .expect("a rewrite is compiled where its pattern is"),
+                    };
+                    if let Some((whole, over)) = self.rewrite_in(
+                        compiled,
+                        read.shown,
+                        text,
+                        &earlier,
+                        &edit,
+                        work,
+                        read.file,
+                        &mut unparsed,
+                    ) {
+                        changes.push(Changes::between(text, &whole, &over));
+                        edited = Some(whole);
+                        by.push(*index);
+                    }
+                }
+            }
+        }
+        (edited, by, changes)
+    }
+
+    /// Counts a file for each structural pattern that looks at it, as `applies` says: as one with
+    /// structural support where its language reads the pattern, a binary one too, since it is in
+    /// scope and the run must not say there is none, though it is counted with the binary files
+    /// rather than searched; as one whose language cannot read the pattern; or as a text-tier
+    /// file, to which no pattern applies.
+    fn count_for_structure(
+        &mut self,
+        work: &Work,
+        applies: &[bool],
+        compiled: Option<&Compiled>,
+        binary: bool,
+    ) {
+        let (mut supported, mut not_applicable, mut unread) = (false, false, false);
+        for &(i, at) in work.structural.iter().filter(|&&(i, _)| applies[i]) {
+            match compiled.map(|c| c.patterns[at].is_some()) {
+                Some(true) => {
+                    self.supported_for[i] += 1;
+                    supported = true;
+                }
+                _ if binary => {}
+                Some(false) => {
+                    self.unread_for[i] += 1;
+                    unread = true;
+                }
+                None => {
+                    self.not_applicable_for[i] += 1;
+                    not_applicable = true;
+                }
+            }
+        }
+        self.supported += usize::from(supported);
+        self.not_applicable += usize::from(not_applicable);
+        self.unread += usize::from(unread);
+    }
+
+    /// Searches a file in a known encoding, `text` its body after any byte-order mark, for each
+    /// textual pattern, by its index among all the run's patterns.
+    pub(super) fn known(
+        &mut self,
+        shown: &Path,
+        text: &[u8],
+        encoding: Encoding,
+        textual: &[(usize, &TextPattern)],
+    ) {
+        for &(i, pattern) in textual {
+            match search::search(text, encoding, pattern) {
+                None => self.unspelled[i].push((shown.to_owned(), Unspelled::Ambiguous(encoding))),
+                Some(in_file) if in_file.is_empty() => {}
+                Some(in_file) => self.matches[i].push((
+                    shown.to_owned(),
+                    in_file
+                        .into_iter()
+                        .map(|at| Hit { at, code: None })
+                        .collect(),
+                )),
+            }
+        }
+    }
+
+    /// Searches a file's decoded `text`, in `language`, for each structural pattern, `shapes` in
+    /// the order of `structural`, which pairs each pattern's index among all the run's patterns
+    /// with its compiled one.  A file that does not parse is searched for nothing, and where and
+    /// why is returned.
+    fn parsed(
+        &mut self,
+        language: &dyn FrontEnd,
+        shown: &Path,
+        text: &str,
+        version: Version,
+        structural: &[(usize, usize)],
+        shapes: &[(&Pattern, Option<&structural::Where>)],
+    ) -> Result<(), String> {
+        match structural::search(language, text, shapes) {
+            Err(unparsed) => Err(unparsed_at(&unparsed)),
+            Ok(found) => {
+                for (&(i, _), in_file) in structural.iter().zip(found) {
+                    self.cite(i, shown, version, in_file);
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// What to hold of a file no replace changed, `bytes`, that structural matches were found in:
+    /// the code they cover, copied, if that is less than the file, as for a few short matches in a
+    /// large file, with each match's [`Code`] moved to where its copy stands; and otherwise the
+    /// file, as for matches that overlap, each to the end of a long block.  So a run holds no more
+    /// of a file than the smaller of the two.
+    fn copied_or_whole(
+        &mut self,
+        bytes: crate::contents::Bytes,
+        language: Option<&'static dyn FrontEnd>,
+    ) -> Held {
+        let cited = std::mem::take(&mut self.cited);
+        let codes = |matches: &[(PathBuf, Vec<Hit>)]| -> Vec<Code> {
+            let (_, hits) = matches
+                .last()
+                .expect("a pattern cited here has this file's matches");
+            hits.iter().filter_map(|hit| hit.code).collect()
+        };
+        let covered: usize = cited
+            .iter()
+            .flat_map(|&index| codes(&self.matches[index]))
+            .map(|code| code.end - code.start)
+            .sum();
+        if covered >= bytes.len() {
+            return Held::File {
+                original: bytes,
+                changes: Vec::new(),
+                language,
+            };
+        }
+        let text = language
+            .expect("a file a structural match was found in has a language")
+            .decode(&bytes)
+            .expect("a file a structural match was found in decoded then")
+            .text;
+        let mut copies = String::with_capacity(covered);
+        for index in cited {
+            let (_, hits) = self.matches[index]
+                .last_mut()
+                .expect("a pattern cited here has this file's matches");
+            for code in hits.iter_mut().filter_map(|hit| hit.code.as_mut()) {
+                let start = copies.len();
+                copies.push_str(&text[code.start..code.end]);
+                code.start = start;
+                code.end = copies.len();
+            }
+        }
+        Held::Copied(copies)
+    }
+
+    /// Records the structural matches `found` of the pattern at `index` in a file, as where each
+    /// is in the version of it searched, holding the file if there is any.
+    fn cite(
+        &mut self,
+        index: usize,
+        shown: &Path,
+        version: Version,
+        found: Vec<structural::Found>,
+    ) {
+        if found.is_empty() {
+            return;
+        }
+        self.cited.push(index);
+        self.matches[index].push((
+            shown.to_owned(),
+            found
+                .into_iter()
+                .map(|f| Hit {
+                    at: f.at,
+                    code: Some(Code {
+                        held: version.held,
+                        version: version.number,
+                        start: f.range.start,
+                        end: f.range.end,
+                    }),
+                })
+                .collect(),
+        ));
+    }
+
+    /// Searches a file's current bytes, `text`, for a batch's structural patterns, as `compiled`
+    /// has them for its language.
+    /// `unparsed` says whether an earlier batch found the file unparseable, so that it is counted
+    /// as such once however many batches search it.  `on_disk` is the file as it is on
+    /// disk when an earlier replace has changed it: if that parses and `text` does not, the edit
+    /// broke it, which refuses the run as an edit rather than as a file that cannot be parsed.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the file, its batch and what earlier batches found, as a search has them"
+    )]
+    fn structural_batch(
+        &mut self,
+        compiled: &Compiled,
+        shown: &Path,
+        text: &[u8],
+        earlier: &Earlier,
+        structural: &[(usize, usize)],
+        work: &Work,
+        file: &Path,
+        unparsed: &mut bool,
+    ) {
+        // The file's path as a glob sees it, worked out only if some `where` may read it.
+        let language = compiled.language;
+        let place = structural
+            .iter()
+            .any(|&(i, _)| compiled.filters[i].is_some())
+            .then(|| scope::Place::of(file, work.roots.cwd, work.roots.root));
+        // Each pattern's `where`, decided for this file's path and for what a match binds.
+        let filters: Vec<Option<structural::Where>> = structural
+            .iter()
+            .map(|&(i, _)| {
+                compiled.filters[i].as_ref().map(|filter| {
+                    deciding(
+                        filter,
+                        place
+                            .as_ref()
+                            .expect("worked out for a pattern with a `where`"),
+                    )
+                })
+            })
+            .collect();
+        let shapes: Vec<(&Pattern, Option<&structural::Where>)> = structural
+            .iter()
+            .zip(&filters)
+            .map(|(&(_, at), filter)| {
+                let pattern = compiled.patterns[at]
+                    .as_ref()
+                    .expect("searched only where the language reads the pattern");
+                (pattern, filter.as_ref())
+            })
+            .collect();
+        // The text parsed is the text the language's own reader would read, decoded as it
+        // decodes it, whatever else declares the file's encoding for the textual tier.
+        let outcome = match language.decode(text) {
+            Ok(source) => self.parsed(
+                language,
+                shown,
+                &source.text,
+                earlier.version,
+                structural,
+                &shapes,
+            ),
+            // A file its language's reader refuses does not parse, whatever it holds, and one in
+            // an encoding quaff does not read cannot be parsed by quaff: either way a count
+            // without it could not be trusted.
+            Err(refusal) => Err(refusal.to_string()),
+        };
+        if outcome.is_ok() {
+            for &(i, _) in structural {
+                self.structural_for[i] += 1;
+            }
+        }
+        let Err(why) = outcome else {
+            return;
+        };
+        let indices: Vec<usize> = structural.iter().map(|&(i, _)| i).collect();
+        self.not_parsed(language, shown, why, earlier, &indices, unparsed);
+    }
+
+    /// Records that a file could not be parsed in `language` for the patterns at `indices`, `why`:
+    /// as broken by an earlier replace, if it parses on disk and a replace changed it, and
+    /// otherwise as a file that cannot be parsed, once however many batches find it so.
+    fn not_parsed(
+        &mut self,
+        language: &dyn FrontEnd,
+        shown: &Path,
+        why: String,
+        earlier: &Earlier,
+        indices: &[usize],
+        unparsed: &mut bool,
+    ) {
+        if earlier
+            .on_disk
+            .is_some_and(|bytes| parses(language, bytes).is_ok())
+        {
+            for &i in indices {
+                self.broken[i].push((shown.to_owned(), why.clone(), earlier.by.to_vec()));
+            }
+        } else if !*unparsed {
+            self.unparsed.push((shown.to_owned(), why));
+            *unparsed = true;
+        }
+    }
+
+    /// Replaces a structural pattern in a file's current bytes, `text`, as `edit` says, and
+    /// returns the file's new bytes if that changed it, with each stretch of `text` it wrote over
+    /// and where it went in them, as [`Changes::between`] takes.  The text is decoded as the
+    /// file's language decodes it and written back in the same encoding, so that every byte
+    /// outside the matches is as it was.  A file that does not parse is recorded as a search
+    /// records it; an edit that cannot be made as written, or written in the file's encoding, is
+    /// recorded for the run to refuse.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the file, the edit and what earlier batches found, as a search has them"
+    )]
+    fn rewrite_in(
+        &mut self,
+        compiled: &Compiled,
+        shown: &Path,
+        text: &[u8],
+        earlier: &Earlier,
+        edit: &Rewriting,
+        work: &Work,
+        file: &Path,
+        unparsed: &mut bool,
+    ) -> Option<(Vec<u8>, Over)> {
+        let index = edit.index;
+        let language = compiled.language;
+        // The file's path as a glob sees it, worked out only if a `where` may read it.
+        let placed = compiled.filters[index].as_ref().map(|filter| {
+            let place = scope::Place::of(file, work.roots.cwd, work.roots.root);
+            (filter, place)
+        });
+        let filter = placed
+            .as_ref()
+            .map(|(filter, place)| deciding(filter, place));
+        let source = match language.decode(text) {
+            Ok(source) => source,
+            Err(refusal) => {
+                self.not_parsed(
+                    language,
+                    shown,
+                    refusal.to_string(),
+                    earlier,
+                    &[index],
+                    unparsed,
+                );
+                return None;
+            }
+        };
+        let rewrite = match edit.rewrite {
+            Ok(rewrite) => rewrite,
+            Err(err) => {
+                self.unwritten(
+                    language,
+                    shown,
+                    &source.text,
+                    earlier,
+                    edit,
+                    filter.as_ref(),
+                    err,
+                    unparsed,
+                );
+                return None;
+            }
+        };
+        let replaced = match rewrite::replace(
+            language,
+            &source.text,
+            edit.pattern,
+            filter.as_ref(),
+            rewrite,
+        ) {
+            Ok(replaced) => replaced,
+            Err(err) => {
+                self.not_parsed(
+                    language,
+                    shown,
+                    unparsed_at(&err),
+                    earlier,
+                    &[index],
+                    unparsed,
+                );
+                return None;
+            }
+        };
+        self.structural_for[index] += 1;
+        self.cite(index, shown, earlier.version, replaced.found);
+        match replaced.outcome {
+            Ok(None) => None,
+            Ok(Some(edited)) => match source.encode(&edited.text) {
+                Ok(bytes) => {
+                    for questioned in edited.questioned {
+                        self.questioned[index].push((
+                            shown.to_owned(),
+                            format!(
+                                "line {}, column {}: {}",
+                                questioned.at.line, questioned.at.column, questioned.why
+                            ),
+                        ));
+                    }
+                    let over = in_bytes(&source, &edited.text, &edited.over);
+                    Some((bytes, over))
+                }
+                Err(unencodable) => {
+                    self.unwritable[index].push((
+                        shown.to_owned(),
+                        unencodable.encoding,
+                        unencodable.character.to_string(),
+                        unencodable.ambiguous,
+                    ));
+                    None
+                }
+            },
+            Err(refused) => {
+                self.edits_refused[index].push((
+                    shown.to_owned(),
+                    format!(
+                        "line {}, column {}: {}",
+                        refused.at.line, refused.at.column, refused.why
+                    ),
+                ));
+                None
+            }
+        }
+    }
+
+    /// Searches a file whose language reads a replace's pattern but not its rewrite: each match
+    /// is counted and cited, and the first refuses the edit, since it cannot be written there.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the file, the edit and why its rewrite cannot be compiled"
+    )]
+    fn unwritten(
+        &mut self,
+        language: &dyn FrontEnd,
+        shown: &Path,
+        text: &str,
+        earlier: &Earlier,
+        edit: &Rewriting,
+        filter: Option<&structural::Where>,
+        err: &CompileError,
+        unparsed: &mut bool,
+    ) {
+        let index = edit.index;
+        let found = match structural::search(language, text, &[(edit.pattern, filter)]) {
+            Ok(mut found) => found.swap_remove(0),
+            Err(why) => {
+                self.not_parsed(
+                    language,
+                    shown,
+                    unparsed_at(&why),
+                    earlier,
+                    &[index],
+                    unparsed,
+                );
+                return;
+            }
+        };
+        self.structural_for[index] += 1;
+        if let Some(first) = found.first() {
+            self.edits_refused[index].push((
+                shown.to_owned(),
+                format!(
+                    "line {}, column {}: the rewrite cannot be written in {}: {err}",
+                    first.at.start.line,
+                    first.at.start.column,
+                    language.language()
+                ),
+            ));
+        }
+        self.cite(index, shown, earlier.version, found);
+    }
+
+    /// Counts a file once by what it is: binary, refused by its language's reader, or of unknown
+    /// encoding that reads cleanly in the locale's, for the hint.
+    fn tally(
+        &mut self,
+        shown: &Path,
+        resolution: Resolution,
+        bytes: &[u8],
+        locale: Option<&(String, Encoding)>,
+    ) {
+        match resolution {
+            Resolution::Binary => self.binary += 1,
+            Resolution::Refused(refusal) => self.refused.push((shown.to_owned(), refusal)),
+            Resolution::Unknown(reason) => {
+                if reason == Unknown::NotUtf8
+                    && locale.is_some_and(|(_, encoding)| encoding.reads_cleanly(bytes))
+                {
+                    self.hinted.push(shown.to_owned());
+                }
+            }
+            Resolution::Known { .. } => {}
+        }
+    }
+
+    /// Replaces the pattern at `index` with `with` in a file's current bytes, `text`, decided as
+    /// `resolution` says, and returns its new bytes if that changed it, with where each
+    /// replacement went, as [`Changes::between`] takes.  A file of unknown encoding is never
+    /// edited: its matches are only possible, and reported as in a search.
+    fn replace_in(
+        &mut self,
+        shown: &Path,
+        text: &[u8],
+        resolution: &Resolution,
+        index: usize,
+        pattern: &TextPattern,
+        with: &TextPattern,
+    ) -> Option<(Vec<u8>, Over)> {
+        match resolution {
+            Resolution::Known { encoding, body, .. } => {
+                let replaced = search::replace(&text[*body..], *encoding, pattern, with);
+                let written = self.replaced(shown, index, *encoding, replaced)?;
+                let mut whole = text[..*body].to_vec();
+                whole.extend_from_slice(&written.bytes);
+                // The replace saw the text after any byte-order mark, which is before it in both.
+                let over = written
+                    .over
+                    .into_iter()
+                    .map(|(was, now)| {
+                        (
+                            was.start + body..was.end + body,
+                            now.start + body..now.end + body,
+                        )
+                    })
+                    .collect();
+                Some((whole, over))
+            }
+            Resolution::Unknown(reason) => {
+                self.unknown(shown, text, reason, &[(index, pattern)]);
+                None
+            }
+            Resolution::Binary | Resolution::Refused(_) => None,
+        }
+    }
+
+    /// Records what replacing the pattern at `index` in a file in `encoding` found, and returns
+    /// the file's new text if the replace changed it.
+    pub(super) fn replaced(
+        &mut self,
+        shown: &Path,
+        index: usize,
+        encoding: Encoding,
+        replaced: search::Replaced,
+    ) -> Option<search::Written> {
+        let hits = |matches: Vec<Match>| -> Vec<Hit> {
+            matches
+                .into_iter()
+                .map(|at| Hit { at, code: None })
+                .collect()
+        };
+        match replaced {
+            search::Replaced::NotSearched => {
+                self.unspelled[index].push((shown.to_owned(), Unspelled::Ambiguous(encoding)));
+                None
+            }
+            search::Replaced::Edited { matches, text } => {
+                if !matches.is_empty() {
+                    self.matches[index].push((shown.to_owned(), hits(matches)));
+                }
+                text
+            }
+            search::Replaced::Unwritable {
+                matches,
+                text,
+                ambiguous,
+            } => {
+                self.matches[index].push((shown.to_owned(), hits(matches)));
+                self.unwritable[index].push((shown.to_owned(), name_of(encoding), text, ambiguous));
+                None
+            }
+        }
+    }
+
+    /// Searches a file of unknown encoding for each textual pattern.  An ASCII query is the
+    /// same bytes in every ASCII-compatible encoding, so where its bytes are absent there is
+    /// certainly no match; where present, a match is only possible, since in some encodings those
+    /// bytes end a character.  In a declared UTF-16 or UTF-32 it is other bytes, so no query can
+    /// be searched.
+    pub(super) fn unknown(
+        &mut self,
+        shown: &Path,
+        bytes: &[u8],
+        reason: &Unknown,
+        textual: &[(usize, &TextPattern)],
+    ) {
+        for &(i, pattern) in textual {
+            let in_file = if reason.ascii_compatible() {
+                search::search(bytes, Encoding::Unknown8Bit, pattern)
+            } else {
+                None
+            };
+            match in_file {
+                None => {
+                    self.unspelled[i].push((shown.to_owned(), Unspelled::Unknown(reason.clone())));
+                }
+                Some(in_file) if in_file.is_empty() => {}
+                Some(in_file) => {
+                    let mut lines: Vec<usize> = in_file.iter().map(|m| m.start.line).collect();
+                    lines.dedup();
+                    self.possible[i].push((shown.to_owned(), lines, reason.clone()));
+                }
+            }
+        }
+    }
+}
+
+/// `filter`, a statement's `where`, decided for a file at `place` and for what a match binds.
+pub(super) fn deciding<'f>(
+    filter: &'f filter::Filter,
+    place: &'f scope::Place,
+) -> structural::Where<'f> {
+    let found = filter::Found::default();
+    structural::Where {
+        names: filter.names.iter().map(String::as_str).collect(),
+        holds: Box::new(move |arena, nodes| filter.holds(place, arena, nodes, &found)),
+    }
+}
+
+/// The structural patterns of `batch` that `compiled`'s language reads: the rest do not apply to
+/// a file of it.  All of them where it reads them all, as one language reads every pattern.
+pub(super) fn reads<'b>(
+    compiled: Option<&Compiled>,
+    batch: Cow<'b, [(usize, usize)]>,
+) -> Cow<'b, [(usize, usize)]> {
+    match compiled {
+        Some(compiled) if !batch.iter().all(|&(_, at)| compiled.patterns[at].is_some()) => {
+            Cow::Owned(
+                batch
+                    .iter()
+                    .copied()
+                    .filter(|&(_, at)| compiled.patterns[at].is_some())
+                    .collect(),
+            )
+        }
+        _ => batch,
+    }
+}
+
+/// The patterns in `batch`, each by its index among all the run's patterns, that look at a file,
+/// as `applies` says by that index: the batch itself, uncopied, when they all do.
+fn applying<'b, T: Copy>(batch: &'b [(usize, T)], applies: &[bool]) -> Cow<'b, [(usize, T)]> {
+    if batch.iter().all(|&(i, _)| applies[i]) {
+        Cow::Borrowed(batch)
+    } else {
+        Cow::Owned(batch.iter().copied().filter(|&(i, _)| applies[i]).collect())
+    }
+}
+
+/// Where and why a file does not parse in its language, as a message gives it.
+fn unparsed_at(unparsed: &structural::Unparsed) -> String {
+    format!(
+        "line {}, column {}: {}",
+        unparsed.at.line, unparsed.at.column, unparsed.message
+    )
+}

@@ -32,6 +32,27 @@ The forms and options are in `docs/language.md`.  What the parser (`src/cli.rs`)
   statements that must each have one; a form or statement this build gains joins that list
   and gets an example in the same change.
 
+## A run's phases
+
+A run (`src/run.rs`) is a pipeline of phases, each a module of its own under `src/run/` with
+one entry point, taking what the phase before gave and giving what the phases after read.  A
+statement kind is added by extending these types, not by threading a new value from one end of
+the run to the other.
+
+| Phase | Module | In | Out |
+|---|---|---|---|
+| Reading | `sources.rs` | the sources and the command-line scope | `Built`: the program, checked, and each source's text |
+| Planning | `plan.rs`, `compile.rs` | `Built`, and the languages quaff parses | `Plan`: the steps, the run's patterns in order, and each compiled for each language |
+| Scoping | `scoping.rs` | `Plan`, `Built` and the current directory | `Files`: the files found, each with which patterns look at it; each `where` compiled into the `Plan` |
+| Execution | `execute.rs` | `Plan` and `Files` | `Searched`: every match, and every edit held, not written |
+| Evaluation | `evaluate.rs` | `Searched`, `Plan` and `Built` | the results printed, the edits written, and `Evaluated`: the outcome and its notes |
+| Reporting | `report.rs` | `Evaluated`, `Searched`, `Files` and `Plan` | the notes, on standard error |
+
+The failures every phase can end a run with, and how each is worded, are `failure.rs`.  The order
+of the phases is what keeps a run's promises: every pattern and `where` is compiled before
+discovery looks at a file, so a script error is one however large the tree; and nothing is printed
+or written until evaluation has decided the outcome, so a run that fails prints nothing.
+
 ## Discovery
 
 What a user sees is in `docs/language.md`, _What is searched_.  How it is built:
@@ -78,7 +99,7 @@ What a user sees is in `docs/language.md`, _What is searched_.  How it is built:
 
 ## Scope and filters
 
-Which files each statement looks at (`src/scope.rs`, and `Scoping` in `src/run.rs`).  The path
+Which files each statement looks at (`src/scope.rs`, and `src/run/scoping.rs`).  The path
 rules a user sees are `docs/language.md`'s _Paths and globs_.
 
 - **Every pattern of the run has its own scope**: the base its files come from, its `in`, and
@@ -152,7 +173,7 @@ A structural pattern is matched by shape against files in a language quaff parse
 syntax arena and that language's front end (`syntax.md`, and `python.md` for Python).  Such a file
 has structural support.  **Each file's language is identified, and the pattern is applied as that
 language reads it.**  Which files it applies to follows the units rule, a unit being a whole file
-(`src/structural.rs`, and the file loop in `src/run.rs`):
+(`src/structural.rs`, and the file loop in `src/run/execute.rs`):
 
 - **A file in a language quaff parses**, by name alone, by the extensions its front end gives in
   `languages::LANGUAGES`, is decoded as the language's own reader decodes it - for Python, as
@@ -199,7 +220,7 @@ The format is in `docs/language.md`, _Output_.  The rules behind it:
 - **A closed standard output stops the printing quietly**, but assertions are still evaluated,
   so the exit code is still the answer.
 - **Every match is held until the run prints, so a match holds where its code is, not the code**
-  (`Hit` and `Code` in `src/run.rs`).  Files are searched one at a time, but each statement's
+  (`Hit` and `Code` in `src/run/execute.rs`).  Files are searched one at a time, but each statement's
   matches print together, so nothing can print until the last file is done; structural matches
   can overlap, as `x = $v` and a sequence to the end of a block do from every statement in it, and
   copies of their code would hold about the square of the block's length.  So a structural match
@@ -241,11 +262,11 @@ it was written.
 **A run that cannot give an answer - exit 3, 5, 6, 7 or 9 - prints nothing on standard output**, so
 a partial answer never passes for a whole one.  Every message says what was being done, quotes
 the path or argument it concerns, and says what to do where there is something to do
-(`src/run.rs`).
+(`src/run/failure.rs`).
 
 ## Editing
 
-`replace string` edits text (`src/run.rs`, `src/search.rs`, `src/write.rs`), and a structural
+`replace string` edits text (`src/run/execute.rs`, `src/search.rs`, `src/write.rs`), and a structural
 `replace` edits code (`src/rewrite.rs`), through the same pipeline.  `delete` is a structural
 `replace` whose rewrite is empty.
 
