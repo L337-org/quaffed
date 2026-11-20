@@ -41,14 +41,14 @@ a file's bytes the same way.
    identifier on a stem the pattern does not contain.  A `$` not followed by a name or `...` is
    left as written, and a name ends where Python's would, by the identifier rules Ruff's lexer
    uses.
-2. **Let the grammar decide.**  The result is parsed, as an expression if it is one and otherwise
-   as statements, and a placeholder is a hole when a node spans exactly it, the outermost where
-   several do.  A lambda's parameters have no brackets, so with one parameter the list and the
-   parameter have one range; the list is passed over (`BARE_LIST`), so that one hole is one
-   parameter, as in every list with brackets.  One that no node spans, or only a string's literal text, is inside a string or a
-   comment: it is put back as written and the pattern parsed again.  A hole merged into a name,
-   `x$a`, is put back too and fails to parse; one inside a dotted module name, `import a.$m`, is
-   refused as `PatternError::InsideAName`.
+2. **Let the grammar decide.**  The result is parsed, as an expression if it is one and otherwise as
+   statements, and a placeholder is a hole when a node spans exactly it, the outermost where several
+   do.  A lambda's parameters have no brackets, so with one parameter the list and the parameter
+   have one range; the list is passed over (`BARE_LIST`), so that one hole is one parameter, as in
+   every list with brackets.  One that no node spans, or only a string's literal text, is inside a
+   string or a comment: it is put back as written and the pattern parsed again.  A hole merged into
+   a name, `x$a`, is put back too and fails to parse; one inside a dotted module name, `import
+   a.$m`, is refused as `PatternError::InsideAName`.
 
 **A decorator alone is not Python**, so a pattern that does not parse and starts with `@` is
 parsed again with a definition after it to decorate (`DECORATED`), and its decorator is lifted

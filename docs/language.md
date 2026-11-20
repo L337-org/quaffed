@@ -571,8 +571,8 @@ q`; `lambda $p...: $b` matches both.
 In Python they are a block's statements, a call's arguments, the parameters on one side of a `/`
 or a `*`, the elements of a list, tuple or set, an assignment's targets, a `del`'s targets, an
 import's names, a `global`'s or `nonlocal`'s names, a `with`'s items, the operands of one `and`
-or `or`, a comprehension's clauses and each clause's conditions, decorators, type parameters,
-and the parts of a sequence, class or alternative pattern in a `case`.  Where the code holds one
+or `or`, a comprehension clause's `if` conditions, type parameters, and the parts of a sequence,
+class or alternative pattern in a `case`.  Where the code holds one
 node - an assignment's value, a subscript, an `assert`'s test, a keyword argument's value - a
 sequence would take whatever optional syntax follows it there too, so `$t = $v...` would match
 `t = u = 1` with `$v...` as `u = 1`.  Such a pattern is refused, exit 3.
@@ -642,11 +642,11 @@ quaff: -p, at character 5: the pattern is not Python: unexpected EOF while parsi
 ```
 
 A pattern with no code at all, only whitespace or comments, is refused too, and so is one that
-starts or ends a run of statements with a sequence hole, puts two sequences together in any
-list or a sequence where the code holds one node, or whose search could grow faster than the square of a block's or list's length ([Runs of
-statements](#runs-of-statements)).  So is a hole inside a name the language reads as one, such as
-Python's dotted module name: `import $m` is a hole for the whole name, but `import a.$m` is
-refused, since `a.m` is one name, not two.
+starts or ends a run of statements with a sequence hole, puts two sequences together in any list or
+a sequence where the code holds one node, or whose search could grow faster than the square of a
+block's or list's length ([Runs of statements](#runs-of-statements)).  So is a hole inside a name
+the language reads as one, such as Python's dotted module name: `import $m` is a hole for the whole
+name, but `import a.$m` is refused, since `a.m` is one name, not two.
 
 **A pattern is parsed as a file is, so it starts at the left margin.**  In Python, code copied
 from inside a function keeps its indentation, which Python refuses at the start of a file, and so
@@ -764,16 +764,15 @@ quaff: -p, at character 17: "$b..." follows another sequence with nothing betwee
 [exit 3]
 ```
 
-**A search may depend on two places at once where it can go more than one way, but not
-three.**  Such a place is where a sequence stops, and, in a run of statements, where the run
-starts.  A sequence named twice is fine: `w()`, `$a...`, `x()`, `$a...`, `y()` depends on where
-the run starts and where the first `$a...` stops.  So is a name bound in one statement and used in
-a later one.  Inside a node, which starts where it stands, `f($a..., 0, $b...) + g($a..., x,
-$b...)` is fine too, since one stop divides `f`'s arguments between `$a` and `$b`.  Places in lists that
-share no name do not add up, since neither changes what the other is matched with: `f(g($a..., x,
-$a...), h($b..., y, $b...))` is accepted.  Each place multiplies the work of a search by the
-length of the block or list it stands in, so a third is refused rather than left to make a search
-slow on a long file:
+**A search may depend on two places at once where it can go more than one way, but not three.**
+Such a place is where a sequence stops, and, in a run of statements, where the run starts.  A
+sequence named twice is fine: `w()`, `$a...`, `x()`, `$a...`, `y()` depends on where the run starts
+and where the first `$a...` stops.  So is a name bound in one statement and used in a later one.
+Inside a node, which starts where it stands, `f($a..., 0, $b...) + g($a..., x, $b...)` is fine too,
+since one stop divides `f`'s arguments between `$a` and `$b`.  Places in lists that share no name do
+not add up, since neither changes what the other is matched with: `f(g($a..., x, $a...), h($b..., y,
+$b...))` is accepted.  Each place multiplies the work of a search by the length of the block or list
+it stands in, so a third is refused rather than left to make a search slow on a long file:
 
 ```
 $ quaff -p 'open_db()
@@ -1432,13 +1431,13 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
 - **Two sequences may not stand together in any list** - statements, arguments, elements,
   parameters - since nothing says how many items each takes: `f($a..., $b...)` is refused, and
   `f($a..., x, $b...)` is fine.
-- **A search may depend on at most two places at once where it can go more than one way** -
-  where a sequence stops, or where a run of statements starts.  Matching patterns with names used more than once is, in
-  general, a problem no algorithm solves quickly, so the pattern is refused where its search could
-  grow faster than the square of a block's or list's length, rather than accepted and left to run
-  for minutes on a long file.  A sequence named twice is fine; two sequences each named twice are
-  fine inside a node, which starts where it stands, but not in a run of statements, which could
-  start anywhere.
+- **A search may depend on at most two places at once where it can go more than one way** - where a
+  sequence stops, or where a run of statements starts.  Matching patterns with names used more than
+  once is, in general, a problem no algorithm solves quickly, so the pattern is refused where its
+  search could grow faster than the square of a block's or list's length, rather than accepted and
+  left to run for minutes on a long file.  A sequence named twice is fine; two sequences each named
+  twice are fine inside a node, which starts where it stands, but not in a run of statements, which
+  could start anywhere.
 - **Structural patterns ignore files without structural support rather than falling back to
   text**, and say so.
 - **A file with structural support that quaff cannot parse stops a structural search** (exit 9),
