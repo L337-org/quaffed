@@ -56,6 +56,7 @@ the work instead.  The shared hygiene check that CI runs fails on either.
 | `crates/representation/`: what a program means, the checker, or its lint configuration | [architecture/representation.md](architecture/representation.md) |
 | `crates/script/`: the script language's operands, grammar, errors or locations | [architecture/script.md](architecture/script.md) |
 | `crates/syntax/`: the arena a parsed file becomes, for every language | [architecture/syntax.md](architecture/syntax.md) |
+| the front end every language implements: `crates/syntax/src/front.rs`, `crates/quaffed/src/languages.rs`, or adding a language | the front end and adding a language sections of [architecture/syntax.md](architecture/syntax.md) |
 | `crates/python/`, or a `ruff_*` dependency or its version | [architecture/python.md](architecture/python.md) |
 | `crates/python/tests/round_trip.rs`, or how the corpus is judged by the oracle | the round trip section of [architecture/corpus.md](architecture/corpus.md) |
 | `corpus/`, `scripts/fetch-corpus` or `scripts/check-synthetic`, or adding Python to the synthetic corpus | the corpus sections of [architecture/corpus.md](architecture/corpus.md) |
@@ -100,7 +101,7 @@ and the reasoning.  These are not enforced, so they are carried here:
 - **Every commit is signed off** (`git commit -s`) under the Developer Certificate of Origin; see
   `CONTRIBUTING.md`.
 - **Write about structural search and editing, never about one language.**  The languages are
-  listed in code, in `resolve::LANGUAGES`, which the help prints; the language guide's table
+  listed in code, in `languages::LANGUAGES`, which the help prints; the language guide's table
   under _Which files_ is held to it by `tests/language_guide.rs`.  Anything only one language
   does is said as that language's.  A sentence that names Python as if it were the only language
   goes stale the day a second is added.  Messages, the help, the guide, the README and

@@ -4,9 +4,8 @@
 //! Python source parsed into a syntax arena, and the kinds of node a piece of source contains.
 
 use std::collections::BTreeSet;
-use std::fmt;
 
-use quaffed_syntax::{Arena, Builder, Kind, Language, TokenText, TooLong};
+use quaffed_syntax::{Arena, Builder, Kind, Language, ParseError, TokenText, TooLong};
 use ruff_python_ast::token::{Token, TokenKind, Tokens, parentheses_iterator};
 use ruff_python_ast::visitor::source_order::{
     SourceOrderVisitor, TraversalSignal, walk_body, walk_interpolated_string_element, walk_node,
@@ -22,51 +21,11 @@ use crate::kinds::kind_of;
 /// The language every arena this adapter builds carries.
 pub const PYTHON: Language = Language::new("Python");
 
-/// Why source could not be parsed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ParseError {
-    /// Ruff refused the source: its message, verbatim, and the byte offset where the error
-    /// starts.
-    Invalid {
-        /// What the parser said.
-        message: String,
-        /// The byte offset in the source.
-        offset: usize,
-    },
-    /// The source is longer than an arena's offsets reach, so it was not parsed.
-    TooLong(TooLong),
-}
-
-impl fmt::Display for ParseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ParseError::Invalid { message, offset } => write!(f, "at byte {offset}: {message}"),
-            ParseError::TooLong(err) => err.fmt(f),
-        }
-    }
-}
-
-impl std::error::Error for ParseError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            ParseError::Invalid { .. } => None,
-            ParseError::TooLong(err) => Some(err),
-        }
-    }
-}
-
-impl From<ruff_python_parser::ParseError> for ParseError {
-    fn from(err: ruff_python_parser::ParseError) -> Self {
-        ParseError::Invalid {
-            message: err.error.to_string(),
-            offset: err.location.start().to_usize(),
-        }
-    }
-}
-
-impl From<TooLong> for ParseError {
-    fn from(err: TooLong) -> Self {
-        ParseError::TooLong(err)
+/// Ruff's refusal of source as a [`ParseError`]: its message, verbatim, and where it starts.
+pub(crate) fn invalid(err: &ruff_python_parser::ParseError) -> ParseError {
+    ParseError::Invalid {
+        message: err.error.to_string(),
+        offset: err.location.start().to_usize(),
     }
 }
 
@@ -108,7 +67,8 @@ pub(crate) fn parse_from<'text>(
     mode: Mode,
 ) -> Result<Arena<'text>, ParseError> {
     let builder = builder?;
-    let parsed = ruff_python_parser::parse(source, ParseOptions::from(mode))?;
+    let parsed =
+        ruff_python_parser::parse(source, ParseOptions::from(mode)).map_err(|err| invalid(&err))?;
     Ok(build(
         builder,
         AnyNodeRef::from(parsed.syntax()),

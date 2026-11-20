@@ -13,6 +13,7 @@
 use std::fmt;
 
 use crate::codecs::{ALIASES, MODULES, MULTI_BYTE, SINGLE_BYTE, UNDEFINED};
+use crate::source::{Source, SourceEncoding};
 
 /// What a codec module of `CPython`'s is, as far as quaff reads it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,17 +196,6 @@ impl fmt::Debug for MultiByteCodec {
     }
 }
 
-/// How a Python file's bytes decode, by what it declares.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SourceEncoding {
-    /// UTF-8: declared, marked, or by default.
-    Utf8,
-    /// A single-byte codec, declared.
-    SingleByte(Codec),
-    /// A multi-byte codec, declared.
-    MultiByte(MultiByteCodec),
-}
-
 /// Why `CPython` refuses to read a Python file, and so quaff does too.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
@@ -341,173 +331,83 @@ impl std::error::Error for Refusal {}
 /// The UTF-8 byte-order mark.
 pub(crate) const UTF8_MARK: &[u8] = &[0xEF, 0xBB, 0xBF];
 
-/// A Python file's text, decoded as `CPython` decodes it, with what it takes to write it back.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Source {
-    /// The text, after any byte-order mark, line endings as the file has them.
-    pub text: String,
-    /// The encoding it was decoded from.
-    pub encoding: SourceEncoding,
-    /// Whether the file starts with a UTF-8 byte-order mark.
-    pub byte_order_mark: bool,
-}
-
-/// Text that has no one spelling in a file's encoding, so cannot be written to it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Unencodable {
-    /// The first character with no one spelling.
-    pub character: char,
-    /// The encoding, by its `CPython` codec name.
-    pub encoding: &'static str,
-    /// Whether the encoding spells it several ways, rather than not at all.
-    pub ambiguous: bool,
-}
-
-impl fmt::Display for Unencodable {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.ambiguous {
-            write!(
-                f,
-                "{:?} has more than one spelling in {:?}, so which to write is not known",
-                self.character, self.encoding
-            )
-        } else {
-            write!(
-                f,
-                "{:?} cannot be written in {:?}",
-                self.character, self.encoding
-            )
-        }
+/// A whole Python file's bytes decoded as `CPython` decodes them, refusing what `CPython` refuses.
+///
+/// # Errors
+///
+/// Returns the [`Refusal`] `CPython`'s own refusal corresponds to: a NUL byte, a declared
+/// encoding that is unknown, not of text or the `undefined` codec, a byte-order mark with a
+/// declaration of anything but UTF-8, or a byte invalid in the encoding.  Also a declared
+/// encoding `CPython` reads and quaff does not, [`Refusal::Unread`], which is quaff's own
+/// limit.  Nothing partial is returned.
+pub fn decode(bytes: &[u8]) -> Result<Source, Refusal> {
+    // CPython refuses a NUL before it looks at anything else.
+    if let Some(at) = memchr::memchr(0, bytes) {
+        return Err(Refusal::Nul {
+            line: line_of(bytes, at),
+        });
     }
-}
-
-impl std::error::Error for Unencodable {}
-
-impl Source {
-    /// Decodes a whole Python file as `CPython` does, refusing what `CPython` refuses.
-    ///
-    /// # Errors
-    ///
-    /// Returns the [`Refusal`] `CPython`'s own refusal corresponds to: a NUL byte, a declared
-    /// encoding that is unknown, not of text or the `undefined` codec, a byte-order mark with a
-    /// declaration of anything but UTF-8, or a byte invalid in the encoding.  Also a declared
-    /// encoding `CPython` reads and quaff does not, [`Refusal::Unread`], which is quaff's own
-    /// limit.  Nothing partial is returned.
-    pub fn decode(bytes: &[u8]) -> Result<Source, Refusal> {
-        // CPython refuses a NUL before it looks at anything else.
-        if let Some(at) = memchr::memchr(0, bytes) {
-            return Err(Refusal::Nul {
-                line: line_of(bytes, at),
-            });
-        }
-        let (encoding, body) = encoding(bytes)?;
-        let source_encoding = encoding.source_encoding();
-        let rest = &bytes[body..];
-        let text = match encoding {
-            Resolved::Utf8(described) => match std::str::from_utf8(rest) {
-                Ok(text) => text.to_owned(),
-                Err(err) => {
-                    let at = err.valid_up_to();
-                    return Err(Refusal::Invalid {
-                        byte: rest[at],
-                        line: line_of(rest, at),
-                        encoding: described,
-                    });
-                }
-            },
-            Resolved::MultiByte(codec, name, declared_on) => {
-                let mut text = String::with_capacity(rest.len());
-                let mut at = 0;
-                while at < rest.len() {
-                    match codec.read(&rest[at..]) {
-                        Read::Char(c, width) => {
-                            text.push(c);
-                            at += width;
-                        }
-                        Read::Invalid(_) => {
-                            return Err(Refusal::Invalid {
-                                byte: rest[at],
-                                line: line_of(rest, at),
-                                encoding: Described::Declared {
-                                    name,
-                                    line: declared_on,
-                                },
-                            });
-                        }
-                    }
-                }
-                text
+    let (encoding, body) = encoding(bytes)?;
+    let source_encoding = encoding.source_encoding();
+    let rest = &bytes[body..];
+    let text = match encoding {
+        Resolved::Utf8(described) => match std::str::from_utf8(rest) {
+            Ok(text) => text.to_owned(),
+            Err(err) => {
+                let at = err.valid_up_to();
+                return Err(Refusal::Invalid {
+                    byte: rest[at],
+                    line: line_of(rest, at),
+                    encoding: described,
+                });
             }
-            Resolved::SingleByte(codec, name, declared_on) => {
-                let mut text = String::with_capacity(rest.len());
-                for (at, &byte) in rest.iter().enumerate() {
-                    let Some(c) = codec.decode(byte) else {
+        },
+        Resolved::MultiByte(codec, name, declared_on) => {
+            let mut text = String::with_capacity(rest.len());
+            let mut at = 0;
+            while at < rest.len() {
+                match codec.read(&rest[at..]) {
+                    Read::Char(c, width) => {
+                        text.push(c);
+                        at += width;
+                    }
+                    Read::Invalid(_) => {
                         return Err(Refusal::Invalid {
-                            byte,
+                            byte: rest[at],
                             line: line_of(rest, at),
                             encoding: Described::Declared {
                                 name,
                                 line: declared_on,
                             },
                         });
-                    };
-                    text.push(c);
-                }
-                text
-            }
-        };
-        Ok(Source {
-            text,
-            encoding: source_encoding,
-            byte_order_mark: body > 0,
-        })
-    }
-
-    /// Encodes `text` the way this file is, byte-order mark first if it has one, so that
-    /// encoding a file's own decoded text gives back its bytes exactly.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Unencodable`] naming the first character the encoding cannot hold, or holds
-    /// under more than one byte, which only a few single-byte codecs do.
-    pub fn encode(&self, text: &str) -> Result<Vec<u8>, Unencodable> {
-        let mut bytes = Vec::with_capacity(text.len() + 3);
-        if self.byte_order_mark {
-            bytes.extend_from_slice(UTF8_MARK);
-        }
-        match self.encoding {
-            SourceEncoding::Utf8 => bytes.extend_from_slice(text.as_bytes()),
-            SourceEncoding::SingleByte(codec) => {
-                for c in text.chars() {
-                    let mut spellings = codec.spellings(c);
-                    match (spellings.next(), spellings.next()) {
-                        (Some(byte), None) => bytes.push(byte),
-                        (first, _) => {
-                            return Err(Unencodable {
-                                character: c,
-                                encoding: codec.name(),
-                                ambiguous: first.is_some(),
-                            });
-                        }
                     }
                 }
             }
-            SourceEncoding::MultiByte(codec) => {
-                for c in text.chars() {
-                    let spellings = codec.spellings(c);
-                    let [only] = spellings.as_slice() else {
-                        return Err(Unencodable {
-                            character: c,
-                            encoding: codec.name(),
-                            ambiguous: !spellings.is_empty(),
-                        });
-                    };
-                    bytes.extend_from_slice(only);
-                }
-            }
+            text
         }
-        Ok(bytes)
-    }
+        Resolved::SingleByte(codec, name, declared_on) => {
+            let mut text = String::with_capacity(rest.len());
+            for (at, &byte) in rest.iter().enumerate() {
+                let Some(c) = codec.decode(byte) else {
+                    return Err(Refusal::Invalid {
+                        byte,
+                        line: line_of(rest, at),
+                        encoding: Described::Declared {
+                            name,
+                            line: declared_on,
+                        },
+                    });
+                };
+                text.push(c);
+            }
+            text
+        }
+    };
+    Ok(Source {
+        text,
+        encoding: source_encoding,
+        byte_order_mark: body > 0,
+    })
 }
 
 /// An encoding a declaration, a mark or the default settled on, before a byte is decoded.
@@ -533,7 +433,7 @@ impl Resolved {
 /// The encoding a Python file's bytes are in, and how many bytes of mark come before its text.
 ///
 /// The declaration is resolved and its conflicts with a mark refused, but no byte past the
-/// declaration is checked; [`Source::decode`] does that.
+/// declaration is checked; [`decode`] does that.
 fn encoding(bytes: &[u8]) -> Result<(Resolved, usize), Refusal> {
     let marked = bytes.starts_with(UTF8_MARK);
     let body = if marked { UTF8_MARK.len() } else { 0 };
@@ -852,14 +752,14 @@ mod tests {
     #[test]
     fn a_python_file_declaring_a_multi_byte_encoding_decodes_and_encodes_back() {
         let bytes = b"# coding: shift_jis\ns = '\x93\xfa\x96\x7b'\n";
-        let source = Source::decode(bytes).unwrap();
+        let source = decode(bytes).unwrap();
         assert_eq!(source.text, "# coding: shift_jis\ns = '日本'\n");
         assert_eq!(source.encode(&source.text).unwrap(), bytes);
         assert_eq!(
             source.encode("∪").map_err(|e| e.ambiguous),
             Ok(vec![0x81, 0xbe])
         );
-        let cp932 = Source::decode(b"# coding: cp932\n").unwrap();
+        let cp932 = decode(b"# coding: cp932\n").unwrap();
         assert_eq!(
             cp932.encode("∪").map_err(|e| e.to_string()),
             Err(
@@ -868,7 +768,7 @@ mod tests {
             )
         );
         assert_eq!(
-            Source::decode(b"# coding: shift_jis\n\x93\n").map_err(|e| e.to_string()),
+            decode(b"# coding: shift_jis\n\x93\n").map_err(|e| e.to_string()),
             Err(
                 "byte 0x93 on line 2 is not valid \"shift_jis\", the encoding line 1 declares"
                     .into()
@@ -1007,12 +907,12 @@ mod tests {
     }
 
     fn decoded(bytes: &[u8]) -> Result<Source, String> {
-        Source::decode(bytes).map_err(|refusal| refusal.to_string())
+        decode(bytes).map_err(|refusal| refusal.to_string())
     }
 
     #[test]
     fn undeclared_source_is_utf8() {
-        let source = Source::decode("x = 'é'\n".as_bytes()).unwrap();
+        let source = decode("x = 'é'\n".as_bytes()).unwrap();
         assert_eq!(source.text, "x = 'é'\n");
         assert_eq!(source.encoding, SourceEncoding::Utf8);
         assert!(!source.byte_order_mark);
@@ -1020,16 +920,15 @@ mod tests {
 
     #[test]
     fn declared_source_decodes_by_its_declaration() {
-        let source = Source::decode(b"# coding: latin-1\nx = '\xe9'\n").unwrap();
+        let source = decode(b"# coding: latin-1\nx = '\xe9'\n").unwrap();
         assert_eq!(source.text, "# coding: latin-1\nx = 'é'\n");
         assert_eq!(source.encoding, SourceEncoding::SingleByte(latin_1()));
-        let source =
-            Source::decode(b"#!/usr/bin/env python\n# coding: koi8-r\nx = '\xc1'\n").unwrap();
+        let source = decode(b"#!/usr/bin/env python\n# coding: koi8-r\nx = '\xc1'\n").unwrap();
         assert_eq!(
             source.text,
             "#!/usr/bin/env python\n# coding: koi8-r\nx = 'а'\n"
         );
-        let source = Source::decode(b"# coding: utf8\nx = '\xc3\xa9'\n").unwrap();
+        let source = decode(b"# coding: utf8\nx = '\xc3\xa9'\n").unwrap();
         assert_eq!(source.encoding, SourceEncoding::Utf8);
         assert_eq!(source.text, "# coding: utf8\nx = 'é'\n");
     }
@@ -1037,7 +936,7 @@ mod tests {
     #[test]
     fn a_byte_order_mark_is_kept_out_of_the_text_and_written_back() {
         let bytes = b"\xef\xbb\xbf# coding: utf-8\nx = '\xc3\xa9'\n";
-        let source = Source::decode(bytes).unwrap();
+        let source = decode(bytes).unwrap();
         assert!(source.byte_order_mark);
         assert_eq!(source.text, "# coding: utf-8\nx = 'é'\n");
         assert_eq!(source.encode(&source.text).unwrap(), bytes);
@@ -1051,17 +950,17 @@ mod tests {
             &b"# coding: cp1252\nx = '\x80'\n"[..],
             "x = 'é'\n".as_bytes(),
         ] {
-            let source = Source::decode(bytes).unwrap();
+            let source = decode(bytes).unwrap();
             assert_eq!(source.encode(&source.text).unwrap(), bytes);
         }
     }
 
     #[test]
     fn text_the_encoding_cannot_hold_is_not_encoded() {
-        let source = Source::decode(b"# coding: koi8-r\n").unwrap();
+        let source = decode(b"# coding: koi8-r\n").unwrap();
         let err = source.encode("é").unwrap_err();
         assert_eq!(err.to_string(), "'é' cannot be written in \"koi8_r\"");
-        let source = Source::decode(b"# coding: mac-arabic\n").unwrap();
+        let source = decode(b"# coding: mac-arabic\n").unwrap();
         let err = source.encode(" ").unwrap_err();
         assert_eq!(
             err.to_string(),
@@ -1144,7 +1043,7 @@ mod tests {
     #[test]
     fn a_nul_is_refused_before_the_declaration_is_read() {
         assert_eq!(
-            Source::decode(b"# coding: uft-8\n\x00"),
+            decode(b"# coding: uft-8\n\x00"),
             Err(Refusal::Nul { line: 2 })
         );
     }
@@ -1153,11 +1052,11 @@ mod tests {
     fn a_byte_order_mark_allows_utf8_declared_any_way_cpython_normalises_to_it() {
         for declaration in ["utf-8", "UTF_8", "utf-8-sig", "Utf_8-Whatever"] {
             let bytes = format!("\u{feff}# coding: {declaration}\nx = 1\n");
-            let source = Source::decode(bytes.as_bytes()).unwrap();
+            let source = decode(bytes.as_bytes()).unwrap();
             assert!(source.byte_order_mark, "{declaration}");
         }
         assert!(matches!(
-            Source::decode(b"\xef\xbb\xbf#\n# coding: latin-1\n"),
+            decode(b"\xef\xbb\xbf#\n# coding: latin-1\n"),
             Err(Refusal::MarkConflict { line: 2, .. })
         ));
     }

@@ -10,6 +10,11 @@ authors.workspace = true
 # Nothing is published until a release decides where and how.
 publish = false
 
+[dependencies]
+# How a file's bytes are read, which a front end answers for its language.  Not a parser:
+# `tests/no_dependencies.rs` names it.
+quaffed-encoding = { path = "../encoding" }
+
 [dev-dependencies]
 insta = "=1.49.0"
 proptest = "=1.12.0"

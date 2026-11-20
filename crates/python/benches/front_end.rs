@@ -24,11 +24,11 @@ use std::hint::black_box;
 
 use common::{GROUPS, Mode, group_files};
 use gungraun::prelude::*;
-use quaffed_encoding::python::Source;
+use quaffed_encoding::python;
 use quaffed_python::{
-    Rewrite, compile_pattern, compile_rewrite, lex, parse_expression, parse_ipython, parse_module,
+    compile_pattern, compile_rewrite, lex, parse_expression, parse_ipython, parse_module,
 };
-use quaffed_syntax::{Arena, Pattern, find, find_captured};
+use quaffed_syntax::{Arena, Pattern, Rewrite, find, find_captured};
 use ruff_python_parser::ParseOptions;
 
 /// Every file of the synthetic corpus, decoded as quaff decodes it, with how it is parsed.
@@ -39,7 +39,7 @@ fn corpus() -> Vec<(Mode, String)> {
             group_files(group).into_iter().map(move |path| {
                 let bytes = std::fs::read(&path)
                     .unwrap_or_else(|err| panic!("reading {}: {err}", path.display()));
-                let source = Source::decode(&bytes)
+                let source = python::decode(&bytes)
                     .unwrap_or_else(|err| panic!("decoding {}: {err}", path.display()));
                 (group.mode, source.text)
             })

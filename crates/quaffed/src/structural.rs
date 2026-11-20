@@ -1,17 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Gavin Lucas
 
-//! Finding a structural pattern in one Python file's text.
+//! Finding a structural pattern in one file's text.
 //!
-//! The file is parsed into an arena (`quaffed-python`), the pattern's shape is looked for in it
-//! (`quaffed-syntax`), and each match's byte range is turned into the line and column an
-//! editor shows, counted as a textual search counts them.
+//! The file is parsed into an arena by its language's front end, the pattern's shape is looked
+//! for in it (`quaffed-syntax`), and each match's byte range is turned into the line and column
+//! an editor shows, counted as a textual search counts them.
 
 use std::collections::BTreeMap;
 use std::ops::Range;
 
-use quaffed_python::{ParseError, parse_module};
-use quaffed_syntax::{Arena, NodeId, Pattern, find, find_where};
+use quaffed_syntax::{Arena, FrontEnd, NodeId, ParseError, Pattern, find, find_where};
 
 use crate::search::{Match, Position};
 
@@ -47,18 +46,19 @@ pub struct Where<'a> {
     pub holds: Box<Holds<'a>>,
 }
 
-/// Every match of each of `patterns` in `text`, a Python file's decoded text, in source order,
-/// kept by its `where` where it has one.
+/// Every match of each of `patterns` in `text`, a file's decoded text in `language`, in source
+/// order, kept by its `where` where it has one.
 ///
 /// # Errors
 ///
-/// Returns [`Unparsed`] if the text is not Python, saying where and why; a file that does not
-/// parse is searched for nothing.
+/// Returns [`Unparsed`] if the text does not parse in its language, saying where and why; a file
+/// that does not parse is searched for nothing.
 pub fn search(
+    language: &dyn FrontEnd,
     text: &str,
     patterns: &[(&Pattern, Option<&Where>)],
 ) -> Result<Vec<Vec<Found>>, Unparsed> {
-    let arena = parse_module(text).map_err(|err| unparsed(text, err))?;
+    let arena = language.parse(text).map_err(|err| unparsed(text, err))?;
     let ranges: Vec<Vec<Range<usize>>> = patterns
         .iter()
         .map(|(pattern, filter)| {
@@ -163,9 +163,9 @@ pub(crate) fn positions(text: &str, offsets: &[usize]) -> BTreeMap<usize, Positi
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::languages::PYTHON;
     use proptest::prelude::*;
     use quaffed_encoding::Encoding;
-    use quaffed_python::compile_pattern;
 
     fn pos(line: usize, column: usize) -> Position {
         Position { line, column }
@@ -173,7 +173,7 @@ mod tests {
 
     #[test]
     fn a_where_is_offered_the_nodes_a_match_binds_and_keeps_what_it_passes() {
-        let pattern = compile_pattern("connect($a, $b)").unwrap();
+        let pattern = PYTHON.compile_pattern("connect($a, $b)").unwrap();
         let text = "connect('https://x', port)\nconnect(r\"http://y\", 80)\n";
         let offered = std::cell::RefCell::new(Vec::new());
         let filter = Where {
@@ -190,7 +190,7 @@ mod tests {
                     .is_some_and(|v| v.starts_with("https"))
             }),
         };
-        let found = search(text, &[(&pattern, Some(&filter))]).unwrap();
+        let found = search(PYTHON, text, &[(&pattern, Some(&filter))]).unwrap();
         assert_eq!(found[0].len(), 1);
         assert_eq!(
             &text[found[0][0].range.clone()],
@@ -204,10 +204,10 @@ mod tests {
 
     #[test]
     fn a_match_is_placed_by_its_first_and_last_character() {
-        let pattern = compile_pattern("connect($a)").unwrap();
+        let pattern = PYTHON.compile_pattern("connect($a)").unwrap();
         // On an attribute, `client.connect(host)` is another shape, so only the bare call matches.
         let text = "client.connect(x)\nif ready: connect(host)\n";
-        let found = search(text, &[(&pattern, None)]).unwrap();
+        let found = search(PYTHON, text, &[(&pattern, None)]).unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(
             found[0],
@@ -271,9 +271,9 @@ mod tests {
 
     #[test]
     fn a_match_that_spans_lines_ends_on_its_last_line() {
-        let pattern = compile_pattern("f($a, $b)").unwrap();
+        let pattern = PYTHON.compile_pattern("f($a, $b)").unwrap();
         let text = "f(\n    1,\n    2,\n)\n";
-        let found = search(text, &[(&pattern, None)]).unwrap();
+        let found = search(PYTHON, text, &[(&pattern, None)]).unwrap();
         assert_eq!(
             found[0][0].at,
             Match {
@@ -285,8 +285,8 @@ mod tests {
 
     #[test]
     fn a_file_that_does_not_parse_says_where_and_why() {
-        let pattern = compile_pattern("f($a)").unwrap();
-        let err = search("x = 1\ndef (:\n", &[(&pattern, None)]).unwrap_err();
+        let pattern = PYTHON.compile_pattern("f($a)").unwrap();
+        let err = search(PYTHON, "x = 1\ndef (:\n", &[(&pattern, None)]).unwrap_err();
         assert_eq!(err.at, pos(2, 5));
         assert_eq!(err.message, "Expected an identifier");
     }
@@ -301,9 +301,9 @@ mod tests {
 
     #[test]
     fn matches_inside_matches_are_each_placed() {
-        let pattern = compile_pattern("f($x)").unwrap();
+        let pattern = PYTHON.compile_pattern("f($x)").unwrap();
         let text = "f(f(1))\n";
-        let found = search(text, &[(&pattern, None)]).unwrap();
+        let found = search(PYTHON, text, &[(&pattern, None)]).unwrap();
         let texts: Vec<&str> = found[0].iter().map(|f| &text[f.range.clone()]).collect();
         assert_eq!(texts, ["f(f(1))", "f(1)"]);
         assert_eq!(

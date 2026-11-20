@@ -15,7 +15,7 @@ use std::fs;
 use std::path::Path;
 
 use fetched::{fetched, python_files, sources};
-use quaffed_encoding::python::Source;
+use quaffed_encoding::python;
 use quaffed_python::{compile_pattern, parse_module};
 use quaffed_syntax::find;
 
@@ -168,7 +168,7 @@ fn every_structural_match_across_real_python_is_found_as_cpython_counts_it() {
         for relative in &accepted {
             let path = dir.join(relative);
             let bytes = fs::read(&path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
-            let text = Source::decode(&bytes)
+            let text = python::decode(&bytes)
                 .unwrap_or_else(|err| panic!("{relative}: decoding: {err}"))
                 .text;
             let arena =

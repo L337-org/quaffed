@@ -44,7 +44,7 @@ fn parsed(path: &Path, parse: Parser) -> BTreeSet<Kind> {
 }
 
 /// One of the adapter's ways of parsing source into the kinds it contains.
-type Parser = fn(&str) -> Result<BTreeSet<Kind>, quaffed_python::ParseError>;
+type Parser = fn(&str) -> Result<BTreeSet<Kind>, quaffed_syntax::ParseError>;
 
 /// The kinds in `all` that are not in `found`.
 fn missing(all: &[Kind], found: &BTreeSet<Kind>) -> Vec<&'static str> {

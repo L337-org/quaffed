@@ -1,11 +1,13 @@
 # The syntax arena
 
 `crates/syntax`, the `quaffed-syntax` crate: a parsed file as node kinds and byte ranges over
-its text, **the same shape for every language**.  Each language's adapter parses with its own
-parser and builds an arena; the engine - matching, rewriting, the invariant checks - reads arenas
-and never a parser's own types.  So this crate depends on nothing, and a second language's adapter
-depends on it rather than on the Python adapter or its parser; `tests/no_dependencies.rs` fails on
-any dependency it does not name.
+its text, **the same shape for every language**, and the front end, **the one interface through
+which the engine reaches a language**.  Each language's adapter parses with its own parser and
+builds an arena; the engine - matching, rewriting, the invariant checks - reads arenas and never a
+parser's own types.  So this crate depends on no parser, and a second language's adapter depends
+on it rather than on the Python adapter or its parser; `tests/no_dependencies.rs` fails on any
+dependency its `ALLOWED` does not name, which is where a dependency that is not a parser, such
+as quaff's own reading of a file's bytes, is added deliberately.
 
 ## The shape
 
@@ -145,6 +147,44 @@ front.  A second root, a `leave` with nothing open, or a node left open panics a
 adapter.  The builder does not check the range invariants, which would cost every parse; the round
 trip checks them over both corpora.
 
+## The front end
+
+**A language is reached only through its `FrontEnd`** (`src/front.rs`), which its adapter
+implements once, whatever tools it uses to answer: Python's uses Ruff, and quaff's own reading of
+a Python file's bytes in `quaffed-encoding`.  It asks, of text in that language:
+
+- which files are its own, by name alone (`claims`, from `extensions`);
+- what encoding a file declares in its own text, and how its bytes are decoded, as the language's
+  own reader would (`declared_encoding`, `decode`);
+- to parse a file into an arena, and to compile a pattern and a rewrite (`parse`,
+  `compile_pattern`, `compile_rewrite`);
+- what a rewrite needs of the text beyond the arena: its comments, strings and brackets, its code
+  tokens, how a value is written into a string, and what stands outside the construct it needs
+  (`lex`, `code_tokens`, `token_kinds`, `escaped`, `misplaced`).
+
+**Only quaff's own types cross it**, defined beside it or in `quaffed-encoding`: an arena, a
+`Pattern`, a `Rewrite`, a `Lexed`, a decoded `Source`, a `Declared` encoding naming what the
+language calls its declaration, and errors as a `ParseError`, a `CompileError` of message and
+place, or a `Refused` in the language's own words, so the engine never sees an adapter's type and
+never words a language's refusal for it.  Every question but `claims` takes text rather than a
+file, so the same questions can be asked of code embedded in another language's file once a
+scope can name it.
+
+**A question added later has a default answer**, so every language already written compiles
+unchanged.  A default is given only where an honest one exists, such as declaring no encoding,
+and one that leaves something undone makes the engine refuse rather than guess: writing nothing
+into a string refuses such an edit.  A language with only a parser implements the questions that
+have no default and takes the rest.  A type an adapter builds is
+built through a constructor where its fields may grow (`Rewrite::new`, `CompileError::new`);
+every crate is in one workspace, so any other change to what crosses is a compile error in the
+adapters, fixed in the same change.
+
+**The binary names an adapter in one file**, `crates/quaffed/src/languages.rs`, whose `LANGUAGES`
+lists each language's front end in the order the help gives them; `tests/adapter_containment.rs`
+fails on any other file of the binary that names one.  A run finds each file's language there by
+the file's name, and compiles every pattern for every language: `search.md` says what a pattern
+means where files of several languages are in scope.
+
 ## Adding a language
 
 1. Choose the parser for that language on its merits; there is no common parsing substrate.
@@ -159,8 +199,26 @@ trip checks them over both corpora.
    tests and properties like Python's.
 6. Refuse a pattern `Pattern::unbounded_sequence` or `Pattern::costly` names, with an error that
    says where the hole is, since `find` panics on one.
-7. List it, with the extensions that name its files, in `resolve::LANGUAGES`, which the help
-   prints, and as a row of the table under _Which files_ in `docs/language.md`, with what only it
-   does under a heading of its own there; `tests/language_guide.rs` fails until the two lists
-   agree.  Nothing else quaff says names a language, as `AGENTS.md` asks, so the rest of the
-   help, the messages and the guide need no change.
+7. Implement `FrontEnd` for it in the adapter, answering each question in the language's own
+   terms.  Take a default only where it is the truth for the language.  Where the language
+   declares its encoding in its own text, answer `declared_encoding` and `decode` as its own
+   reader does, with refusals in its own words and its declaration named as its users know it,
+   and describe the rule in `encoding.md` beside Python's.
+8. Add its front end to `LANGUAGES` in `crates/quaffed/src/languages.rs`, its adapter to the
+   binary's `Cargo.toml`, and the adapter's crate name to `ADAPTERS` in
+   `crates/quaffed/tests/adapter_containment.rs`, which fails on a `quaffed-*` dependency of the
+   binary that is in neither its `ADAPTERS` nor its `ENGINE`.  The test in `languages.rs` fails
+   if a language claims a file named by another's extensions; a front end that overrides
+   `claims` beyond its extensions needs a test of its own that it claims no other language's
+   files.  Nothing else in the binary changes: every file is found among `LANGUAGES`, and every
+   pattern is compiled for each.
+9. List it, with the extensions that name its files, as a row of the table under _Which files_ in
+   `docs/language.md`, with what only it does under a heading of its own there;
+   `tests/language_guide.rs` fails until the table agrees with the help, which prints
+   `LANGUAGES`.  Nothing else quaff says names a language, as `AGENTS.md` asks, so the rest of
+   the help, the messages and the guide need no change.
+10. Give it a corpus and an oracle for the edit invariants, by the checklist in `corpus.md`.
+11. Check the rewriter's own rules against the language: where `src/rewrite.rs` or
+    `src/rewrite/lines.rs` spells a kind name of one parser, or holds a rule about statements or
+    blocks that the language does not share, the rule has to be asked of the front end before
+    the language's files are edited.

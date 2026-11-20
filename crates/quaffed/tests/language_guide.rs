@@ -657,7 +657,7 @@ fn the_guide_lists_the_languages_the_help_does() {
         listed,
         guide.join("; "),
         "the table of languages under Which files in docs/language.md must list what the help \
-         does, which comes from resolve::LANGUAGES"
+         does, which comes from languages::LANGUAGES"
     );
 }
 

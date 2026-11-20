@@ -1,4 +1,4 @@
-//! `quaffed-syntax` depends on nothing, so that no parser reaches it.
+//! `quaffed-syntax` depends on nothing but what is named here, so that no parser reaches it.
 //!
 //! The arena is the one shape every language's adapter builds, and the reason it has a crate of
 //! its own is that a second language's adapter can depend on it without depending on another
@@ -9,8 +9,9 @@
 use std::fs;
 use std::path::Path;
 
-/// Dependencies the crate may have, by name.
-const ALLOWED: &[&str] = &[];
+/// Dependencies the crate may have, by name.  `quaffed-encoding` is quaff's own reading of a
+/// file's bytes, which a language's front end answers in its terms.
+const ALLOWED: &[&str] = &["quaffed-encoding"];
 
 /// The dependencies the manifest text declares, by name, in `[dependencies]`,
 /// `[build-dependencies]` or a `[dependencies.<name>]` table, target-specific ones included.

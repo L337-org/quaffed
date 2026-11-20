@@ -149,14 +149,19 @@ match, so a search needs about the size of the largest file.  No size limit is a
 ## Structural search
 
 A structural pattern is matched by shape against files in a language quaff parses, through the
-syntax arena (`syntax.md`) and that language's adapter (`python.md` for Python).  Such a file has
-structural support.  **Which files it applies to follows the units rule, a unit being a whole
-file** (`src/structural.rs`, and the file loop in `src/run.rs`):
+syntax arena and that language's front end (`syntax.md`, and `python.md` for Python).  Such a file
+has structural support.  **Each file's language is identified, and the pattern is applied as that
+language reads it.**  Which files it applies to follows the units rule, a unit being a whole file
+(`src/structural.rs`, and the file loop in `src/run.rs`):
 
-- **A Python file**, by name alone, by the extensions `resolve::LANGUAGES` gives it, is
-  decoded as `CPython` decodes it (`python::Source::decode`), parsed and searched.  A declaration
-  that gives the textual tier another encoding does not change the text Ruff is given, since it
-  does not change what Python runs.
+- **A file in a language quaff parses**, by name alone, by the extensions its front end gives in
+  `languages::LANGUAGES`, is decoded as the language's own reader decodes it - for Python, as
+  `CPython` does - parsed and searched.  A declaration that gives the textual tier another
+  encoding does not change the text the parser is given, since it does not change what the
+  language runs.
+- **A file whose language cannot read the pattern is not applicable to it**: it cannot hold a
+  match, so it is not searched for that pattern, never an error, and counted in a note of its own.
+  Where no file in scope is in a language that reads the pattern, the run says so.
 - **Any other file is not applicable**: never matched as text instead, never an error, and
   counted in a note.  **When nothing in scope could be searched structurally, the run says so**:
   a `find` exits 1, and a `find ... expect` fails, exit 2, whatever it asks, since an assertion
@@ -168,8 +173,14 @@ file** (`src/structural.rs`, and the file loop in `src/run.rs`):
   as text.
 - **A binary file with structural support** is skipped and counted, as any binary file is.
 
-**A pattern is compiled before any file is read**, so a pattern the compiler refuses
-(`python.md`, `syntax.md`) is a script error, exit 3, and nothing is searched.  The error is
+**A pattern is compiled before any file is read, once for every language quaff parses**, with
+its rewrite and its `where`.  **A pattern no language reads** (`python.md`, `syntax.md`) is a
+script error, exit 3, and nothing is searched; with more than one language the message gives what
+each said, named.  A `where` a language cannot read leaves the pattern unread in that language, and
+one that no language reading the pattern reads is a script error.  **A rewrite a language reads
+the pattern but not the rewrite in** refuses the edit in each file of that language where the
+pattern matches, as an edit refused, exit 9, so nothing is written; one that no language reading
+its pattern can read is a script error.  The error is
 placed in its source's terms - `-p, at character 6`, or a script's line and column - not as a byte
 offset into the pattern.
 
@@ -290,11 +301,11 @@ the path or argument it concerns, and says what to do where there is something t
   sets back, sees an edit whose modification time was restored.  **A timestamp is only as fine as
   the clock that set it**, so, as git does for its racily clean files, a file whose newest
   timestamp is within two seconds of its read is never vouched for, and has its bytes compared.
-- **A structural replace edits a Python file's decoded text** and encodes the result back as the
-  file is encoded (`python::Source::encode`), which gives a file's own bytes back exactly, so every
-  byte outside the matches is kept.  A character the encoding cannot hold is refused as for a
+- **A structural replace edits a file's decoded text** and encodes the result back as the file is
+  encoded (`Source::encode`), which gives a file's own bytes back exactly, so every byte outside
+  the matches is kept.  A character the encoding cannot hold is refused as for a
   textual replace.  Each match is written over with its rewrite: what each hole captured, from the
-  matcher, put where the template's sites say (`quaffed_python::compile_rewrite`), each capture
+  matcher, put where the template's sites say (`FrontEnd::compile_rewrite`), each capture
   widened over brackets that only wrap it (`whole_brackets`).  **Layout the template does not
   decide is the file's, by one rule** (`diffed`): each stretch of the template between two
   anchors - its holes, and the match's start and end - is compared with the file's stretch
@@ -330,7 +341,7 @@ the path or argument it concerns, and says what to do where there is something t
   that node's own holds them, as a subscript's does, before the template is filled
   (`Job::rebracketed`), so that its layout is carried as any bracket's is; and a value written
   into a string is escaped as
-  Python's literal needs (`quaffed_python::escaped`), and questioned.  **What the user did not
+  the language's literal needs (`FrontEnd::escaped`), and questioned.  **What the user did not
   write is derived, never guessed**: the indentation of the template's later lines and of
   captured code moved to another depth, from the file's indent unit; the file's own line ending for
   the template's line breaks; and the trailing commas a pattern ignores.  **Statements that share
@@ -355,7 +366,7 @@ the path or argument it concerns, and says what to do where there is something t
   `src/rewrite/layout.rs`.  A trailing comma the pattern ignores is one the arena keeps no token
   for, so the matcher and the edit agree on it (`ignored_by_matcher`); it is carried to the bracket
   in the rewrite that holds the same holes as its own, brackets paired from the lexer's
-  (`quaffed_python::Lexed::brackets`), goes with its bracket where the rewrite has none that does,
+  (`Lexed::brackets`), goes with its bracket where the rewrite has none that does,
   goes to the outermost where the match has one and the rewrite has several nested one inside the
   next, since the outermost stands where the match's did, and is refused where the rewrite has some
   but a different number from the match otherwise, or where the comma would be a token where it
@@ -377,7 +388,7 @@ the path or argument it concerns, and says what to do where there is something t
   it make a tuple.  **An edit that leaves code outside the construct the language requires of
   it** is refused too, once every level is written: code the parser accepts anywhere but the
   language will not run there, so neither the parse check nor the matcher would see it.  For
-  Python, `quaffed_python::misplaced` finds what it covers, listed in `python.md`; only what the
+  Python, `FrontEnd::misplaced` finds what it covers, listed in `python.md`; only what the
   edit wrote is judged, and only beyond as many of the same kind as were outside in what it wrote
   over, so one already in the file and carried through a hole is the file's.  A text search for
   the keywords involved skips the extra parse for an edit that writes none of them.  A refusal

@@ -28,18 +28,9 @@ use ruff_python_ast::visitor::{Visitor, walk_comprehension, walk_expr, walk_stmt
 use ruff_python_ast::{Comprehension, Expr, Stmt};
 use ruff_text_size::Ranged;
 
-use crate::ParseError;
+use quaffed_syntax::{Misplaced, ParseError};
 
-/// A statement or expression outside the construct it needs: what it is, as Python spells it,
-/// and where it starts.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Misplaced {
-    /// `return`, `yield`, `yield from`, `await`, `async with`, `async for`, `break` or
-    /// `continue`.
-    pub what: &'static str,
-    /// The byte offset in the source where it starts.
-    pub offset: usize,
-}
+use crate::parse::invalid;
 
 /// Every statement and expression in `source`, parsed as a module, that stands outside the
 /// construct it needs, in source order.
@@ -49,7 +40,7 @@ pub struct Misplaced {
 /// Returns the first [`ParseError`] if `source` is not a valid module.  Nothing partial is
 /// returned.
 pub fn misplaced(source: &str) -> Result<Vec<Misplaced>, ParseError> {
-    let parsed = ruff_python_parser::parse_module(source)?;
+    let parsed = ruff_python_parser::parse_module(source).map_err(|err| invalid(&err))?;
     let mut walk = Walk {
         within: Vec::new(),
         found: Vec::new(),

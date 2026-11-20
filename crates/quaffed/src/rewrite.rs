@@ -28,10 +28,10 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
-use quaffed_python::{
-    Bracket, Lexed, ParseError, Rewrite, code_tokens, lex, misplaced, parse_module, token_kinds,
+use quaffed_syntax::{
+    Arena, Bracket, Captured, FrontEnd, Kind, Lexed, Misplaced, NodeId, ParseError, Pattern,
+    Rewrite, find_captured, find_where_captured,
 };
-use quaffed_syntax::{Arena, Captured, Kind, NodeId, Pattern, find_captured, find_where_captured};
 
 use crate::search::{Match, Position};
 
@@ -106,19 +106,21 @@ pub fn name_every_hole(pattern: &Pattern) -> Pattern {
     Pattern::new(pattern.arena().clone(), holes)
 }
 
-/// Every match of `pattern` in `text`, a Python file's decoded text, kept by `filter` where there
-/// is one, each written over with `rewrite`.
+/// Every match of `pattern` in `text`, a file's decoded text in `language`, kept by `filter`
+/// where there is one, each written over with `rewrite`.
 ///
 /// # Errors
 ///
-/// Returns [`Unparsed`] if the text is not Python; nothing is searched or replaced in it.
+/// Returns [`Unparsed`] if the text does not parse in its language; nothing is searched or
+/// replaced in it.
 pub fn replace(
+    language: &dyn FrontEnd,
     text: &str,
     pattern: &Pattern,
     filter: Option<&Where>,
     rewrite: &Rewrite,
 ) -> Result<Replaced, Unparsed> {
-    let arena = parse_module(text).map_err(|err| unparsed(text, err))?;
+    let arena = language.parse(text).map_err(|err| unparsed(text, err))?;
     // Every name the pattern binds is captured, not only those the rewrite writes: what a hole
     // matched is the hole's, written back or dropped as the rewrite says, and only what stands
     // outside every hole is the pattern's own.  An unnamed hole is captured only once
@@ -163,7 +165,7 @@ pub fn replace(
     let outcome = if captured.is_empty() {
         Ok(None)
     } else {
-        nested(text, &arena, &captured, &names, rewrite).map(Some)
+        nested(language, text, &arena, &captured, &names, rewrite).map(Some)
     };
     Ok(Replaced { found, outcome })
 }
@@ -175,6 +177,7 @@ pub fn replace(
 /// overlap without one standing inside the other's capture cannot both be rewritten, and refuse
 /// the edit.  Every place a refusal or a question names is where it was in `text`.
 fn nested(
+    language: &dyn FrontEnd,
     text: &str,
     arena: &Arena<'_>,
     captured: &[Captured],
@@ -183,7 +186,7 @@ fn nested(
 ) -> Result<Edited, Refused> {
     let at = |offset: usize| positions(text, &[offset])[&offset];
     // Lexed once for the first level, which widening the captures reads too.
-    let first_lexed = lex(text);
+    let first_lexed = language.lex(text);
     let captured = &whole_brackets(text, arena, &first_lexed, captured);
     let depths = depths(captured).map_err(|(later, earlier)| {
         let earlier = at(captured[earlier].range.start);
@@ -221,7 +224,7 @@ fn nested(
         let level_arena = if maps.is_empty() {
             arena
         } else {
-            match parse_module(&current) {
+            match language.parse(&current) {
                 Ok(arena) => {
                     parsed = arena;
                     &parsed
@@ -248,15 +251,22 @@ fn nested(
         let level_lexed = if maps.is_empty() {
             &first_lexed
         } else {
-            later_lexed = lex(&current);
+            later_lexed = language.lex(&current);
             &later_lexed
         };
-        let done = rewritten(&current, level_arena, level_lexed, &level, names, rewrite).map_err(
-            |(offset, why)| Refused {
-                at: at(backward(&maps, offset)),
-                why,
-            },
-        )?;
+        let done = rewritten(
+            language,
+            &current,
+            level_arena,
+            level_lexed,
+            &level,
+            names,
+            rewrite,
+        )
+        .map_err(|(offset, why)| Refused {
+            at: at(backward(&maps, offset)),
+            why,
+        })?;
         questioned.extend(done.questioned.into_iter().map(|(offset, why)| Questioned {
             at: at(backward(&maps, offset)),
             why,
@@ -266,7 +276,7 @@ fn nested(
     }
     questioned.sort_by_key(|q| (q.at.line, q.at.column));
     let over = outermost_over(&maps);
-    if let Some((offset, why)) = left_outside(text, &current, &over) {
+    if let Some((offset, why)) = left_outside(language, text, &current, &over) {
         return Err(Refused {
             at: at(offset),
             why,
@@ -302,6 +312,7 @@ fn outermost_over(maps: &[Vec<(Range<usize>, Range<usize>)>]) -> Vec<(Range<usiz
 /// it wrote over: one already misplaced and carried through a hole is the file's, not the
 /// edit's.  A new text that does not parse is left to the parse check.
 fn left_outside(
+    language: &dyn FrontEnd,
     old: &str,
     new: &str,
     over: &[(Range<usize>, Range<usize>)],
@@ -315,7 +326,7 @@ fn left_outside(
     }
     // Each found in a stretch the edit wrote over, on its new side or its old, with where that
     // stretch starts in `old`.
-    let inside = |found: &[quaffed_python::Misplaced], new_side: bool| {
+    let inside = |found: &[Misplaced], new_side: bool| {
         found
             .iter()
             .filter_map(|m| {
@@ -325,11 +336,11 @@ fn left_outside(
             })
             .collect::<Vec<_>>()
     };
-    let now = inside(&misplaced(new).ok()?, true);
+    let now = inside(&language.misplaced(new).ok()?, true);
     if now.is_empty() {
         return None;
     }
-    let was = inside(&misplaced(old).ok()?, false);
+    let was = inside(&language.misplaced(old).ok()?, false);
     let count = |found: &[(usize, &str)], what: &str| found.iter().filter(|f| f.1 == what).count();
     let &(offset, what) = now
         .iter()
@@ -567,6 +578,7 @@ struct Level {
 /// `text`, parsed as `arena`, with every match in `captured`, none overlapping, written over,
 /// each capture in the order of `names`; or why not, at an offset of `text`.
 fn rewritten(
+    language: &dyn FrontEnd,
     text: &str,
     arena: &Arena<'_>,
     lexed: &Lexed,
@@ -575,9 +587,10 @@ fn rewritten(
     rewrite: &Rewrite,
 ) -> Result<Level, (usize, String)> {
     if !rewrite.has_code() {
-        return deleted(text, arena, lexed, captured, names, rewrite);
+        return deleted(language, text, arena, lexed, captured, names, rewrite);
     }
     let before = Before {
+        language,
         text,
         arena,
         lexed,
@@ -597,7 +610,7 @@ fn rewritten(
     } = write_matches(&before, rewrite, &edges)?;
     let edits = |now: &[Range<usize>]| level_edits(captured, &written, now, &laid);
     // A file that no longer parses is left to the parse check, which refuses it.
-    let Ok(out_arena) = parse_module(&out) else {
+    let Ok(out_arena) = language.parse(&out) else {
         return Ok(Level {
             edits: edits(&written),
             text: out,
@@ -614,8 +627,9 @@ fn rewritten(
     let carried = layout::carry(&before, &after)?;
     let carried_arena;
     let (text, arena, sites, written) = if let Some(carried) = &carried {
-        carried_arena =
-            parse_module(&carried.text).expect("layout is carried only where it parses");
+        carried_arena = language
+            .parse(&carried.text)
+            .expect("layout is carried only where it parses");
         (
             carried.text.as_str(),
             &carried_arena,
@@ -666,6 +680,7 @@ fn write_matches(
     edges: &[Range<usize>],
 ) -> Result<Writing, (usize, String)> {
     let Before {
+        language,
         text,
         arena,
         lexed,
@@ -689,8 +704,17 @@ fn write_matches(
     // Where each change to the text around the matches was made: its old range and its new.
     let mut laid: Vec<(Range<usize>, Range<usize>)> = Vec::new();
     for (index, found) in captured.iter().enumerate() {
-        let rendered = render(text, arena, found, names, rewrite, lexed, &bases[index])
-            .map_err(|why| (found.range.start, why))?;
+        let rendered = render(
+            language,
+            text,
+            arena,
+            found,
+            names,
+            rewrite,
+            lexed,
+            &bases[index],
+        )
+        .map_err(|why| (found.range.start, why))?;
         if let Some(comment) = dropped_comment(lexed, found, edges, &rendered, rewrite, names) {
             return Err((
                 comment.start,
@@ -813,13 +837,14 @@ struct Laid {
 /// that it parses alone, to see what it needs of the line.
 fn laid_out(before: &Before<'_>, rewrite: &Rewrite) -> Result<Laid, (usize, String)> {
     let Before {
+        language,
         text,
         arena,
         lexed,
         captured,
         names,
     } = *before;
-    let template_unit = lex(rewrite.text()).indent_unit;
+    let template_unit = language.lex(rewrite.text()).indent_unit;
     let unit = lexed.indent_unit.as_deref().or(template_unit.as_deref());
     let mut slots = Vec::with_capacity(captured.len());
     let mut bases = Vec::with_capacity(captured.len());
@@ -829,11 +854,11 @@ fn laid_out(before: &Before<'_>, rewrite: &Rewrite) -> Result<Laid, (usize, Stri
         let base = match &slot {
             None => line_indent(text, found.range.start),
             Some(slot) => {
-                let alone = render(text, arena, found, names, rewrite, lexed, "")
+                let alone = render(language, text, arena, found, names, rewrite, lexed, "")
                     .map_err(|why| (found.range.start, why))?;
                 let ending = line_ending(text, found.range.start);
                 let layout = slot
-                    .lay_out(Needs::of_text(&alone.text), unit, ending)
+                    .lay_out(Needs::of_text(language, &alone.text), unit, ending)
                     .map_err(|why| (found.range.start, why.to_owned()))?;
                 changes.extend(layout.changes);
                 layout.indent
@@ -903,6 +928,7 @@ fn left_block(
 /// is gone.  A comment the rewrite writes may not have code after it on its line, which it would
 /// swallow.  A result that does not parse is left to the parse check, which refuses it.
 fn deleted(
+    language: &dyn FrontEnd,
     text: &str,
     arena: &Arena<'_>,
     lexed: &Lexed,
@@ -922,7 +948,7 @@ fn deleted(
     let mut escapes: Vec<(usize, String)> = Vec::new();
     for found in captured {
         let base = line_indent(text, found.range.start);
-        let rendered = render(text, arena, found, names, rewrite, lexed, &base)
+        let rendered = render(language, text, arena, found, names, rewrite, lexed, &base)
             .map_err(|why| (found.range.start, why))?;
         for name in &rendered.escaped {
             escapes.push((found.range.start, escaped_note(text, found, names, name)));
@@ -1464,7 +1490,7 @@ fn regrouped(
 ) -> Option<(usize, String)> {
     let (out, arena) = after;
     let code = CodeIndex::of(arena);
-    let lexed = lex(out);
+    let lexed = before.language.lex(out);
     let site = sites.iter().find(|site| {
         let whole = unwrapped(out, &lexed, &site.range)
             .iter()
@@ -1697,7 +1723,12 @@ impl CodeIndex {
 /// match's line's, unless [`lines`] lays the match out on lines of its own.  A capture of
 /// statements the template writes where they need lines of their own is given them in the
 /// template, as [`lines`] lays them out, or refused where it cannot.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the match, its file and its language, and the rewrite, as a render needs them"
+)]
 fn render(
+    language: &dyn FrontEnd,
     text: &str,
     arena: &Arena<'_>,
     found: &Captured,
@@ -1707,6 +1738,7 @@ fn render(
     base: &str,
 ) -> Result<Rendered, String> {
     let job = Job {
+        language,
         text,
         arena,
         found,
@@ -1724,8 +1756,8 @@ fn render(
     let mut escaped = Vec::new();
     let (written, code) = job.fill(&marked, &gaps, None, &mut escaped)?;
     if rewrite.sites().iter().any(|site| site.in_literal)
-        && token_kinds(&written)
-            != token_kinds(&job.fill(&marked, &gaps, Some("x"), &mut escaped)?.0)
+        && language.token_kinds(&written)
+            != language.token_kinds(&job.fill(&marked, &gaps, Some("x"), &mut escaped)?.0)
     {
         let interpolated: Vec<String> = rewrite
             .sites()
@@ -1756,6 +1788,7 @@ fn render(
 
 /// One match to render, with what rendering it reads.
 struct Job<'a> {
+    language: &'a dyn FrontEnd,
     text: &'a str,
     arena: &'a Arena<'a>,
     found: &'a Captured,
@@ -1804,6 +1837,7 @@ impl Job<'_> {
         let with_markers = self.laid_out(with_markers, &markers)?;
         let with_markers = self.rebracketed(with_markers, &markers);
         let indented = indent_template(
+            self.language,
             &with_markers,
             self.base,
             line_ending(self.text, self.found.range.start),
@@ -1819,7 +1853,7 @@ impl Job<'_> {
             .collect();
         at.sort_unstable();
         Ok(Marked {
-            own: lex(&indented),
+            own: self.language.lex(&indented),
             indented,
             markers,
             at,
@@ -1847,10 +1881,10 @@ impl Job<'_> {
         if needs.is_empty() {
             return Ok(template);
         }
-        let Ok(arena) = parse_module(&template) else {
+        let Ok(arena) = self.language.parse(&template) else {
             return Ok(template);
         };
-        let lexed = lex(&template);
+        let lexed = self.language.lex(&template);
         let unit = lexed
             .indent_unit
             .as_deref()
@@ -1906,10 +1940,10 @@ impl Job<'_> {
         if own.is_empty() {
             return template;
         }
-        let Ok(parsed) = parse_module(&template) else {
+        let Ok(parsed) = self.language.parse(&template) else {
             return template;
         };
-        let lexed = lex(&template);
+        let lexed = self.language.lex(&template);
         let wraps: Vec<Wrap<'_>> = own
             .into_iter()
             .filter_map(|bracket| self.wrap(bracket, &template, &parsed, &lexed, markers))
@@ -2076,8 +2110,8 @@ impl Job<'_> {
         let template_blank = template.rfind('\n') != Some(template_first);
         (!file_comment
             && !template_blank
-            && code_tokens(template).is_empty()
-            && code_tokens(file).is_empty())
+            && self.language.code_tokens(template).is_empty()
+            && self.language.code_tokens(file).is_empty())
         .then(|| Gap {
             text: format!("{}{}", &file[..=file_last], &template[template_first + 1..]),
             carried: vec![file_gap],
@@ -2144,7 +2178,7 @@ impl Job<'_> {
         code_around: (bool, bool),
     ) -> Option<Gap> {
         let file = &self.text[file_gap.clone()];
-        let (written, copied) = diffed(file, template, depth, code_around)?;
+        let (written, copied) = diffed(self.language, file, template, depth, code_around)?;
         let text = self.text;
         // What stands either side, only as far as it could run into a token: a word's or a
         // number's character as `a`, a dot as itself, anything else, a quote included, as
@@ -2163,7 +2197,9 @@ impl Job<'_> {
             stretch.extend(after);
             stretch
         };
-        if layout_free_tokens(&beside(&written)) != layout_free_tokens(&beside(template)) {
+        if layout_free_tokens(self.language, &beside(&written))
+            != layout_free_tokens(self.language, &beside(template))
+        {
             return None;
         }
         Some(Gap {
@@ -2267,7 +2303,7 @@ impl Job<'_> {
                     .strings
                     .iter()
                     .find(|part| part.range.start <= place && place < part.range.end);
-                match part.map(|part| quaffed_python::escaped(value, part)) {
+                match part.map(|part| self.language.escaped(value, part)) {
                     Some(Some(text)) => {
                         if text != value && !escaped.contains(&site.name) {
                             escaped.push(site.name.clone());
@@ -2396,8 +2432,9 @@ fn one_logical_line(text: &str) -> bool {
 /// The code tokens of `text` without a backslash continuing a line, which a lexer given a
 /// stretch ending in one reads as a token of its own, and without the empty token it gives a
 /// stretch ending inside an open bracket.
-fn layout_free_tokens(text: &str) -> Vec<&str> {
-    code_tokens(text)
+fn layout_free_tokens<'a>(language: &dyn FrontEnd, text: &'a str) -> Vec<&'a str> {
+    language
+        .code_tokens(text)
         .into_iter()
         .filter(|token| !token.is_empty() && !token.trim_start().starts_with('\\'))
         .collect()
@@ -2421,13 +2458,17 @@ fn layout_free_tokens(text: &str) -> Vec<&str> {
 /// whether a line break is safe is judged by the template's brackets, where it is written.
 /// `None` where there are too many tokens to compare.
 fn diffed(
+    language: &dyn FrontEnd,
     file: &str,
     template: &str,
     depth: usize,
     code_around: (bool, bool),
 ) -> Option<(String, Vec<Range<usize>>)> {
     let (code_before, code_after) = code_around;
-    let (ours, theirs) = (layout_free_tokens(file), layout_free_tokens(template));
+    let (ours, theirs) = (
+        layout_free_tokens(language, file),
+        layout_free_tokens(language, template),
+    );
     let bracket = |token: &str| matches!(token, "(" | "[" | "{" | ")" | "]" | "}");
     let (n, m) = (ours.len(), theirs.len());
     if n.saturating_mul(m) > MOST_COMPARED {
@@ -2599,8 +2640,14 @@ fn marker_stem(template: &str, text: &str) -> String {
 /// `base`, the line's own indentation kept relative to it in the file's indent unit, and each
 /// line break spelled `ending`, the file's own.  A line that starts inside one of the template's
 /// multi-line strings is part of its value and left alone, and so is the line break before it.
-fn indent_template(marked: &str, base: &str, ending: &str, file: &Lexed) -> String {
-    let own = lex(marked);
+fn indent_template(
+    language: &dyn FrontEnd,
+    marked: &str,
+    base: &str,
+    ending: &str,
+    file: &Lexed,
+) -> String {
+    let own = language.lex(marked);
     let inside = |at: usize| {
         own.multi_line_strings
             .iter()
@@ -2773,15 +2820,19 @@ fn lines_with_starts(text: &str) -> Vec<(usize, &str)> {
 mod tests {
     use super::layout::ignored_by_matcher;
     use super::*;
-    use quaffed_python::{compile_pattern, compile_rewrite};
+    use crate::languages::PYTHON;
 
     /// `text` with `pattern` replaced by `with`, and what was questioned, or why it was refused.
     fn edited(pattern: &str, with: &str, text: &str) -> Result<Option<Edited>, String> {
-        let pattern = compile_pattern(pattern).expect("the pattern compiles");
-        let rewrite = compile_rewrite(with, &pattern).expect("the rewrite compiles");
+        let pattern = PYTHON
+            .compile_pattern(pattern)
+            .expect("the pattern compiles");
+        let rewrite = PYTHON
+            .compile_rewrite(with, &pattern)
+            .expect("the rewrite compiles");
         // As a run does: once the rewrite is compiled.
         let pattern = name_every_hole(&pattern);
-        let edited = replace(text, &pattern, None, &rewrite)
+        let edited = replace(PYTHON, text, &pattern, None, &rewrite)
             .expect("the text parses")
             .outcome
             .map_err(|refused| {
@@ -3239,7 +3290,7 @@ mod tests {
     #[test]
     fn a_comma_that_is_not_ignored_is_the_patterns_to_match() {
         let text = "x = (a,)\ny = f(a,)\n";
-        let arena = parse_module(text).unwrap();
+        let arena = PYTHON.parse(text).unwrap();
         assert!(!ignored_by_matcher(&arena, text.find("a,)").unwrap() + 1));
         assert!(ignored_by_matcher(&arena, text.rfind("a,)").unwrap() + 1));
         // Every other kind of bracket the lexer lists: its trailing comma is layout to the
@@ -3248,8 +3299,9 @@ mod tests {
                     from m import (a,)\nclass C(B,):\n    def f(self, a,):\n        pass\n\
                     with (open(p), open(q),):\n    pass\nmatch v:\n    case [a,]:\n        \
                     pass\ndef g[T,](): pass\n";
-        let arena = parse_module(text).unwrap();
-        let ending: Vec<_> = lex(text)
+        let arena = PYTHON.parse(text).unwrap();
+        let ending: Vec<_> = PYTHON
+            .lex(text)
             .brackets
             .into_iter()
             .filter_map(|b| b.trailing_comma.map(|comma| (comma, b)))

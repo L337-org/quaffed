@@ -78,14 +78,17 @@ read differently is a file quaff misreads.  The sources, at the oracle's release
 (`src/python.rs`, `declaration` and `coding_spec`), `Objects/unicodeobject.c` and
 `Lib/encodings/__init__.py` for resolving its name (`normal_name`, `resolve`).
 
-**Decoding** (`Source::decode`) refuses what CPython refuses, each with its own message, and
-also an encoding Python reads and quaff does not.  `Source` keeps the text, the encoding and
-whether there was a mark, and `Source::encode` writes text back the same way, so a file's own
-decoded text encodes to its exact bytes.
+**Decoding** (`python::decode`) refuses what CPython refuses, each with its own message, and
+also an encoding Python reads and quaff does not.  It gives a `Source` (`src/source.rs`), the
+same for every language: the text, the encoding and whether there was a mark, and
+`Source::encode` writes text back the same way, so a file's own decoded text encodes to its exact
+bytes.  Python's front end passes each refusal on in its own words, as the interface's `Refused`
+(`syntax.md`).
 
 **For a reader that tolerates bad bytes**, as a textual search is, `declared_encoding` resolves
-the declaration alone, refusing only what no content could make readable.  `src/resolve.rs` turns
-an encoding Python reads and quaff does not into an unknown encoding naming the declaration.  An
+the declaration alone, refusing only what no content could make readable.  Python's front end
+gives an encoding Python reads and quaff does not as a declaration quaff cannot read, which
+`src/resolve.rs` turns into an unknown encoding naming the declaration.  An
 undeclared Python file that is not valid UTF-8 is of unknown encoding rather than read as UTF-8,
 so a non-ASCII query is reported as not searched rather than silently matching nothing.
 

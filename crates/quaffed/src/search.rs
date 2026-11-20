@@ -523,6 +523,7 @@ mod tests {
         let file = File {
             path: &nowhere.join("file.txt"),
             bytes,
+            language: None,
         };
         match resolve(&file, &mut declarations).expect("nothing to read") {
             Resolution::Binary => None,
