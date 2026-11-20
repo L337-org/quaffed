@@ -406,8 +406,7 @@ fn a_post_sends_the_points_with_the_credentials_to_the_endpoint() {
         .authorization
         .as_deref()
         .and_then(|a| a.strip_prefix("Basic "))
-        .map(decode_base64)
-        .unwrap_or_default();
+        .map_or_default(decode_base64);
     assert_eq!(decoded, expected);
     assert!(!scratch.path("pending").exists() && !scratch.path("rejected").exists());
 }

@@ -953,7 +953,7 @@ mod tests {
             let file = dir.join(format!("case{number}.ignore"));
             fs::write(&file, bytes).unwrap();
             let mut reference = GitignoreBuilder::new(&dir);
-            let reference_errors = reference.add(&file).map(flattened).unwrap_or_default();
+            let reference_errors = reference.add(&file).map_or_default(flattened);
             let reference = reference.build().unwrap();
             let (ours, our_errors) = parse_ignore_file(&dir, &file, bytes);
             let our_errors: Vec<String> = our_errors.into_iter().flat_map(flattened).collect();
