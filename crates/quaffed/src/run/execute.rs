@@ -52,9 +52,12 @@ pub(super) fn execute(
     limit: Option<NonZeroUsize>,
 ) -> Result<Searched, Failure> {
     let locale = locale();
-    let (jobs, one_at_a_time) = match jobs(limit) {
+    let (jobs, unknown) = match jobs(limit, thread::available_parallelism) {
         Ok(jobs) => (jobs, None),
-        Err(err) => (NonZeroUsize::MIN, Some(err.to_string())),
+        Err(err) => (
+            NonZeroUsize::MIN,
+            Some(FewerAtOnce::Unknown(err.to_string())),
+        ),
     };
     let mut searched = search_files(
         &files.to_search,
@@ -68,7 +71,9 @@ pub(super) fn execute(
         locale.as_ref(),
         jobs,
     )?;
-    searched.one_at_a_time = one_at_a_time;
+    if unknown.is_some() {
+        searched.fewer_at_once = unknown;
+    }
     // A structural search over files it cannot parse would give a count that cannot be trusted,
     // whether their language could parse them or not, so the whole run is refused, naming each,
     // before anything is printed.
@@ -81,14 +86,34 @@ pub(super) fn execute(
 }
 
 /// How many files a run searches at once: `limit` if the user set one, and otherwise as many as
-/// the machine can run at once.
+/// `available` says the machine can run at once - [`thread::available_parallelism`] for a run.
 ///
 /// # Errors
 ///
 /// Returns the system's error, verbatim, when no limit was set and how many the machine can run
 /// at once cannot be told.
-fn jobs(limit: Option<NonZeroUsize>) -> io::Result<NonZeroUsize> {
-    limit.map_or_else(thread::available_parallelism, Ok)
+fn jobs(
+    limit: Option<NonZeroUsize>,
+    available: impl FnOnce() -> io::Result<NonZeroUsize>,
+) -> io::Result<NonZeroUsize> {
+    limit.map_or_else(available, Ok)
+}
+
+/// Why a run searched fewer files at once than it meant to.  It searched them all, and what it
+/// found is the same, but it says so, since the run may have been slower for it.
+#[derive(Debug)]
+pub(super) enum FewerAtOnce {
+    /// No limit was set, and how many files the machine can search at once could not be told, so
+    /// they were searched one at a time: the system's error.
+    Unknown(String),
+    /// The system would start fewer threads than the run meant to search with: how many it meant
+    /// to, how many started, none meaning the files were searched one at a time, and the system's
+    /// error.
+    Refused {
+        meant: usize,
+        started: usize,
+        cause: String,
+    },
 }
 
 /// Stretches an edit wrote over, each where it was in the bytes before and where what was written
@@ -361,9 +386,8 @@ pub(super) struct Searched {
     /// could not understand, each with the project it was consulted in: for one file, each it
     /// consulted, in order; for every file, each once, where the first file to consult it did.
     pub(super) skipped: Vec<(usize, Skipped)>,
-    /// Why the run searched one file at a time with no limit set: the system's error telling how
-    /// many files the machine can search at once.
-    pub(super) one_at_a_time: Option<String>,
+    /// Why the run searched fewer files at once than it meant to, if it did.
+    pub(super) fewer_at_once: Option<FewerAtOnce>,
 }
 
 /// A file a replace changed, held in memory until the run is over: by its place among the files
@@ -555,7 +579,7 @@ fn search_files(
     // A file is the unit of work: it is taken through every batch, on whichever thread takes
     // it, and what it gave is gathered into the run's in discovery order, so that each pattern's
     // matches stay in that order.
-    parallel::in_order(
+    let fewer = parallel::in_order(
         files.len(),
         jobs,
         |index| {
@@ -569,6 +593,11 @@ fn search_files(
         },
         |in_file| searched.gather(in_file),
     )?;
+    searched.fewer_at_once = fewer.map(|fewer| FewerAtOnce::Refused {
+        meant: fewer.asked,
+        started: fewer.started,
+        cause: fewer.cause.to_string(),
+    });
     Ok(searched)
 }
 
@@ -590,7 +619,7 @@ impl Searched {
             declares_in: None,
             binary: 0,
             skipped: Vec::new(),
-            one_at_a_time: None,
+            fewer_at_once: None,
         }
     }
 
@@ -615,7 +644,7 @@ impl Searched {
             declares_in: _,
             binary,
             skipped,
-            one_at_a_time: _,
+            fewer_at_once: _,
         } = file;
         for (run, in_file) in self.found.iter_mut().zip(found) {
             // Every field named, so that one added to `Found` cannot be left out of gathering.
@@ -1763,9 +1792,18 @@ mod tests {
     #[test]
     fn a_run_searches_as_many_files_at_once_as_the_machine_runs_unless_limited() {
         let three = NonZeroUsize::new(3);
-        assert_eq!(jobs(three).unwrap(), three.unwrap());
+        let untold = || Err(io::Error::other("untold"));
+        assert_eq!(jobs(three, untold).unwrap(), three.unwrap());
         assert_eq!(
-            jobs(None).unwrap(),
+            jobs(None, || Ok(NonZeroUsize::MIN.saturating_add(4)))
+                .unwrap()
+                .get(),
+            5
+        );
+        assert_eq!(jobs(None, untold).unwrap_err().to_string(), "untold");
+        // A run asks the machine.
+        assert_eq!(
+            jobs(None, thread::available_parallelism).unwrap(),
             thread::available_parallelism().unwrap()
         );
     }

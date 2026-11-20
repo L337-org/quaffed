@@ -78,17 +78,22 @@ order from a shared counter, searches it, and sends what it gave to the run's ow
 gathers the results strictly in discovery order, holding any that finish early until those
 before them are in.  A thread starts no file more than twice the number of threads ahead of the
 next to be gathered, so what waits stays bounded however long one file takes, and memory stays
-in line with the files being read.  The first failure in discovery order ends the run, as it
+in line with the files being read at once.  The first failure in discovery order ends the run, as it
 would one file at a time: files after it may have been read, but nothing they gave is used.  With
 one job no thread is started, and each file is searched and gathered before the next is read.
+Where the system will start fewer threads than asked for, the run goes on with those it started,
+or on its own thread with none, and says so in a note: a container's limit on processes must not
+stop a search that could be answered more slowly.
 
 **What the threads share is read-only, or locked for one question at a time.**  The plan and its
 compiled patterns are only read.  The store files are read through (`src/contents.rs`) is locked
 to look a file up or keep it, and a file it keeps - a rules file, a declaring file, a script - is
 read with the lock held, so two threads asking for one at once read it once.  Each project's
 encoding declarations, git's attributes (`src/workspace/git.rs`) and EditorConfig's
-(`src/editorconfig.rs`), keep what they have read behind a lock held for the whole question.
-Deciding an encoding is little next to searching a file, so the threads seldom wait on it.
+(`src/editorconfig.rs`), keep what they have read behind a lock held for the whole question.  A
+lock per declaring file would let more threads decide at once, but one per project is simpler,
+and is chosen on the reasoning that deciding an encoding costs little next to searching the file;
+the benchmarks are where that would show otherwise.
 
 **Nothing a thread does decides the order of the output.**  Matches, counts and notes come from
 the gathered results.  So do the notes on lines a declaring file holds that cannot be used: a
@@ -214,7 +219,8 @@ Line breaks and anchors (`script.md`) are spelt in the file's encoding like the 
 break prefers CRLF to its CR alone, so a pattern answers a CRLF file as it answers one with LF.
 
 **A file is read whole**, and positions are worked out in one pass that stops at the last
-match, so a search needs about the size of the largest file.  No size limit is applied.
+match, so a search needs about the size of the largest files being searched at once, one for
+each thread.  No size limit is applied.
 
 ## Structural search
 

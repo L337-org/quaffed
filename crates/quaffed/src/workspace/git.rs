@@ -108,7 +108,8 @@ impl Workspace for Git {
             return Ok(None);
         };
         // Held for the whole question, so that a file is read once however many ask for it at
-        // once; reading it is the only slow part, and that happens once.
+        // once.  Simpler than a lock per file, on the reasoning that a question costs little next
+        // to searching the file it is asked for; the benchmarks would show threads waiting here.
         let mut so_far = self.read.lock().expect("no thread panics holding it");
         let Read {
             repositories,

@@ -158,7 +158,13 @@ option.
 - **Files are searched several at once**: as many as the machine runs at once, or at most `N`
   with `-j N`, which takes a whole number, 1 or more.  `-j 1` searches one file at a time.  What
   is printed, and the exit code, are the same whatever `N`, and the same on every run: each
-  file's matches are taken in the order the files are found.
+  file's matches are taken in the order the files are found.  Where quaff cannot tell how many
+  the machine runs, or the system will not start as many threads as that, it searches fewer at
+  once and says so in a note:
+
+  ```
+  quaff: searched 2 files at a time rather than 8, as the system would start no more threads: Resource temporarily unavailable (os error 11); -j sets how many
+  ```
 
   ```
   $ quaff -j 0 TODO
@@ -1331,8 +1337,9 @@ src/app.py:16:5-17:32: return lookup(request.args["id"], default=None,)
   full.
 - **With several queries, each query's matches print together**, in the order of the program.
 - **Notes go to standard error, prefixed `quaff:`**: no matches, possible matches, files not
-  searched and why, binary files skipped, skipped ignore-file lines, links not followed.
-  Anything not looked at, or looked at without certainty, is said.
+  searched and why, binary files skipped, skipped ignore-file lines, links not followed, fewer
+  files searched at once than meant.  Anything not looked at, or looked at without certainty, is
+  said.
 - **A message names a pattern** quoted for text - `"TODO"`, with anchors outside the quotes as a
   script writes them, `^"x"$` - and in backticks for a structural pattern, `` `f($a)` ``.  In
   both, a line break is shown as `\n`, so a message stays on one line.

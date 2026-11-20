@@ -4,7 +4,7 @@
 //! The run engine's tests from end to end: whole runs, through every phase.
 
 use super::*;
-use super::{evaluate::*, execute::*, failure::*, report::*};
+use super::{evaluate::*, execute::*, failure::*, parallel, report::*};
 use std::fs;
 use std::io::{self, Write};
 
@@ -886,6 +886,54 @@ fn what_a_run_prints_and_how_it_ends_are_the_same_whatever_the_limit() {
     );
     for (jobs, ran) in others {
         assert_eq!(ran, one_at_a_time, "with {jobs:?} jobs");
+    }
+}
+
+#[test]
+fn a_run_the_system_starts_fewer_threads_for_answers_the_same_and_says_so() {
+    let dir = tree("refused", &todos(24));
+    let ran = |jobs| {
+        let options = cli::Options {
+            jobs: std::num::NonZeroUsize::new(jobs),
+            ..cli::Options::default()
+        };
+        let (mut out, mut notes) = (Vec::new(), Vec::new());
+        let query = SourceArg::Query(cli::Query {
+            text: "TODO".into(),
+            source: cli::Source::Positional,
+        });
+        let outcome = run(
+            vec![query],
+            None,
+            &options,
+            &dir,
+            &mut io::empty(),
+            &mut out,
+            &mut notes,
+        );
+        (
+            format!("{outcome:?}"),
+            String::from_utf8(out).unwrap(),
+            String::from_utf8(notes).unwrap(),
+        )
+    };
+    let one_at_a_time = ran(1);
+    let two_of_four = parallel::with_threads_refused_from(2, || ran(4));
+    let none_of_four = parallel::with_threads_refused_from(0, || ran(4));
+    let _ = fs::remove_dir_all(&dir);
+    assert_eq!(one_at_a_time.2, "");
+    for (ran, how) in [
+        (two_of_four, "2 files at a time rather than 4"),
+        (none_of_four, "one file at a time rather than 4"),
+    ] {
+        assert_eq!((&ran.0, &ran.1), (&one_at_a_time.0, &one_at_a_time.1));
+        assert_eq!(
+            ran.2,
+            format!(
+                "quaff: searched {how}, as the system would start no more threads: refused by a \
+                 test; -j sets how many\n"
+            )
+        );
     }
 }
 

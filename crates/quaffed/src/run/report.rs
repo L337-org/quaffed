@@ -14,7 +14,7 @@ use quaffed_representation::program::{Count, TextPart, TextPattern};
 
 use super::{
     evaluate::Evaluated,
-    execute::{Searched, Unspelled},
+    execute::{FewerAtOnce, Searched, Unspelled},
     failure::Failure,
     plan::{Plan, Searching, Wanted},
     scoping::Files,
@@ -42,11 +42,8 @@ pub(super) fn notes(
     for text in &files.notes {
         note(text);
     }
-    if let Some(err) = &searched.one_at_a_time {
-        note(&format!(
-            "searched one file at a time, as how many this machine can search at once cannot be \
-             told: {err}; -j sets how many"
-        ));
+    if let Some(fewer) = &searched.fewer_at_once {
+        note(&fewer_at_once(fewer));
     }
     // Project by project, each project's in the order a search of one file after another meets
     // them.
@@ -64,6 +61,28 @@ pub(super) fn notes(
     ) {
         note(&text);
     }
+}
+
+/// Why a run searched fewer files at once than it meant to, as a note says it.
+pub(super) fn fewer_at_once(fewer: &FewerAtOnce) -> String {
+    let (how, why) = match fewer {
+        FewerAtOnce::Unknown(err) => (
+            "one file at a time".to_owned(),
+            format!("how many this machine can search at once cannot be told: {err}"),
+        ),
+        FewerAtOnce::Refused {
+            meant,
+            started,
+            cause,
+        } => (
+            match started {
+                0 | 1 => format!("one file at a time rather than {meant}"),
+                _ => format!("{started} files at a time rather than {meant}"),
+            },
+            format!("the system would start no more threads: {cause}"),
+        ),
+    };
+    format!("searched {how}, as {why}; -j sets how many")
 }
 
 /// The text a pattern matches, for display: each line break as LF, which `output::fold`
@@ -303,6 +322,32 @@ pub(super) fn count(n: usize, one: &str, many: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_run_that_searched_fewer_files_at_once_than_it_meant_says_why() {
+        let refused = |started| FewerAtOnce::Refused {
+            meant: 8,
+            started,
+            cause: "no more".into(),
+        };
+        assert_eq!(
+            fewer_at_once(&FewerAtOnce::Unknown("untold".into())),
+            "searched one file at a time, as how many this machine can search at once cannot be \
+             told: untold; -j sets how many"
+        );
+        for started in [0, 1] {
+            assert_eq!(
+                fewer_at_once(&refused(started)),
+                "searched one file at a time rather than 8, as the system would start no more \
+                 threads: no more; -j sets how many"
+            );
+        }
+        assert_eq!(
+            fewer_at_once(&refused(3)),
+            "searched 3 files at a time rather than 8, as the system would start no more \
+             threads: no more; -j sets how many"
+        );
+    }
 
     #[test]
     fn every_encoding_is_named_as_cpython_names_its_codec() {
