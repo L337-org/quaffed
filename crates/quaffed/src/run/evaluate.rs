@@ -538,8 +538,8 @@ mod tests {
                 &contents,
             )?;
             let mut plan = plan::plan(languages::LANGUAGES, &built)?;
-            let mut files = scoping::scope(&mut plan, &built, &dir, &contents)?;
-            let searched = execute::execute(&plan, &mut files)?;
+            let files = scoping::scope(&mut plan, &built, &dir, &contents)?;
+            let searched = execute::execute(&plan, &files, None)?;
             evaluate(&searched, &plan, &built, &cli::Options::default(), &mut out)
         })();
         let _ = fs::remove_dir_all(&dir);

@@ -14,11 +14,13 @@ mod git;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::contents::Contents;
 
-/// What a version control system tells quaff about a project.
-pub trait Workspace {
+/// What a version control system tells quaff about a project.  Shared by the threads files are
+/// searched on, so whatever it learns as it is asked is kept behind a lock.
+pub trait Workspace: Send + Sync {
     /// The project root, which a search covers when no scope narrows it.
     fn root(&self) -> &Path;
 
@@ -29,20 +31,22 @@ pub trait Workspace {
     /// The encoding this system's own files declare for the file at `path`, under the root, if
     /// they declare one, with the declaring file shown relative to `shown_from`.
     ///
+    /// Each of this system's files consulted that has lines it could not understand is added to
+    /// `skipped`, in the order consulted, whether this question read it or an earlier one did.
+    /// Whatever order files are asked about in, taking what each question added in the order
+    /// the files are searched, and each file's lines the first time it is named, gives the lines
+    /// in the order a search of one file after another meets them.
+    ///
     /// # Errors
     ///
     /// Returns an [`Error`] when a file that could declare one cannot be read, so that a file is
     /// never read in the wrong encoding for want of its declaration.
     fn declared_encoding(
-        &mut self,
+        &self,
         path: &Path,
         shown_from: &Path,
+        skipped: &mut Vec<Skipped>,
     ) -> Result<Option<Declared>, Error>;
-
-    /// Each line of this system's files that could not be understood and was passed over,
-    /// described for the user, in the order met, its file shown as `declared_encoding` was asked
-    /// to show it.
-    fn skipped(&self) -> &[String];
 
     /// Where this system lets a project declare a file's encoding, as a message tells the user,
     /// such as `.gitattributes`.
@@ -80,6 +84,17 @@ pub struct Declared {
     pub name: String,
     /// The file and line that declare it, as a message names them.
     pub origin: Origin,
+}
+
+/// The lines of one of a version control system's files that could not be understood and were
+/// passed over.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Skipped {
+    /// The file, shown as [`Workspace::declared_encoding`] was asked to show it, which names it
+    /// however many files it was consulted for.
+    pub file: PathBuf,
+    /// Each line, described for the user, in order.
+    pub lines: Arc<[String]>,
 }
 
 /// Where a declaration was found.

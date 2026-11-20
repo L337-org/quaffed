@@ -42,12 +42,19 @@ pub(super) fn notes(
     for text in &files.notes {
         note(text);
     }
-    let declared_skipped: Vec<String> = files
-        .projects
-        .list
-        .iter()
-        .filter_map(|p| p.declarations.workspace.as_ref())
-        .flat_map(|w| w.skipped().iter().cloned())
+    if let Some(err) = &searched.one_at_a_time {
+        note(&format!(
+            "searched one file at a time, as how many this machine can search at once cannot be \
+             told: {err}; -j sets how many"
+        ));
+    }
+    // Project by project, each project's in the order a search of one file after another meets
+    // them.
+    let mut by_project: Vec<_> = searched.skipped.iter().collect();
+    by_project.sort_by_key(|(project, _)| *project);
+    let declared_skipped: Vec<String> = by_project
+        .into_iter()
+        .flat_map(|(_, skipped)| skipped.lines.iter().cloned())
         .collect();
     for text in skipped(
         searched,

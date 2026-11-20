@@ -17,7 +17,7 @@ use quaffed_syntax::{DeclaredEncoding, FrontEnd, Refused};
 
 use crate::contents::Contents;
 use crate::editorconfig::EditorConfig;
-use crate::workspace::{self, Origin, Workspace};
+use crate::workspace::{self, Origin, Skipped, Workspace};
 
 /// The declarations kept outside a file that its encoding may come from.
 pub struct Declarations {
@@ -158,20 +158,23 @@ pub enum Resolution {
     Refused(Refused),
 }
 
-/// One place an encoding can come from: the file's decision if this source makes one.
-type Decide = fn(&File, &mut Declarations) -> Result<Option<Resolution>, workspace::Error>;
+/// One place an encoding can come from: the file's decision if this source makes one, adding the
+/// declaring files it consulted with lines it could not understand to the list it is given.
+type Decide =
+    fn(&File, &Declarations, &mut Vec<Skipped>) -> Result<Option<Resolution>, workspace::Error>;
 
 /// Where a file's encoding comes from, most explicit and closest to its bytes first.  The first
 /// that decides wins.  The last always decides, so every file gets an answer.
 const SOURCES: [Decide; 5] = [
-    |file, _| Ok(byte_order_mark(file)),
-    |file, _| Ok(coding_line(file)),
+    |file, _, _| Ok(byte_order_mark(file)),
+    |file, _, _| Ok(coding_line(file)),
     version_control,
-    editorconfig,
-    |file, _| Ok(Some(proven_utf8(file))),
+    |file, declarations, _| editorconfig(file, declarations),
+    |file, _, _| Ok(Some(proven_utf8(file))),
 ];
 
-/// Decides what `file` is.
+/// Decides what `file` is, adding each version control system file consulted that has lines it
+/// could not understand to `skipped`, as [`Workspace::declared_encoding`] says.
 ///
 /// git's binary test - a NUL in the first 8000 bytes - applies to whatever decides, except a
 /// byte-order mark or a declaration of UTF-16 or UTF-32, whose text is full of NULs.
@@ -181,10 +184,11 @@ const SOURCES: [Decide; 5] = [
 /// Returns a [`workspace::Error`] when a file that could declare the encoding cannot be read.
 pub fn resolve(
     file: &File,
-    declarations: &mut Declarations,
+    declarations: &Declarations,
+    skipped: &mut Vec<Skipped>,
 ) -> Result<Resolution, workspace::Error> {
     for source in SOURCES {
-        let Some(decided) = source(file, declarations)? else {
+        let Some(decided) = source(file, declarations, skipped)? else {
             continue;
         };
         // A wide encoding's text is full of NULs, so a mark or a declaration of one - even
@@ -257,12 +261,13 @@ fn coding_line(file: &File) -> Option<Resolution> {
 /// The project's version control system, such as git's `working-tree-encoding` attribute.
 fn version_control(
     file: &File,
-    declarations: &mut Declarations,
+    declarations: &Declarations,
+    skipped: &mut Vec<Skipped>,
 ) -> Result<Option<Resolution>, workspace::Error> {
-    let Some(workspace) = declarations.workspace.as_mut() else {
+    let Some(workspace) = declarations.workspace.as_ref() else {
         return Ok(None);
     };
-    let Some(declared) = workspace.declared_encoding(file.path, &declarations.cwd)? else {
+    let Some(declared) = workspace.declared_encoding(file.path, &declarations.cwd, skipped)? else {
         return Ok(None);
     };
     // git writes a byte-order mark for these, which has decided before a name is read; the
@@ -282,7 +287,7 @@ fn version_control(
 /// `EditorConfig`'s `charset`.
 fn editorconfig(
     file: &File,
-    declarations: &mut Declarations,
+    declarations: &Declarations,
 ) -> Result<Option<Resolution>, workspace::Error> {
     let Some(declared) = declarations
         .editorconfig
@@ -368,7 +373,7 @@ mod tests {
 
         fn resolve(&self, path: &str) -> Resolution {
             let contents = Contents::default();
-            let mut declarations = Declarations {
+            let declarations = Declarations {
                 workspace: workspace::find(&self.0, &contents),
                 editorconfig: EditorConfig::new(&self.0, &contents),
                 cwd: self.0.clone(),
@@ -382,7 +387,8 @@ mod tests {
                     bytes: &bytes,
                     language: crate::languages::of(&path),
                 },
-                &mut declarations,
+                &declarations,
+                &mut Vec::new(),
             )
             .unwrap()
         }
@@ -442,7 +448,7 @@ mod tests {
                     let declared = if *kind == "attribute" {
                         workspace::find(root, &Contents::default())
                             .expect("a git workspace")
-                            .declared_encoding(&target, root)
+                            .declared_encoding(&target, root, &mut Vec::new())
                             .unwrap()
                     } else {
                         EditorConfig::new(root, &Contents::default())
@@ -513,7 +519,7 @@ mod tests {
             let target = project.0.join(path);
             workspace::find(target.parent().unwrap(), &Contents::default())
                 .expect("a git workspace")
-                .declared_encoding(&target, &project.0)
+                .declared_encoding(&target, &project.0, &mut Vec::new())
                 .unwrap()
                 .map(|d| d.name)
         };
@@ -697,7 +703,7 @@ mod tests {
             ],
         );
         // Asked with the subdirectory as the boundary, the project's file is above it.
-        let mut declarations = Declarations {
+        let declarations = Declarations {
             workspace: None,
             editorconfig: EditorConfig::new(&project.0.join("sub"), &Contents::default()),
             cwd: project.0.clone(),
@@ -711,7 +717,8 @@ mod tests {
                     bytes: b"x\n",
                     language: None,
                 },
-                &mut declarations
+                &declarations,
+                &mut Vec::new()
             )
             .unwrap(),
             Resolution::Known {

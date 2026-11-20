@@ -13,6 +13,7 @@
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use crate::contents::Contents;
 use crate::workspace::{Declared, Error, Origin};
@@ -27,7 +28,9 @@ const CHARSET: &str = "charset";
 pub struct EditorConfig {
     /// The directory the search stops at: the project root, or where quaff runs.
     boundary: PathBuf,
-    files: HashMap<PathBuf, Option<File>>,
+    /// Each directory's file, read the first time a file beneath it is asked about, behind a
+    /// lock so that files searched at once can ask.
+    files: Mutex<HashMap<PathBuf, Option<File>>>,
     /// Where files are read through, so an `.editorconfig` also searched is read once.
     contents: Contents,
 }
@@ -48,7 +51,7 @@ impl EditorConfig {
         contents.keep_named(FILE);
         EditorConfig {
             boundary: boundary.to_path_buf(),
-            files: HashMap::new(),
+            files: Mutex::new(HashMap::new()),
             contents: contents.clone(),
         }
     }
@@ -61,21 +64,24 @@ impl EditorConfig {
     /// # Errors
     ///
     /// Returns an [`Error`] when a `.editorconfig` that exists cannot be read.
-    pub fn charset(&mut self, path: &Path, shown_from: &Path) -> Result<Option<Declared>, Error> {
+    pub fn charset(&self, path: &Path, shown_from: &Path) -> Result<Option<Declared>, Error> {
         let dirs: Vec<PathBuf> = path
             .ancestors()
             .skip(1)
             .take_while(|dir| dir.starts_with(&self.boundary))
             .map(Path::to_path_buf)
             .collect();
+        // Held for the whole question, so that a file is read once however many ask for it at
+        // once; reading it is the only slow part, and that happens once.
+        let mut files = self.files.lock().expect("no thread panics holding it");
         // Nearest first, so the first file with a matching section decides; a root file ends
         // the search.
         for dir in dirs {
-            if !self.files.contains_key(&dir) {
+            if !files.contains_key(&dir) {
                 let file = read(&self.contents, &dir, shown_from)?;
-                self.files.insert(dir.clone(), file);
+                files.insert(dir.clone(), file);
             }
-            let Some(Some(file)) = self.files.get(&dir) else {
+            let Some(Some(file)) = files.get(&dir) else {
                 continue;
             };
             let relative = path

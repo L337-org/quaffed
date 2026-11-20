@@ -78,7 +78,6 @@ fn every_file_is_read_from_disk_once_whatever_reads_it() {
         fs::write(path, text).unwrap();
     }
     let dir = fs::canonicalize(&dir).unwrap();
-    crate::contents::DISK_READS.with(|reads| reads.borrow_mut().clear());
     let outcome = run(
         vec![SourceArg::Query(cli::Query {
             text: "TODO".into(),
@@ -91,7 +90,7 @@ fn every_file_is_read_from_disk_once_whatever_reads_it() {
         &mut Vec::new(),
         &mut Vec::new(),
     );
-    let reads = crate::contents::DISK_READS.with(|reads| reads.borrow().clone());
+    let reads = crate::contents::disk_reads_under(&dir);
     let _ = fs::remove_dir_all(&dir);
     assert!(outcome.is_ok(), "{outcome:?}");
     let twice: Vec<_> = reads
@@ -139,7 +138,6 @@ fn a_git_pointer_file_is_read_from_disk_once() {
     )
     .unwrap();
     let project = fs::canonicalize(&project).unwrap();
-    crate::contents::DISK_READS.with(|reads| reads.borrow_mut().clear());
     let outcome = run(
         vec![SourceArg::Query(cli::Query {
             text: "TODO".into(),
@@ -152,17 +150,17 @@ fn a_git_pointer_file_is_read_from_disk_once() {
         &mut Vec::new(),
         &mut Vec::new(),
     );
-    let reads = crate::contents::DISK_READS.with(|reads| reads.borrow().clone());
+    let counts: Vec<_> = [project.join(".git"), worktree.join("commondir")]
+        .into_iter()
+        .map(|pointer| {
+            let count = crate::contents::disk_reads_of(&pointer);
+            (pointer, count)
+        })
+        .collect();
     let _ = fs::remove_dir_all(&dir);
     assert!(outcome.is_ok(), "{outcome:?}");
-    for pointer in [project.join(".git"), worktree.join("commondir")] {
-        let count = reads.iter().filter(|read| **read == pointer).count();
-        assert_eq!(
-            count,
-            1,
-            "{} read {count} times: {reads:?}",
-            pointer.display()
-        );
+    for (pointer, count) in counts {
+        assert_eq!(count, 1, "{} read {count} times", pointer.display());
     }
 }
 
@@ -326,7 +324,6 @@ fn a_script_in_the_scope_is_read_from_disk_once() {
     fs::write(dir.join("a.txt"), "TODO\n").unwrap();
     let dir = fs::canonicalize(&dir).unwrap();
     let script = dir.join("scripts/fix.quaff");
-    crate::contents::DISK_READS.with(|reads| reads.borrow_mut().clear());
     let mut out = Vec::new();
     let outcome = run(
         vec![SourceArg::File(script.clone().into_os_string())],
@@ -337,7 +334,7 @@ fn a_script_in_the_scope_is_read_from_disk_once() {
         &mut out,
         &mut Vec::new(),
     );
-    let reads = crate::contents::DISK_READS.with(|reads| reads.borrow().clone());
+    let reads = crate::contents::disk_reads_under(&dir);
     let _ = fs::remove_dir_all(&dir);
     assert!(outcome.is_ok(), "{outcome:?}");
     // The script holds "TODO" too, so it was searched as well as run.
@@ -716,4 +713,221 @@ fn a_file_unparseable_for_a_search_and_an_unwritable_rewrite_is_named_once() {
         "{:?}",
         ran.outcome
     );
+}
+
+/// A directory for one test holding `files`, each path with its text, canonicalised as a run
+/// names what it finds.
+fn tree(name: &str, files: &[(String, String)]) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("quaffed-run-{name}-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(dir.join(".git")).unwrap();
+    for (path, text) in files {
+        let path = dir.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+    fs::canonicalize(&dir).unwrap()
+}
+
+/// `count` files, each holding one `TODO`.
+fn todos(count: usize) -> Vec<(String, String)> {
+    (0..count)
+        .map(|n| (format!("d{}/f{n}.txt", n % 4), "TODO\n".to_owned()))
+        .collect()
+}
+
+/// Searching for `TODO` with `options`.
+fn search_todo(dir: &Path, options: &cli::Options) -> Result<Outcome, Failure> {
+    let query = SourceArg::Query(cli::Query {
+        text: "TODO".into(),
+        source: cli::Source::Positional,
+    });
+    run(
+        vec![query],
+        None,
+        options,
+        dir,
+        &mut io::empty(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+    )
+}
+
+#[test]
+fn with_no_limit_set_a_run_searches_files_at_once() {
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    if cores < 2 {
+        // Every CI runner has more than one, so a run there that checked nothing fails.
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "this machine runs one thread at a time, so nothing can be searched at once"
+        );
+        eprintln!("skipped: this machine runs one thread at a time");
+        return;
+    }
+    let dir = tree("at-once", &todos(64));
+    let mut outcome = None;
+    let most = meeting::most_at_once(&dir, std::time::Duration::from_secs(20), || {
+        outcome = Some(search_todo(&dir, &cli::Options::default()));
+    });
+    let _ = fs::remove_dir_all(&dir);
+    assert_eq!(outcome.unwrap().unwrap(), Outcome::Success);
+    assert!(
+        most >= 2,
+        "with no limit, {cores} threads searched at most {most} file at once"
+    );
+}
+
+#[test]
+fn with_a_limit_of_one_a_run_searches_one_file_at_a_time() {
+    let dir = tree("one-at-a-time", &todos(16));
+    let options = cli::Options {
+        jobs: std::num::NonZeroUsize::new(1),
+        ..cli::Options::default()
+    };
+    let mut outcome = None;
+    let most = meeting::most_at_once(&dir, std::time::Duration::from_millis(200), || {
+        outcome = Some(search_todo(&dir, &options));
+    });
+    let _ = fs::remove_dir_all(&dir);
+    assert_eq!(outcome.unwrap().unwrap(), Outcome::Success);
+    assert_eq!(most, 1);
+}
+
+#[test]
+fn what_a_run_prints_and_how_it_ends_are_the_same_whatever_the_limit() {
+    // Matches, edits held and printed for a dry run, and notes of lines git cannot use, from
+    // files in several directories, each directory's attributes met by different files.  The
+    // first file found in a directory with attributes is large, so that threads meet the other
+    // directories' attributes before its own; its name sorts before `.gitattributes`, which is
+    // searched too.
+    let mut files: Vec<(String, String)> = vec![
+        (
+            "a/-big.txt".into(),
+            format!("TODO\n{}", "x\n".repeat(4 << 20)),
+        ),
+        (
+            "a/.gitattributes".into(),
+            "a{a working-tree-encoding=X\n".into(),
+        ),
+    ];
+    files.extend((0..40).map(|n| {
+        (
+            format!("d{}/f{n}.py", n % 5),
+            format!("f({n})  # TODO\nx = {n}\n"),
+        )
+    }));
+    files.push((
+        ".gitattributes".into(),
+        "!*.c working-tree-encoding=X\n".into(),
+    ));
+    for d in 0..5 {
+        files.push((
+            format!("d{d}/.gitattributes"),
+            format!("a{{{d} working-tree-encoding=X\n"),
+        ));
+    }
+    let dir = tree("same-whatever", &files);
+    let script = "find \"TODO\"\nfind `f($a)`\nreplace string \"TODO\" with \"DONE\" expect 41\n";
+    let ran = |jobs: Option<usize>| {
+        let options = cli::Options {
+            dry_run: true,
+            jobs: jobs.and_then(std::num::NonZeroUsize::new),
+            ..cli::Options::default()
+        };
+        let (mut out, mut notes) = (Vec::new(), Vec::new());
+        let outcome = run(
+            vec![SourceArg::Expression {
+                number: 1,
+                text: script.into(),
+            }],
+            None,
+            &options,
+            &dir,
+            &mut io::empty(),
+            &mut out,
+            &mut notes,
+        );
+        (
+            format!("{outcome:?}"),
+            String::from_utf8(out).unwrap(),
+            String::from_utf8(notes).unwrap(),
+        )
+    };
+    let one_at_a_time = ran(Some(1));
+    let others: Vec<_> = [Some(2), Some(3), Some(8), None]
+        .into_iter()
+        .flat_map(|jobs| (0..3).map(move |_| jobs))
+        .map(|jobs| (jobs, ran(jobs)))
+        .collect();
+    let _ = fs::remove_dir_all(&dir);
+    let (outcome, out, notes) = &one_at_a_time;
+    assert_eq!(outcome, "Ok(Success)", "{notes}");
+    assert!(out.contains("-big.txt"), "{out}");
+    // Every attributes file's line is noted, in the order one file after another meets them,
+    // so the order they are noted in is checked.
+    let declaring: Vec<&str> = notes
+        .lines()
+        .filter_map(|line| line.strip_prefix("quaff: attributes file \""))
+        .filter_map(|line| line.split('"').next())
+        .collect();
+    assert_eq!(
+        declaring,
+        [
+            ".gitattributes",
+            "a/.gitattributes",
+            "d0/.gitattributes",
+            "d1/.gitattributes",
+            "d2/.gitattributes",
+            "d3/.gitattributes",
+            "d4/.gitattributes"
+        ],
+        "{notes}"
+    );
+    for (jobs, ran) in others {
+        assert_eq!(ran, one_at_a_time, "with {jobs:?} jobs");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn of_several_files_that_cannot_be_read_the_first_found_is_named_whatever_the_limit() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tree("unreadable", &todos(32));
+    let locked = [dir.join("d1/f5.txt"), dir.join("d3/f31.txt")];
+    for path in &locked {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o000)).unwrap();
+    }
+    let readable_anyway = fs::read(&locked[0]).is_ok();
+    let failures: Vec<_> = [Some(1), Some(4), Some(8), None]
+        .into_iter()
+        .flat_map(|jobs| (0..3).map(move |_| jobs))
+        .map(|jobs| {
+            let options = cli::Options {
+                jobs: jobs.and_then(std::num::NonZeroUsize::new),
+                ..cli::Options::default()
+            };
+            (jobs, search_todo(&dir, &options).map_err(|f| f.to_string()))
+        })
+        .collect();
+    for path in &locked {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    let _ = fs::remove_dir_all(&dir);
+    if readable_anyway {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "this user can read a mode-000 path, so this test checks nothing; run it as a user \
+             other than root"
+        );
+        eprintln!("skipped: this user can read a mode-000 path, so it cannot fail");
+        return;
+    }
+    for (jobs, failure) in failures {
+        let failure = failure.expect_err("a file cannot be read");
+        assert!(
+            failure.contains("d1/f5.txt"),
+            "with {jobs:?} jobs: {failure}"
+        );
+    }
 }

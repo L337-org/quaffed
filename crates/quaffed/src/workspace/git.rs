@@ -18,10 +18,11 @@
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
-use super::{Declared, Error, IgnoreFiles, Origin, SystemIgnores, Workspace};
+use super::{Declared, Error, IgnoreFiles, Origin, Skipped, SystemIgnores, Workspace};
 use crate::contents::Contents;
 
 /// The name whose presence marks a project root.
@@ -36,13 +37,18 @@ const ENCODING: &str = "working-tree-encoding";
 /// A git repository's working tree, and any repositories nested in it.
 pub struct Git {
     root: PathBuf,
+    /// What has been read so far, behind a lock so that files searched at once can ask.
+    read: Mutex<Read>,
+    /// Where files are read through, so one also searched is read once.
+    contents: Contents,
+}
+
+/// What a [`Git`] has read as it was asked.
+struct Read {
     /// Each repository asked about, by its root: the outer one, and any nested in it.
     repositories: HashMap<PathBuf, Repository>,
     /// The repository each directory asked about is in, by the nearest `.git` at or above it.
     owners: HashMap<PathBuf, PathBuf>,
-    skipped: Vec<String>,
-    /// Where files are read through, so one also searched is read once.
-    contents: Contents,
 }
 
 /// One repository's attributes files, read as they are needed.
@@ -93,25 +99,37 @@ impl Workspace for Git {
     }
 
     fn declared_encoding(
-        &mut self,
+        &self,
         path: &Path,
         shown_from: &Path,
+        skipped: &mut Vec<Skipped>,
     ) -> Result<Option<Declared>, Error> {
         let Some(dir) = path.parent() else {
             return Ok(None);
         };
+        // Held for the whole question, so that a file is read once however many ask for it at
+        // once; reading it is the only slow part, and that happens once.
+        let mut so_far = self.read.lock().expect("no thread panics holding it");
+        let Read {
+            repositories,
+            owners,
+        } = &mut *so_far;
         // A file in a nested repository, a submodule among them, takes its attributes from that
         // repository alone, as git does when it works there.
-        let root = self.owner(dir);
-        if !self.repositories.contains_key(&root) {
-            let repository =
-                Repository::read(&root, &self.contents, shown_from, &mut self.skipped)?;
-            self.repositories.insert(root.clone(), repository);
+        let root = owner(owners, &self.root, dir);
+        if !repositories.contains_key(&root) {
+            let repository = Repository::read(&root, &self.contents, shown_from)?;
+            repositories.insert(root.clone(), repository);
         }
-        let repository = self
-            .repositories
+        let repository = repositories
             .get_mut(&root)
             .expect("read above if it was not there");
+        // The files read with the repository are consulted for every file in it, whether they
+        // decide or not: the top-level `.gitattributes` for its macros, then info/attributes.
+        let top = repository.files.get(&root).and_then(Option::as_ref);
+        for attributes in [top, repository.info.as_ref()].into_iter().flatten() {
+            attributes.note(skipped);
+        }
         // info/attributes first, then each .gitattributes from the deepest up: the first with a
         // line that matches decides.
         if let Some(decided) = repository.info.as_ref().and_then(|info| info.decide(path)) {
@@ -129,21 +147,20 @@ impl Workspace for Git {
                     dir,
                     &repository.macros,
                     shown_from,
-                    &mut self.skipped,
                 )?;
                 repository.files.insert(dir.to_path_buf(), attributes);
             }
-            if let Some(Some(attributes)) = repository.files.get(dir)
-                && let Some(decided) = attributes.decide(path)
-            {
-                return Ok(decided.declared());
+            if let Some(Some(attributes)) = repository.files.get(dir) {
+                // The top-level file's lines were noted with the repository's.
+                if dir != root {
+                    attributes.note(skipped);
+                }
+                if let Some(decided) = attributes.decide(path) {
+                    return Ok(decided.declared());
+                }
             }
         }
         Ok(None)
-    }
-
-    fn skipped(&self) -> &[String] {
-        &self.skipped
     }
 
     fn declares_encodings_in(&self) -> &'static str {
@@ -184,28 +201,29 @@ impl Git {
         contents.keep_named("commondir");
         Git {
             root: root.to_path_buf(),
-            repositories: HashMap::new(),
-            owners: HashMap::new(),
-            skipped: Vec::new(),
+            read: Mutex::new(Read {
+                repositories: HashMap::new(),
+                owners: HashMap::new(),
+            }),
             contents: contents.clone(),
         }
     }
+}
 
-    /// The root of the repository `dir` is in: the nearest directory at or above it holding
-    /// `.git`, and never above the workspace's root.
-    fn owner(&mut self, dir: &Path) -> PathBuf {
-        if let Some(root) = self.owners.get(dir) {
-            return root.clone();
-        }
-        let root = dir
-            .ancestors()
-            .take_while(|d| d.starts_with(&self.root))
-            .find(|d| is_root(d))
-            .unwrap_or(&self.root)
-            .to_path_buf();
-        self.owners.insert(dir.to_path_buf(), root.clone());
-        root
+/// The root of the repository `dir` is in: the nearest directory at or above it holding `.git`,
+/// and never above `workspace`, the workspace's root.  `owners` keeps each answer.
+fn owner(owners: &mut HashMap<PathBuf, PathBuf>, workspace: &Path, dir: &Path) -> PathBuf {
+    if let Some(root) = owners.get(dir) {
+        return root.clone();
     }
+    let root = dir
+        .ancestors()
+        .take_while(|d| d.starts_with(workspace))
+        .find(|d| is_root(d))
+        .unwrap_or(workspace)
+        .to_path_buf();
+    owners.insert(dir.to_path_buf(), root.clone());
+    root
 }
 
 impl Repository {
@@ -213,12 +231,7 @@ impl Repository {
     /// and the rules in each.  Each is read once: its macros and its rules come from the same
     /// text, and the top-level file's rules are kept with the root's, so the walk up from a file
     /// never reads it again.
-    fn read(
-        root: &Path,
-        contents: &Contents,
-        shown_from: &Path,
-        skipped: &mut Vec<String>,
-    ) -> Result<Repository, Error> {
+    fn read(root: &Path, contents: &Contents, shown_from: &Path) -> Result<Repository, Error> {
         let top_file = root.join(".gitattributes");
         let info_file = git_dir(root, contents)?.map(|dir| dir.join("info").join("attributes"));
         let top = read(contents, &top_file)?;
@@ -236,12 +249,10 @@ impl Repository {
             }
         }
         let mut files = HashMap::new();
-        let top = top.map(|text| rules_in(&text, &top_file, root, &macros, shown_from, skipped));
+        let top = top.map(|text| rules_in(&text, &top_file, root, &macros, shown_from));
         files.insert(root.to_path_buf(), top);
         let info = match (info, &info_file) {
-            (Some(text), Some(file)) => {
-                Some(rules_in(&text, file, root, &macros, shown_from, skipped))
-            }
+            (Some(text), Some(file)) => Some(rules_in(&text, file, root, &macros, shown_from)),
             _ => None,
         };
         Ok(Repository {
@@ -253,21 +264,19 @@ impl Repository {
 }
 
 /// The rules in `file` that touch the encoding attribute, matched relative to `base`, or `None`
-/// if there is no such file; a line that cannot be used is described in `skipped`, its file
-/// shown relative to `shown_from`.
+/// if there is no such file, the file shown relative to `shown_from`.
 fn read_file(
     contents: &Contents,
     file: &Path,
     base: &Path,
     macros: &HashMap<String, Option<State>>,
     shown_from: &Path,
-    skipped: &mut Vec<String>,
 ) -> Result<Option<Attributes>, Error> {
-    Ok(read(contents, file)?.map(|text| rules_in(&text, file, base, macros, shown_from, skipped)))
+    Ok(read(contents, file)?.map(|text| rules_in(&text, file, base, macros, shown_from)))
 }
 
 /// The rules in `text`, the contents of `file`, that touch the encoding attribute, matched
-/// relative to `base`; a line that cannot be used is described in `skipped`, its file shown
+/// relative to `base`, and a description of each line that cannot be used, the file shown
 /// relative to `shown_from`.
 fn rules_in(
     text: &str,
@@ -275,10 +284,10 @@ fn rules_in(
     base: &Path,
     macros: &HashMap<String, Option<State>>,
     shown_from: &Path,
-    skipped: &mut Vec<String>,
 ) -> Attributes {
     let shown = crate::output::relative(file, shown_from);
     let mut rules = Vec::new();
+    let mut skipped = Vec::new();
     for (index, raw) in text.lines().enumerate() {
         let line = index + 1;
         match parse(raw) {
@@ -306,7 +315,11 @@ fn rules_in(
             }
         }
     }
-    Attributes { file: shown, rules }
+    Attributes {
+        file: shown,
+        rules,
+        skipped: skipped.into(),
+    }
 }
 
 /// The git directory of the repository at `root`, where `info/attributes` is: `.git` itself, or
@@ -357,9 +370,21 @@ struct Attributes {
     /// The file, as a message names it.
     file: PathBuf,
     rules: Vec<Rule>,
+    /// Each line that could not be used, described for the user, in order.
+    skipped: Arc<[String]>,
 }
 
 impl Attributes {
+    /// Adds this file's lines that could not be used to `skipped`, if it has any.
+    fn note(&self, skipped: &mut Vec<Skipped>) {
+        if !self.skipped.is_empty() {
+            skipped.push(Skipped {
+                file: self.file.clone(),
+                lines: Arc::clone(&self.skipped),
+            });
+        }
+    }
+
     /// What the last matching rule says of the encoding for `path`, or `None` if no rule
     /// matches.
     fn decide(&self, path: &Path) -> Option<Decision> {
@@ -608,16 +633,27 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join(".git")).unwrap();
         fs::write(dir.join(".gitattributes"), "a{b working-tree-encoding=X\n").unwrap();
-        let mut workspace = find(&dir, &Contents::default()).unwrap();
-        let declared = workspace.declared_encoding(&dir.join("x.c"), &dir).unwrap();
-        let skipped = workspace.skipped().to_vec();
+        let workspace = find(&dir, &Contents::default()).unwrap();
+        let mut skipped = Vec::new();
+        let declared = workspace
+            .declared_encoding(&dir.join("x.c"), &dir, &mut skipped)
+            .unwrap();
+        // Asked again, the file is not read again, and its lines are named again, for whichever
+        // file is searched first to report.
+        let mut again = Vec::new();
+        workspace
+            .declared_encoding(&dir.join("y.c"), &dir, &mut again)
+            .unwrap();
         let _ = fs::remove_dir_all(&dir);
         assert_eq!(declared, None);
         assert_eq!(skipped.len(), 1, "{skipped:?}");
+        assert_eq!(skipped[0].file, Path::new(".gitattributes"));
+        assert_eq!(skipped[0].lines.len(), 1, "{skipped:?}");
         assert!(
-            skipped[0].starts_with("\".gitattributes\": line 1: "),
+            skipped[0].lines[0].starts_with("\".gitattributes\": line 1: "),
             "{skipped:?}"
         );
+        assert_eq!(again, skipped);
     }
 
     #[test]
@@ -638,12 +674,12 @@ mod tests {
         )
         .unwrap();
         READS.with(|reads| reads.borrow_mut().clear());
-        let mut workspace = find(&dir, &Contents::default()).unwrap();
+        let workspace = find(&dir, &Contents::default()).unwrap();
         let names: Vec<_> = ["a.c", "b.c", "a.h", "sub/c.c"]
             .iter()
             .map(|path| {
                 workspace
-                    .declared_encoding(&dir.join(path), &dir)
+                    .declared_encoding(&dir.join(path), &dir, &mut Vec::new())
                     .unwrap()
                     .map(|d| d.name)
             })
@@ -713,7 +749,7 @@ mod tests {
         fs::write(dir.join(".git"), "not a pointer\n").unwrap();
         let declared = find(&dir, &Contents::default())
             .unwrap()
-            .declared_encoding(&dir.join("x.c"), &dir)
+            .declared_encoding(&dir.join("x.c"), &dir, &mut Vec::new())
             .unwrap();
         let _ = fs::remove_dir_all(&dir);
         assert_eq!(declared, None);
