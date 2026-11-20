@@ -53,6 +53,32 @@ of the phases is what keeps a run's promises: every pattern and `where` is compi
 discovery looks at a file, so a script error is one however large the tree; and nothing is printed
 or written until evaluation has decided the outcome, so a run that fails prints nothing.
 
+**What a run knows about each of its patterns is one record in each phase**, not lists matched
+up by a pattern's index: planning's `Searching` holds the pattern, its query and what it is
+replaced with, and execution's `Found` holds what it found - its matches, its counts, and the
+files it could not be searched for, written in or made in.  A pattern's index is its place among
+the run's patterns, in program order, and is the same in both.
+
+### The unit of work
+
+**Execution's unit of work is a file.**  A file is read once and taken through the run's
+patterns in batches, in program order: the patterns between two replaces are searched for in one
+pass over the file as it then is, and each replace changes the file for the patterns after it.
+Only the file's own patterns - those whose scope holds it - are looked at.  What a file gives is
+a `Searched` of its own, which is gathered into the run's in discovery order: each pattern's
+`Found` takes the file's matches, counts and notes after those of the files before it, and a
+file the run holds is renumbered as it joins the files held so far.  Nothing a file's search does
+depends on another file's, so files can be worked on in any order, and the order of the results
+depends on discovery alone.
+
+**A statement that works across files does not fit this unit.**  A statement that follows
+references from one file into others, or one that binds a set a later statement ranges over,
+needs what other files gave before it can work on a file.  Such a statement would split execution
+into stages at that statement: every file is taken through the batches before it, what it needs
+is gathered from every file, and only then are the files taken through the batches after it, with
+what was gathered as an input alongside the plan.  A file would be read again for each stage, or
+held between them: that choice is the cost to weigh against what a run may hold in memory.
+
 ## Discovery
 
 What a user sees is in `docs/language.md`, _What is searched_.  How it is built:
@@ -220,7 +246,7 @@ The format is in `docs/language.md`, _Output_.  The rules behind it:
 - **A closed standard output stops the printing quietly**, but assertions are still evaluated,
   so the exit code is still the answer.
 - **Every match is held until the run prints, so a match holds where its code is, not the code**
-  (`Hit` and `Code` in `src/run/execute.rs`).  Files are searched one at a time, but each statement's
+  (`Hit` and `Code` in `src/run/execute.rs`).  However files are searched, each statement's
   matches print together, so nothing can print until the last file is done; structural matches
   can overlap, as `x = $v` and a sequence to the end of a block do from every statement in it, and
   copies of their code would hold about the square of the block's length.  So a structural match
@@ -266,9 +292,9 @@ the path or argument it concerns, and says what to do where there is something t
 
 ## Editing
 
-`replace string` edits text (`src/run/execute.rs`, `src/search.rs`, `src/write.rs`), and a structural
-`replace` edits code (`src/rewrite.rs`), through the same pipeline.  `delete` is a structural
-`replace` whose rewrite is empty.
+`replace string` edits text (`src/run/execute.rs`, `src/search.rs`, `src/write.rs`), and a
+structural `replace` edits code (`src/rewrite.rs`), through the same pipeline.  `delete` is a
+structural `replace` whose rewrite is empty.
 
 - **Each file is taken through the program's statements in order** and read once: the patterns
   between two replaces are searched in one pass over the file as it then is, and a replace changes

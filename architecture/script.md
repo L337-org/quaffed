@@ -138,8 +138,8 @@ program a script parses to.
 2. Parse it in `src/parser.rs`, removing it from `NOT_IN_THIS_BUILD` or the matching list.
 3. Add unit tests for the form and for each way it can be malformed, with what each says.
 4. Extend the statement generator in `tests/properties.rs` so layout invariance covers it.
-5. When it becomes runnable, remove its refusal from `steps` in `crates/quaffed/src/run/plan.rs`, and
-   replace its end-to-end snapshot in `each_construct_not_built_yet_exits_5_naming_it` with one
-   that runs it.
+5. When it becomes runnable, remove its refusal from `steps` in `crates/quaffed/src/run/plan.rs`,
+   and replace its end-to-end snapshot in `each_construct_not_built_yet_exits_5_naming_it` with
+   one that runs it.
 6. Update this page, `search.md` where it changes the output or the exit codes, and
    `docs/language.md`, in the same change.
