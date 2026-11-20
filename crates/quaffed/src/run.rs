@@ -21,7 +21,7 @@ use quaffed_representation::program::{
 };
 use quaffed_representation::span::{Source, Span, Spanned};
 use quaffed_script::{ErrorKind, lexer, location, parse_source};
-use quaffed_syntax::{FrontEnd, Pattern, Rewrite};
+use quaffed_syntax::{CompileError, FrontEnd, Pattern, Rewrite};
 
 use crate::changes::{self, Changes};
 use crate::cli::{self, SourceArg, UsageError};
@@ -388,6 +388,34 @@ pub fn run(
     out: &mut impl Write,
     notes: &mut impl Write,
 ) -> Result<Outcome, Failure> {
+    run_in(
+        languages::LANGUAGES,
+        sources,
+        scope,
+        options,
+        cwd,
+        stdin,
+        out,
+        notes,
+    )
+}
+
+/// [`run`], with `languages` the languages quaff parses, in the order a pattern is compiled for
+/// them: the registry's for a run, and others for a test.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a run's arguments, and the languages it parses"
+)]
+fn run_in(
+    languages: &[&'static dyn FrontEnd],
+    sources: Vec<SourceArg>,
+    scope: Option<&OsString>,
+    options: &cli::Options,
+    cwd: &Path,
+    stdin: &mut impl Read,
+    out: &mut impl Write,
+    notes: &mut impl Write,
+) -> Result<Outcome, Failure> {
     // One store for the whole run, so a file read before the search or for its rules, and
     // searched as well, is read once.
     let contents = Contents::default();
@@ -412,14 +440,14 @@ pub fn run(
             location: built.locate(span, span.start),
             message: format!("{construct} is not built yet"),
         })?;
-    let (compiled, rewrites) = compile(&structural, &planned_rewrites, &built)?;
+    let mut compiled = compile(languages, &structural, &planned_rewrites, &built)?;
     for step in &mut steps {
         if let Step::Replace(replacing) = step
             && let ReplaceKind::Structural { rewrite, .. } = replacing.kind
         {
             // A rewrite that writes a comment replaces the code with it; only one that writes
             // nothing deletes.
-            replacing.deletes = rewrites[rewrite].text().trim().is_empty();
+            replacing.deletes = planned_rewrites[rewrite].0.trim().is_empty();
         }
     }
 
@@ -442,7 +470,7 @@ pub fn run(
         steps.iter().flat_map(Step::replacements).collect();
     // Every `where` is compiled and checked, as every pattern is, before discovery looks at a
     // file, so that a script error is reported as one however large or unreadable the tree.
-    let filters = filters(&searching, &compiled, roots, &built)?;
+    filters(&searching, &mut compiled, roots, &built)?;
     let mut scoping = Scoping::new(narrow.as_deref(), &cwd);
     let scoped: Vec<Scoped> = searching
         .iter()
@@ -457,8 +485,6 @@ pub fn run(
         &patterns,
         &replacements,
         &compiled,
-        &rewrites,
-        &filters,
         &mut projects,
         locale.as_ref(),
     )?;
@@ -499,54 +525,111 @@ pub fn run(
     Ok(outcome)
 }
 
-/// Every structural pattern compiled, and every rewrite template against the pattern whose
-/// captures it writes back, before any file is read, so that one that cannot be compiled stops
-/// the run before it looks at anything.
+/// The run's structural patterns, their rewrites and their `where`s, compiled for one language,
+/// each where the language reads it: a file is searched with its own language's.
+struct Compiled {
+    /// The language.
+    language: &'static dyn FrontEnd,
+    /// Each structural pattern, by its place among them, if the language reads it and its
+    /// `where`.
+    patterns: Vec<Option<Pattern>>,
+    /// Each rewrite template, by its place among them, where the language reads its pattern:
+    /// compiled, or why the language cannot read it, which refuses the edit in a file of the
+    /// language where the pattern matches.
+    rewrites: Vec<Option<Result<Rewrite, CompileError>>>,
+    /// Each of the run's patterns' `where`, by the pattern's index among all of them, where it
+    /// tests a metavariable and the language reads the pattern.
+    filters: Vec<Option<filter::Filter>>,
+}
+
+/// A script error for text no language could compile, at the place of the first language's
+/// error: what it said, or with more than one language, what each said, named.
+fn unread(errors: &[(&dyn FrontEnd, CompileError)], span: Span, built: &Built) -> Failure {
+    let (_, first) = &errors[0];
+    let message = match errors {
+        [(_, only)] => only.to_string(),
+        _ => errors
+            .iter()
+            .map(|(language, err)| format!("as {}: {err}", language.language()))
+            .collect::<Vec<_>>()
+            .join("; "),
+    };
+    Failure::Script {
+        location: built.locate(
+            span,
+            first
+                .offset()
+                .map_or(span.start, |at| built.content_start(span) + at),
+        ),
+        message,
+    }
+}
+
+/// Every structural pattern compiled for each of `languages`, and every rewrite template against
+/// the pattern whose captures it writes back, before any file is read.  A pattern no language
+/// reads stops the run before it looks at anything, as does a rewrite no language that reads its
+/// pattern reads.
 fn compile(
+    languages: &[&'static dyn FrontEnd],
     structural: &[(&str, Span)],
     planned_rewrites: &[PlannedRewrite],
     built: &Built,
-) -> Result<(Vec<Pattern>, Vec<Rewrite>), Failure> {
-    let language = languages::of_patterns();
-    // Every structural pattern is compiled before any file is read, so one that cannot be
-    // compiled stops the run before it looks at anything.
-    let mut compiled: Vec<Pattern> = structural
+) -> Result<Vec<Compiled>, Failure> {
+    let mut compiled: Vec<Compiled> = languages
         .iter()
-        .map(|(written, span)| {
-            language
-                .compile_pattern(written)
-                .map_err(|err| Failure::Script {
-                    location: built.locate(
-                        *span,
-                        err.offset()
-                            .map_or(span.start, |at| built.content_start(*span) + at),
-                    ),
-                    message: err.to_string(),
-                })
+        .map(|&language| Compiled {
+            language,
+            patterns: Vec::with_capacity(structural.len()),
+            rewrites: Vec::with_capacity(planned_rewrites.len()),
+            filters: Vec::new(),
         })
-        .collect::<Result<_, _>>()?;
-    // So is every rewrite template, against the pattern whose captures it writes back.
-    let rewrites: Vec<Rewrite> = planned_rewrites
-        .iter()
-        .map(|(written, span, compiled_at)| {
-            language
-                .compile_rewrite(written, &compiled[*compiled_at])
-                .map_err(|err| Failure::Script {
-                    location: built.locate(
-                        *span,
-                        err.offset()
-                            .map_or(span.start, |at| built.content_start(*span) + at),
-                    ),
-                    message: err.to_string(),
-                })
-        })
-        .collect::<Result<_, _>>()?;
+        .collect();
+    for (written, span) in structural {
+        let mut errors = Vec::new();
+        for for_language in &mut compiled {
+            let language = for_language.language;
+            match language.compile_pattern(written) {
+                Ok(pattern) => for_language.patterns.push(Some(pattern)),
+                Err(err) => {
+                    for_language.patterns.push(None);
+                    errors.push((language, err));
+                }
+            }
+        }
+        if errors.len() == languages.len() {
+            return Err(unread(&errors, *span, built));
+        }
+    }
+    for (written, span, compiled_at) in planned_rewrites {
+        let mut errors = Vec::new();
+        for for_language in &mut compiled {
+            let language = for_language.language;
+            let rewrite = for_language.patterns[*compiled_at]
+                .as_ref()
+                .map(|pattern| language.compile_rewrite(written, pattern));
+            if let Some(Err(err)) = &rewrite {
+                errors.push((language, err.clone()));
+            }
+            for_language.rewrites.push(rewrite);
+        }
+        let reading = compiled
+            .iter()
+            .filter(|c| c.patterns[*compiled_at].is_some())
+            .count();
+        if errors.len() == reading {
+            return Err(unread(&errors, *span, built));
+        }
+    }
     // A replace's unnamed holes are named once its rewrite is compiled, which reports `$_` in a
     // rewrite as the unnamed hole it is, so that each match says where they matched too.
-    for (_, _, compiled_at) in planned_rewrites {
-        compiled[*compiled_at] = rewrite::name_every_hole(&compiled[*compiled_at]);
+    for for_language in &mut compiled {
+        for (_, _, compiled_at) in planned_rewrites {
+            if let Some(pattern) = &mut for_language.patterns[*compiled_at] {
+                *pattern = rewrite::name_every_hole(pattern);
+            }
+        }
     }
-    Ok((compiled, rewrites))
+    Ok(compiled)
 }
 
 /// `--debug-pause-before-write`: creates `marker` and waits until it is removed, so that a test
@@ -1215,78 +1298,104 @@ fn buildable<'p>(
     }
 }
 
-/// Each of the run's patterns' `where`, compiled, where it tests a metavariable: checked first
-/// against the pattern, which must be structural, must bind each name it tests to one node, and
-/// with the names it tests must not be too costly to search.
+/// Each of the run's patterns' `where`, compiled for each language that reads the pattern, where
+/// it tests a metavariable: checked first against the pattern, which must be structural, must
+/// bind each name it tests to one node, and with the names it tests must not be too costly to
+/// search.  A language that cannot read the `where` does not read the pattern either; one that
+/// no language reads stops the run, with the first language's error.
 fn filters(
     searching: &[Searching],
-    compiled: &[Pattern],
+    compiled: &mut [Compiled],
     roots: scope::Roots,
     built: &Built,
-) -> Result<Vec<Option<filter::Filter>>, Failure> {
+) -> Result<(), Failure> {
+    for for_language in compiled.iter_mut() {
+        for_language.filters = searching.iter().map(|_| None).collect();
+    }
+    for (index, searching) in searching.iter().enumerate() {
+        let Some(written) = &searching.query.filter else {
+            continue;
+        };
+        let mut failures = Vec::new();
+        let mut reading = 0;
+        for for_language in compiled.iter_mut() {
+            let pattern = match searching.pattern {
+                Wanted::Structural { compiled: at, .. } => match &for_language.patterns[at] {
+                    Some(pattern) => Some(pattern),
+                    None => continue,
+                },
+                Wanted::Text(_) => None,
+            };
+            reading += 1;
+            match filter_for(for_language.language, written, pattern, roots, built) {
+                Ok(filter) => for_language.filters[index] = filter,
+                Err(failure @ (Failure::Unknown { .. } | Failure::Io { .. })) => {
+                    return Err(failure);
+                }
+                Err(failure) => {
+                    if let Wanted::Structural { compiled: at, .. } = searching.pattern {
+                        for_language.patterns[at] = None;
+                    }
+                    failures.push(failure);
+                }
+            }
+        }
+        if failures.len() == reading
+            && let Some(first) = failures.into_iter().next()
+        {
+            return Err(first);
+        }
+    }
+    Ok(())
+}
+
+/// The `where` written, compiled in `language`, where it tests a metavariable, and checked
+/// against `pattern`, the statement's in that language, or `None` for a textual statement.
+fn filter_for(
+    language: &dyn FrontEnd,
+    written: &Spanned<Filter>,
+    pattern: Option<&Pattern>,
+    roots: scope::Roots,
+    built: &Built,
+) -> Result<Option<filter::Filter>, Failure> {
     let script = |span: Span, message: String| Failure::Script {
         location: built.locate(span, span.start),
         message,
     };
-    searching
-        .iter()
-        .map(|searching| {
-            let Some(written) = &searching.query.filter else {
-                return Ok(None);
-            };
-            let outer: Vec<&str> = match searching.pattern {
-                Wanted::Structural {
-                    compiled: index, ..
-                } => compiled[index]
-                    .holes()
-                    .filter_map(|(_, hole)| hole.name.as_deref())
-                    .collect(),
-                Wanted::Text(_) => Vec::new(),
-            };
-            let compiled_filter =
-                filter::Filter::new(languages::of_patterns(), written, roots, &outer).map_err(
-                    |err| match err {
-                        filter::Error::NotBuilt(filter::NotBuilt(span)) => Failure::Unknown {
-                            location: built.locate(span, span.start),
-                            message: "this `where` test is not built yet".into(),
-                        },
-                        filter::Error::Pattern(err, span) => Failure::Script {
-                            location: built.locate(
-                                span,
-                                err.offset()
-                                    .map_or(span.start, |at| built.content_start(span) + at),
-                            ),
-                            message: err.to_string(),
-                        },
-                        filter::Error::Glob(scope::Error::TooLarge(err), span) => {
-                            script(span, err.to_string())
-                        }
-                        filter::Error::Glob(scope::Error::Io { path, cause }, _) => Failure::Io {
-                            doing: "looking for",
-                            path,
-                            cause,
-                        },
-                    },
-                )?;
-            let Some(compiled_filter) = compiled_filter else {
-                return Ok(None);
-            };
-            let span = metavariable_test(written).unwrap_or(written.span);
-            let Wanted::Structural {
-                compiled: index, ..
-            } = searching.pattern
-            else {
-                return Err(script(
-                    span,
-                    "a textual search binds no metavariables, so there is nothing for `where` to \
-                     test here: test FILE, or search for a backticked pattern"
-                        .into(),
-                ));
-            };
-            check_filter(&compiled_filter, &compiled[index], span, built)?;
-            Ok(Some(compiled_filter))
-        })
-        .collect()
+    let outer: Vec<&str> = pattern.map_or_default(|pattern| {
+        pattern
+            .holes()
+            .filter_map(|(_, hole)| hole.name.as_deref())
+            .collect()
+    });
+    let compiled_filter =
+        filter::Filter::new(language, written, roots, &outer).map_err(|err| match err {
+            filter::Error::NotBuilt(filter::NotBuilt(span)) => Failure::Unknown {
+                location: built.locate(span, span.start),
+                message: "this `where` test is not built yet".into(),
+            },
+            filter::Error::Pattern(err, span) => unread(&[(language, err)], span, built),
+            filter::Error::Glob(scope::Error::TooLarge(err), span) => script(span, err.to_string()),
+            filter::Error::Glob(scope::Error::Io { path, cause }, _) => Failure::Io {
+                doing: "looking for",
+                path,
+                cause,
+            },
+        })?;
+    let Some(compiled_filter) = compiled_filter else {
+        return Ok(None);
+    };
+    let span = metavariable_test(written).unwrap_or(written.span);
+    let Some(pattern) = pattern else {
+        return Err(script(
+            span,
+            "a textual search binds no metavariables, so there is nothing for `where` to test \
+             here: test FILE, or search for a backticked pattern"
+                .into(),
+        ));
+    };
+    check_filter(&compiled_filter, pattern, span, built)?;
+    Ok(Some(compiled_filter))
 }
 
 /// Checks a compiled `where` against `pattern`, the statement's: each name it tests must be one
@@ -1972,6 +2081,9 @@ struct Searched {
     supported: usize,
     /// Other files in some structural pattern's scope, which have no structure quaff reads.
     not_applicable: usize,
+    /// Files in a language quaff parses in the scope of some structural pattern the language
+    /// cannot read, binary ones aside, so not searched for it.
+    unread: usize,
     /// For each pattern, the files in a language quaff parses in its scope, binary ones included:
     /// none for a textual one.
     supported_for: Vec<usize>,
@@ -1979,6 +2091,9 @@ struct Searched {
     structural_for: Vec<usize>,
     /// For each pattern, the other files in its scope, which it does not apply to.
     not_applicable_for: Vec<usize>,
+    /// For each pattern, the files in its scope in a language quaff parses that cannot read it,
+    /// binary ones aside.
+    unread_for: Vec<usize>,
     /// For each pattern, the files of unknown encoding holding bytes it would match, by the
     /// paths a message shows, with the lines they are on and why the encoding is unknown.  Never
     /// counted, and never edited.
@@ -2123,7 +2238,8 @@ struct ReadFile<'a> {
     shown: &'a Path,
     bytes: &'a [u8],
     resolution: &'a Resolution,
-    language: Option<&'static dyn FrontEnd>,
+    /// What the run's patterns compile to in its language, if quaff parses it.
+    compiled: Option<&'a Compiled>,
     binary: bool,
 }
 
@@ -2132,7 +2248,8 @@ struct ReadFile<'a> {
 struct Rewriting<'a> {
     index: usize,
     pattern: &'a Pattern,
-    rewrite: &'a Rewrite,
+    /// The rewrite, or why the file's language cannot read it.
+    rewrite: &'a Result<Rewrite, CompileError>,
 }
 
 /// What earlier replaces did to a file: its bytes on disk if they changed it, which did, by
@@ -2156,12 +2273,11 @@ struct Version {
 /// whether there is any.
 struct Plan<'p> {
     batches: Vec<Batch<'p>>,
-    compiled: &'p [Pattern],
-    rewrites: &'p [Rewrite],
-    /// The structural patterns, by their index among all the run's patterns.
-    structural: Vec<usize>,
-    /// For each pattern, its `where` if that tests a metavariable.
-    filters: &'p [Option<filter::Filter>],
+    /// The structural patterns, rewrites and `where`s, compiled for each language.
+    compiled: &'p [Compiled],
+    /// The structural patterns, by their index among all the run's patterns, with their place
+    /// among the compiled ones.
+    structural: Vec<(usize, usize)>,
     /// Where a file's path, as a `FILE` test sees it, is worked out from.
     roots: scope::Roots<'p>,
 }
@@ -2169,18 +2285,12 @@ struct Plan<'p> {
 /// Searches each of `files` for each of `patterns`, in order, replacing as `replacements` says,
 /// reading each file once and deciding its encoding from what declares it.  A pattern after a
 /// replace is searched for in the file as the replace left it; the edits are held, not written.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "what a search is of, each part from a different stage of the run"
-)]
 fn search_files(
     files: &[ToSearch],
     roots: scope::Roots,
     patterns: &[Wanted],
     replacements: &[Option<Replacement>],
-    compiled: &[Pattern],
-    rewrites: &[Rewrite],
-    filters: &[Option<filter::Filter>],
+    compiled: &[Compiled],
     projects: &mut Projects,
     locale: Option<&(String, Encoding)>,
 ) -> Result<Searched, Failure> {
@@ -2189,17 +2299,21 @@ fn search_files(
     let structural = patterns
         .iter()
         .enumerate()
-        .filter(|(_, wanted)| matches!(wanted, Wanted::Structural { .. }))
-        .map(|(i, _)| i)
+        .filter_map(|(i, wanted)| match wanted {
+            Wanted::Structural { compiled, .. } => Some((i, *compiled)),
+            Wanted::Text(_) => None,
+        })
         .collect();
     let mut searched = Searched {
         matches: (0..patterns.len()).map(|_| Vec::new()).collect(),
         unparsed: Vec::new(),
         supported: 0,
         not_applicable: 0,
+        unread: 0,
         supported_for: vec![0; patterns.len()],
         structural_for: vec![0; patterns.len()],
         not_applicable_for: vec![0; patterns.len()],
+        unread_for: vec![0; patterns.len()],
         possible: vec![Vec::new(); patterns.len()],
         unspelled: vec![Vec::new(); patterns.len()],
         unwritable: vec![Vec::new(); patterns.len()],
@@ -2222,9 +2336,7 @@ fn search_files(
     let plan = Plan {
         batches,
         compiled,
-        rewrites,
         structural,
-        filters,
         roots,
     };
     for file in files {
@@ -2273,11 +2385,16 @@ impl Searched {
                 path: shown.clone(),
                 cause,
             })?;
+        // The file's language, by its name, and its patterns, rewrites and `where`s compiled for
+        // it.
+        let compiled = plan.compiled.iter().find(|c| c.language.claims(file));
+        let language = compiled.map(|c| c.language);
         // Decided once, from the file as it is on disk, whatever the number of patterns.
         let resolution = resolve::resolve(
             &resolve::File {
                 path: file,
                 bytes: &bytes,
+                language,
             },
             declarations,
         )
@@ -2287,14 +2404,13 @@ impl Searched {
             cause: err.cause,
         })?;
         let binary = matches!(resolution, Resolution::Binary);
-        let language = languages::of(file);
-        self.count_for_structure(plan, applies, language.is_some(), binary);
+        self.count_for_structure(plan, applies, compiled, binary);
         let read = ReadFile {
             file,
             shown: &shown,
             bytes: &bytes,
             resolution: &resolution,
-            language,
+            compiled,
             binary,
         };
         self.cited.clear();
@@ -2360,13 +2476,13 @@ impl Searched {
                     structural,
                 } => {
                     let textual = applying(textual, applies);
-                    let structural = applying(structural, applies);
-                    if let Some(language) = read.language
+                    let structural = reads(read.compiled, applying(structural, applies));
+                    if let Some(compiled) = read.compiled
                         && !structural.is_empty()
                         && !read.binary
                     {
                         self.structural_batch(
-                            language,
+                            compiled,
                             read.shown,
                             text,
                             &earlier,
@@ -2404,20 +2520,26 @@ impl Searched {
                 }
                 Batch::Rewrite {
                     index,
-                    compiled,
+                    compiled: at,
                     rewrite,
                 } => {
-                    let Some(language) = read.language.filter(|_| applies[*index] && !read.binary)
+                    let Some(compiled) = read
+                        .compiled
+                        .filter(|c| applies[*index] && !read.binary && c.patterns[*at].is_some())
                     else {
                         continue;
                     };
                     let edit = Rewriting {
                         index: *index,
-                        pattern: &plan.compiled[*compiled],
-                        rewrite: &plan.rewrites[*rewrite],
+                        pattern: compiled.patterns[*at]
+                            .as_ref()
+                            .expect("rewritten only where the language reads the pattern"),
+                        rewrite: compiled.rewrites[*rewrite]
+                            .as_ref()
+                            .expect("a rewrite is compiled where its pattern is"),
                     };
                     if let Some((whole, over)) = self.rewrite_in(
-                        language,
+                        compiled,
                         read.shown,
                         text,
                         &earlier,
@@ -2436,36 +2558,39 @@ impl Searched {
         (edited, by, changes)
     }
 
-    /// Counts a file for the structural patterns that look at it, as `applies` says: a Python
-    /// file, a binary one too, since it is in scope and the run must not say there is no Python,
-    /// though it is counted with the binary files rather than searched; or a text-tier file, to
-    /// which they do not apply.
+    /// Counts a file for each structural pattern that looks at it, as `applies` says: as one with
+    /// structural support where its language reads the pattern, a binary one too, since it is in
+    /// scope and the run must not say there is none, though it is counted with the binary files
+    /// rather than searched; as one whose language cannot read the pattern; or as a text-tier
+    /// file, to which no pattern applies.
     fn count_for_structure(
         &mut self,
         plan: &Plan,
         applies: &[bool],
-        supported: bool,
+        compiled: Option<&Compiled>,
         binary: bool,
     ) {
-        let here: Vec<usize> = plan
-            .structural
-            .iter()
-            .copied()
-            .filter(|&i| applies[i])
-            .collect();
-        if here.is_empty() || (binary && !supported) {
-            return;
+        let (mut supported, mut not_applicable, mut unread) = (false, false, false);
+        for &(i, at) in plan.structural.iter().filter(|&&(i, _)| applies[i]) {
+            match compiled.map(|c| c.patterns[at].is_some()) {
+                Some(true) => {
+                    self.supported_for[i] += 1;
+                    supported = true;
+                }
+                _ if binary => {}
+                Some(false) => {
+                    self.unread_for[i] += 1;
+                    unread = true;
+                }
+                None => {
+                    self.not_applicable_for[i] += 1;
+                    not_applicable = true;
+                }
+            }
         }
-        let counts = if supported {
-            self.supported += 1;
-            &mut self.supported_for
-        } else {
-            self.not_applicable += 1;
-            &mut self.not_applicable_for
-        };
-        for i in here {
-            counts[i] += 1;
-        }
+        self.supported += usize::from(supported);
+        self.not_applicable += usize::from(not_applicable);
+        self.unread += usize::from(unread);
     }
 
     /// Searches a file in a known encoding, `text` its body after any byte-order mark, for each
@@ -2606,7 +2731,7 @@ impl Searched {
     )]
     fn structural_batch(
         &mut self,
-        language: &dyn FrontEnd,
+        compiled: &Compiled,
         shown: &Path,
         text: &[u8],
         earlier: &Earlier,
@@ -2616,32 +2741,34 @@ impl Searched {
         unparsed: &mut bool,
     ) {
         // The file's path as a glob sees it, worked out only if some `where` may read it.
+        let language = compiled.language;
         let place = structural
             .iter()
-            .any(|&(i, _)| plan.filters[i].is_some())
+            .any(|&(i, _)| compiled.filters[i].is_some())
             .then(|| scope::Place::of(file, plan.roots.cwd, plan.roots.root));
         // Each pattern's `where`, decided for this file's path and for what a match binds.
         let filters: Vec<Option<structural::Where>> = structural
             .iter()
             .map(|&(i, _)| {
-                plan.filters[i].as_ref().map(|filter| {
-                    let place = place
-                        .as_ref()
-                        .expect("worked out for a pattern with a `where`");
-                    let found = filter::Found::default();
-                    structural::Where {
-                        names: filter.names.iter().map(String::as_str).collect(),
-                        holds: Box::new(move |arena, nodes| {
-                            filter.holds(place, arena, nodes, &found)
-                        }),
-                    }
+                compiled.filters[i].as_ref().map(|filter| {
+                    deciding(
+                        filter,
+                        place
+                            .as_ref()
+                            .expect("worked out for a pattern with a `where`"),
+                    )
                 })
             })
             .collect();
         let shapes: Vec<(&Pattern, Option<&structural::Where>)> = structural
             .iter()
             .zip(&filters)
-            .map(|(&(_, c), filter)| (&plan.compiled[c], filter.as_ref()))
+            .map(|(&(_, at), filter)| {
+                let pattern = compiled.patterns[at]
+                    .as_ref()
+                    .expect("searched only where the language reads the pattern");
+                (pattern, filter.as_ref())
+            })
             .collect();
         // The text parsed is the text the language's own reader would read, decoded as it
         // decodes it, whatever else declares the file's encoding for the textual tier.
@@ -2709,7 +2836,7 @@ impl Searched {
     )]
     fn rewrite_in(
         &mut self,
-        language: &dyn FrontEnd,
+        compiled: &Compiled,
         shown: &Path,
         text: &[u8],
         earlier: &Earlier,
@@ -2719,19 +2846,15 @@ impl Searched {
         unparsed: &mut bool,
     ) -> Option<(Vec<u8>, Over)> {
         let index = edit.index;
-        let place = plan.filters[index]
-            .is_some()
-            .then(|| scope::Place::of(file, plan.roots.cwd, plan.roots.root));
-        let filter = plan.filters[index].as_ref().map(|filter| {
-            let place = place
-                .as_ref()
-                .expect("worked out for a pattern with a `where`");
-            let found = filter::Found::default();
-            structural::Where {
-                names: filter.names.iter().map(String::as_str).collect(),
-                holds: Box::new(move |arena, nodes| filter.holds(place, arena, nodes, &found)),
-            }
+        let language = compiled.language;
+        // The file's path as a glob sees it, worked out only if a `where` may read it.
+        let placed = compiled.filters[index].as_ref().map(|filter| {
+            let place = scope::Place::of(file, plan.roots.cwd, plan.roots.root);
+            (filter, place)
         });
+        let filter = placed
+            .as_ref()
+            .map(|(filter, place)| deciding(filter, place));
         let source = match language.decode(text) {
             Ok(source) => source,
             Err(refusal) => {
@@ -2746,12 +2869,27 @@ impl Searched {
                 return None;
             }
         };
+        let rewrite = match edit.rewrite {
+            Ok(rewrite) => rewrite,
+            Err(err) => {
+                self.unwritten(
+                    language,
+                    shown,
+                    &source.text,
+                    earlier,
+                    edit,
+                    filter.as_ref(),
+                    err,
+                );
+                return None;
+            }
+        };
         let replaced = match rewrite::replace(
             language,
             &source.text,
             edit.pattern,
             filter.as_ref(),
-            edit.rewrite,
+            rewrite,
         ) {
             Ok(replaced) => replaced,
             Err(err) => {
@@ -2805,6 +2943,53 @@ impl Searched {
                 None
             }
         }
+    }
+
+    /// Searches a file whose language reads a replace's pattern but not its rewrite: each match
+    /// is counted and cited, and the first refuses the edit, since it cannot be written there.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the file, the edit and why its rewrite cannot be compiled"
+    )]
+    fn unwritten(
+        &mut self,
+        language: &dyn FrontEnd,
+        shown: &Path,
+        text: &str,
+        earlier: &Earlier,
+        edit: &Rewriting,
+        filter: Option<&structural::Where>,
+        err: &CompileError,
+    ) {
+        let index = edit.index;
+        let found = match structural::search(language, text, &[(edit.pattern, filter)]) {
+            Ok(mut found) => found.swap_remove(0),
+            Err(unparsed) => {
+                let mut unparsed_once = false;
+                self.not_parsed(
+                    language,
+                    shown,
+                    unparsed_at(&unparsed),
+                    earlier,
+                    &[index],
+                    &mut unparsed_once,
+                );
+                return;
+            }
+        };
+        self.structural_for[index] += 1;
+        if let Some(first) = found.first() {
+            self.edits_refused[index].push((
+                shown.to_owned(),
+                format!(
+                    "line {}, column {}: the rewrite cannot be written in {}: {err}",
+                    first.at.start.line,
+                    first.at.start.column,
+                    language.language()
+                ),
+            ));
+        }
+        self.cite(index, shown, earlier.version, found);
     }
 
     /// Counts a file once by what it is: binary, refused by `CPython`, or of unknown encoding that
@@ -2943,6 +3128,35 @@ impl Searched {
 
 /// The patterns in `batch`, each by its index among all the run's patterns, that look at a file,
 /// as `applies` says by that index: the batch itself, uncopied, when they all do.
+/// `filter`, a statement's `where`, decided for a file at `place` and for what a match binds.
+fn deciding<'f>(filter: &'f filter::Filter, place: &'f scope::Place) -> structural::Where<'f> {
+    let found = filter::Found::default();
+    structural::Where {
+        names: filter.names.iter().map(String::as_str).collect(),
+        holds: Box::new(move |arena, nodes| filter.holds(place, arena, nodes, &found)),
+    }
+}
+
+/// The structural patterns of `batch` that `compiled`'s language reads: the rest do not apply to
+/// a file of it.  All of them where it reads them all, as one language reads every pattern.
+fn reads<'b>(
+    compiled: Option<&Compiled>,
+    batch: Cow<'b, [(usize, usize)]>,
+) -> Cow<'b, [(usize, usize)]> {
+    match compiled {
+        Some(compiled) if !batch.iter().all(|&(_, at)| compiled.patterns[at].is_some()) => {
+            Cow::Owned(
+                batch
+                    .iter()
+                    .copied()
+                    .filter(|&(_, at)| compiled.patterns[at].is_some())
+                    .collect(),
+            )
+        }
+        _ => batch,
+    }
+}
+
 fn applying<'b, T: Copy>(batch: &'b [(usize, T)], applies: &[bool]) -> Cow<'b, [(usize, T)]> {
     if batch.iter().all(|&(i, _)| applies[i]) {
         Cow::Borrowed(batch)
@@ -3199,15 +3413,32 @@ impl<'s> Evaluation<'s> {
         match pattern {
             // With nothing in scope at all, as where a `where` leaves out every file, there are no
             // text-tier files to count, and "0 not searched" would say nothing.
-            Wanted::Structural { .. } if searched.supported_for[index] == 0 => {
-                Some(match searched.not_applicable_for[index] {
-                    0 => "no file in scope has structural support".to_string(),
-                    n => format!(
+            Wanted::Structural { .. } if searched.supported_for[index] == 0 => Some(
+                match (
+                    searched.unread_for[index],
+                    searched.not_applicable_for[index],
+                ) {
+                    (0, 0) => "no file in scope has structural support".to_string(),
+                    (0, n) => format!(
                         "no file in scope has structural support; {} not searched",
                         count(n, "text-tier file", "text-tier files")
                     ),
-                })
-            }
+                    (unread, 0) => format!(
+                        "no file in scope is in a language that reads it; {} not searched",
+                        count(unread, "file", "files")
+                    ),
+                    (unread, n) => format!(
+                        "no file in scope is in a language that reads it; {} and {} not \
+                             searched",
+                        count(
+                            unread,
+                            "file in another language",
+                            "files in another language"
+                        ),
+                        count(n, "text-tier file", "text-tier files")
+                    ),
+                },
+            ),
             // Every Python file in scope is binary, which the binary count says.
             Wanted::Structural { .. } if searched.structural_for[index] == 0 => Some(format!(
                 "no file in scope with structural support could be searched; {} not searched",
@@ -3384,13 +3615,21 @@ fn structural_notes(searched: &Searched, evaluated: &[Searching]) -> Vec<String>
     for (path, why) in searched.questioned[..evaluated.len()].iter().flatten() {
         notes.push(format!("{path:?}: {why}"));
     }
-    // With no Python in scope, the run's own message counts these instead.
+    // With nothing in scope with structural support, the run's own message counts these instead.
     if searched.supported > 0 && searched.not_applicable > 0 {
         notes.push(format!(
             "{} not searched for structural patterns, which apply only to files with \
              structural support",
             count(searched.not_applicable, "text-tier file", "text-tier files")
         ));
+    }
+    if searched.supported > 0 && searched.unread > 0 {
+        notes.push(match searched.unread {
+            1 => "1 file not searched for a structural pattern its language cannot read".to_owned(),
+            n => {
+                format!("{n} files not searched for structural patterns their language cannot read")
+            }
+        });
     }
     notes
 }
@@ -3989,8 +4228,6 @@ mod tests {
             &[Wanted::Text(&pattern)],
             &[None],
             &[],
-            &[],
-            &[None],
             &mut projects,
             None,
         );
@@ -4256,5 +4493,212 @@ mod tests {
     fn counts_are_worded_for_one_and_for_many() {
         assert_eq!(count(1, "binary file", "binary files"), "1 binary file");
         assert_eq!(count(3, "binary file", "binary files"), "3 binary files");
+    }
+
+    /// What a run over two languages, Python and the test language Toy, gave: its outcome, what
+    /// it printed, its notes, and each file's text afterwards.
+    struct TwoLanguages {
+        outcome: Result<Outcome, Failure>,
+        out: String,
+        notes: String,
+        after: Vec<String>,
+    }
+
+    /// Runs `script` over `files`, each a path and its text, in a fresh directory, as a run that
+    /// parses Python and Toy.
+    fn in_two_languages(name: &str, script: &str, files: &[(&str, &str)]) -> TwoLanguages {
+        use crate::languages::{PYTHON, TOY};
+        let dir = std::env::temp_dir().join(format!(
+            "quaffed-two-languages-{name}-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        for (path, text) in files {
+            let path = dir.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        }
+        let dir = fs::canonicalize(&dir).unwrap();
+        let (mut out, mut notes) = (Vec::new(), Vec::new());
+        let outcome = run_in(
+            &[PYTHON, TOY],
+            vec![SourceArg::Expression {
+                number: 1,
+                text: script.to_owned(),
+            }],
+            None,
+            &cli::Options::default(),
+            &dir,
+            &mut io::empty(),
+            &mut out,
+            &mut notes,
+        );
+        let after = files
+            .iter()
+            .map(|(path, _)| fs::read_to_string(dir.join(path)).unwrap())
+            .collect();
+        let _ = fs::remove_dir_all(&dir);
+        TwoLanguages {
+            outcome,
+            out: String::from_utf8(out).unwrap(),
+            notes: String::from_utf8(notes).unwrap(),
+            after,
+        }
+    }
+
+    #[test]
+    fn a_pattern_both_languages_read_is_matched_in_each_language_s_files() {
+        let ran = in_two_languages(
+            "both",
+            "find `f($x)`",
+            &[("a.py", "f(1)\n"), ("b.toy", "f(2)\n"), ("c.txt", "f(3)\n")],
+        );
+        assert!(
+            matches!(ran.outcome, Ok(Outcome::Success)),
+            "{:?}",
+            ran.outcome
+        );
+        assert!(
+            ran.out.contains("a.py") && ran.out.contains("b.toy"),
+            "{}",
+            ran.out
+        );
+        assert!(!ran.out.contains("c.txt"), "{}", ran.out);
+    }
+
+    #[test]
+    fn a_file_whose_language_cannot_read_the_pattern_is_not_applicable_and_counted() {
+        let ran = in_two_languages(
+            "one-reads",
+            "find `g = lambda: f($x)`",
+            &[
+                ("a.py", "g = lambda: f(1)\n"),
+                ("b.toy", "g = lambda: f(2)\n"),
+            ],
+        );
+        assert!(
+            matches!(ran.outcome, Ok(Outcome::Success)),
+            "{:?}",
+            ran.outcome
+        );
+        assert!(ran.out.contains("a.py"), "{}", ran.out);
+        assert!(!ran.out.contains("b.toy"), "{}", ran.out);
+        assert!(
+            ran.notes
+                .contains("1 file not searched for a structural pattern its language cannot read"),
+            "{}",
+            ran.notes
+        );
+    }
+
+    #[test]
+    fn a_pattern_no_file_s_language_reads_says_so_rather_than_nothing_found() {
+        let ran = in_two_languages(
+            "unread-only",
+            "find `g = lambda: f($x)`",
+            &[("b.toy", "g = lambda: f(2)\n")],
+        );
+        assert!(
+            matches!(ran.outcome, Ok(Outcome::NothingFound)),
+            "{:?}",
+            ran.outcome
+        );
+        assert!(
+            ran.notes
+                .contains("no file in scope is in a language that reads it; 1 file not searched"),
+            "{}",
+            ran.notes
+        );
+        let ran = in_two_languages(
+            "unread-and-text",
+            "find `g = lambda: f($x)`",
+            &[("b.toy", "g = lambda: f(2)\n"), ("c.txt", "g\n")],
+        );
+        assert!(
+            ran.notes.contains(
+                "no file in scope is in a language that reads it; 1 file in another language \
+                 and 1 text-tier file not searched"
+            ),
+            "{}",
+            ran.notes
+        );
+    }
+
+    #[test]
+    fn a_pattern_no_language_reads_is_refused_with_what_each_said() {
+        let ran = in_two_languages("none-reads", "find `lambda f(`", &[("a.py", "x\n")]);
+        let Err(Failure::Script { message, .. }) = &ran.outcome else {
+            panic!("{:?}", ran.outcome);
+        };
+        assert!(message.starts_with("as Python: "), "{message}");
+        assert!(
+            message.contains("; as Toy: `lambda` is not Toy"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_rewrite_one_language_cannot_write_refuses_the_run_where_it_matches_there() {
+        let files = [("a.py", "f(1)\n"), ("b.toy", "f(2)\n")];
+        let ran = in_two_languages(
+            "unwritten",
+            "replace `f($x)` with `lambda: $x` expect 2",
+            &files,
+        );
+        let Err(Failure::EditRefused { files: refused, .. }) = &ran.outcome else {
+            panic!("{:?}", ran.outcome);
+        };
+        assert_eq!(refused.len(), 1, "{refused:?}");
+        assert!(refused[0].0.ends_with("b.toy"), "{refused:?}");
+        assert!(
+            refused[0].1.contains(
+                "line 1, column 1: the rewrite cannot be written in Toy: `lambda` is not Toy"
+            ),
+            "{refused:?}"
+        );
+        assert_eq!(ran.after, ["f(1)\n", "f(2)\n"], "nothing is written");
+        // Where no file of the language that cannot write it matches, the edit is made.
+        let ran = in_two_languages(
+            "unwritten-unmatched",
+            "replace `f($x)` with `lambda: $x` expect 1",
+            &[("a.py", "f(1)\n"), ("b.toy", "g(2)\n")],
+        );
+        assert!(
+            matches!(ran.outcome, Ok(Outcome::Success)),
+            "{:?}",
+            ran.outcome
+        );
+        assert_eq!(ran.after, ["lambda: 1\n", "g(2)\n"]);
+    }
+
+    #[test]
+    fn a_rewrite_no_language_that_reads_its_pattern_can_write_is_refused() {
+        let ran = in_two_languages(
+            "rewrite-none",
+            "replace `f($x)` with `lambda $x:` expect 1",
+            &[("a.py", "f(1)\n")],
+        );
+        let Err(Failure::Script { message, .. }) = &ran.outcome else {
+            panic!("{:?}", ran.outcome);
+        };
+        assert!(message.starts_with("as Python: "), "{message}");
+        assert!(message.contains("; as Toy: "), "{message}");
+        assert_eq!(ran.after, ["f(1)\n"]);
+    }
+
+    #[test]
+    fn a_where_one_language_cannot_read_leaves_that_language_s_files_not_applicable() {
+        let ran = in_two_languages(
+            "where",
+            "find `g = $v` where $v matches `lambda: $b`",
+            &[("a.py", "g = lambda: 1\n"), ("b.toy", "g = lambda: 2\n")],
+        );
+        assert!(
+            matches!(ran.outcome, Ok(Outcome::Success)),
+            "{:?}",
+            ran.outcome
+        );
+        assert!(ran.out.contains("a.py"), "{}", ran.out);
+        assert!(!ran.out.contains("b.toy"), "{}", ran.out);
     }
 }

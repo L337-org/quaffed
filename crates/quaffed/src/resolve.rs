@@ -17,7 +17,6 @@ use quaffed_syntax::FrontEnd;
 
 use crate::contents::Contents;
 use crate::editorconfig::EditorConfig;
-use crate::languages;
 use crate::workspace::{self, Origin, Workspace};
 
 /// The declarations kept outside a file that its encoding may come from.
@@ -39,13 +38,8 @@ pub struct File<'a> {
     pub path: &'a Path,
     /// Its bytes.
     pub bytes: &'a [u8],
-}
-
-impl File<'_> {
-    /// Its language, by its name, if quaff parses it.
-    fn language(&self) -> Option<&'static dyn FrontEnd> {
-        languages::of(self.path)
-    }
+    /// Its language, if quaff parses it, whose own declaration of an encoding is read.
+    pub language: Option<&'a dyn FrontEnd>,
 }
 
 /// What decides a file's encoding.
@@ -216,7 +210,7 @@ fn byte_order_mark(file: &File) -> Option<Resolution> {
     let (encoding, body) = encoding::byte_order_mark(file.bytes)?;
     if encoding == Encoding::Utf8
         && let Some(Err(refusal)) = file
-            .language()
+            .language
             .and_then(|language| language.declared_encoding(file.bytes))
     {
         return Some(Resolution::Refused(refusal));
@@ -231,7 +225,7 @@ fn byte_order_mark(file: &File) -> Option<Resolution> {
 /// A declaration in the file's own language, such as a Python file's coding line, read as that
 /// language reads it.
 fn coding_line(file: &File) -> Option<Resolution> {
-    match file.language()?.declared_encoding(file.bytes)? {
+    match file.language?.declared_encoding(file.bytes)? {
         Ok(None) => None,
         Ok(Some((declared, line))) => Some(Resolution::Known {
             encoding: declared.into(),
@@ -375,6 +369,7 @@ mod tests {
                 &File {
                     path: &path,
                     bytes: &bytes,
+                    language: crate::languages::of(&path),
                 },
                 &mut declarations,
             )
@@ -695,7 +690,8 @@ mod tests {
             resolve(
                 &File {
                     path: &path,
-                    bytes: b"x\n"
+                    bytes: b"x\n",
+                    language: None,
                 },
                 &mut declarations
             )
