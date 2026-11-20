@@ -18,7 +18,7 @@ use quaffed_syntax::{CompileError, FrontEnd, Pattern, Refused, Rewrite};
 use super::{
     compile::Compiled,
     failure::Failure,
-    plan::{Plan, Replacement, Wanted},
+    plan::{Plan, Replacement, Searching, Wanted},
     report::name_of,
     scoping::{Files, Projects, ToSearch},
 };
@@ -40,7 +40,6 @@ use crate::structural;
 /// be, and refuses the run for files a structural search needs that quaff cannot parse: a count
 /// that left them out could not be trusted.
 pub(super) fn execute(plan: &Plan, files: &mut Files) -> Result<Searched, Failure> {
-    let patterns: Vec<Wanted> = plan.searching.iter().map(|s| s.pattern).collect();
     let locale = locale();
     let searched = search_files(
         &files.to_search,
@@ -48,8 +47,7 @@ pub(super) fn execute(plan: &Plan, files: &mut Files) -> Result<Searched, Failur
             cwd: &files.cwd,
             root: &files.root,
         },
-        &patterns,
-        &plan.replacements,
+        &plan.searching,
         &plan.compiled,
         &mut files.projects,
         locale.as_ref(),
@@ -257,10 +255,51 @@ impl Held {
     }
 }
 
-/// What searching every file for every pattern found.
+/// What one of the run's patterns found, over the files searched: everything a run knows about it
+/// once the search is over, in one place, so that evaluating and reporting it reads one record.
+#[derive(Default)]
+pub(super) struct Found {
+    /// The files with matches, in discovery order.
+    pub(super) matches: Vec<(PathBuf, Vec<Hit>)>,
+    /// The files in a language quaff parses in its scope, binary ones included: none for a
+    /// textual pattern.
+    pub(super) supported: usize,
+    /// The files in a language quaff parses searched for it.
+    pub(super) structural: usize,
+    /// The other files in its scope, which it does not apply to.
+    pub(super) not_applicable: usize,
+    /// The files in its scope in a language quaff parses that cannot read it, binary ones aside.
+    pub(super) unread: usize,
+    /// The files of unknown encoding holding bytes it would match, by the paths a message shows,
+    /// with the lines they are on and why the encoding is unknown.  Never counted, and never
+    /// edited.
+    pub(super) possible: Vec<(PathBuf, Vec<usize>, Unknown)>,
+    /// The files not searched for it because it has no one spelling there, by the paths a message
+    /// shows, and why.
+    pub(super) unspelled: Vec<(PathBuf, Unspelled)>,
+    /// For a replaced pattern, the files whose encoding cannot write its replacement, by the paths
+    /// a message shows, with the encoding as `CPython` names its codec, the text it cannot write,
+    /// and whether it spells that text more than one way rather than not at all.
+    pub(super) unwritable: Vec<(PathBuf, &'static str, String, bool)>,
+    /// For a structural replace, the files it cannot be made in as written, by the paths a message
+    /// shows, with where and why: refused once its count holds, as an edit its files' encodings
+    /// cannot write is, so that a count that does not hold is told first.
+    pub(super) edits_refused: Vec<(PathBuf, String)>,
+    /// For a structural replace, the places it was made as written but may have changed what the
+    /// code means, by the paths a message shows, with where and why: noted only for the
+    /// statements the run reached.
+    pub(super) questioned: Vec<(PathBuf, String)>,
+    /// For a structural pattern, the files an earlier replace left unparseable, though they parse
+    /// on disk, with where and why and the replaces that changed them: the pattern cannot be
+    /// searched for in them, and the edit is refused.
+    pub(super) broken: Vec<(PathBuf, String, Vec<usize>)>,
+}
+
+/// What searching found: for one file, as the search of it gives it, or for every file, as those
+/// are gathered in discovery order.
 pub(super) struct Searched {
-    /// For each pattern, the files with matches, in discovery order.
-    pub(super) matches: Vec<Vec<(PathBuf, Vec<Hit>)>>,
+    /// What each of the run's patterns found, by its index.
+    pub(super) found: Vec<Found>,
     /// Files a structural search needs that quaff cannot parse, by the paths a message shows,
     /// with where and why.
     pub(super) unparsed: Vec<(PathBuf, String)>,
@@ -271,47 +310,14 @@ pub(super) struct Searched {
     /// Files in a language quaff parses in the scope of some structural pattern the language
     /// cannot read, binary ones aside, so not searched for it.
     pub(super) unread: usize,
-    /// For each pattern, the files in a language quaff parses in its scope, binary ones included:
-    /// none for a textual one.
-    pub(super) supported_for: Vec<usize>,
-    /// For each pattern, the files in a language quaff parses searched for it.
-    pub(super) structural_for: Vec<usize>,
-    /// For each pattern, the other files in its scope, which it does not apply to.
-    pub(super) not_applicable_for: Vec<usize>,
-    /// For each pattern, the files in its scope in a language quaff parses that cannot read it,
-    /// binary ones aside.
-    pub(super) unread_for: Vec<usize>,
-    /// For each pattern, the files of unknown encoding holding bytes it would match, by the
-    /// paths a message shows, with the lines they are on and why the encoding is unknown.  Never
-    /// counted, and never edited.
-    pub(super) possible: Vec<Vec<(PathBuf, Vec<usize>, Unknown)>>,
-    /// For each pattern, the files not searched for it because it has no one spelling there,
-    /// by the paths a message shows, and why.
-    pub(super) unspelled: Vec<Vec<(PathBuf, Unspelled)>>,
-    /// For each replaced pattern, the files whose encoding cannot write its replacement, by the
-    /// paths a message shows, with the encoding as `CPython` names its codec, the text it cannot
-    /// write, and whether it spells that text more than one way rather than not at all.
-    pub(super) unwritable: Vec<Vec<(PathBuf, &'static str, String, bool)>>,
-    /// For each structural replace, the files it cannot be made in as written, by the paths a
-    /// message shows, with where and why: refused once its count holds, as an edit its files'
-    /// encodings cannot write is, so that a count that does not hold is told first.
-    pub(super) edits_refused: Vec<Vec<(PathBuf, String)>>,
-    /// For each structural replace, the places it was made as written but may have changed what
-    /// the code means, by the paths a message shows, with where and why: noted only for the
-    /// statements the run reached.
-    pub(super) questioned: Vec<Vec<(PathBuf, String)>>,
     /// Every file a replace changed, held until the run ends.
     pub(super) changed: Vec<Changed>,
     /// Every file the run holds until it ends, which a [`Changed`] or a [`Code`] names by its place
     /// here.
     pub(super) held: Vec<Held>,
     /// The patterns, by their index, that structural matches were found for in the file being
-    /// searched, whose last entry in [`Searched::matches`] is that file's: it must be held.
+    /// searched, whose last entry in [`Found::matches`] is that file's: it must be held.
     cited: Vec<usize>,
-    /// For each structural pattern, the files an earlier replace left unparseable, though
-    /// they parse on disk, with where and why: the pattern cannot be searched for in them, and
-    /// the edit is refused.
-    pub(super) broken: Vec<Vec<(PathBuf, String, Vec<usize>)>>,
     /// Files whose own declared encoding their language's reader refuses, whatever they hold, so
     /// are searched for nothing, by the paths a message shows, with why.
     pub(super) refused: Vec<(PathBuf, Refused)>,
@@ -374,15 +380,20 @@ enum Batch<'p> {
     },
 }
 
-/// `patterns` in batches, `replacements` naming each one's replacement, if it is replaced.
-fn batches<'p>(
-    patterns: &[Wanted<'p>],
-    replacements: &[Option<Replacement<'p>>],
-) -> Vec<Batch<'p>> {
+/// The run's patterns, `searching`, in batches.
+fn batches<'p>(searching: &[Searching<'p>]) -> Vec<Batch<'p>> {
     let mut batches = Vec::new();
     let mut textual = Vec::new();
     let mut structural = Vec::new();
-    for (index, (wanted, with)) in patterns.iter().zip(replacements).enumerate() {
+    for (
+        index,
+        Searching {
+            pattern: wanted,
+            replacement: with,
+            ..
+        },
+    ) in searching.iter().enumerate()
+    {
         if with.is_some() && (!textual.is_empty() || !structural.is_empty()) {
             batches.push(Batch::Search {
                 textual: std::mem::take(&mut textual),
@@ -470,80 +481,148 @@ struct Work<'p> {
     roots: scope::Roots<'p>,
 }
 
-/// Searches each of `files` for each of `patterns`, in order, replacing as `replacements` says,
-/// reading each file once and deciding its encoding from what declares it.  A pattern after a
-/// replace is searched for in the file as the replace left it; the edits are held, not written.
+/// Searches each of `files` for each of the run's patterns, `searching`, in order, replacing as
+/// each says, reading each file once and deciding its encoding from what declares it.  A pattern
+/// after a replace is searched for in the file as the replace left it; the edits are held, not
+/// written.
 fn search_files(
     files: &[ToSearch],
     roots: scope::Roots,
-    patterns: &[Wanted],
-    replacements: &[Option<Replacement>],
+    searching: &[Searching],
     compiled: &[Compiled],
     projects: &mut Projects,
     locale: Option<&(String, Encoding)>,
 ) -> Result<Searched, Failure> {
     let cwd = roots.cwd;
-    let batches = batches(patterns, replacements);
-    let structural = patterns
+    let batches = batches(searching);
+    let structural = searching
         .iter()
         .enumerate()
-        .filter_map(|(i, wanted)| match wanted {
-            Wanted::Structural { compiled, .. } => Some((i, *compiled)),
+        .filter_map(|(i, searching)| match searching.pattern {
+            Wanted::Structural { compiled, .. } => Some((i, compiled)),
             Wanted::Text(_) => None,
         })
         .collect();
-    let mut searched = Searched {
-        matches: (0..patterns.len()).map(|_| Vec::new()).collect(),
-        unparsed: Vec::new(),
-        supported: 0,
-        not_applicable: 0,
-        unread: 0,
-        supported_for: vec![0; patterns.len()],
-        structural_for: vec![0; patterns.len()],
-        not_applicable_for: vec![0; patterns.len()],
-        unread_for: vec![0; patterns.len()],
-        possible: vec![Vec::new(); patterns.len()],
-        unspelled: vec![Vec::new(); patterns.len()],
-        unwritable: vec![Vec::new(); patterns.len()],
-        edits_refused: vec![Vec::new(); patterns.len()],
-        questioned: vec![Vec::new(); patterns.len()],
-        changed: Vec::new(),
-        held: Vec::new(),
-        cited: Vec::new(),
-        broken: vec![Vec::new(); patterns.len()],
-        refused: Vec::new(),
-        hinted: Vec::new(),
-        hint: locale.map(|(name, _)| name.clone()),
-        declares_in: projects.list[0]
-            .declarations
-            .workspace
-            .as_ref()
-            .map(|w| w.declares_encodings_in()),
-        binary: 0,
-    };
+    let mut searched = Searched::new(searching.len());
+    searched.hint = locale.map(|(name, _)| name.clone());
+    searched.declares_in = projects.list[0]
+        .declarations
+        .workspace
+        .as_ref()
+        .map(|w| w.declares_encodings_in());
     let work = Work {
         batches,
         compiled,
         structural,
         roots,
     };
+    // A file is the unit of work: it is taken through every batch, and what it gave is gathered
+    // into the run's in discovery order, so that each pattern's matches stay in that order.
     for file in files {
         let declarations = &mut projects.list[file.project].declarations;
-        searched.file(&file.path, cwd, &work, declarations, locale, &file.applies)?;
+        let mut in_file = Searched::new(searching.len());
+        in_file.file(&file.path, cwd, &work, declarations, locale, &file.applies)?;
+        searched.gather(in_file);
     }
     Ok(searched)
 }
 
 impl Searched {
+    /// Nothing found yet, for a run of `patterns` patterns.
+    fn new(patterns: usize) -> Self {
+        Searched {
+            found: (0..patterns).map(|_| Found::default()).collect(),
+            unparsed: Vec::new(),
+            supported: 0,
+            not_applicable: 0,
+            unread: 0,
+            changed: Vec::new(),
+            held: Vec::new(),
+            cited: Vec::new(),
+            refused: Vec::new(),
+            hinted: Vec::new(),
+            hint: None,
+            declares_in: None,
+            binary: 0,
+        }
+    }
+
+    /// Adds what searching one more file found, `file`, after everything found so far, so that
+    /// gathering the files in discovery order keeps every list in that order.  A [`Code`] or a
+    /// [`Changed`] names a file held by its place among the files `file` holds, which becomes its
+    /// place after those held so far.
+    fn gather(&mut self, file: Searched) {
+        let held = self.held.len();
+        let Searched {
+            found,
+            unparsed,
+            supported,
+            not_applicable,
+            unread,
+            changed,
+            held: holding,
+            cited: _,
+            refused,
+            hinted,
+            hint: _,
+            declares_in: _,
+            binary,
+        } = file;
+        for (run, in_file) in self.found.iter_mut().zip(found) {
+            // Every field named, so that one added to `Found` cannot be left out of gathering.
+            let Found {
+                mut matches,
+                supported,
+                structural,
+                not_applicable,
+                unread,
+                possible,
+                unspelled,
+                unwritable,
+                edits_refused,
+                questioned,
+                broken,
+            } = in_file;
+            for (_, hits) in &mut matches {
+                for code in hits.iter_mut().filter_map(|hit| hit.code.as_mut()) {
+                    code.held += held;
+                }
+            }
+            run.matches.append(&mut matches);
+            run.supported += supported;
+            run.structural += structural;
+            run.not_applicable += not_applicable;
+            run.unread += unread;
+            run.possible.extend(possible);
+            run.unspelled.extend(unspelled);
+            run.unwritable.extend(unwritable);
+            run.edits_refused.extend(edits_refused);
+            run.questioned.extend(questioned);
+            run.broken.extend(broken);
+        }
+        self.unparsed.extend(unparsed);
+        self.supported += supported;
+        self.not_applicable += not_applicable;
+        self.unread += unread;
+        self.changed.extend(changed.into_iter().map(|mut changed| {
+            changed.held += held;
+            changed
+        }));
+        self.held.extend(holding);
+        self.refused.extend(refused);
+        self.hinted.extend(hinted);
+        self.binary += binary;
+    }
+
     /// How many bytes what the run holds until it prints comes to: every match, each a fixed
     /// size, and every file held, as read and as each replace changed it.  The code a match covers
     /// is not among them, since it is read from the file when the match is printed.
     #[cfg(test)]
     pub(super) fn held_for_printing(&self) -> usize {
         let hits: usize = self
-            .matches
+            .found
             .iter()
-            .flatten()
+            .flat_map(|found| &found.matches)
             .map(|(_, hits)| hits.len())
             .sum();
         let files: usize = self.held.iter().map(Held::size).sum();
@@ -762,16 +841,16 @@ impl Searched {
         for &(i, at) in work.structural.iter().filter(|&&(i, _)| applies[i]) {
             match compiled.map(|c| c.patterns[at].is_some()) {
                 Some(true) => {
-                    self.supported_for[i] += 1;
+                    self.found[i].supported += 1;
                     supported = true;
                 }
                 _ if binary => {}
                 Some(false) => {
-                    self.unread_for[i] += 1;
+                    self.found[i].unread += 1;
                     unread = true;
                 }
                 None => {
-                    self.not_applicable_for[i] += 1;
+                    self.found[i].not_applicable += 1;
                     not_applicable = true;
                 }
             }
@@ -792,9 +871,11 @@ impl Searched {
     ) {
         for &(i, pattern) in textual {
             match search::search(text, encoding, pattern) {
-                None => self.unspelled[i].push((shown.to_owned(), Unspelled::Ambiguous(encoding))),
+                None => self.found[i]
+                    .unspelled
+                    .push((shown.to_owned(), Unspelled::Ambiguous(encoding))),
                 Some(in_file) if in_file.is_empty() => {}
-                Some(in_file) => self.matches[i].push((
+                Some(in_file) => self.found[i].matches.push((
                     shown.to_owned(),
                     in_file
                         .into_iter()
@@ -848,7 +929,7 @@ impl Searched {
         };
         let covered: usize = cited
             .iter()
-            .flat_map(|&index| codes(&self.matches[index]))
+            .flat_map(|&index| codes(&self.found[index].matches))
             .map(|code| code.end - code.start)
             .sum();
         if covered >= bytes.len() {
@@ -865,7 +946,8 @@ impl Searched {
             .text;
         let mut copies = String::with_capacity(covered);
         for index in cited {
-            let (_, hits) = self.matches[index]
+            let (_, hits) = self.found[index]
+                .matches
                 .last_mut()
                 .expect("a pattern cited here has this file's matches");
             for code in hits.iter_mut().filter_map(|hit| hit.code.as_mut()) {
@@ -891,7 +973,7 @@ impl Searched {
             return;
         }
         self.cited.push(index);
-        self.matches[index].push((
+        self.found[index].matches.push((
             shown.to_owned(),
             found
                 .into_iter()
@@ -977,7 +1059,7 @@ impl Searched {
         };
         if outcome.is_ok() {
             for &(i, _) in structural {
-                self.structural_for[i] += 1;
+                self.found[i].structural += 1;
             }
         }
         let Err(why) = outcome else {
@@ -1004,7 +1086,9 @@ impl Searched {
             .is_some_and(|bytes| parses(language, bytes).is_ok())
         {
             for &i in indices {
-                self.broken[i].push((shown.to_owned(), why.clone(), earlier.by.to_vec()));
+                self.found[i]
+                    .broken
+                    .push((shown.to_owned(), why.clone(), earlier.by.to_vec()));
             }
         } else if !*unparsed {
             self.unparsed.push((shown.to_owned(), why));
@@ -1094,14 +1178,14 @@ impl Searched {
                 return None;
             }
         };
-        self.structural_for[index] += 1;
+        self.found[index].structural += 1;
         self.cite(index, shown, earlier.version, replaced.found);
         match replaced.outcome {
             Ok(None) => None,
             Ok(Some(edited)) => match source.encode(&edited.text) {
                 Ok(bytes) => {
                     for questioned in edited.questioned {
-                        self.questioned[index].push((
+                        self.found[index].questioned.push((
                             shown.to_owned(),
                             format!(
                                 "line {}, column {}: {}",
@@ -1113,7 +1197,7 @@ impl Searched {
                     Some((bytes, over))
                 }
                 Err(unencodable) => {
-                    self.unwritable[index].push((
+                    self.found[index].unwritable.push((
                         shown.to_owned(),
                         unencodable.encoding,
                         unencodable.character.to_string(),
@@ -1123,7 +1207,7 @@ impl Searched {
                 }
             },
             Err(refused) => {
-                self.edits_refused[index].push((
+                self.found[index].edits_refused.push((
                     shown.to_owned(),
                     format!(
                         "line {}, column {}: {}",
@@ -1167,9 +1251,9 @@ impl Searched {
                 return;
             }
         };
-        self.structural_for[index] += 1;
+        self.found[index].structural += 1;
         if let Some(first) = found.first() {
-            self.edits_refused[index].push((
+            self.found[index].edits_refused.push((
                 shown.to_owned(),
                 format!(
                     "line {}, column {}: the rewrite cannot be written in {}: {err}",
@@ -1262,12 +1346,16 @@ impl Searched {
         };
         match replaced {
             search::Replaced::NotSearched => {
-                self.unspelled[index].push((shown.to_owned(), Unspelled::Ambiguous(encoding)));
+                self.found[index]
+                    .unspelled
+                    .push((shown.to_owned(), Unspelled::Ambiguous(encoding)));
                 None
             }
             search::Replaced::Edited { matches, text } => {
                 if !matches.is_empty() {
-                    self.matches[index].push((shown.to_owned(), hits(matches)));
+                    self.found[index]
+                        .matches
+                        .push((shown.to_owned(), hits(matches)));
                 }
                 text
             }
@@ -1276,8 +1364,15 @@ impl Searched {
                 text,
                 ambiguous,
             } => {
-                self.matches[index].push((shown.to_owned(), hits(matches)));
-                self.unwritable[index].push((shown.to_owned(), name_of(encoding), text, ambiguous));
+                self.found[index]
+                    .matches
+                    .push((shown.to_owned(), hits(matches)));
+                self.found[index].unwritable.push((
+                    shown.to_owned(),
+                    name_of(encoding),
+                    text,
+                    ambiguous,
+                ));
                 None
             }
         }
@@ -1303,13 +1398,17 @@ impl Searched {
             };
             match in_file {
                 None => {
-                    self.unspelled[i].push((shown.to_owned(), Unspelled::Unknown(reason.clone())));
+                    self.found[i]
+                        .unspelled
+                        .push((shown.to_owned(), Unspelled::Unknown(reason.clone())));
                 }
                 Some(in_file) if in_file.is_empty() => {}
                 Some(in_file) => {
                     let mut lines: Vec<usize> = in_file.iter().map(|m| m.start.line).collect();
                     lines.dedup();
-                    self.possible[i].push((shown.to_owned(), lines, reason.clone()));
+                    self.found[i]
+                        .possible
+                        .push((shown.to_owned(), lines, reason.clone()));
                 }
             }
         }
@@ -1372,6 +1471,8 @@ mod tests {
 
     use std::fs;
 
+    use quaffed_representation::program::{Operand, Query};
+
     use crate::contents::Contents;
 
     /// A stretch of `text`'s bytes, in `encoding`'s spelling, rewritten: `old` in the file as
@@ -1433,6 +1534,15 @@ mod tests {
         fs::write(&with, "TODO\n").expect("writing");
         fs::write(&without, "nothing\n").expect("writing");
         let pattern = TextPattern::literal("TODO");
+        let span = quaffed_representation::span::Span {
+            source: 0,
+            start: 0,
+            end: 4,
+        };
+        let query = Query::new(quaffed_representation::span::Spanned::new(
+            Operand::Text(pattern.clone()),
+            span,
+        ));
         let mut projects = Projects::new(&dir, &Contents::default());
         let file = |path| ToSearch {
             path,
@@ -1445,15 +1555,108 @@ mod tests {
                 cwd: &dir,
                 root: &dir,
             },
-            &[Wanted::Text(&pattern)],
-            &[None],
+            &[Searching {
+                pattern: Wanted::Text(&pattern),
+                query: &query,
+                replacement: None,
+            }],
             &[],
             &mut projects,
             None,
         );
         let _ = fs::remove_dir_all(&dir);
         let searched = searched.expect("searching");
-        let listed: Vec<&PathBuf> = searched.matches[0].iter().map(|(path, _)| path).collect();
+        let listed: Vec<&PathBuf> = searched.found[0]
+            .matches
+            .iter()
+            .map(|(path, _)| path)
+            .collect();
         assert_eq!(listed, [&PathBuf::from("with.txt")]);
+    }
+
+    /// What searching a directory holding `files` for `script` found, through every phase
+    /// before this one.
+    fn searched(name: &str, script: &str, files: &[(&str, &str)]) -> Searched {
+        use crate::cli::SourceArg;
+        use crate::languages;
+        use crate::run::{plan, scoping, sources};
+        let dir =
+            std::env::temp_dir().join(format!("quaffed-execute-{}-{name}", std::process::id()));
+        fs::create_dir_all(&dir).expect("creating the directory");
+        for (path, text) in files {
+            fs::write(dir.join(path), text).expect("writing");
+        }
+        let contents = Contents::default();
+        let result = (|| {
+            let built = sources::read(
+                vec![SourceArg::Expression {
+                    number: 1,
+                    text: script.into(),
+                }],
+                None,
+                &mut std::io::empty(),
+                &contents,
+            )?;
+            let mut plan = plan::plan(languages::LANGUAGES, &built)?;
+            let mut files = scoping::scope(&mut plan, &built, &dir, &contents)?;
+            execute(&plan, &mut files)
+        })();
+        let _ = fs::remove_dir_all(&dir);
+        let Ok(searched) = result else {
+            panic!("{:?}", result.err());
+        };
+        searched
+    }
+
+    #[test]
+    fn each_match_gathered_from_its_file_names_the_code_in_that_file() {
+        let searched = searched(
+            "codes",
+            "find `f($a)`\n",
+            &[("a.py", "f(1)\n"), ("b.py", "x = 0\nf(2)\n")],
+        );
+        let codes: Vec<(PathBuf, String)> = searched.found[0]
+            .matches
+            .iter()
+            .flat_map(|(path, hits)| hits.iter().map(move |hit| (path, hit)))
+            .map(|(path, hit)| {
+                let code = hit.code.expect("a structural match says where its code is");
+                let text = searched.held[code.held].text(code.version);
+                (path.clone(), text[code.start..code.end].to_owned())
+            })
+            .collect();
+        assert_eq!(
+            codes,
+            [
+                (PathBuf::from("a.py"), "f(1)".to_owned()),
+                (PathBuf::from("b.py"), "f(2)".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn each_changed_file_gathered_names_its_own_bytes_as_read() {
+        let searched = searched(
+            "changed",
+            "replace string \"a\" with \"b\" expect 2\n",
+            &[("one.txt", "a\n"), ("two.txt", "xa\n")],
+        );
+        let changed: Vec<(PathBuf, Vec<u8>)> = searched
+            .changed
+            .iter()
+            .map(|file| {
+                (
+                    file.shown.clone(),
+                    searched.held[file.held].file().0.to_vec(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            changed,
+            [
+                (PathBuf::from("one.txt"), b"a\n".to_vec()),
+                (PathBuf::from("two.txt"), b"xa\n".to_vec()),
+            ]
+        );
     }
 }

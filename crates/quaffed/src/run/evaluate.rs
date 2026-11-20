@@ -360,7 +360,8 @@ impl<'s> Evaluation<'s> {
                         self.replaced += found;
                     }
                     self.replaced_in.extend(
-                        self.searched.matches[index]
+                        self.searched.found[index]
+                            .matches
                             .iter()
                             .map(|(path, _)| path.as_path()),
                     );
@@ -377,7 +378,7 @@ impl<'s> Evaluation<'s> {
     /// Refuses the run if the replace at `index`, whose count holds, cannot be made: a file's
     /// encoding cannot write its replacement, or a structural replace cannot be made as written.
     fn refuse_edits_of(&self, index: usize, verb: &'static str) -> Result<(), Failure> {
-        let unwritable = &self.searched.unwritable[index];
+        let unwritable = &self.searched.found[index].unwritable;
         if !unwritable.is_empty() {
             return Err(Failure::Unwritable {
                 files: unwritable
@@ -391,7 +392,7 @@ impl<'s> Evaluation<'s> {
                     .collect(),
             });
         }
-        let refused = &self.searched.edits_refused[index];
+        let refused = &self.searched.found[index].edits_refused;
         if !refused.is_empty() {
             return Err(Failure::EditRefused {
                 verb,
@@ -405,8 +406,8 @@ impl<'s> Evaluation<'s> {
     /// left unparseable: the edit broke it, so they cannot be searched for in it.
     fn refuse_broken_for(&self, patterns: usize) -> Result<(), Failure> {
         let mut files: Vec<Broken> = Vec::new();
-        for broken in &self.searched.broken[self.next..self.next + patterns] {
-            for (path, why, by) in broken {
+        for found in &self.searched.found[self.next..self.next + patterns] {
+            for (path, why, by) in &found.broken {
                 let file = Broken {
                     path: path.clone(),
                     why: why.clone(),
@@ -434,7 +435,7 @@ impl<'s> Evaluation<'s> {
         let mut count = 0;
         // The text a file's matches are being printed from, built once for all of them.
         let mut decoded: Option<((usize, usize), Cow<str>)> = None;
-        for (path, in_file) in &self.searched.matches[self.next] {
+        for (path, in_file) in &self.searched.found[self.next].matches {
             for hit in in_file {
                 count += 1;
                 if !self.printing {
@@ -467,10 +468,10 @@ impl<'s> Evaluation<'s> {
         match pattern {
             // With nothing in scope at all, as where a `where` leaves out every file, there are no
             // text-tier files to count, and "0 not searched" would say nothing.
-            Wanted::Structural { .. } if searched.supported_for[index] == 0 => Some(
+            Wanted::Structural { .. } if searched.found[index].supported == 0 => Some(
                 match (
-                    searched.unread_for[index],
-                    searched.not_applicable_for[index],
+                    searched.found[index].unread,
+                    searched.found[index].not_applicable,
                 ) {
                     (0, 0) => "no file in scope has structural support".to_string(),
                     (0, n) => format!(
@@ -494,9 +495,9 @@ impl<'s> Evaluation<'s> {
                 },
             ),
             // Every file in scope whose language reads it is binary, which the binary count says.
-            Wanted::Structural { .. } if searched.structural_for[index] == 0 => Some(format!(
+            Wanted::Structural { .. } if searched.found[index].structural == 0 => Some(format!(
                 "no file in scope with structural support could be searched; {} not searched",
-                count(searched.supported_for[index], "such file", "such files")
+                count(searched.found[index].supported, "such file", "such files")
             )),
             _ => None,
         }

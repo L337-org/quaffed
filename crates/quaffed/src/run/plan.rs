@@ -22,12 +22,10 @@ use super::sources::Built;
 pub(super) struct Plan<'p> {
     /// The steps, in program order.
     pub(super) steps: Vec<Step<'p>>,
-    /// Every pattern the steps search for, in the order [`Step::patterns`] lists them, with its
-    /// query: the run's patterns, which a pattern's index is a place in.
+    /// Every pattern the steps search for, in the order [`Step::patterns`] lists them, each with
+    /// its query and what it is replaced with: the run's patterns, which a pattern's index is a
+    /// place in.
     pub(super) searching: Vec<Searching<'p>>,
-    /// What each of the run's patterns is replaced with, by its index: `None` for one only
-    /// searched for.
-    pub(super) replacements: Vec<Option<Replacement<'p>>>,
     /// Each structural replace's rewrite template, as written.
     pub(super) rewrites: Vec<PlannedRewrite<'p>>,
     /// The structural patterns and rewrites, compiled for each language, and once scoping has
@@ -62,11 +60,9 @@ pub(super) fn plan<'p>(
         }
     }
     let searching = steps.iter().flat_map(Step::patterns).collect();
-    let replacements = steps.iter().flat_map(Step::replacements).collect();
     Ok(Plan {
         steps,
         searching,
-        replacements,
         rewrites,
         compiled,
     })
@@ -167,11 +163,14 @@ pub(super) struct Assertion<'p> {
     pub(super) query: &'p Query,
 }
 
-/// One pattern the run searches for, and the query it is from.
+/// One pattern the run searches for, the query it is from, and what it is replaced with, if it
+/// is: everything the search needs to know of it.
 #[derive(Clone, Copy)]
 pub(super) struct Searching<'p> {
     pub(super) pattern: Wanted<'p>,
     pub(super) query: &'p Query,
+    /// What it is replaced with: `None` for a pattern only searched for.
+    pub(super) replacement: Option<Replacement<'p>>,
 }
 
 impl<'p> Step<'p> {
@@ -182,31 +181,24 @@ impl<'p> Step<'p> {
             Step::Find(pattern, query) => vec![Searching {
                 pattern: *pattern,
                 query,
+                replacement: None,
             }],
             Step::Assert(block) => block
                 .iter()
                 .map(|a| Searching {
                     pattern: a.pattern,
                     query: a.query,
+                    replacement: None,
                 })
                 .collect(),
             Step::Replace(replacing) => vec![Searching {
                 pattern: replacing.wanted(),
                 query: replacing.query,
+                replacement: Some(match replacing.kind {
+                    ReplaceKind::Text { with, .. } => Replacement::Text(with),
+                    ReplaceKind::Structural { rewrite, .. } => Replacement::Structural(rewrite),
+                }),
             }],
-        }
-    }
-
-    /// The replacement each of the step's patterns is replaced with, in the order
-    /// [`Step::patterns`] lists them: `None` for a pattern only searched for.
-    pub(super) fn replacements(&self) -> Vec<Option<Replacement<'p>>> {
-        match self {
-            Step::Find(..) => vec![None],
-            Step::Assert(block) => block.iter().map(|_| None).collect(),
-            Step::Replace(replacing) => vec![Some(match replacing.kind {
-                ReplaceKind::Text { with, .. } => Replacement::Text(with),
-                ReplaceKind::Structural { rewrite, .. } => Replacement::Structural(rewrite),
-            })],
         }
     }
 }

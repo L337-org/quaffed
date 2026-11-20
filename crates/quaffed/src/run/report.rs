@@ -118,7 +118,8 @@ pub(super) fn skipped(
     let mut notes = structural_notes(searched, evaluated);
     for (i, Searching { pattern, .. }) in evaluated.iter().enumerate() {
         let pattern = quoted(*pattern);
-        let unknown = searched.unspelled[i]
+        let unknown = searched.found[i]
+            .unspelled
             .iter()
             .filter(|(_, why)| {
                 matches!(
@@ -134,7 +135,7 @@ pub(super) fn skipped(
                 count(unknown, "file", "files"),
             ));
         }
-        for (path, why) in &searched.unspelled[i] {
+        for (path, why) in &searched.found[i].unspelled {
             match why {
                 Unspelled::Ambiguous(encoding) => notes.push(format!(
                     "{path:?} not searched for {pattern}: it is in {:?}, which spells a \
@@ -152,7 +153,7 @@ pub(super) fn skipped(
                 Unspelled::Unknown(_) => {}
             }
         }
-        for (path, lines, reason) in &searched.possible[i] {
+        for (path, lines, reason) in &searched.found[i].possible {
             notes.push(format!(
                 "{path:?}: possible {} of {pattern} on {}, not counted, since its encoding is \
                  unknown: {reason}",
@@ -224,7 +225,10 @@ fn structural_notes(searched: &Searched, evaluated: &[Searching]) -> Vec<String>
     {
         return notes;
     }
-    for (path, why) in searched.questioned[..evaluated.len()].iter().flatten() {
+    for (path, why) in searched.found[..evaluated.len()]
+        .iter()
+        .flat_map(|found| &found.questioned)
+    {
         notes.push(format!("{path:?}: {why}"));
     }
     // With nothing in scope with structural support, the run's own message counts these instead.
