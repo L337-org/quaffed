@@ -66,8 +66,8 @@ pub enum PatternError {
         /// Whether it starts the statements, rather than ending them.
         leading: bool,
     },
-    /// Two sequence holes stand together in one list - statements, arguments, elements - so
-    /// nothing in the pattern says how many items each takes.
+    /// Two sequence holes are consecutive items of one list - statements, arguments, elements,
+    /// operands - so nothing in the pattern says how many items each takes.
     SequencesTogether {
         /// The second sequence's name, or `None` for `$...`.
         name: Option<String>,
@@ -154,8 +154,8 @@ impl fmt::Display for PatternError {
             }
             PatternError::SequencesTogether { name, .. } => write!(
                 f,
-                "\"${}...\" follows another sequence with nothing between them, so nothing says \
-                 how many items each takes: use one sequence, or put code between them",
+                "\"${}...\" is the next item after another sequence in the same list, so nothing \
+                 says how many items each takes: use one sequence, or put an item between them",
                 name.as_deref().unwrap_or("")
             ),
             PatternError::NotInAList { spelled, .. } => {

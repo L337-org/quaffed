@@ -356,6 +356,7 @@ fn two_sequences_together_in_any_list_are_refused() {
         ("import $a..., $b...", 14),
         ("del $a..., $b...", 11),
         ("@retry($a..., $b...)", 14),
+        ("$a... < $b...", 8),
     ] {
         match compile_pattern(pattern) {
             Err(err @ PatternError::SequencesTogether { .. }) => {
@@ -397,7 +398,6 @@ fn a_sequence_stands_only_as_items_of_a_list() {
         ("f\"{$v...}\"", 3),
         ("f(*$a...)", 3),
         ("f(k=$v...)", 4),
-        ("$a < $b...", 5),
         ("$a... + $b", 0),
         ("@$d...", 1),
         ("def $f(*$a...): pass", 8),
@@ -420,6 +420,7 @@ fn a_sequence_stands_only_as_items_of_a_list() {
         "global $n...",
         "with $o...: pass",
         "$a and $b...",
+        "$a < $b...",
         "[$x for $y in $z if $c...]",
         "f($a, $b...)",
         "f($a..., k=1)",
@@ -438,6 +439,24 @@ fn a_sequence_stands_only_as_items_of_a_list() {
     ] {
         assert!(compile_pattern(pattern).is_ok(), "{pattern:?}");
     }
+}
+
+#[test]
+fn a_sequence_among_a_comparison_s_operands_takes_the_operators_between_them() {
+    let source = "a = x < y
+b = x < y == z
+c = x == y < z
+d = x + y + z
+";
+    // The pattern's own operator is compared; those between the operands a sequence takes are
+    // the sequence's.
+    assert_eq!(matches("$a < $b...", source), ["x < y", "x < y == z"]);
+    assert_eq!(matches("$a... < $b", source), ["x < y", "x == y < z"]);
+    // A sum nests, so its operands are no list.
+    assert!(matches!(
+        compile_pattern("$a + $b..."),
+        Err(PatternError::NotInAList { .. })
+    ));
 }
 
 #[test]

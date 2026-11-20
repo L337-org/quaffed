@@ -11,4 +11,4 @@ exit_code: 3
 ----- stdout -----
 
 ----- stderr -----
-quaff: -p, at character 11: "$b..." follows another sequence with nothing between them, so nothing says how many items each takes: use one sequence, or put code between them
+quaff: -p, at character 11: "$b..." is the next item after another sequence in the same list, so nothing says how many items each takes: use one sequence, or put an item between them

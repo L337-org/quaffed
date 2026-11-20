@@ -571,11 +571,17 @@ q`; `lambda $p...: $b` matches both.
 In Python they are a block's statements, a call's arguments, the parameters on one side of a `/`
 or a `*`, the elements of a list, tuple or set, an assignment's targets, a `del`'s targets, an
 import's names, a `global`'s or `nonlocal`'s names, a `with`'s items, the operands of one `and`
-or `or`, a comprehension clause's `if` conditions, type parameters, and the parts of a sequence,
-class or alternative pattern in a `case`.  Where the code holds one
-node - an assignment's value, a subscript, an `assert`'s test, a keyword argument's value - a
-sequence would take whatever optional syntax follows it there too, so `$t = $v...` would match
-`t = u = 1` with `$v...` as `u = 1`.  Such a pattern is refused, exit 3.
+or `or`, the operands of a comparison, a comprehension clause's `if` conditions, type
+parameters, and the parts of a sequence, class or alternative pattern in a `case`.  Where the
+code holds one node - an assignment's value, a subscript, an `assert`'s test, a keyword
+argument's value - a sequence would take whatever optional syntax follows it there too, so
+`$t = $v...` would match `t = u = 1` with `$v...` as `u = 1`.  Such a pattern is refused, exit 3.
+
+**A list is where the code holds any number of items in one place, as the language's syntax
+has it**, and a sequence takes the operators between the items it takes.  `x < y == z` is one
+comparison of three operands, so `$a < $b...` matches it with `$b...` as `y == z`, and matches
+`x < y` too.  `x + y + z` is `(x + y) + z`, two sums of two operands each, so its operands are
+no list and `$a + $b...` is refused.
 
 **Two sequence holes may not stand together in one list**, since nothing says how many items
 each takes: `f($a..., $b...)` is refused, exit 3, as two sequences together are in a run of
@@ -760,7 +766,7 @@ $ quaff -p 'open_db()
 $a...
 $b...
 close_db()' play
-quaff: -p, at character 17: "$b..." follows another sequence with nothing between them, so nothing says how many items each takes: use one sequence, or put code between them
+quaff: -p, at character 17: "$b..." is the next item after another sequence in the same list, so nothing says how many items each takes: use one sequence, or put an item between them
 [exit 3]
 ```
 
@@ -1428,6 +1434,9 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
 - **A sequence hole stands only as items of a list**, never where the code holds one node, such as
   an assignment's value, where it would take whatever follows it there too.  So `$t = $v...` is
   refused rather than matching `t = u = 1` with `$v...` as `u = 1`.
+- **A comparison's operands are a list, and a sum's are not**, because Python's syntax holds
+  `x < y == z` as one comparison and `x + y + z` as one sum inside another.  So `$a < $b...`
+  matches `x < y == z`, taking `==` into `$b...`, and `$a + $b...` is refused.
 - **Two sequences may not stand together in any list** - statements, arguments, elements,
   parameters - since nothing says how many items each takes: `f($a..., $b...)` is refused, and
   `f($a..., x, $b...)` is fine.

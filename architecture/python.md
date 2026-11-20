@@ -58,15 +58,19 @@ of them could not be kept to one definition's, and several are refused
 (`PatternError::SeveralDecorators`).  A rewrite template may be a decorator alone too, parsed the
 same way for its sites.
 
-**Which places are lists is Python's** (`src/lists.rs`): a block's statements, a call's
-arguments, the parameters on each side of a `/` or `*`, and the rest that `lists`'s doc comment
-names, read from the fields of Ruff's tree for the pattern.  A sequence hole must be one of a
-list's items, and is refused elsewhere (`PatternError::NotInAList`), since in a place that holds
-one node it would also take whatever optional syntax follows it there.  Two sequence holes that
-are consecutive items of one list are refused (`PatternError::SequencesTogether`), since nothing
-says how many items each takes.  This is decided as the pattern compiles, from a parse of its
-own text, so the arena and the matcher are unchanged; the engine's own refusal of two sequences
-together in a run of statements (`syntax.md`) stays as its guard.
+**Which places are lists is Python's** (`src/lists.rs`): a block's statements, a call's arguments,
+the parameters on each side of a `/` or `*`, and the rest that `lists`'s doc comment names, read
+from the fields of Ruff's tree for the pattern.  A list follows the tree's shape, which is
+CPython's: a comparison holds all its operands in one node, so they are a list and a sequence among
+them takes the operators between, but a sum nests, `(x + y) + z`, so its operands are not.
+Flattening a nested chain into a list would change what every pattern over it matches.  A sequence
+hole must be one of a list's items, and is refused elsewhere (`PatternError::NotInAList`), since in
+a place that holds one node it would also take whatever optional syntax follows it there.  Two
+sequence holes that are consecutive items of one list are refused
+(`PatternError::SequencesTogether`), since nothing says how many items each takes.  This is decided
+as the pattern compiles, from a parse of its own text, so the arena and the matcher are unchanged;
+the engine's own refusal of two sequences together in a run of statements (`syntax.md`) stays as its
+guard.
 
 `compile_pattern`'s doc comment lists what it refuses, including the two limits `syntax.md` sets
 and one name used for both a node and a sequence.  An error from Ruff is placed in the pattern as

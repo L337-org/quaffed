@@ -22,12 +22,17 @@ use crate::parse::ParseError;
 
 /// Every list in `source`, parsed in `mode`, as the byte ranges of its items in source order.
 /// The lists are those whose items can stand one after another with nothing between them but a
-/// separator: a block's statements; a call's arguments, positional and keyword together; each
-/// run of parameters a `/` or a `*` divides from the next; the elements of a list, tuple or set;
-/// an assignment's targets but not its value; a `del`'s targets; an import's names; the names
-/// of a `global` or `nonlocal`; a `with`'s items; the values joined by one `and` or `or`; a
-/// comprehension's `for` clauses, and each clause's `if` conditions; decorators; type
-/// parameters; and the patterns of a sequence, class or alternative pattern.
+/// separator or an operator: a block's statements; a call's arguments, positional and keyword
+/// together; each run of parameters a `/` or a `*` divides from the next; the elements of a
+/// list, tuple or set; an assignment's targets but not its value; a `del`'s targets; an import's
+/// names; the names of a `global` or `nonlocal`; a `with`'s items; the values joined by one
+/// `and` or `or`; a comparison's operands, whatever operators join them; a comprehension's `for`
+/// clauses, and each clause's `if` conditions; decorators; type parameters; and the patterns of
+/// a sequence, class or alternative pattern.
+///
+/// A list is a place the tree holds a variable number of items in one node, as the tree has
+/// it: `x < y == z` is one comparison of three operands, so its operands are a list, but
+/// `x + y + z` is `(x + y) + z`, two operations of two operands each, so no list.
 ///
 /// # Errors
 ///
@@ -77,6 +82,7 @@ impl<'a> SourceOrderVisitor<'a> for Lists {
             AnyNodeRef::StmtGlobal(global) => self.push(global.names.iter().map(ranged)),
             AnyNodeRef::StmtNonlocal(nonlocal) => self.push(nonlocal.names.iter().map(ranged)),
             AnyNodeRef::ExprBoolOp(op) => self.push(op.values.iter().map(ranged)),
+            AnyNodeRef::ExprCompare(compare) => self.push(compare.operands.iter().map(ranged)),
             AnyNodeRef::ExprSet(set) => self.push(set.elts.iter().map(ranged)),
             AnyNodeRef::ExprList(list) => self.push(list.elts.iter().map(ranged)),
             AnyNodeRef::ExprTuple(tuple) => self.push(tuple.elts.iter().map(ranged)),
@@ -167,6 +173,15 @@ mod tests {
                 vec!["pass"]
             ]
         );
+    }
+
+    #[test]
+    fn a_comparison_s_operands_are_a_list_but_a_nested_operation_s_are_not() {
+        assert_eq!(
+            items("x < y == z"),
+            [vec!["x < y == z"], vec!["x", "y", "z"]]
+        );
+        assert_eq!(items("x + y + z"), [vec!["x + y + z"]]);
     }
 
     #[test]
