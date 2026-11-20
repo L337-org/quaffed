@@ -557,11 +557,36 @@ statement for each, or the definition they decorate after them.
 | --- | --- |
 | `$name` | any one node - an expression, a statement, an argument, a parameter, a name - bound to `name` |
 | `$_` | any one node, bound to nothing |
-| `$name...` | one or more consecutive items - arguments, elements, statements - bound to `name` |
-| `$...` | one or more consecutive items, bound to nothing |
+| `$name...` | one or more consecutive items of one list - arguments, elements, parameters, statements - bound to `name` |
+| `$...` | one or more consecutive items of one list, bound to nothing |
 
 **A hole always matches something, never nothing.**  A hole's name is spelt as the language
 spells an identifier.
+
+**One hole among a list's items is one item.**  `f($x)` does not match `f(1, 2)`, `def $f($p)`
+does not match a function of two parameters, and `lambda $p: $b` does not match `lambda q, r=1:
+q`; `lambda $p...: $b` matches both.
+
+**A sequence hole stands only as items of a list.**  Which places are lists is the language's.
+In Python they are a block's statements, a call's arguments, the parameters on one side of a `/`
+or a `*`, the elements of a list, tuple or set, an assignment's targets, a `del`'s targets, an
+import's names, a `global`'s or `nonlocal`'s names, a `with`'s items, the operands of one `and`
+or `or`, the operands of a comparison, a comprehension clause's `if` conditions, type
+parameters, and the parts of a sequence, class or alternative pattern in a `case`.  Where the
+code holds one node - an assignment's value, a subscript, an `assert`'s test, a keyword
+argument's value - a sequence would take whatever optional syntax follows it there too, so
+`$t = $v...` would match `t = u = 1` with `$v...` as `u = 1`.  Such a pattern is refused, exit 3.
+
+**A list is where the code holds any number of items in one place, as the language's syntax
+has it**, and a sequence takes the operators between the items it takes.  `x < y == z` is one
+comparison of three operands, so `$a < $b...` matches it with `$b...` as `y == z`, and matches
+`x < y` too.  `x + y + z` is `(x + y) + z`, two sums of two operands each, so its operands are
+no list and `$a + $b...` is refused.
+
+**Two sequence holes may not stand together in one list**, since nothing says how many items
+each takes: `f($a..., $b...)` is refused, exit 3, as two sequences together are in a run of
+statements.  Code between them bounds each, so `f($a..., x, $b...)` is fine, and so is
+`def $f($a..., *, $b...)`.
 
 ```
 $ quaff -p 'log.info($msg, $...)'
@@ -583,8 +608,9 @@ play/nested.py:2:1-2:16: same(a + b, a+b)
 ```
 
 The same holds whatever role the name plays: `$x = $o.$x` matches `name = self.name`.  And it
-holds across nodes: `f($a..., $b...) + g($a...)` matches `f(1, 2, 3) + g(1, 2)`, `$a` taking
-`1, 2` in `f` because `g` holds that, though `1` alone would let `f` match by itself.
+holds across nodes: `f($a..., 0, $b...) + g($a...)` matches `f(1, 0, 2, 0, 3) + g(1, 0, 2)`,
+`$a` taking `1, 0, 2` in `f` because `g` holds that, though `1` alone would let `f` match by
+itself.
 
 **A hole is only a hole in code.**  A `$name` inside a string literal or a comment in the pattern
 is literal text, while one in an f-string's `{...}` field is a hole:
@@ -612,17 +638,21 @@ $ quaff -p 'f($x, $x...)'
 quaff: -p, at character 7: "$x" is used for one node and, here, for a sequence: a name is one or the other, so give the sequence a name of its own
 [exit 3]
 
+$ quaff -p '$t = $v...'
+quaff: -p, at character 6: "$v..." stands where the code holds one node, not a list of them, so it cannot be a sequence: it would take whatever follows it there as well, as "$t = $v..." would match "t = u = 1" with "$v..." as "u = 1".  Use a hole for one node, "$v"
+[exit 3]
+
 $ quaff -p 'f($a'
 quaff: -p, at character 5: the pattern is not Python: unexpected EOF while parsing
 [exit 3]
 ```
 
 A pattern with no code at all, only whitespace or comments, is refused too, and so is one that
-starts or ends a run of statements with a sequence hole, puts two sequences together in one, or
-whose search could grow faster than the square of a block's or list's length ([Runs of
-statements](#runs-of-statements)).  So is a hole inside a name the language reads as one, such as
-Python's dotted module name: `import $m` is a hole for the whole name, but `import a.$m` is
-refused, since `a.m` is one name, not two.
+starts or ends a run of statements with a sequence hole, puts two sequences together in any list or
+a sequence where the code holds one node, or whose search could grow faster than the square of a
+block's or list's length ([Runs of statements](#runs-of-statements)).  So is a hole inside a name
+the language reads as one, such as Python's dotted module name: `import $m` is a hole for the whole
+name, but `import a.$m` is refused, since `a.m` is one name, not two.
 
 **A pattern is parsed as a file is, so it starts at the left margin.**  In Python, code copied
 from inside a function keeps its indentation, which Python refuses at the start of a file, and so
@@ -728,28 +758,27 @@ quaff: -p, at character 11: "$rest..." ends the pattern's statements, so nothing
 A sequence inside one node is bounded by it, so `def $f():` with `$body...` as its body, or
 `f($first, $rest...)`, is fine.
 
-**Two sequences may not stand together in a run of statements**, since nothing says how many
-statements each takes:
+**Two sequences may not stand together in a run of statements**, any more than in any other
+list, since nothing says how many statements each takes:
 
 ```
 $ quaff -p 'open_db()
 $a...
 $b...
 close_db()' play
-quaff: -p, at character 17: "$b..." follows another sequence with no statement between them, so nothing says how many statements each takes: use one sequence, or put a statement between them
+quaff: -p, at character 17: "$b..." is the next item after another sequence in the same list, so nothing says how many items each takes: use one sequence, or put an item between them
 [exit 3]
 ```
 
-**A search may depend on two places at once where it can go more than one way, but not
-three.**  Such a place is where a sequence stops, and, in a run of statements, where the run
-starts.  A sequence named twice is fine: `w()`, `$a...`, `x()`, `$a...`, `y()` depends on where
-the run starts and where the first `$a...` stops.  So is a name bound in one statement and used in
-a later one.  Inside a node, which starts where it stands, `f($a..., $b...) + g($a..., x, $b...)`
-is fine too, since one stop divides `f`'s arguments between `$a` and `$b`.  Places in lists that
-share no name do not add up, since neither changes what the other is matched with: `f(g($a..., x,
-$a...), h($b..., y, $b...))` is accepted.  Each place multiplies the work of a search by the
-length of the block or list it stands in, so a third is refused rather than left to make a search
-slow on a long file:
+**A search may depend on two places at once where it can go more than one way, but not three.**
+Such a place is where a sequence stops, and, in a run of statements, where the run starts.  A
+sequence named twice is fine: `w()`, `$a...`, `x()`, `$a...`, `y()` depends on where the run starts
+and where the first `$a...` stops.  So is a name bound in one statement and used in a later one.
+Inside a node, which starts where it stands, `f($a..., 0, $b...) + g($a..., x, $b...)` is fine too,
+since one stop divides `f`'s arguments between `$a` and `$b`.  Places in lists that share no name do
+not add up, since neither changes what the other is matched with: `f(g($a..., x, $a...), h($b..., y,
+$b...))` is accepted.  Each place multiplies the work of a search by the length of the block or list
+it stands in, so a third is refused rather than left to make a search slow on a long file:
 
 ```
 $ quaff -p 'open_db()
@@ -1402,15 +1431,22 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
   short of the edge of its block, so one match would cover far more than the pattern spells.  Put
   fixed code on both sides of it.  So `return $x` then `$dead...`, every statement after a
   `return`, cannot be written.
-- **A search may depend on at most two places at once where it can go more than one way** -
-  where a sequence stops, or where a run of statements starts - and two sequences may not stand
-  together in a run of statements.  Matching patterns with names used more than once is, in
-  general, a problem no algorithm solves quickly, so the pattern is refused where its search could
-  grow faster than the square of a block's or list's length, rather than accepted and left to run
-  for minutes on a long file.  A sequence named twice is fine; two sequences each named twice are
-  fine inside a node, which starts where it stands, but not in a run of statements, which could
-  start anywhere.  Two sequences together inside a node, `f($a..., $b...)`, are fine: the node
-  bounds them.
+- **A sequence hole stands only as items of a list**, never where the code holds one node, such as
+  an assignment's value, where it would take whatever follows it there too.  So `$t = $v...` is
+  refused rather than matching `t = u = 1` with `$v...` as `u = 1`.
+- **A comparison's operands are a list, and a sum's are not**, because Python's syntax holds
+  `x < y == z` as one comparison and `x + y + z` as one sum inside another.  So `$a < $b...`
+  matches `x < y == z`, taking `==` into `$b...`, and `$a + $b...` is refused.
+- **Two sequences may not stand together in any list** - statements, arguments, elements,
+  parameters - since nothing says how many items each takes: `f($a..., $b...)` is refused, and
+  `f($a..., x, $b...)` is fine.
+- **A search may depend on at most two places at once where it can go more than one way** - where a
+  sequence stops, or where a run of statements starts.  Matching patterns with names used more than
+  once is, in general, a problem no algorithm solves quickly, so the pattern is refused where its
+  search could grow faster than the square of a block's or list's length, rather than accepted and
+  left to run for minutes on a long file.  A sequence named twice is fine; two sequences each named
+  twice are fine inside a node, which starts where it stands, but not in a run of statements, which
+  could start anywhere.
 - **Structural patterns ignore files without structural support rather than falling back to
   text**, and say so.
 - **A file with structural support that quaff cannot parse stops a structural search** (exit 9),

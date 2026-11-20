@@ -23,6 +23,9 @@ string literal or a comment is literal text.  Where they are holes, these are re
 - `$_...`, since `$...` already spells it;
 - one name used both for one node and for a sequence;
 - a sequence hole at the start or end of a run of statements, which nothing would bound;
+- a sequence hole anywhere but as items of a list, which the language's grammar decides, since
+  in a place that holds one node it would take whatever follows it there too;
+- two sequence holes together in one list, since nothing says how many items each takes;
 - a pattern whose search could grow faster than the square of a block's or list's length
   (`syntax.md` says which);
 - a pattern with no code, or with nothing but holes.

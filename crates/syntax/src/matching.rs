@@ -688,8 +688,9 @@ impl Pattern {
     /// from what put it there.
     ///
     /// So `f(g($a..., x, $a...), h($b..., y, $b...))` is accepted, each list worked out once
-    /// whatever the other took, and so is `f($a..., $b...) + g($a..., x, $b...)`, whose one stop
-    /// divides `f`'s arguments; three stops whose bindings a later list reads together are not.
+    /// whatever the other took, and so is `f($a..., 0, $b...) + g($a..., x, $b...)`, whose one
+    /// stop divides `f`'s arguments; three stops whose bindings a later list reads together are
+    /// not.
     ///
     /// Every language's compiler refuses a pattern this names, and [`find`] panics on one, as a
     /// defect in its compiler.  Two sequences standing together in a run of statements are

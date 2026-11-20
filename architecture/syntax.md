@@ -93,7 +93,9 @@ its compiler:
   whole list, so a sequence with nothing free after it ends where the node does; a plain search
   settles a sequence nothing reads at the first place the code after it stands; and a `where`
   carries every way of binding what it tests.  Two sequences standing together in a run of
-  statements are refused too, since nothing settles how the statements divide between them.
+  statements are refused too, since nothing settles how the statements divide between them; a
+  language's compiler refuses them in every other list as well, where it knows which places are
+  lists, but the engine does not.
   Unbounded choices would make this pattern matching with variables, which is NP-complete.  A
   fixed corpus of generated patterns records each verdict, and a property test holds what is
   accepted to quadratic growth over fresh ones: see the cost check's corpus in `testing.md`.

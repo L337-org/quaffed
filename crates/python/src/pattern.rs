@@ -16,6 +16,7 @@ use std::ops::Range;
 use quaffed_syntax::{Arena, Builder, Costly, Hole, NodeId, Pattern};
 use ruff_python_parser::Mode;
 
+use crate::lists::lists;
 use crate::parse::{PYTHON, ParseError, parse_from};
 
 /// Why a pattern could not be compiled.  Each that has a place in the pattern carries it, as a
@@ -65,12 +66,21 @@ pub enum PatternError {
         /// Whether it starts the statements, rather than ending them.
         leading: bool,
     },
-    /// Two sequence holes stand together in a run of statements, so nothing settles how many
-    /// statements each takes, and a search would try every division.
+    /// Two sequence holes are consecutive items of one list - statements, arguments, elements,
+    /// operands - so nothing in the pattern says how many items each takes.
     SequencesTogether {
         /// The second sequence's name, or `None` for `$...`.
         name: Option<String>,
         /// Where in the pattern the second sequence is.
+        offset: usize,
+    },
+    /// A sequence hole stands where the grammar holds one node rather than a list, such as an
+    /// assignment's value or an `assert`'s test.  It would take whatever optional syntax
+    /// follows it there as well: `$t = $v...` would match `t = u = 1` with `$v...` as `u = 1`.
+    NotInAList {
+        /// The hole, as written.
+        spelled: String,
+        /// Where in the pattern it is.
         offset: usize,
     },
     /// A search that would depend on more than two places at once where it can go more than one
@@ -144,11 +154,23 @@ impl fmt::Display for PatternError {
             }
             PatternError::SequencesTogether { name, .. } => write!(
                 f,
-                "\"${}...\" follows another sequence with no statement between them, so nothing \
-                 says how many statements each takes: use one sequence, or put a statement \
-                 between them",
+                "\"${}...\" is the next item after another sequence in the same list, so nothing \
+                 says how many items each takes: use one sequence, or put an item between them",
                 name.as_deref().unwrap_or("")
             ),
+            PatternError::NotInAList { spelled, .. } => {
+                let single = match spelled.trim_end_matches("...") {
+                    "$" => "$_",
+                    single => single,
+                };
+                write!(
+                    f,
+                    "\"{spelled}\" stands where the code holds one node, not a list of them, so it \
+                     cannot be a sequence: it would take whatever follows it there as well, as \
+                     \"$t = $v...\" would match \"t = u = 1\" with \"$v...\" as \"u = 1\".  Use a \
+                     hole for one node, \"{single}\""
+                )
+            }
             PatternError::ThirdPlace { spelled, .. } => write!(
                 f,
                 "\"{spelled}\" makes a search depend on a third place at once where it can go more \
@@ -178,6 +200,7 @@ impl PatternError {
             | PatternError::MixedHole { offset, .. }
             | PatternError::UnboundedSequence { offset, .. }
             | PatternError::SequencesTogether { offset, .. }
+            | PatternError::NotInAList { offset, .. }
             | PatternError::ThirdPlace { offset, .. }
             | PatternError::InsideAName { offset, .. } => Some(*offset),
             PatternError::NoShape
@@ -206,8 +229,9 @@ pub(crate) struct Claim {
 ///
 /// Returns a [`PatternError`] if the pattern is not Python, has no code at all, spells a hole
 /// `$_...`, uses one name for a node and a sequence, puts a hole inside a name Python reads as
-/// one, is nothing but holes, starts or ends a run of statements with a sequence hole, is
-/// several decorators alone, is too costly to search ([`Pattern::costly`]), or is too long.
+/// one, is nothing but holes, starts or ends a run of statements with a sequence hole, puts a
+/// sequence hole where the code holds one node or beside another in one list, is several
+/// decorators alone, is too costly to search ([`Pattern::costly`]), or is too long.
 /// Nothing partial is returned.
 ///
 /// # Panics
@@ -265,6 +289,9 @@ pub fn compile_pattern(text: &str) -> Result<Pattern, PatternError> {
             (node, claim)
         })
         .collect();
+    // Read before a decorator is lifted out of what it decorates, while the holes' ranges are
+    // still those of the text just parsed.
+    let misplaced_sequence = sequence_out_of_place(text, mode, &second, &arena, &placed)?;
     let mut holes: Vec<(NodeId, Hole)> = placed
         .iter()
         .map(|(node, claim)| (*node, claim.hole.clone()))
@@ -298,27 +325,83 @@ pub fn compile_pattern(text: &str) -> Result<Pattern, PatternError> {
             leading: node == first,
         });
     }
-    if let Some(costly) = pattern.costly() {
-        let node = match costly {
-            Costly::Together(node) | Costly::ThirdPlace(node) => node,
-        };
-        let (_, claim) = placed
-            .iter()
-            .find(|(hole, _)| *hole == node)
-            .expect("a costly run is named by one of the pattern's holes");
+    if let Some(err) = misplaced_sequence {
+        return Err(err);
+    }
+    match pattern.costly() {
+        Some(costly) => Err(too_costly(text, costly, &placed)),
+        None => Ok(pattern),
+    }
+}
+
+/// Why a pattern is too costly to search, as the error that places it in `text`, the pattern as
+/// written.
+fn too_costly(text: &str, costly: Costly, placed: &[(NodeId, &Claim)]) -> PatternError {
+    let node = match costly {
+        Costly::Together(node) | Costly::ThirdPlace(node) => node,
+    };
+    let (_, claim) = placed
+        .iter()
+        .find(|(hole, _)| *hole == node)
+        .expect("a costly run is named by one of the pattern's holes");
+    let offset = claim.written.start;
+    match costly {
+        Costly::Together(_) => PatternError::SequencesTogether {
+            name: claim.hole.name.clone(),
+            offset,
+        },
+        Costly::ThirdPlace(_) => PatternError::ThirdPlace {
+            spelled: text[claim.written.clone()].to_owned(),
+            offset,
+        },
+    }
+}
+
+/// The first sequence hole, in the order written, that is not an item of one of the lists in
+/// `parsed`, the pattern `text` as `arena` was parsed from it in `mode`, or that is the item after
+/// another sequence hole in one of them.  A hole is an item where its node's range is the item's,
+/// as for a statement, whose hole is the statement around the name.
+fn sequence_out_of_place(
+    text: &str,
+    mode: Parsed,
+    parsed: &Substituted,
+    arena: &Arena<'_>,
+    placed: &[(NodeId, &Claim)],
+) -> Result<Option<PatternError>, PatternError> {
+    let lists = match mode {
+        Parsed::Plain(mode) => lists(&parsed.text, mode),
+        Parsed::Decorators => lists(&format!("{}{DECORATED}", parsed.text), Mode::Module),
+    }
+    .map_err(|err| invalid(err, parsed))?;
+    let mut sequences: Vec<&(NodeId, &Claim)> = placed
+        .iter()
+        .filter(|(_, claim)| claim.hole.sequence)
+        .collect();
+    sequences.sort_by_key(|(_, claim)| claim.written.start);
+    for (node, claim) in sequences {
+        let range = arena.range(*node);
+        let place = lists.iter().find_map(|list| {
+            list.iter()
+                .position(|item| *item == range)
+                .map(|at| (list, at))
+        });
+        let spelled = text[claim.written.clone()].to_owned();
         let offset = claim.written.start;
-        return Err(match costly {
-            Costly::Together(_) => PatternError::SequencesTogether {
+        let Some((list, at)) = place else {
+            return Ok(Some(PatternError::NotInAList { spelled, offset }));
+        };
+        let after_sequence = at > 0
+            && placed.iter().any(|(other, earlier)| {
+                earlier.hole.sequence && arena.range(*other) == list[at - 1]
+            });
+        if after_sequence {
+            return Ok(Some(PatternError::SequencesTogether {
                 name: claim.hole.name.clone(),
                 offset,
-            },
-            Costly::ThirdPlace(_) => PatternError::ThirdPlace {
-                spelled: text[claim.written.clone()].to_owned(),
-                offset,
-            },
-        });
+            }));
+        }
     }
-    Ok(pattern)
+    Ok(None)
 }
 
 /// The decorator of `arena`, a pattern of one decorator parsed with a definition after it to
@@ -570,15 +653,23 @@ const LITERAL_TEXT: &[&str] = &[
     "BytesLiteral",
 ];
 
+/// The kinds that only gather a list, and that can stand without brackets of their own, so that
+/// with one member the list and the member have the same range.  The member is the hole: one
+/// hole is one item, as it is in every list that has brackets, and a sequence hole takes the
+/// items.  A lambda's parameters are the one such list.
+const BARE_LIST: &[&str] = &["Parameters"];
+
 /// The hole a placeholder spanning `range` is: the outermost node below the root whose range is
-/// exactly `range`, unless one of those nodes is a string's literal text, in which case it is
-/// no hole at all.  The root never is the hole: a pattern that is one placeholder parses to a
-/// root spanning just that, and its content, not the root, is the hole.
+/// exactly `range`, passing over a list that only gathers it ([`BARE_LIST`]), unless one of
+/// those nodes is a string's literal text, in which case it is no hole at all.  The root never
+/// is the hole: a pattern that is one placeholder parses to a root spanning just that, and its
+/// content, not the root, is the hole.
 pub(crate) fn node_spanning(arena: &Arena<'_>, range: &Range<usize>) -> Option<NodeId> {
     let mut spanning = arena
         .nodes()
         .skip(1)
         .filter(|&node| arena.range(node) == *range)
+        .filter(|&node| !BARE_LIST.contains(&arena.kind(node).name()))
         .peekable();
     let outermost = *spanning.peek()?;
     spanning

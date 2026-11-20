@@ -1,0 +1,14 @@
+---
+source: crates/quaffed/tests/end_to_end.rs
+info:
+  program: quaff
+  args:
+    - "-p"
+    - $t = $v...
+---
+success: false
+exit_code: 3
+----- stdout -----
+
+----- stderr -----
+quaff: -p, at character 6: "$v..." stands where the code holds one node, not a list of them, so it cannot be a sequence: it would take whatever follows it there as well, as "$t = $v..." would match "t = u = 1" with "$v..." as "u = 1".  Use a hole for one node, "$v"

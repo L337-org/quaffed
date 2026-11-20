@@ -3784,18 +3784,14 @@ mod tests {
     fn blank_lines_between_two_statement_holes_are_the_files() {
         let text = "class C:\n    def f(self):\n        pass\n\n    def g(self):\n        pass\n";
         assert_eq!(
-            ok(
-                "class C:\n    $a...\n    $b...",
-                "class D:\n    $a...\n    $b...",
-                text
-            ),
+            ok("class C:\n    $a\n    $b", "class D:\n    $a\n    $b", text),
             "class D:\n    def f(self):\n        pass\n\n    def g(self):\n        pass\n"
         );
         // Moved to another depth, the blank lines stand and the template's indentation is used.
         assert_eq!(
             ok(
-                "def f():\n    $a...\n    $b...",
-                "def f():\n    if c:\n        $a...\n        $b...",
+                "def f():\n    $a\n    $b",
+                "def f():\n    if c:\n        $a\n        $b",
                 "def f():\n    x = 1\n\n\n    y = 2\n"
             ),
             "def f():\n    if c:\n        x = 1\n\n\n        y = 2\n"
@@ -3812,8 +3808,8 @@ mod tests {
         // Where code stands between them in the template, its layout stands.
         assert_eq!(
             ok(
-                "class C:\n    $a...\n    $b...",
-                "class D:\n    $a...\n    z = 0\n    $b...",
+                "class C:\n    $a\n    $b",
+                "class D:\n    $a\n    z = 0\n    $b",
                 text
             ),
             "class D:\n    def f(self):\n        pass\n    z = 0\n    def g(self):\n        pass\n"

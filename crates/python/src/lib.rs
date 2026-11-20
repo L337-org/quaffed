@@ -11,6 +11,7 @@
 
 mod kinds;
 mod lex;
+mod lists;
 mod parse;
 mod pattern;
 mod rewrite;
