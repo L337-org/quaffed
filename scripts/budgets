@@ -72,25 +72,31 @@ ROOT = Path(__file__).resolve().parent.parent
 # separator or lines are worked out and each file it changes parsed again, which some then fail,
 # so it is refused, exit 9, with nothing written.  A scenario that edits runs on a fresh copy each
 # time, since each run changes it, made before any run and left to settle (make_fresh).
+#
+# Every scenario searches at most four files at once, -j 4, rather than one per core: with no -j
+# the number of threads is the runner's core count, and each thread costs the allocator a heap of
+# its own, so the counts would move whenever the runner's hardware did.  Four still runs the
+# search on several threads, and is never asked for the core count, so nothing is read to learn
+# it.
 SCENARIOS = {
-    "startup": {"project": "empty", "args": ["TODO"], "exit": 1},
-    "search": {"project": "corpus", "args": ["def"], "exit": 0},
-    "scope": {"project": "corpus", "args": ["def", "modules"], "exit": 0},
+    "startup": {"project": "empty", "args": ["-j", "4", "TODO"], "exit": 1},
+    "search": {"project": "corpus", "args": ["-j", "4", "def"], "exit": 0},
+    "scope": {"project": "corpus", "args": ["-j", "4", "def", "modules"], "exit": 0},
     "edit": {
         "project": "edited",
-        "args": ["-e", 'replace string "def " with "def  " expect any'],
+        "args": ["-j", "4", "-e", 'replace string "def " with "def  " expect any'],
         "exit": 0,
         "fresh": True,
     },
     "rewrite": {
         "project": "edited",
-        "args": ["-e", "replace `$x = $y` with `$x = ($y)` expect any"],
+        "args": ["-j", "4", "-e", "replace `$x = $y` with `$x = ($y)` expect any"],
         "exit": 0,
         "fresh": True,
     },
     "delete": {
         "project": "edited",
-        "args": ["-e", "delete `$x = $y` expect any"],
+        "args": ["-j", "4", "-e", "delete `$x = $y` expect any"],
         "exit": 9,
         "fresh": True,
     },

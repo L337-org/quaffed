@@ -43,6 +43,11 @@ that.
 - **What is measured** is the amd64 musl binary built with the `profiling` profile, on the
   runner image `runs-on:` names, not `ubuntu-latest`, because Valgrind comes from the image and
   its version moves the counts.
+- **Every scenario runs with `-j 4`**, a fixed number of threads, not one per core.  Each thread
+  costs the allocator a heap of its own, so with no `-j` the counts would follow the runner's
+  core count, which its image does not fix.  Four still exercises the threaded search, and
+  counted measurements do not depend on how many cores run those threads.  A run with no `-j`,
+  which asks the system for the core count, is held by the tests instead.
 - **The scenarios are `SCENARIOS` in `scripts/budgets`**, each in a scratch copy of the synthetic
   corpus, always under `/tmp` at the same depth, because a deeper path executes more instructions.
   A scenario that edits gets a fresh copy, at the same path, before each run of quaff.  Every
