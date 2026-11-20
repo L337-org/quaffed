@@ -166,8 +166,9 @@ a Python file's bytes in `quaffed-encoding`.  It asks, of text in that language:
 `Pattern`, a `Rewrite`, a `Lexed`, a decoded `Source`, a `Declared` encoding naming what the
 language calls its declaration, and errors as a `ParseError`, a `CompileError` of message and
 place, or a `Refused` in the language's own words, so the engine never sees an adapter's type and
-never words a language's refusal for it.  Every question but `claims` takes text rather than a file, so the same
-questions can be asked of code embedded in another language's file once a scope can name it.
+never words a language's refusal for it.  Every question but `claims` takes text rather than a
+file, so the same questions can be asked of code embedded in another language's file once a
+scope can name it.
 
 **A question added later has a default answer**, so every language already written compiles
 unchanged.  A default is given only where an honest one exists, such as declaring no encoding,
