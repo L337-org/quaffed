@@ -80,7 +80,7 @@ impl FrontEnd for Toy {
     fn extensions(&self) -> &'static [&'static str] {
         self.extensions
     }
-    fn decode(&self, bytes: &[u8]) -> Result<quaffed_encoding::Source, quaffed_encoding::Refusal> {
+    fn decode(&self, bytes: &[u8]) -> Result<quaffed_encoding::Source, quaffed_syntax::Refused> {
         PYTHON.decode(bytes)
     }
     fn parse<'a>(

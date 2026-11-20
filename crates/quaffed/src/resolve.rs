@@ -12,8 +12,8 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use quaffed_encoding::{self as encoding, Encoding, Named, Refusal, Unproven};
-use quaffed_syntax::FrontEnd;
+use quaffed_encoding::{self as encoding, Encoding, Named, Unproven};
+use quaffed_syntax::{DeclaredEncoding, FrontEnd, Refused};
 
 use crate::contents::Contents;
 use crate::editorconfig::EditorConfig;
@@ -47,8 +47,14 @@ pub struct File<'a> {
 pub enum Source {
     /// Its byte-order mark.
     ByteOrderMark,
-    /// A Python file's coding line, on this line.
-    CodingLine(usize),
+    /// A declaration in the file's own language, by what the language calls it, on this line:
+    /// for Python, its coding line.
+    OwnDeclaration {
+        /// What the language calls it.
+        what: &'static str,
+        /// The line it is on.
+        line: usize,
+    },
     /// A version control system's declaration, or `EditorConfig`'s.
     Declared(Origin),
     /// Its bytes are proven UTF-8.
@@ -59,7 +65,7 @@ impl fmt::Display for Source {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Source::ByteOrderMark => write!(f, "its byte-order mark"),
-            Source::CodingLine(line) => write!(f, "the coding line on line {line}"),
+            Source::OwnDeclaration { what, line } => write!(f, "the {what} on line {line}"),
             Source::Declared(origin) => write!(
                 f,
                 "{} on line {} of {:?}",
@@ -148,8 +154,8 @@ pub enum Resolution {
     },
     /// Text in an encoding quaff does not know.
     Unknown(Unknown),
-    /// A Python file `CPython` refuses to read whatever it holds, so quaff does not search it.
-    Refused(Refusal),
+    /// A file its language's own reader refuses whatever it holds, so quaff does not search it.
+    Refused(Refused),
 }
 
 /// One place an encoding can come from: the file's decision if this source makes one.
@@ -225,22 +231,27 @@ fn byte_order_mark(file: &File) -> Option<Resolution> {
 /// A declaration in the file's own language, such as a Python file's coding line, read as that
 /// language reads it.
 fn coding_line(file: &File) -> Option<Resolution> {
-    match file.language?.declared_encoding(file.bytes)? {
-        Ok(None) => None,
-        Ok(Some((declared, line))) => Some(Resolution::Known {
-            encoding: declared.into(),
+    let declared = match file.language?.declared_encoding(file.bytes)? {
+        Ok(None) => return None,
+        Ok(Some(declared)) => declared,
+        Err(refusal) => return Some(Resolution::Refused(refusal)),
+    };
+    let source = Source::OwnDeclaration {
+        what: declared.what,
+        line: declared.line,
+    };
+    Some(match declared.encoding {
+        DeclaredEncoding::Read(encoding) => Resolution::Known {
+            encoding: encoding.into(),
             body: 0,
-            source: Source::CodingLine(line),
+            source,
+        },
+        DeclaredEncoding::Unread { name, codec } => Resolution::Unknown(Unknown::Unreadable {
+            name,
+            codec: Some(codec),
+            source,
         }),
-        Err(Refusal::Unread { name, codec, line }) => {
-            Some(Resolution::Unknown(Unknown::Unreadable {
-                name,
-                codec: Some(codec),
-                source: Source::CodingLine(line),
-            }))
-        }
-        Err(refusal) => Some(Resolution::Refused(refusal)),
-    }
+    })
 }
 
 /// The project's version control system, such as git's `working-tree-encoding` attribute.
@@ -457,7 +468,11 @@ mod tests {
             "its bytes being valid UTF-8"
         );
         assert_eq!(
-            Source::CodingLine(2).to_string(),
+            Source::OwnDeclaration {
+                what: "coding line",
+                line: 2
+            }
+            .to_string(),
             "the coding line on line 2"
         );
     }
@@ -617,7 +632,10 @@ mod tests {
             Resolution::Unknown(Unknown::Unreadable {
                 name: "gbk".into(),
                 codec: Some("gbk"),
-                source: Source::CodingLine(1),
+                source: Source::OwnDeclaration {
+                    what: "coding line",
+                    line: 1
+                },
             })
         );
         assert_eq!(
@@ -660,11 +678,11 @@ mod tests {
         );
         assert!(matches!(
             project.resolve("typo.py"),
-            Resolution::Refused(Refusal::Unknown { .. })
+            Resolution::Refused(refused) if refused.to_string().contains("which Python does not know")
         ));
         assert!(matches!(
             project.resolve("marked.py"),
-            Resolution::Refused(Refusal::MarkConflict { .. })
+            Resolution::Refused(refused) if refused.to_string().contains("byte-order mark")
         ));
     }
 

@@ -14,7 +14,8 @@ Ruff warns "will have frequent breaking changes", is absorbed here and reaches n
   the binary that names it.  The types that cross it - `Lexed`, `StringPart`, `Bracket`,
   `Rewrite`, `Site`, `Misplaced` and `ParseError` - are `quaffed-syntax`'s, which the functions
   below return; `PatternError` and `RewriteError` stay here, and cross as a `CompileError` of
-  message and place.
+  message and place, and `quaffed-encoding`'s Python `Refusal` crosses as a `Refused` with its
+  message, its coding line as a `Declared` named "coding line".
 - **`parse_module`**, **`parse_expression`** and **`parse_ipython`**: source parsed into a syntax
   arena (`syntax.md`) of language `PYTHON`.  Source that does not parse is `ParseError::Invalid`,
   with Ruff's message verbatim and the byte offset; text too long for an arena is

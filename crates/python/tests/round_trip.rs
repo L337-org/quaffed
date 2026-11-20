@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 
 use common::{GROUPS, Mode, group_files, workspace_root};
 use fetched::{Fetched, fetched, python_files, sources};
-use quaffed_encoding::python::Source;
+use quaffed_encoding::python;
 use quaffed_python::{parse_expression, parse_ipython, parse_module};
 use quaffed_syntax::{Arena, ParseError};
 
@@ -101,7 +101,7 @@ enum Made {
 }
 
 fn front_end(bytes: &[u8], mode: Mode, printer: Printer) -> Made {
-    let source = match Source::decode(bytes) {
+    let source = match python::decode(bytes) {
         Ok(source) => source,
         Err(err) => return Made::Refused(format!("decoding: {err}")),
     };

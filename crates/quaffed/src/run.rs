@@ -12,7 +12,7 @@ use std::io::{self, Read, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use quaffed_encoding::{self as encoding, Encoding, Named, Refusal};
+use quaffed_encoding::{self as encoding, Encoding, Named};
 use quaffed_representation::check;
 use quaffed_representation::glob::Glob;
 use quaffed_representation::program::{
@@ -21,7 +21,7 @@ use quaffed_representation::program::{
 };
 use quaffed_representation::span::{Source, Span, Spanned};
 use quaffed_script::{ErrorKind, lexer, location, parse_source};
-use quaffed_syntax::{CompileError, FrontEnd, Pattern, Rewrite};
+use quaffed_syntax::{CompileError, FrontEnd, Pattern, Refused, Rewrite};
 
 use crate::changes::{self, Changes};
 use crate::cli::{self, SourceArg, UsageError};
@@ -2145,7 +2145,7 @@ struct Searched {
     broken: Vec<Vec<(PathBuf, String, Vec<usize>)>>,
     /// Files whose own declared encoding their language's reader refuses, whatever they hold, so
     /// are searched for nothing, by the paths a message shows, with why.
-    refused: Vec<(PathBuf, Refusal)>,
+    refused: Vec<(PathBuf, Refused)>,
     /// Files of unknown encoding that read cleanly in the locale's encoding, which a message
     /// mentions as a hint, and that encoding's name as the locale spells it.
     hinted: Vec<PathBuf>,
@@ -4001,7 +4001,7 @@ mod tests {
     /// A stretch of `text`'s bytes, in `encoding`'s spelling, rewritten: `old` in the file as
     /// decoded becomes `new`, and the claim is checked to be exactly what changed.
     fn claimed_in_bytes(file: &[u8], old: &str, new: &str) {
-        let source = encoding::Source::decode(file).expect("decodes");
+        let source = crate::languages::PYTHON.decode(file).expect("decodes");
         let at = source.text.find(old).expect("the old text is in the file");
         let edited = source.text.replacen(old, new, 1);
         let over = [(at..at + old.len(), at..at + new.len())];
@@ -4041,7 +4041,9 @@ mod tests {
 
     #[test]
     fn a_stretch_off_a_character_boundary_claims_nothing() {
-        let source = encoding::Source::decode("x = 'é'\n".as_bytes()).unwrap();
+        let source = crate::languages::PYTHON
+            .decode("x = 'é'\n".as_bytes())
+            .unwrap();
         // Byte 6 is inside "é".
         assert_eq!(in_bytes(&source, "x = 'é'\n", &[(6..7, 6..7)]), Vec::new());
     }

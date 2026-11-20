@@ -7,10 +7,10 @@
 //! in `quaffed-encoding`, which reads them as `CPython` does: Python's front end uses both tools,
 //! and the engine sees neither.
 
-use quaffed_encoding::{Refusal, Source, SourceEncoding, python};
+use quaffed_encoding::{Refusal, Source, python};
 use quaffed_syntax::{
-    Arena, CompileError, FrontEnd, Language, Lexed, Misplaced, ParseError, Pattern, Rewrite,
-    StringPart,
+    Arena, CompileError, Declared, DeclaredEncoding, FrontEnd, Language, Lexed, Misplaced,
+    ParseError, Pattern, Refused, Rewrite, StringPart,
 };
 
 use crate::{
@@ -31,18 +31,32 @@ impl FrontEnd for Python {
         &["py", "pyi", "pyw"]
     }
 
-    /// PEP 263's coding line, on the first or second line, read as `CPython` reads it.
-    fn declared_encoding(
-        &self,
-        bytes: &[u8],
-    ) -> Option<Result<Option<(SourceEncoding, usize)>, Refusal>> {
-        Some(python::declared_encoding(bytes))
+    /// PEP 263's coding line, on the first or second line, read as `CPython` reads it.  A codec
+    /// `CPython` reads and quaff does not is an encoding quaff does not read rather than a
+    /// refusal, since Python would run the file.
+    fn declared_encoding(&self, bytes: &[u8]) -> Option<Result<Option<Declared>, Refused>> {
+        let declared = |line, encoding| Declared {
+            what: "coding line",
+            line,
+            encoding,
+        };
+        Some(match python::declared_encoding(bytes) {
+            Ok(None) => Ok(None),
+            Ok(Some((encoding, line))) => {
+                Ok(Some(declared(line, DeclaredEncoding::Read(encoding))))
+            }
+            Err(Refusal::Unread { name, codec, line }) => Ok(Some(declared(
+                line,
+                DeclaredEncoding::Unread { name, codec },
+            ))),
+            Err(refusal) => Err(Refused::new(refusal.to_string())),
+        })
     }
 
     /// As `CPython` decodes a file, refusing what it refuses, whatever else declares the file's
     /// encoding for the textual tier.
-    fn decode(&self, bytes: &[u8]) -> Result<Source, Refusal> {
-        Source::decode(bytes)
+    fn decode(&self, bytes: &[u8]) -> Result<Source, Refused> {
+        python::decode(bytes).map_err(|refusal| Refused::new(refusal.to_string()))
     }
 
     fn parse<'a>(&self, text: &'a str) -> Result<Arena<'a>, ParseError> {
@@ -110,12 +124,47 @@ mod tests {
 
     #[test]
     fn the_coding_line_is_read_as_cpython_reads_it() {
-        assert_eq!(
-            Python.declared_encoding(b"# -*- coding: latin-1 -*-\nx = 1\n"),
-            Some(python::declared_encoding(
-                b"# -*- coding: latin-1 -*-\nx = 1\n"
-            ))
-        );
+        let Some(Ok(Some(declared))) =
+            Python.declared_encoding(b"#!/usr/bin/env python\n# coding: latin-1\n")
+        else {
+            panic!("a coding line on the second line is not read")
+        };
+        let Ok(Some((encoding, 2))) =
+            python::declared_encoding(b"#!/usr/bin/env python\n# coding: latin-1\n")
+        else {
+            panic!("CPython's reading changed")
+        };
+        assert_eq!((declared.what, declared.line), ("coding line", 2));
+        assert_eq!(declared.encoding, DeclaredEncoding::Read(encoding));
         assert_eq!(Python.declared_encoding(b"x = 1\n"), Some(Ok(None)));
+    }
+
+    #[test]
+    fn a_codec_python_reads_and_quaff_does_not_is_declared_and_unread() {
+        let Some(Ok(Some(declared))) = Python.declared_encoding(b"# coding: utf-16\n") else {
+            panic!("an unread codec is not a declaration")
+        };
+        assert_eq!(
+            declared.encoding,
+            DeclaredEncoding::Unread {
+                name: "utf-16".to_owned(),
+                codec: "utf_16"
+            }
+        );
+    }
+
+    #[test]
+    fn a_refusal_says_what_cpython_s_reader_says() {
+        for bytes in [&b"# coding: nonsense\n"[..], b"x = 1\0\n"] {
+            let refusal = python::decode(bytes).unwrap_err().to_string();
+            assert_eq!(Python.decode(bytes).unwrap_err().to_string(), refusal);
+        }
+        let refusal = python::declared_encoding(b"# coding: nonsense\n")
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            Python.declared_encoding(b"# coding: nonsense\n"),
+            Some(Err(Refused::new(refusal)))
+        );
     }
 }

@@ -10,14 +10,16 @@
 //! file, including ones kept outside it, is the caller's.  Nothing is inferred from statistics.
 //!
 //! Python source is read as `CPython` reads it, by the [`python`] module's rules and `CPython`'s
-//! own codecs.  `architecture/encoding.md` describes this crate.
+//! own codecs; any language's decoded file is a [`Source`], written back the same way.  `architecture/encoding.md` describes this crate.
 
 // Generated from the oracle's codecs; the generator owns its layout.
 #[rustfmt::skip]
 mod codecs;
 pub mod python;
+mod source;
 
-pub use python::{Codec, MultiByteCodec, Read, Refusal, Source, SourceEncoding, Unencodable};
+pub use python::{Codec, MultiByteCodec, Read, Refusal};
+pub use source::{Source, SourceEncoding, Unencodable};
 
 /// How many leading bytes git examines for a NUL when deciding a file is binary.
 ///

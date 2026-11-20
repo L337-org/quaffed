@@ -162,9 +162,11 @@ a Python file's bytes in `quaffed-encoding`.  It asks, of text in that language:
   tokens, how a value is written into a string, and what stands outside the construct it needs
   (`lex`, `code_tokens`, `token_kinds`, `escaped`, `misplaced`).
 
-**Only quaff's own types cross it**, defined beside it: an arena, a `Pattern`, a `Rewrite`, a
-`Lexed`, and errors as a `ParseError` or a `CompileError` of message and place, so the engine never
-sees an adapter's type.  Every question but `claims` takes text rather than a file, so the same
+**Only quaff's own types cross it**, defined beside it or in `quaffed-encoding`: an arena, a
+`Pattern`, a `Rewrite`, a `Lexed`, a decoded `Source`, a `Declared` encoding naming what the
+language calls its declaration, and errors as a `ParseError`, a `CompileError` of message and
+place, or a `Refused` in the language's own words, so the engine never sees an adapter's type and
+never words a language's refusal for it.  Every question but `claims` takes text rather than a file, so the same
 questions can be asked of code embedded in another language's file once a scope can name it.
 
 **A question added later has a default answer**, so every language already written compiles
@@ -199,7 +201,8 @@ means where files of several languages are in scope.
 7. Implement `FrontEnd` for it in the adapter, answering each question in the language's own
    terms.  Take a default only where it is the truth for the language.  Where the language
    declares its encoding in its own text, answer `declared_encoding` and `decode` as its own
-   reader does, and describe the rule in `encoding.md` beside Python's.
+   reader does, with refusals in its own words and its declaration named as its users know it,
+   and describe the rule in `encoding.md` beside Python's.
 8. Add its front end to `LANGUAGES` in `crates/quaffed/src/languages.rs`, its adapter to the
    binary's `Cargo.toml`, and the adapter's crate name to `ADAPTERS` in
    `crates/quaffed/tests/adapter_containment.rs`, which fails on a `quaffed-*` dependency of the

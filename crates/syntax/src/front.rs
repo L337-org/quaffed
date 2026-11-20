@@ -17,7 +17,7 @@ use std::fmt;
 use std::ops::Range;
 use std::path::Path;
 
-use quaffed_encoding::{Refusal, Source, SourceEncoding};
+use quaffed_encoding::{Source, SourceEncoding};
 
 use crate::{Arena, Language, Pattern, TooLong};
 
@@ -47,11 +47,8 @@ pub trait FrontEnd: Sync {
     ///
     /// # Errors
     ///
-    /// Returns the [`Refusal`] the language's own reader would give for the declaration.
-    fn declared_encoding(
-        &self,
-        bytes: &[u8],
-    ) -> Option<Result<Option<(SourceEncoding, usize)>, Refusal>> {
+    /// Returns the [`Refused`] the language's own reader would give for the declaration.
+    fn declared_encoding(&self, bytes: &[u8]) -> Option<Result<Option<Declared>, Refused>> {
         let _ = bytes;
         None
     }
@@ -61,9 +58,9 @@ pub trait FrontEnd: Sync {
     ///
     /// # Errors
     ///
-    /// Returns the [`Refusal`] the language's own reader would give.  Nothing partial is
+    /// Returns the [`Refused`] the language's own reader would give.  Nothing partial is
     /// returned.
-    fn decode(&self, bytes: &[u8]) -> Result<Source, Refusal>;
+    fn decode(&self, bytes: &[u8]) -> Result<Source, Refused>;
 
     /// `text`, a whole file's worth, parsed into an arena.
     ///
@@ -158,6 +155,57 @@ impl From<TooLong> for ParseError {
         ParseError::TooLong(err)
     }
 }
+
+/// An encoding a file declares in its own text, as its language reads the declaration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Declared {
+    /// What the language calls such a declaration, as a message names it: for Python, "coding
+    /// line".
+    pub what: &'static str,
+    /// The line it is on, from 1.
+    pub line: usize,
+    /// The encoding it declares.
+    pub encoding: DeclaredEncoding,
+}
+
+/// The encoding a [`Declared`] names, as far as quaff reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeclaredEncoding {
+    /// One quaff reads.
+    Read(SourceEncoding),
+    /// One the language reads and quaff does not: its name as the file spells it, and the codec
+    /// the name is quaff's name for.  Such a file is of unknown encoding rather than refused,
+    /// since its language would read it.
+    Unread {
+        /// The name, as the file spells it.
+        name: String,
+        /// The codec, by its `CPython` name, as quaff names every codec.
+        codec: &'static str,
+    },
+}
+
+/// Why a language's own reader refuses a file: what it would say, in the language's own terms,
+/// as a message gives it after the file's name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refused {
+    message: String,
+}
+
+impl Refused {
+    /// The refusal `message` says.
+    #[must_use]
+    pub fn new(message: String) -> Refused {
+        Refused { message }
+    }
+}
+
+impl fmt::Display for Refused {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for Refused {}
 
 /// Why a pattern or a rewrite template could not be compiled: the language's own message, and
 /// where in the text as written the error is, if it has a place.  The message leaves the place

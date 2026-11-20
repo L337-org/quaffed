@@ -15,7 +15,8 @@ mod matching;
 mod pattern;
 
 pub use front::{
-    Bracket, CompileError, FrontEnd, Lexed, Misplaced, ParseError, Rewrite, Site, StringPart,
+    Bracket, CompileError, Declared, DeclaredEncoding, FrontEnd, Lexed, Misplaced, ParseError,
+    Refused, Rewrite, Site, StringPart,
 };
 
 pub use matching::{
