@@ -47,7 +47,8 @@ Each member's design is in its own note: textual search in `search.md`, encoding
   linking the Python adapter, and Ruff with it.
 - `quaffed-representation` is its own crate so that its lint configuration - no hash maps or sets -
   applies to it alone, and so that it depends on no parser.
-- `quaffed-syntax` depends on nothing, so that the engine reads one shape whichever parser built it.
+- `quaffed-syntax` depends on no parser, so that the engine reads one shape whichever parser built
+  it, and reaches every language through the one front end it defines.
 - `quaffed-python` is the one crate allowed to depend on a `ruff_*` crate, so that Ruff's API
   changes stop there.
 
