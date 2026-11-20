@@ -23,8 +23,9 @@ use crate::{
 /// Python's rules for statements, lists and layout, as an edit needs them.
 ///
 /// - A list, a tuple and a call's arguments can each lose an item and still mean the rest: `[]`,
-///   `()` and `f()` are what they were less one.  A set cannot, since `{}` is a dict, and a
-///   parameter is not among them because no pattern of its own matches one.
+///   `()` and `f()` are what they were less one.  A set cannot, since `{}` is a dict.  A
+///   parameter list is not among them: what removing a parameter alone leaves has not been
+///   judged, so such a deletion is refused.
 /// - A tuple of one item needs its comma, `(a,)`, or it is that item alone.
 /// - Blocks are decided by indentation, and a block may follow its header's colon on the
 ///   header's line, `if x: a(); b()`, after which statements share the line.

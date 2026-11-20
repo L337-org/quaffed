@@ -1248,8 +1248,11 @@ impl Deletion<'_, '_> {
             }
         }
         let before = self.before(found, matched.start, floor, whole_lines);
-        // An item separator with only whitespace between it and a closing bracket - a bracket
-        // of the lexer's, `)`, `]` or `}` - is the list's trailing one.
+        // An item separator with only whitespace between it and a closing `)`, `]` or `}` is the
+        // list's trailing one.  The bracket is told by its character, not from the lexer's
+        // brackets, since an interpolated string's field brace closes the list too and is not
+        // one of them.  Accepted limitation: a language whose lists close with another bracket
+        // needs this asked of its front end before its trailing separators are told apart.
         let trailing_comma = after.is_some_and(|at| {
             self.item_separator(at)
                 && matches!(

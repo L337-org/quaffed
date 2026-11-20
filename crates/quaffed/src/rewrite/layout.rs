@@ -454,19 +454,19 @@ impl Carrying<'_> {
             .trailing
             .as_ref()
             .filter(|_| edges.trailing_comment || last == partner.close);
+        // The separator is carried as the file spells it, whatever the language's is.
+        let separator = |at: usize| text[at..].chars().next().map_or_default(String::from);
         match (trailing, comma) {
             (None, None) => {}
             (None, Some(comma)) => {
-                edits.push(self.edit(last..last, ",".into(), Some(comma), comma, "trailing comma"));
+                let written = separator(comma);
+                edits.push(self.edit(last..last, written, Some(comma), comma, "trailing comma"));
             }
             (Some(trailing), comma) => {
                 if edges.trailing_comment && template_comment(last..partner.close) {
                     return Err(refuse(trailing.start));
                 }
-                let mut carried = String::new();
-                if comma.is_some() {
-                    carried.push(',');
-                }
+                let mut carried = comma.map_or_default(separator);
                 carried.push_str(&text[trailing.clone()]);
                 let what = if comma.is_some() {
                     "trailing comma"
