@@ -456,11 +456,14 @@ def peak_memory(command, cwd, env, expected, out, name):
 
 
 # A successful open, with strace -y's annotation of the descriptor: `= 3</path>`.  Its flags,
-# among the arguments, say whether it opens to write.
-OPENED = re.compile(r"^\d+\s+(?:open|openat|openat2)\((.*)\) = \d+<(.*)>$")
+# among the arguments, say whether it opens to write.  The space before `=` is any run of it,
+# since strace pads the end of a call another thread split to line its results up.
+OPENED = re.compile(r"^\d+\s+(?:open|openat|openat2)\((.*)\)\s+=\s+\d+<(.*)>$")
 WRITING = re.compile(r"\bO_(?:WRONLY|RDWR)\b")
 # A read from a descriptor strace -y annotated: `read(3</path>, ...) = 12`.
-READ = re.compile(r"^\d+\s+(?:read|pread64|readv|preadv|preadv2)\(\d+<(.*?)>, .*\) = (\d+)$")
+READ = re.compile(
+    r"^\d+\s+(?:read|pread64|readv|preadv|preadv2)\(\d+<(.*?)>,\s*.*\)\s+=\s+(\d+)$"
+)
 # A call split across two lines by another thread: `<unfinished ...>`, then `<... resumed>`.
 UNFINISHED = re.compile(r"^(\d+)\s+(.*) <unfinished \.\.\.>$")
 RESUMED = re.compile(r"^(\d+)\s+<\.\.\. \w+ resumed>(.*)$")
