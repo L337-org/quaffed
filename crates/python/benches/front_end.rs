@@ -26,9 +26,9 @@ use common::{GROUPS, Mode, group_files};
 use gungraun::prelude::*;
 use quaffed_encoding::python::Source;
 use quaffed_python::{
-    Rewrite, compile_pattern, compile_rewrite, lex, parse_expression, parse_ipython, parse_module,
+    compile_pattern, compile_rewrite, lex, parse_expression, parse_ipython, parse_module,
 };
-use quaffed_syntax::{Arena, Pattern, find, find_captured};
+use quaffed_syntax::{Arena, Pattern, Rewrite, find, find_captured};
 use ruff_python_parser::ParseOptions;
 
 /// Every file of the synthetic corpus, decoded as quaff decodes it, with how it is parsed.

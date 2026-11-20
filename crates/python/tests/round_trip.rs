@@ -23,8 +23,8 @@ use std::path::{Path, PathBuf};
 use common::{GROUPS, Mode, group_files, workspace_root};
 use fetched::{Fetched, fetched, python_files, sources};
 use quaffed_encoding::python::Source;
-use quaffed_python::{ParseError, parse_expression, parse_ipython, parse_module};
-use quaffed_syntax::Arena;
+use quaffed_python::{parse_expression, parse_ipython, parse_module};
+use quaffed_syntax::{Arena, ParseError};
 
 /// How the arena is printed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

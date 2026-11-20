@@ -13,10 +13,11 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use quaffed_encoding::{self as encoding, Encoding, Named, Refusal, Unproven};
-use quaffed_syntax::Language;
+use quaffed_syntax::FrontEnd;
 
 use crate::contents::Contents;
 use crate::editorconfig::EditorConfig;
+use crate::languages;
 use crate::workspace::{self, Origin, Workspace};
 
 /// The declarations kept outside a file that its encoding may come from.
@@ -41,25 +42,10 @@ pub struct File<'a> {
 }
 
 impl File<'_> {
-    /// Whether it is Python source, by its name, as `architecture/search.md` lists them.
-    fn is_python(&self) -> bool {
-        is_python(self.path)
+    /// Its language, by its name, if quaff parses it.
+    fn language(&self) -> Option<&'static dyn FrontEnd> {
+        languages::of(self.path)
     }
-}
-
-/// The extensions that name Python source.
-const PYTHON_EXTENSIONS: &[&str] = &["py", "pyi", "pyw"];
-
-/// Each language quaff parses, with the extensions that name its files: the list the help
-/// gives, and the one [`is_python`] goes by, so that the two cannot disagree.
-pub const LANGUAGES: &[(Language, &[&str])] = &[(quaffed_python::PYTHON, PYTHON_EXTENSIONS)];
-
-/// Whether the file at `path` is Python source, by its name alone, as `architecture/search.md`
-/// lists them: the one rule both an encoding's decision and structural search go by.
-pub fn is_python(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| PYTHON_EXTENSIONS.contains(&e))
 }
 
 /// What decides a file's encoding.
@@ -224,13 +210,14 @@ pub fn resolve(
     unreachable!("the last source always decides")
 }
 
-/// A byte-order mark.  A Python file's coding line must agree with a UTF-8 one, as `CPython`
-/// requires.
+/// A byte-order mark.  A declaration in the file's own language must agree with a UTF-8 one, as
+/// `CPython` requires of a Python file's coding line.
 fn byte_order_mark(file: &File) -> Option<Resolution> {
     let (encoding, body) = encoding::byte_order_mark(file.bytes)?;
     if encoding == Encoding::Utf8
-        && file.is_python()
-        && let Err(refusal) = encoding::python::declared_encoding(file.bytes)
+        && let Some(Err(refusal)) = file
+            .language()
+            .and_then(|language| language.declared_encoding(file.bytes))
     {
         return Some(Resolution::Refused(refusal));
     }
@@ -241,12 +228,10 @@ fn byte_order_mark(file: &File) -> Option<Resolution> {
     })
 }
 
-/// A Python file's coding line, read as `CPython` reads it.
+/// A declaration in the file's own language, such as a Python file's coding line, read as that
+/// language reads it.
 fn coding_line(file: &File) -> Option<Resolution> {
-    if !file.is_python() {
-        return None;
-    }
-    match encoding::python::declared_encoding(file.bytes) {
+    match file.language()?.declared_encoding(file.bytes)? {
         Ok(None) => None,
         Ok(Some((declared, line))) => Some(Resolution::Known {
             encoding: declared.into(),

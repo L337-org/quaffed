@@ -18,7 +18,8 @@ use ruff_python_ast::{AnyNodeRef, Stmt};
 use ruff_python_parser::{Mode, ParseOptions};
 use ruff_text_size::Ranged;
 
-use crate::parse::ParseError;
+use crate::parse::invalid;
+use quaffed_syntax::ParseError;
 
 /// Every list in `source`, parsed in `mode`, as the byte ranges of its items in source order.
 /// The lists are those whose items can stand one after another with nothing between them but a
@@ -39,7 +40,8 @@ use crate::parse::ParseError;
 /// As Ruff's parser reports them, which the pattern compiler has already met for the same text,
 /// since it parses it the same way.
 pub(crate) fn lists(source: &str, mode: Mode) -> Result<Vec<Vec<Range<usize>>>, ParseError> {
-    let parsed = ruff_python_parser::parse(source, ParseOptions::from(mode))?;
+    let parsed =
+        ruff_python_parser::parse(source, ParseOptions::from(mode)).map_err(|err| invalid(&err))?;
     let mut found = Lists { lists: Vec::new() };
     walk_node(&mut found, AnyNodeRef::from(parsed.syntax()));
     Ok(found.lists)

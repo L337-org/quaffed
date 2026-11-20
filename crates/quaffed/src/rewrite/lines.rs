@@ -28,8 +28,7 @@
 
 use std::ops::Range;
 
-use quaffed_python::{Lexed, lex, parse_module};
-use quaffed_syntax::{Arena, NodeId};
+use quaffed_syntax::{Arena, FrontEnd, Lexed, NodeId};
 
 use super::line_indent;
 
@@ -90,9 +89,9 @@ impl Needs {
     }
 
     /// What `text`, written as a whole, needs; nothing where it is not statements on its own.
-    pub(super) fn of_text(text: &str) -> Needs {
-        match parse_module(text) {
-            Ok(arena) => Needs::of(text, &arena, &lex(text), &(0..text.len())),
+    pub(super) fn of_text(language: &dyn FrontEnd, text: &str) -> Needs {
+        match language.parse(text) {
+            Ok(arena) => Needs::of(text, &arena, &language.lex(text), &(0..text.len())),
             Err(_) => Needs::default(),
         }
     }

@@ -16,61 +16,16 @@
 //! spelling, `\x24` or implicit concatenation.
 
 use std::fmt;
-use std::ops::Range;
 
-use quaffed_syntax::{Hole, Pattern};
+use quaffed_syntax::{Hole, ParseError, Pattern, Rewrite, Site};
 use ruff_python_ast::token::TokenKind;
 use ruff_python_parser::{Mode, ParseOptions};
 use ruff_text_size::Ranged;
 
-use crate::parse::ParseError;
 use crate::pattern::{
     Claim, DECORATED, identifier_len, node_spanning, parse_as, parse_either, placeholder_stem,
     substitute,
 };
-
-/// A compiled rewrite template: the template as written, and where in it each captured name is
-/// written back.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Rewrite {
-    text: String,
-    sites: Vec<Site>,
-    has_code: bool,
-}
-
-impl Rewrite {
-    /// The template as written.
-    #[must_use]
-    pub fn text(&self) -> &str {
-        &self.text
-    }
-
-    /// Where each captured name is written back, in the order written.
-    #[must_use]
-    pub fn sites(&self) -> &[Site] {
-        &self.sites
-    }
-
-    /// Whether the template has code, rather than being empty or only whitespace and comments.
-    /// One with none deletes what matched, so the separator and the line around each match are
-    /// the caller's to remove, where nothing in the template says what becomes of them.
-    #[must_use]
-    pub fn has_code(&self) -> bool {
-        self.has_code
-    }
-}
-
-/// One place in a template where a captured name is written back.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Site {
-    /// The stretch of the template it replaces: `$name`, `$name...` or `${name}`.
-    pub written: Range<usize>,
-    /// The name, without `$`.
-    pub name: String,
-    /// Whether it stands inside a string, an f-string's or t-string's literal part, or a comment,
-    /// where it interpolates, rather than in code.
-    pub in_literal: bool,
-}
 
 /// Why a rewrite template could not be compiled.  Each that has a place carries it as a byte
 /// offset into the template as written, which [`RewriteError::offset`] gives; the message leaves
@@ -285,11 +240,7 @@ pub fn compile_rewrite(text: &str, pattern: &Pattern) -> Result<Rewrite, Rewrite
         };
         sites.extend(site);
     }
-    Ok(Rewrite {
-        text: text.to_owned(),
-        sites,
-        has_code,
-    })
+    Ok(Rewrite::new(text.to_owned(), sites, has_code))
 }
 
 /// The site a claim inside a string, an f-string's or t-string's literal part, or a comment

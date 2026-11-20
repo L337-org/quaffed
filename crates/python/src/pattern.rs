@@ -17,7 +17,9 @@ use quaffed_syntax::{Arena, Builder, Costly, Hole, NodeId, Pattern};
 use ruff_python_parser::Mode;
 
 use crate::lists::lists;
-use crate::parse::{PYTHON, ParseError, parse_from};
+use quaffed_syntax::ParseError;
+
+use crate::parse::{PYTHON, parse_from};
 
 /// Why a pattern could not be compiled.  Each that has a place in the pattern carries it, as a
 /// byte offset into the pattern as written, and [`PatternError::offset`] gives it; the message

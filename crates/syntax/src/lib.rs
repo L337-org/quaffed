@@ -5,12 +5,18 @@
 //! every language.
 //!
 //! Each language's adapter parses with its own parser and builds an [`Arena`] with a
-//! [`Builder`].  The engine is to read arenas and never a parser's own types, which is why this
-//! crate depends on nothing: `tests/no_dependencies.rs` holds that.  `architecture/syntax.md`
+//! [`Builder`], and implements [`FrontEnd`], the one interface through which the engine reaches
+//! its language.  The engine reads arenas and never a parser's own types, which is why this crate
+//! depends on no parser: `tests/no_dependencies.rs` holds that.  `architecture/syntax.md`
 //! describes it.
 
+mod front;
 mod matching;
 mod pattern;
+
+pub use front::{
+    Bracket, CompileError, FrontEnd, Lexed, Misplaced, ParseError, Rewrite, Site, StringPart,
+};
 
 pub use matching::{
     Captured, Costly, Match, find, find_captured, find_where, find_where_captured, matches_at,

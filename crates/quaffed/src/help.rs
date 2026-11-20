@@ -12,7 +12,7 @@
 //! Nothing here names a language structural patterns apply to: those are listed once, from
 //! [`LANGUAGES`], and the rest is written for every one of them.
 
-use crate::resolve::LANGUAGES;
+use crate::languages::LANGUAGES;
 
 /// The help, for `-h` and `--help`, and on standard error when no arguments are given.
 pub fn help() -> String {
@@ -28,9 +28,13 @@ pub fn help() -> String {
 fn languages() -> String {
     LANGUAGES
         .iter()
-        .map(|(language, extensions)| {
-            let extensions: Vec<String> = extensions.iter().map(|e| format!(".{e}")).collect();
-            format!("{language} ({})", extensions.join(", "))
+        .map(|language| {
+            let extensions: Vec<String> = language
+                .extensions()
+                .iter()
+                .map(|e| format!(".{e}"))
+                .collect();
+            format!("{} ({})", language.language(), extensions.join(", "))
         })
         .collect::<Vec<_>>()
         .join("; ")

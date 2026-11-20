@@ -16,6 +16,7 @@ mod filter;
 mod glob;
 mod help;
 mod identity;
+mod languages;
 mod output;
 mod resolve;
 mod rewrite;

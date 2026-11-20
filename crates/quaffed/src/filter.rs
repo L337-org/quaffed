@@ -16,10 +16,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::Range;
 
-use quaffed_python::{PatternError, compile_pattern};
 use quaffed_representation::program::{Filter as Written, Operand, Subject};
 use quaffed_representation::span::{Span, Spanned};
-use quaffed_syntax::{Arena, NodeId, Pattern, find, matches_at};
+use quaffed_syntax::{Arena, CompileError, FrontEnd, NodeId, Pattern, find, matches_at};
 
 use crate::glob::{Kind, Matcher};
 use crate::scope::{self, PathGlob, Place, Roots};
@@ -70,7 +69,7 @@ pub enum Error {
     /// A glob in it could not be: too large, or naming a path that could not be looked up.
     Glob(scope::Error, Span),
     /// A backticked pattern in it is not a pattern, saying where in it.
-    Pattern(PatternError, Span),
+    Pattern(CompileError, Span),
     /// It holds what this build does not have.
     NotBuilt(NotBuilt),
 }
@@ -85,6 +84,7 @@ impl Filter {
     /// build does not have.  `outer` is every name the statement's pattern binds, which a
     /// pattern in the `where` may share.
     pub fn new(
+        language: &dyn FrontEnd,
         filter: &Spanned<Written>,
         roots: Roots,
         outer: &[&str],
@@ -94,7 +94,7 @@ impl Filter {
             shapes: Vec::new(),
             tree: Tree::And(Vec::new()),
         };
-        built.tree = tree(filter, roots, outer, &mut built)?;
+        built.tree = tree(language, filter, roots, outer, &mut built)?;
         Ok((!built.names.is_empty()).then_some(built))
     }
 
@@ -119,6 +119,8 @@ impl Filter {
 }
 
 fn tree(
+    language: &dyn FrontEnd,
+
     filter: &Spanned<Written>,
     roots: Roots,
     outer: &[&str],
@@ -128,17 +130,18 @@ fn tree(
         Written::And(parts) => Tree::And(
             parts
                 .iter()
-                .map(|part| tree(part, roots, outer, built))
+                .map(|part| tree(language, part, roots, outer, built))
                 .collect::<Result<_, _>>()?,
         ),
-        Written::Not(part) => Tree::Not(Box::new(tree(part, roots, outer, built)?)),
+        Written::Not(part) => Tree::Not(Box::new(tree(language, part, roots, outer, built)?)),
         Written::Matches(subject, operand) | Written::Contains(subject, operand) => {
             let anywhere = matches!(filter.node, Written::Contains(..));
             if let (Subject::Metavariable(name), Operand::Pattern(written)) =
                 (subject, &operand.node)
             {
-                let pattern =
-                    compile_pattern(written).map_err(|err| Error::Pattern(err, operand.span))?;
+                let pattern = language
+                    .compile_pattern(written)
+                    .map_err(|err| Error::Pattern(err, operand.span))?;
                 let name = built.name(name);
                 // Each name it shares is tested too, so that every way of binding it is offered.
                 let mut shared: Vec<String> = pattern
@@ -244,6 +247,7 @@ fn holds(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::languages::PYTHON;
     use quaffed_representation::glob::{Glob, GlobPart};
     use std::path::Path;
 
@@ -293,16 +297,15 @@ mod tests {
 
     #[test]
     fn a_value_test_compares_what_a_match_bound_and_not_turns_it_round() {
-        let arena = quaffed_python::parse_module(
-            "a = 'https://x'\nb = r\"http://x\"\nc = port\nd = \"\"\"a\npassword123\"\"\"\n",
-        )
-        .unwrap();
+        let arena = PYTHON
+            .parse("a = 'https://x'\nb = r\"http://x\"\nc = port\nd = \"\"\"a\npassword123\"\"\"\n")
+            .unwrap();
         let holds = |filter: &Filter, nodes: &[NodeId]| {
             filter.holds(&place(), &arena, nodes, &Found::default())
         };
         let mut https = Glob::literal("https");
         https.push(GlobPart::Star);
-        let starts = Filter::new(&test("s", https, false), roots(), &[])
+        let starts = Filter::new(PYTHON, &test("s", https, false), roots(), &[])
             .ok()
             .flatten()
             .unwrap();
@@ -313,7 +316,10 @@ mod tests {
         // Contains is anywhere in the value, lines included; any other node is its text.
         let password = test("x", Glob::literal("password"), true);
         let not = Spanned::new(Written::Not(Box::new(password)), at(0));
-        let without = Filter::new(&not, roots(), &[]).ok().flatten().unwrap();
+        let without = Filter::new(PYTHON, &not, roots(), &[])
+            .ok()
+            .flatten()
+            .unwrap();
         assert!(holds(&without, &[node(&arena, "port")]));
         assert!(!holds(
             &without,
@@ -327,7 +333,10 @@ mod tests {
             ]),
             at(0),
         );
-        let both = Filter::new(&both, roots(), &[]).ok().flatten().unwrap();
+        let both = Filter::new(PYTHON, &both, roots(), &[])
+            .ok()
+            .flatten()
+            .unwrap();
         assert_eq!(both.names, ["x"]);
         assert!(holds(&both, &[node(&arena, "'https://x'")]));
         assert!(!holds(&both, &[node(&arena, "r\"http://x\"")]));
@@ -344,12 +353,15 @@ mod tests {
             },
             at(0),
         );
-        Filter::new(&written, roots(), &[]).ok().flatten().unwrap()
+        Filter::new(PYTHON, &written, roots(), &[])
+            .ok()
+            .flatten()
+            .unwrap()
     }
 
     #[test]
     fn a_pattern_matches_the_bound_node_itself_and_contains_anything_inside_it() {
-        let arena = quaffed_python::parse_module("x = f(g(1), 2)\n").unwrap();
+        let arena = PYTHON.parse("x = f(g(1), 2)\n").unwrap();
         let call = node(&arena, "f(g(1), 2)");
         let holds = |filter: &Filter, bound: NodeId| {
             filter.holds(&place(), &arena, &[bound], &Found::default())

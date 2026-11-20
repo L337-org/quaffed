@@ -20,14 +20,14 @@
 
 use std::ops::Range;
 
-use quaffed_python::{Bracket, Lexed, lex, parse_module};
-use quaffed_syntax::{Arena, Captured};
+use quaffed_syntax::{Arena, Bracket, Captured, FrontEnd, Lexed};
 
 use super::back_over_layout;
 
 /// The file as it was: its text, tree and lexing, each match with what it captured, and the
 /// names the captures are in the order of.
 pub(super) struct Before<'a> {
+    pub language: &'a dyn FrontEnd,
     pub text: &'a str,
     pub arena: &'a Arena<'a>,
     pub lexed: &'a Lexed,
@@ -145,7 +145,8 @@ pub(super) fn carry(
     // A carried comma must be one the matcher ignores where it lands: not a token of the new
     // tree, as a tuple's comma is; and comments change no tree.  Only where the result does not
     // parse at all is each tried alone, to name the one at fault.
-    let culprit = match parse_module(&carried) {
+    let language = before.language;
+    let culprit = match language.parse(&carried) {
         Ok(parsed) => edits
             .iter()
             .filter(|edit| edit.comma.is_some())
@@ -156,7 +157,7 @@ pub(super) fn carry(
         Err(_) => Some(
             edits
                 .iter()
-                .find(|edit| parse_module(&with(&[*edit]).0).is_err())
+                .find(|edit| language.parse(&with(&[*edit]).0).is_err())
                 .unwrap_or(&edits[0]),
         ),
     };
@@ -232,7 +233,7 @@ fn edits(before: &Before<'_>, after: &After<'_>) -> Result<Vec<Edit>, LayoutRefu
     if edges.iter().flatten().all(Edges::is_empty) {
         return Ok(Vec::new());
     }
-    let out_lexed = lex(after.text);
+    let out_lexed = before.language.lex(after.text);
     let mut changes = Vec::new();
     for (index, found) in before.captured.iter().enumerate() {
         let sites: Vec<&WrittenSite> = after

@@ -12,8 +12,7 @@ use std::io::{self, Read, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use quaffed_encoding::{self as encoding, Encoding, Named, Refusal, python};
-use quaffed_python::{Rewrite, compile_pattern, compile_rewrite};
+use quaffed_encoding::{self as encoding, Encoding, Named, Refusal};
 use quaffed_representation::check;
 use quaffed_representation::glob::Glob;
 use quaffed_representation::program::{
@@ -22,7 +21,7 @@ use quaffed_representation::program::{
 };
 use quaffed_representation::span::{Source, Span, Spanned};
 use quaffed_script::{ErrorKind, lexer, location, parse_source};
-use quaffed_syntax::Pattern;
+use quaffed_syntax::{FrontEnd, Pattern, Rewrite};
 
 use crate::changes::{self, Changes};
 use crate::cli::{self, SourceArg, UsageError};
@@ -30,6 +29,7 @@ use crate::contents::Contents;
 use crate::discover;
 use crate::editorconfig::EditorConfig;
 use crate::filter;
+use crate::languages;
 use crate::output;
 use crate::resolve::{self, Declarations, Resolution, Unknown};
 use crate::rewrite;
@@ -507,33 +507,38 @@ fn compile(
     planned_rewrites: &[PlannedRewrite],
     built: &Built,
 ) -> Result<(Vec<Pattern>, Vec<Rewrite>), Failure> {
+    let language = languages::of_patterns();
     // Every structural pattern is compiled before any file is read, so one that cannot be
     // compiled stops the run before it looks at anything.
     let mut compiled: Vec<Pattern> = structural
         .iter()
         .map(|(written, span)| {
-            compile_pattern(written).map_err(|err| Failure::Script {
-                location: built.locate(
-                    *span,
-                    err.offset()
-                        .map_or(span.start, |at| built.content_start(*span) + at),
-                ),
-                message: err.to_string(),
-            })
+            language
+                .compile_pattern(written)
+                .map_err(|err| Failure::Script {
+                    location: built.locate(
+                        *span,
+                        err.offset()
+                            .map_or(span.start, |at| built.content_start(*span) + at),
+                    ),
+                    message: err.to_string(),
+                })
         })
         .collect::<Result<_, _>>()?;
     // So is every rewrite template, against the pattern whose captures it writes back.
     let rewrites: Vec<Rewrite> = planned_rewrites
         .iter()
         .map(|(written, span, compiled_at)| {
-            compile_rewrite(written, &compiled[*compiled_at]).map_err(|err| Failure::Script {
-                location: built.locate(
-                    *span,
-                    err.offset()
-                        .map_or(span.start, |at| built.content_start(*span) + at),
-                ),
-                message: err.to_string(),
-            })
+            language
+                .compile_rewrite(written, &compiled[*compiled_at])
+                .map_err(|err| Failure::Script {
+                    location: built.locate(
+                        *span,
+                        err.offset()
+                            .map_or(span.start, |at| built.content_start(*span) + at),
+                    ),
+                    message: err.to_string(),
+                })
         })
         .collect::<Result<_, _>>()?;
     // A replace's unnamed holes are named once its rewrite is compiled, which reports `$_` in a
@@ -667,17 +672,19 @@ thread_local! {
     static HELD: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Refuses edits that would leave a Python file unparseable that parsed before them.  A file
+/// Refuses edits that would leave a file in a language quaff parses unparseable that parsed before
+/// them.  A file
 /// that did not parse before is not refused: the check protects a parse that existed, and a
 /// textual edit needs no parse tree.
 fn refuse_broken(searched: &Searched, locations: &[Option<String>]) -> Result<(), Failure> {
     let broken: Vec<Broken> = searched
         .changed
         .iter()
-        .filter(|file| file.python && parses(searched.held[file.held].file().0).is_ok())
-        .filter_map(|file| {
+        .filter_map(|file| Some((file, file.language?)))
+        .filter(|(file, language)| parses(*language, searched.held[file.held].file().0).is_ok())
+        .filter_map(|(file, language)| {
             let (original, changes) = searched.held[file.held].file();
-            parses(&changes::applied(original, changes))
+            parses(language, &changes::applied(original, changes))
                 .err()
                 .map(|why| Broken {
                     path: file.shown.clone(),
@@ -727,8 +734,12 @@ type Over = Vec<(Range<usize>, Range<usize>)>;
 /// either text is not one a rewrite gives; then nothing is claimed, and the changes are one
 /// stretch from the first byte that differs to the last - exact, but holding about a whole copy of
 /// the file for the rest of the run, as a run did before changes were held as stretches.
-fn in_bytes(source: &python::Source, edited: &str, over: &[(Range<usize>, Range<usize>)]) -> Over {
-    let plain = python::Source {
+fn in_bytes(
+    source: &encoding::Source,
+    edited: &str,
+    over: &[(Range<usize>, Range<usize>)],
+) -> Over {
+    let plain = encoding::Source {
         text: String::new(),
         encoding: source.encoding,
         byte_order_mark: false,
@@ -780,10 +791,13 @@ fn in_bytes(source: &python::Source, edited: &str, over: &[(Range<usize>, Range<
         .collect()
 }
 
-/// Whether a Python file's bytes parse, decoded as `CPython` decodes them; where and why not.
-fn parses(bytes: &[u8]) -> Result<(), String> {
-    let source = python::Source::decode(bytes).map_err(|refusal| refusal.to_string())?;
-    structural::search(&source.text, &[])
+/// Whether a file's bytes parse in `language`, decoded as the language decodes them; where and why
+/// not.
+fn parses(language: &dyn FrontEnd, bytes: &[u8]) -> Result<(), String> {
+    let source = language
+        .decode(bytes)
+        .map_err(|refusal| refusal.to_string())?;
+    structural::search(language, &source.text, &[])
         .map(|_| ())
         .map_err(|unparsed| unparsed_at(&unparsed))
 }
@@ -1230,28 +1244,30 @@ fn filters(
                 Wanted::Text(_) => Vec::new(),
             };
             let compiled_filter =
-                filter::Filter::new(written, roots, &outer).map_err(|err| match err {
-                    filter::Error::NotBuilt(filter::NotBuilt(span)) => Failure::Unknown {
-                        location: built.locate(span, span.start),
-                        message: "this `where` test is not built yet".into(),
+                filter::Filter::new(languages::of_patterns(), written, roots, &outer).map_err(
+                    |err| match err {
+                        filter::Error::NotBuilt(filter::NotBuilt(span)) => Failure::Unknown {
+                            location: built.locate(span, span.start),
+                            message: "this `where` test is not built yet".into(),
+                        },
+                        filter::Error::Pattern(err, span) => Failure::Script {
+                            location: built.locate(
+                                span,
+                                err.offset()
+                                    .map_or(span.start, |at| built.content_start(span) + at),
+                            ),
+                            message: err.to_string(),
+                        },
+                        filter::Error::Glob(scope::Error::TooLarge(err), span) => {
+                            script(span, err.to_string())
+                        }
+                        filter::Error::Glob(scope::Error::Io { path, cause }, _) => Failure::Io {
+                            doing: "looking for",
+                            path,
+                            cause,
+                        },
                     },
-                    filter::Error::Pattern(err, span) => Failure::Script {
-                        location: built.locate(
-                            span,
-                            err.offset()
-                                .map_or(span.start, |at| built.content_start(span) + at),
-                        ),
-                        message: err.to_string(),
-                    },
-                    filter::Error::Glob(scope::Error::TooLarge(err), span) => {
-                        script(span, err.to_string())
-                    }
-                    filter::Error::Glob(scope::Error::Io { path, cause }, _) => Failure::Io {
-                        doing: "looking for",
-                        path,
-                        cause,
-                    },
-                })?;
+                )?;
             let Some(compiled_filter) = compiled_filter else {
                 return Ok(None);
             };
@@ -1888,6 +1904,8 @@ enum Held {
     File {
         original: crate::contents::Bytes,
         changes: Vec<Changes>,
+        /// Its language, if quaff parses it, which decodes it for a structural match's code.
+        language: Option<&'static dyn FrontEnd>,
     },
     /// The code the structural matches found in a file no replace changed cover, one match's
     /// after another, where that is less than the file: a few short matches in a large file, as
@@ -1900,7 +1918,9 @@ impl Held {
     /// a replace changed is.
     fn file(&self) -> (&crate::contents::Bytes, &[Changes]) {
         match self {
-            Held::File { original, changes } => (original, changes),
+            Held::File {
+                original, changes, ..
+            } => (original, changes),
             Held::Copied(_) => unreachable!("a file a replace changed is held whole"),
         }
     }
@@ -1909,13 +1929,19 @@ impl Held {
     /// decoded again, for a file held whole, and the copies for one whose matches were copied.
     fn text(&self, version: usize) -> Cow<'_, str> {
         match self {
-            Held::File { original, changes } => {
+            Held::File {
+                original,
+                changes,
+                language,
+            } => {
                 let bytes = if version == 0 {
                     Cow::Borrowed(&original[..])
                 } else {
                     Cow::Owned(changes::applied(original, &changes[..version]))
                 };
-                let source = python::Source::decode(&bytes)
+                let source = language
+                    .expect("a file a structural match was found in has a language")
+                    .decode(&bytes)
                     .expect("a version a match was found in decoded then");
                 Cow::Owned(source.text)
             }
@@ -1927,9 +1953,9 @@ impl Held {
     #[cfg(test)]
     fn size(&self) -> usize {
         match self {
-            Held::File { original, changes } => {
-                original.len() + changes.iter().map(Changes::held).sum::<usize>()
-            }
+            Held::File {
+                original, changes, ..
+            } => original.len() + changes.iter().map(Changes::held).sum::<usize>(),
             Held::Copied(copies) => copies.len(),
         }
     }
@@ -1939,17 +1965,17 @@ impl Held {
 struct Searched {
     /// For each pattern, the files with matches, in discovery order.
     matches: Vec<Vec<(PathBuf, Vec<Hit>)>>,
-    /// Python files a structural search needs that quaff cannot parse, by the paths a message
-    /// shows, with where and why.
+    /// Files a structural search needs that quaff cannot parse, by the paths a message shows,
+    /// with where and why.
     unparsed: Vec<(PathBuf, String)>,
-    /// Python files in some structural pattern's scope, binary ones included.
-    python: usize,
+    /// Files in a language quaff parses in some structural pattern's scope, binary ones included.
+    supported: usize,
     /// Other files in some structural pattern's scope, which have no structure quaff reads.
     not_applicable: usize,
-    /// For each pattern, the Python files in its scope, binary ones included: none for a
-    /// textual one.
-    python_for: Vec<usize>,
-    /// For each pattern, the Python files searched for it.
+    /// For each pattern, the files in a language quaff parses in its scope, binary ones included:
+    /// none for a textual one.
+    supported_for: Vec<usize>,
+    /// For each pattern, the files in a language quaff parses searched for it.
     structural_for: Vec<usize>,
     /// For each pattern, the other files in its scope, which it does not apply to.
     not_applicable_for: Vec<usize>,
@@ -2004,8 +2030,8 @@ struct Changed {
     path: PathBuf,
     /// The path a message shows.
     shown: PathBuf,
-    /// Whether it is a Python file, which must still parse if it parsed before.
-    python: bool,
+    /// Its language, if quaff parses it: then it must still parse if it parsed before.
+    language: Option<&'static dyn FrontEnd>,
     /// Its place in [`Searched::held`].
     held: usize,
     /// The replaces that changed it, by their pattern's index.
@@ -2097,7 +2123,7 @@ struct ReadFile<'a> {
     shown: &'a Path,
     bytes: &'a [u8],
     resolution: &'a Resolution,
-    python: bool,
+    language: Option<&'static dyn FrontEnd>,
     binary: bool,
 }
 
@@ -2169,9 +2195,9 @@ fn search_files(
     let mut searched = Searched {
         matches: (0..patterns.len()).map(|_| Vec::new()).collect(),
         unparsed: Vec::new(),
-        python: 0,
+        supported: 0,
         not_applicable: 0,
-        python_for: vec![0; patterns.len()],
+        supported_for: vec![0; patterns.len()],
         structural_for: vec![0; patterns.len()],
         not_applicable_for: vec![0; patterns.len()],
         possible: vec![Vec::new(); patterns.len()],
@@ -2261,14 +2287,14 @@ impl Searched {
             cause: err.cause,
         })?;
         let binary = matches!(resolution, Resolution::Binary);
-        let python = resolve::is_python(file);
-        self.count_for_structure(plan, applies, python, binary);
+        let language = languages::of(file);
+        self.count_for_structure(plan, applies, language.is_some(), binary);
         let read = ReadFile {
             file,
             shown: &shown,
             bytes: &bytes,
             resolution: &resolution,
-            python,
+            language,
             binary,
         };
         self.cited.clear();
@@ -2280,7 +2306,7 @@ impl Searched {
             self.changed.push(Changed {
                 path: file.to_path_buf(),
                 shown,
-                python,
+                language,
                 held: self.held.len(),
                 by,
             });
@@ -2290,9 +2316,10 @@ impl Searched {
             self.held.push(Held::File {
                 original: bytes,
                 changes,
+                language,
             });
         } else if !self.cited.is_empty() {
-            let held = self.copied_or_whole(bytes);
+            let held = self.copied_or_whole(bytes, language);
             self.held.push(held);
         }
         Ok(())
@@ -2317,6 +2344,16 @@ impl Searched {
         let mut unparsed = false;
         for batch in &plan.batches {
             let text: &[u8] = edited.as_deref().unwrap_or(read.bytes);
+            // On disk, if an edit has changed it, to tell a file that never parsed from one an
+            // edit broke.
+            let earlier = Earlier {
+                on_disk: edited.is_some().then_some(read.bytes),
+                by: &by,
+                version: Version {
+                    held: self.held.len(),
+                    number: changes.len(),
+                },
+            };
             match batch {
                 Batch::Search {
                     textual,
@@ -2324,18 +2361,12 @@ impl Searched {
                 } => {
                     let textual = applying(textual, applies);
                     let structural = applying(structural, applies);
-                    if !structural.is_empty() && read.python && !read.binary {
-                        // On disk, if an edit has changed it, to tell a file that never parsed
-                        // from one an edit broke.
-                        let earlier = Earlier {
-                            on_disk: edited.is_some().then_some(read.bytes),
-                            by: &by,
-                            version: Version {
-                                held: self.held.len(),
-                                number: changes.len(),
-                            },
-                        };
+                    if let Some(language) = read.language
+                        && !structural.is_empty()
+                        && !read.binary
+                    {
                         self.structural_batch(
+                            language,
                             read.shown,
                             text,
                             &earlier,
@@ -2376,16 +2407,9 @@ impl Searched {
                     compiled,
                     rewrite,
                 } => {
-                    if !applies[*index] || !read.python || read.binary {
+                    let Some(language) = read.language.filter(|_| applies[*index] && !read.binary)
+                    else {
                         continue;
-                    }
-                    let earlier = Earlier {
-                        on_disk: edited.is_some().then_some(read.bytes),
-                        by: &by,
-                        version: Version {
-                            held: self.held.len(),
-                            number: changes.len(),
-                        },
                     };
                     let edit = Rewriting {
                         index: *index,
@@ -2393,6 +2417,7 @@ impl Searched {
                         rewrite: &plan.rewrites[*rewrite],
                     };
                     if let Some((whole, over)) = self.rewrite_in(
+                        language,
                         read.shown,
                         text,
                         &earlier,
@@ -2415,19 +2440,25 @@ impl Searched {
     /// file, a binary one too, since it is in scope and the run must not say there is no Python,
     /// though it is counted with the binary files rather than searched; or a text-tier file, to
     /// which they do not apply.
-    fn count_for_structure(&mut self, plan: &Plan, applies: &[bool], python: bool, binary: bool) {
+    fn count_for_structure(
+        &mut self,
+        plan: &Plan,
+        applies: &[bool],
+        supported: bool,
+        binary: bool,
+    ) {
         let here: Vec<usize> = plan
             .structural
             .iter()
             .copied()
             .filter(|&i| applies[i])
             .collect();
-        if here.is_empty() || (binary && !python) {
+        if here.is_empty() || (binary && !supported) {
             return;
         }
-        let counts = if python {
-            self.python += 1;
-            &mut self.python_for
+        let counts = if supported {
+            self.supported += 1;
+            &mut self.supported_for
         } else {
             self.not_applicable += 1;
             &mut self.not_applicable_for
@@ -2461,19 +2492,20 @@ impl Searched {
         }
     }
 
-    /// Searches a Python file's decoded `text` for each structural pattern, `shapes` in the
-    /// order of `structural`, which pairs each pattern's index among all the run's patterns with
-    /// its compiled one.  A file that does not parse is searched for nothing, and where and why
-    /// is returned.
-    fn python(
+    /// Searches a file's decoded `text`, in `language`, for each structural pattern, `shapes` in
+    /// the order of `structural`, which pairs each pattern's index among all the run's patterns
+    /// with its compiled one.  A file that does not parse is searched for nothing, and where and
+    /// why is returned.
+    fn parsed(
         &mut self,
+        language: &dyn FrontEnd,
         shown: &Path,
         text: &str,
         version: Version,
         structural: &[(usize, usize)],
         shapes: &[(&Pattern, Option<&structural::Where>)],
     ) -> Result<(), String> {
-        match structural::search(text, shapes) {
+        match structural::search(language, text, shapes) {
             Err(unparsed) => Err(unparsed_at(&unparsed)),
             Ok(found) => {
                 for (&(i, _), in_file) in structural.iter().zip(found) {
@@ -2489,7 +2521,11 @@ impl Searched {
     /// large file, with each match's [`Code`] moved to where its copy stands; and otherwise the
     /// file, as for matches that overlap, each to the end of a long block.  So a run holds no more
     /// of a file than the smaller of the two.
-    fn copied_or_whole(&mut self, bytes: crate::contents::Bytes) -> Held {
+    fn copied_or_whole(
+        &mut self,
+        bytes: crate::contents::Bytes,
+        language: Option<&'static dyn FrontEnd>,
+    ) -> Held {
         let cited = std::mem::take(&mut self.cited);
         let codes = |matches: &[(PathBuf, Vec<Hit>)]| -> Vec<Code> {
             let (_, hits) = matches
@@ -2506,9 +2542,12 @@ impl Searched {
             return Held::File {
                 original: bytes,
                 changes: Vec::new(),
+                language,
             };
         }
-        let text = python::Source::decode(&bytes)
+        let text = language
+            .expect("a file a structural match was found in has a language")
+            .decode(&bytes)
             .expect("a file a structural match was found in decoded then")
             .text;
         let mut copies = String::with_capacity(covered);
@@ -2567,6 +2606,7 @@ impl Searched {
     )]
     fn structural_batch(
         &mut self,
+        language: &dyn FrontEnd,
         shown: &Path,
         text: &[u8],
         earlier: &Earlier,
@@ -2603,11 +2643,18 @@ impl Searched {
             .zip(&filters)
             .map(|(&(_, c), filter)| (&plan.compiled[c], filter.as_ref()))
             .collect();
-        // The text Ruff parses is the text CPython would run, decoded as CPython decodes it,
-        // whatever else declares the file's encoding for the textual tier.
-        let outcome = match python::Source::decode(text) {
-            Ok(source) => self.python(shown, &source.text, earlier.version, structural, &shapes),
-            // A Python file CPython refuses to read does not parse, whatever it holds, and one in
+        // The text parsed is the text the language's own reader would read, decoded as it
+        // decodes it, whatever else declares the file's encoding for the textual tier.
+        let outcome = match language.decode(text) {
+            Ok(source) => self.parsed(
+                language,
+                shown,
+                &source.text,
+                earlier.version,
+                structural,
+                &shapes,
+            ),
+            // A file its language's reader refuses does not parse, whatever it holds, and one in
             // an encoding quaff does not read cannot be parsed by quaff: either way a count
             // without it could not be trusted.
             Err(refusal) => Err(refusal.to_string()),
@@ -2621,7 +2668,7 @@ impl Searched {
             return;
         };
         let indices: Vec<usize> = structural.iter().map(|&(i, _)| i).collect();
-        self.not_parsed(shown, why, earlier, &indices, unparsed);
+        self.not_parsed(language, shown, why, earlier, &indices, unparsed);
     }
 
     /// Records that a Python file could not be parsed for the patterns at `indices`, `why`: as
@@ -2629,13 +2676,17 @@ impl Searched {
     /// as a file that cannot be parsed, once however many batches find it so.
     fn not_parsed(
         &mut self,
+        language: &dyn FrontEnd,
         shown: &Path,
         why: String,
         earlier: &Earlier,
         indices: &[usize],
         unparsed: &mut bool,
     ) {
-        if earlier.on_disk.is_some_and(|bytes| parses(bytes).is_ok()) {
+        if earlier
+            .on_disk
+            .is_some_and(|bytes| parses(language, bytes).is_ok())
+        {
             for &i in indices {
                 self.broken[i].push((shown.to_owned(), why.clone(), earlier.by.to_vec()));
             }
@@ -2658,6 +2709,7 @@ impl Searched {
     )]
     fn rewrite_in(
         &mut self,
+        language: &dyn FrontEnd,
         shown: &Path,
         text: &[u8],
         earlier: &Earlier,
@@ -2680,21 +2732,40 @@ impl Searched {
                 holds: Box::new(move |arena, nodes| filter.holds(place, arena, nodes, &found)),
             }
         });
-        let source = match python::Source::decode(text) {
+        let source = match language.decode(text) {
             Ok(source) => source,
             Err(refusal) => {
-                self.not_parsed(shown, refusal.to_string(), earlier, &[index], unparsed);
+                self.not_parsed(
+                    language,
+                    shown,
+                    refusal.to_string(),
+                    earlier,
+                    &[index],
+                    unparsed,
+                );
                 return None;
             }
         };
-        let replaced =
-            match rewrite::replace(&source.text, edit.pattern, filter.as_ref(), edit.rewrite) {
-                Ok(replaced) => replaced,
-                Err(err) => {
-                    self.not_parsed(shown, unparsed_at(&err), earlier, &[index], unparsed);
-                    return None;
-                }
-            };
+        let replaced = match rewrite::replace(
+            language,
+            &source.text,
+            edit.pattern,
+            filter.as_ref(),
+            edit.rewrite,
+        ) {
+            Ok(replaced) => replaced,
+            Err(err) => {
+                self.not_parsed(
+                    language,
+                    shown,
+                    unparsed_at(&err),
+                    earlier,
+                    &[index],
+                    unparsed,
+                );
+                return None;
+            }
+        };
         self.structural_for[index] += 1;
         self.cite(index, shown, earlier.version, replaced.found);
         match replaced.outcome {
@@ -3128,7 +3199,7 @@ impl<'s> Evaluation<'s> {
         match pattern {
             // With nothing in scope at all, as where a `where` leaves out every file, there are no
             // text-tier files to count, and "0 not searched" would say nothing.
-            Wanted::Structural { .. } if searched.python_for[index] == 0 => {
+            Wanted::Structural { .. } if searched.supported_for[index] == 0 => {
                 Some(match searched.not_applicable_for[index] {
                     0 => "no file in scope has structural support".to_string(),
                     n => format!(
@@ -3140,7 +3211,7 @@ impl<'s> Evaluation<'s> {
             // Every Python file in scope is binary, which the binary count says.
             Wanted::Structural { .. } if searched.structural_for[index] == 0 => Some(format!(
                 "no file in scope with structural support could be searched; {} not searched",
-                count(searched.python_for[index], "such file", "such files")
+                count(searched.supported_for[index], "such file", "such files")
             )),
             _ => None,
         }
@@ -3314,7 +3385,7 @@ fn structural_notes(searched: &Searched, evaluated: &[Searching]) -> Vec<String>
         notes.push(format!("{path:?}: {why}"));
     }
     // With no Python in scope, the run's own message counts these instead.
-    if searched.python > 0 && searched.not_applicable > 0 {
+    if searched.supported > 0 && searched.not_applicable > 0 {
         notes.push(format!(
             "{} not searched for structural patterns, which apply only to files with \
              structural support",
@@ -3667,7 +3738,7 @@ mod tests {
     /// A stretch of `text`'s bytes, in `encoding`'s spelling, rewritten: `old` in the file as
     /// decoded becomes `new`, and the claim is checked to be exactly what changed.
     fn claimed_in_bytes(file: &[u8], old: &str, new: &str) {
-        let source = python::Source::decode(file).expect("decodes");
+        let source = encoding::Source::decode(file).expect("decodes");
         let at = source.text.find(old).expect("the old text is in the file");
         let edited = source.text.replacen(old, new, 1);
         let over = [(at..at + old.len(), at..at + new.len())];
@@ -3707,7 +3778,7 @@ mod tests {
 
     #[test]
     fn a_stretch_off_a_character_boundary_claims_nothing() {
-        let source = python::Source::decode("x = 'é'\n".as_bytes()).unwrap();
+        let source = encoding::Source::decode("x = 'é'\n".as_bytes()).unwrap();
         // Byte 6 is inside "é".
         assert_eq!(in_bytes(&source, "x = 'é'\n", &[(6..7, 6..7)]), Vec::new());
     }

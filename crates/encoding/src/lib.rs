@@ -17,7 +17,7 @@
 mod codecs;
 pub mod python;
 
-pub use python::{Codec, MultiByteCodec, Read, Refusal, SourceEncoding};
+pub use python::{Codec, MultiByteCodec, Read, Refusal, Source, SourceEncoding, Unencodable};
 
 /// How many leading bytes git examines for a NUL when deciding a file is binary.
 ///

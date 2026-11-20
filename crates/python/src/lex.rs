@@ -9,49 +9,10 @@
 
 use std::ops::Range;
 
+use quaffed_syntax::{Bracket, Lexed, StringPart};
 use ruff_python_ast::token::TokenKind;
 use ruff_python_parser::{Mode, ParseOptions};
 use ruff_text_size::Ranged;
-
-/// The parts of Python text a rewrite must handle with care.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Lexed {
-    /// Every comment's byte range, `#` included, in order.
-    pub comments: Vec<Range<usize>>,
-    /// The byte range of every string, or f-string or t-string literal part, that spans more than
-    /// one line, in order: a line starting inside one is part of the string's value, so it is
-    /// never re-indented.
-    pub multi_line_strings: Vec<Range<usize>>,
-    /// The whitespace the first indented block is indented by, if any block is.
-    pub indent_unit: Option<String>,
-    /// Every pair of brackets, round, square or curly, in the order they open.  The braces that
-    /// open and close an f-string's or t-string's fields are not brackets but part of the string.
-    pub brackets: Vec<Bracket>,
-    /// Where each logical line starts: the first token of the text, and the first after each
-    /// logical line ends, in order.  A line continued inside a bracket or after a backslash is
-    /// not one, so its indentation says nothing of depth.
-    pub logical_starts: Vec<usize>,
-    /// Every part of a string whose text is the string's own - a plain string, or an f-string's
-    /// or t-string's literal text between fields - with how its literal is written, in order.
-    pub strings: Vec<StringPart>,
-}
-
-/// One part of a string literal and how the literal is written, which decides how text can be
-/// written into it as text.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StringPart {
-    /// Its byte range: a plain string's whole token, prefix and quotes included, or the literal
-    /// text of an f-string or t-string between its fields.
-    pub range: Range<usize>,
-    /// Whether the literal is raw, its backslashes text rather than escapes.
-    pub raw: bool,
-    /// Whether it is a bytes literal, which holds ASCII only.
-    pub bytes: bool,
-    /// Whether it is an f-string or t-string, in which a brace opens a field.
-    pub formatted: bool,
-    /// Its quotes: one quote character, or three.
-    pub quote: String,
-}
 
 /// `value` written into `part` so that the literal holds it as text: in a string that is not
 /// raw, each backslash and quote character escaped, and line breaks too unless the quotes are
@@ -148,18 +109,6 @@ fn quoting(opening: &str) -> (String, String) {
         rest[..1.min(rest.len())].to_owned()
     };
     (prefix, quote)
-}
-
-/// One pair of brackets in Python text.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Bracket {
-    /// The byte offset of the opening bracket.
-    pub open: usize,
-    /// The byte offset of the closing bracket.
-    pub close: usize,
-    /// The byte offset of a comma that is the last token before the closing bracket, comments
-    /// and line breaks aside, if there is one.
-    pub trailing_comma: Option<usize>,
 }
 
 /// What a bracket's opening token is inside, for pairing it with its closing one.
