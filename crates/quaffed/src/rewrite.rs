@@ -3093,6 +3093,15 @@ mod tests {
             deleted("x = 1", "def f():\n    # why\n    x = 1\n\n    y = 2\n"),
             "def f():\n    # why\n\n    y = 2\n"
         );
+        // A line of a string that starts as a comment would is the string's, and no edge: the
+        // match starts its block, so it takes the blank lines after it.
+        assert_eq!(
+            deleted(
+                "y = 1",
+                "def f(a=\"\"\"\n    # x\"\"\"):\n\n    y = 1\n\n\n    z = 2\n"
+            ),
+            "def f(a=\"\"\"\n    # x\"\"\"):\n\n    z = 2\n"
+        );
         // A comment indented less than the match is outside the block, so is no edge of it.
         assert_eq!(
             deleted(
