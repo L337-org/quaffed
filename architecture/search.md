@@ -70,13 +70,9 @@ file the run holds is renumbered as it joins the files held so far.  Nothing a f
 depends on another file's, so files can be worked on in any order, and the order of the results
 depends on discovery alone.
 
-**A statement that works across files does not fit this unit.**  A statement that follows
-references from one file into others, or one that binds a set a later statement ranges over,
-needs what other files gave before it can work on a file.  Such a statement would split execution
-into stages at that statement: every file is taken through the batches before it, what it needs
-is gathered from every file, and only then are the files taken through the batches after it, with
-what was gathered as an input alongside the plan.  A file would be read again for each stage, or
-held between them: that choice is the cost to weigh against what a run may hold in memory.
+**A statement that works across files does not fit this unit**: one that follows references from
+one file into others, or binds a set a later statement ranges over, needs what other files gave
+before it can work on a file, and a file's search has nothing but the file.
 
 ## Discovery
 
