@@ -568,23 +568,37 @@ impl Searched {
             declares_in: _,
             binary,
         } = file;
-        for (run, mut in_file) in self.found.iter_mut().zip(found) {
-            for (_, hits) in &mut in_file.matches {
+        for (run, in_file) in self.found.iter_mut().zip(found) {
+            // Every field named, so that one added to `Found` cannot be left out of gathering.
+            let Found {
+                mut matches,
+                supported,
+                structural,
+                not_applicable,
+                unread,
+                possible,
+                unspelled,
+                unwritable,
+                edits_refused,
+                questioned,
+                broken,
+            } = in_file;
+            for (_, hits) in &mut matches {
                 for code in hits.iter_mut().filter_map(|hit| hit.code.as_mut()) {
                     code.held += held;
                 }
             }
-            run.matches.append(&mut in_file.matches);
-            run.supported += in_file.supported;
-            run.structural += in_file.structural;
-            run.not_applicable += in_file.not_applicable;
-            run.unread += in_file.unread;
-            run.possible.append(&mut in_file.possible);
-            run.unspelled.append(&mut in_file.unspelled);
-            run.unwritable.append(&mut in_file.unwritable);
-            run.edits_refused.append(&mut in_file.edits_refused);
-            run.questioned.append(&mut in_file.questioned);
-            run.broken.append(&mut in_file.broken);
+            run.matches.append(&mut matches);
+            run.supported += supported;
+            run.structural += structural;
+            run.not_applicable += not_applicable;
+            run.unread += unread;
+            run.possible.extend(possible);
+            run.unspelled.extend(unspelled);
+            run.unwritable.extend(unwritable);
+            run.edits_refused.extend(edits_refused);
+            run.questioned.extend(questioned);
+            run.broken.extend(broken);
         }
         self.unparsed.extend(unparsed);
         self.supported += supported;

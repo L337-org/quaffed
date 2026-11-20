@@ -61,10 +61,9 @@ the run's patterns, in program order, and is the same in both.
 
 ### The unit of work
 
-**Execution's unit of work is a file.**  A file is read once and taken through the run's
-patterns in batches, in program order: the patterns between two replaces are searched for in one
-pass over the file as it then is, and each replace changes the file for the patterns after it.
-Only the file's own patterns - those whose scope holds it - are looked at.  What a file gives is
+**Execution's unit of work is a file**: it is read once and taken through the run's patterns in
+batches, in program order, as the first rule under _Editing_ says.  Only the file's own patterns -
+those whose scope holds it - are looked at.  What a file gives is
 a `Searched` of its own, which is gathered into the run's in discovery order: each pattern's
 `Found` takes the file's matches, counts and notes after those of the files before it, and a
 file the run holds is renumbered as it joins the files held so far.  Nothing a file's search does
