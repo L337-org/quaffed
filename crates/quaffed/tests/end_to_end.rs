@@ -2178,11 +2178,16 @@ fn a_pattern_that_cannot_be_compiled_exits_3_saying_where() {
     assert_quaff_snapshot!(project.quaff(&["-p", "`f(x)"]));
     // A sequence that starts or ends a run of statements would reach the edge of its block.
     assert_quaff_snapshot!(project.quaff(&["-p", "handle_request($a, $b)\n$rest..."]));
-    // A run whose search would grow faster than the square of a block's length.
+    // Two sequences together, which nothing divides; then a run whose search would grow faster
+    // than the square of a block's length.
     assert_quaff_snapshot!(project.quaff(&["-p", "w()\n$a...\n$b...\nx()"]));
     assert_quaff_snapshot!(
         project.quaff(&["-p", "w()\n$a...\nx()\n$b...\ny()\n$a...\nx()\n$b...\nz()"])
     );
+    // Two sequences together inside a node are refused as they are in a run.
+    assert_quaff_snapshot!(project.quaff(&["-p", "handle_request($a..., $b...)"]));
+    // A sequence where the code holds one node would take what follows it there too.
+    assert_quaff_snapshot!(project.quaff(&["-p", "$t = $v..."]));
     project.assert_unchanged();
 }
 

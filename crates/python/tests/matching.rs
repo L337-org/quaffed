@@ -327,18 +327,151 @@ fn a_run_whose_search_would_grow_faster_than_quadratic_is_refused() {
     assert!(compile_pattern("w()\n$a...\nx()\n$a...\ny()\n").is_ok());
     assert!(compile_pattern("f($v)\n$...\ng($v)\n$...\nh($v)\n").is_ok());
     assert!(compile_pattern("w()\n$...\nx()\n$...\ny()\n").is_ok());
-    // Two sequences together inside one node are not a run of statements, and cost nothing.
-    assert!(compile_pattern("f($a..., $b...)").is_ok());
     // Inside a node, which starts where it stands, the same two stops are the square; a third
     // makes the cube.
     assert!(compile_pattern("f(w, $a..., x, $b..., y, $a..., x, $b..., z)").is_ok());
-    match compile_pattern("f(w, $a..., x, $b..., y, $c..., z, $a..., $b..., $c...)") {
+    match compile_pattern("f(w, $a..., x, $b..., y, $c..., z, $a..., x, $b..., y, $c...)") {
         Err(PatternError::ThirdPlace { spelled, .. }) => assert_eq!(spelled, "$c..."),
         other => panic!("{other:?}"),
     }
     assert!(
         compile_pattern("def $f():\n    w()\n    $a...\n    x()\n    $a...\n    y()\n").is_ok()
     );
+}
+
+#[test]
+fn two_sequences_together_in_any_list_are_refused() {
+    // Nothing between them says how many items each takes, whether the list is a run of
+    // statements, a block's statements, arguments, elements or parameters.
+    for (pattern, offset) in [
+        ("w()\n$a...\n$b...\nx()\n", 10),
+        ("def $f():\n    w()\n    $a...\n    $b...\n    x()\n", 32),
+        ("if $c:\n    $a...\n    $b...\n", 21),
+        ("f($a..., $b...)", 9),
+        ("f($a..., $...)", 9),
+        ("[$a..., $b...]", 8),
+        ("{$a..., $b...}", 8),
+        ("def $f($a..., $b...): pass", 14),
+        ("lambda $a..., $b...: 0", 14),
+        ("import $a..., $b...", 14),
+        ("del $a..., $b...", 11),
+        ("@retry($a..., $b...)", 14),
+        ("$a... < $b...", 8),
+    ] {
+        match compile_pattern(pattern) {
+            Err(err @ PatternError::SequencesTogether { .. }) => {
+                assert_eq!(err.offset(), Some(offset), "{pattern:?}");
+            }
+            other => panic!("{pattern:?}: {other:?}"),
+        }
+    }
+    // Code between them bounds each, as a `/` or a `*` does among parameters.
+    for pattern in [
+        "f($a..., x, $b...)",
+        "def $f($a..., /, $b...): pass",
+        "def $f($a..., *, $b...): pass",
+        "def $f($a..., *$r, $b...): pass",
+        "w()\n$a...\nx()\n$b...\ny()\n",
+    ] {
+        assert!(compile_pattern(pattern).is_ok(), "{pattern:?}");
+    }
+    // One list's last sequence and the next list's first are not together.
+    assert!(compile_pattern("f($a...)($b...)").is_ok());
+}
+
+#[test]
+fn a_sequence_stands_only_as_items_of_a_list() {
+    // A place that holds one node is not a list, even where optional syntax follows it there,
+    // which a sequence would take too.
+    for (pattern, offset) in [
+        ("$t = $v...", 5),
+        ("t = u = $v...", 8),
+        ("$t += $v...", 6),
+        ("$x: int = $v...", 10),
+        ("$x: $a...", 4),
+        ("assert $c...", 7),
+        ("raise $e...", 6),
+        ("return $v...", 7),
+        ("$a[$s...]", 3),
+        ("$a[1:$s...]", 5),
+        ("($e for $q in $w...)", 14),
+        ("f\"{$v...}\"", 3),
+        ("f(*$a...)", 3),
+        ("f(k=$v...)", 4),
+        ("$a... + $b", 0),
+        ("@$d...", 1),
+        ("def $f(*$a...): pass", 8),
+        ("from $m... import x", 5),
+    ] {
+        match compile_pattern(pattern) {
+            Err(err @ PatternError::NotInAList { .. }) => {
+                assert_eq!(err.offset(), Some(offset), "{pattern:?}");
+            }
+            other => panic!("{pattern:?}: {other:?}"),
+        }
+    }
+    // Each list Python has takes one, wherever in the list it stands.
+    for pattern in [
+        "$t... = 1",
+        "$a, $b... = $v",
+        "del $a...",
+        "import $m...",
+        "from m import $n...",
+        "global $n...",
+        "with $o...: pass",
+        "$a and $b...",
+        "$a < $b...",
+        "[$x for $y in $z if $c...]",
+        "f($a, $b...)",
+        "f($a..., k=1)",
+        "{$a...}",
+        "($a, $b...)",
+        "$a[$i, $j...]",
+        "def $f($p...): pass",
+        "def $f($a, /, $p...): pass",
+        "def $f(*, $k...): pass",
+        "def $f[$t...](): pass",
+        "class $c($b...): pass",
+        "lambda $p...: 0",
+        "@retry($a...)",
+        "match $s:\n    case [$p...]:\n        pass\n    case $c($q...):\n        pass\n    case 1 | $r...:\n        pass\n",
+        "w()\n$body...\nx()\n",
+    ] {
+        assert!(compile_pattern(pattern).is_ok(), "{pattern:?}");
+    }
+}
+
+#[test]
+fn a_sequence_among_a_comparison_s_operands_takes_the_operators_between_them() {
+    let source = "a = x < y
+b = x < y == z
+c = x == y < z
+d = x + y + z
+";
+    // The pattern's own operator is compared; those between the operands a sequence takes are
+    // the sequence's.
+    assert_eq!(matches("$a < $b...", source), ["x < y", "x < y == z"]);
+    assert_eq!(matches("$a... < $b", source), ["x < y", "x == y < z"]);
+    // A sum nests, so its operands are no list.
+    assert!(matches!(
+        compile_pattern("$a + $b..."),
+        Err(PatternError::NotInAList { .. })
+    ));
+}
+
+#[test]
+fn a_hole_among_a_lambda_s_parameters_is_one_parameter() {
+    let source = "f = lambda q, r=1: q
+g = lambda q: q
+h = lambda: 0
+";
+    assert_eq!(matches("lambda $p: $b", source), ["lambda q: q"]);
+    assert_eq!(
+        matches("lambda $p...: $b", source),
+        ["lambda q, r=1: q", "lambda q: q"]
+    );
+    assert_eq!(matches("lambda $p, $q: $b", source), ["lambda q, r=1: q"]);
+    assert_eq!(matches("lambda: $b", source), ["lambda: 0"]);
 }
 
 #[test]
@@ -575,26 +708,26 @@ fn hole_spellings_in_a_string_or_comment_are_literal_text_whatever_they_are() {
 
 #[test]
 fn a_node_is_asked_again_when_a_name_it_bound_fails_later() {
-    // `f`'s `$a` must take `1, 2` for `g` to hold the same, though `1` alone lets `f` match.
-    let source = "f(1, 2, 3) + g(1, 2)\nf(1, 2, 3) + g(1, 2, 3, 4)\n";
+    // `f`'s `$a` must take `1, 0, 2` for `g` to hold the same, though `1` alone lets `f` match.
+    let source = "f(1, 0, 2, 0, 3) + g(1, 0, 2)\nf(1, 0, 2, 0, 3) + g(1, 0, 2, 0, 3, 4)\n";
     assert_eq!(
-        matches("f($a..., $b...) + g($a...)", source),
-        ["f(1, 2, 3) + g(1, 2)"]
+        matches("f($a..., 0, $b...) + g($a...)", source),
+        ["f(1, 0, 2, 0, 3) + g(1, 0, 2)"]
     );
     // One stop divides `f`'s arguments between `$a` and `$b`, and `$b` ends where they do, so
     // the node's ways are one choice, however many names they move.
     assert_eq!(
         matches(
-            "f($a..., $b...) + g($a..., x, $b...)",
-            "f(1, 2) + g(1, x, 2)\nf(1, 2) + g(1, 2, x)\n"
+            "f($a..., 0, $b...) + g($a..., x, $b...)",
+            "f(1, 0, 2) + g(1, x, 2)\nf(1, 0, 2) + g(1, 2, x)\n"
         ),
-        ["f(1, 2) + g(1, x, 2)"]
+        ["f(1, 0, 2) + g(1, x, 2)"]
     );
     // Three stops in it are as many ways as their triples, each compared with `g`'s
     // arguments: refused, where two are the square.
-    assert!(compile_pattern("f($a..., $b..., $c...) + g($a..., x, $b...)").is_ok());
+    assert!(compile_pattern("f($a..., 0, $b..., 0, $c...) + g($a..., x, $b...)").is_ok());
     assert!(matches!(
-        compile_pattern("f($a..., $b..., $c..., $d...) + g($a..., $b..., $c...)"),
+        compile_pattern("f($a..., 0, $b..., 0, $c..., 0, $d...) + g($a..., 0, $b..., 0, $c...)"),
         Err(PatternError::ThirdPlace { .. })
     ));
 }
@@ -611,8 +744,8 @@ fn a_stop_in_a_nodes_own_list_still_counts_when_its_name_is_used_outside() {
     }
     // With a sequence after them, `$c...` stops anywhere too: three stops, the cube.
     for pattern in [
-        "f($a..., 1, $b..., 2, $b..., 3, $c..., 4, $c..., $d...)",
-        "f($a..., 1, $b..., 2, $b..., 3, $c..., 4, $c..., $d...) + g($b...)",
+        "f($a..., 1, $b..., 2, $b..., 3, $c..., 4, $c..., 5, $d...)",
+        "f($a..., 1, $b..., 2, $b..., 3, $c..., 4, $c..., 5, $d...) + g($b...)",
     ] {
         assert!(
             matches!(
