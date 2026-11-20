@@ -345,9 +345,10 @@ the path or argument it concerns, and says what to do where there is something t
   write is derived, never guessed**: the indentation of the template's later lines and of
   captured code moved to another depth, from the file's indent unit; the file's own line ending for
   the template's line breaks; and the trailing commas a pattern ignores.  **Statements that share
-  a line are given lines of their own where they need them** (`src/rewrite/lines.rs`), where the
-  language lets statements share a line - in Python, after a semicolon, or in a block written on
-  its header's line after the colon.  A match that is a run of statements there, or a statement
+  a line are given lines of their own where they need them** (`src/rewrite/lines.rs`), in a
+  language whose blocks layout decides, where its `Editing` names what ends a header whose block
+  may share its line - in Python, after a semicolon, or in a block written on its header's line
+  after the colon.  A match that is a run of statements there, or a statement
   capture the template writes there, may need more than one line, or start or end with a
   statement holding a block, or end with a comment.  Then the code round it is laid out: the
   block is moved to lines of its own under its header, and a separator before or after the
@@ -401,20 +402,23 @@ the path or argument it concerns, and says what to do where there is something t
   a block it ends with, and of the blank lines either side, the narrower run, or those at the start
   or end of the file, or those on the inner side of a block's start or end, which the statement
   lists the adapter marks tell (`Deletion::block_edges`), unless a comment stands at that edge
-  (`Deletion::whole_lines`); or else one comma its parent node holds next to it,
-  across line breaks, or one semicolon on its own line (`Deletion`).  Asking the parent is what
-  keeps a comma belonging to a neighbouring expression from being taken, and a comma in a comment,
-  or with a comment between it and the match, is never taken.  A run of list items, each taking the
-  separator after it, leaves the last with none, so the run takes the one before it.  A tuple left
-  with one item and no comma after it would be that item alone, so a comma is written after it
-  (`one_item_tuples`).  A rewrite that is only a comment is written in place of the code, takes no
-  comma from another line, and never takes the line; it is refused where code follows it on its
-  line, which it would swallow.  An empty block left behind does not parse, and the parse check
-  refuses it.  A match that takes nothing is refused unless it is a statement, which the parse check
-  judges, or an item that can simply be gone (`ITEMS`): anywhere else what holds it is left without
-  it, which can parse and mean something else, as `x =  + a` and a bare `return` do.  It is an
-  allowlist, not a list of the kinds known to go wrong, so a position nobody thought of is refused
-  rather than let through.  An empty rewrite is reported as a delete however it is spelled
+  (`Deletion::whole_lines`); or else one separator its parent node holds next to it, as the
+  language's `Editing` names them: an item separator, Python's comma, across line breaks, or a
+  statement separator, Python's semicolon, on its own line (`Deletion`).  Asking the parent is
+  what keeps a comma belonging to a neighbouring expression from being taken, and a separator in a
+  comment, or with a comment between it and the match, is never taken.  A run of list items, each
+  taking the separator after it, leaves the last with none, so the run takes the one before it.  A
+  list the language needs a separator after a lone item in, as Python's tuple, left with one item
+  and no separator after it would be that item alone, so one is written after it (`lone_items`).
+  A rewrite that is only a comment is written in place of the code, takes no separator from
+  another line, and never takes the line; it is refused where code follows it on its line, which
+  it would swallow.  An empty block left behind is the language's parse check to judge, and
+  Python's refuses it.  A match that takes nothing is refused unless it is a statement, which the
+  parse check judges, or an item the language lets its list simply lose
+  (`Editing::droppable_items`): anywhere else what holds it is left without it, which can parse
+  and mean something else, as Python's `x =  + a` and a bare `return` do.  It is an allowlist, not
+  a list of the kinds known to go wrong, so a position nobody thought of is refused rather than
+  let through.  An empty rewrite is reported as a delete however it is spelled
   (`Replacing::deletes`); one that is only a comment is reported as the replace it is.
 - **A file an earlier replace broke is refused as an edit** when a later structural statement
   needs it, naming the replaces that changed it, not as a file that cannot be parsed, since on

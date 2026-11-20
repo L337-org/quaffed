@@ -9,13 +9,41 @@
 
 use quaffed_encoding::{Refusal, Source, python};
 use quaffed_syntax::{
-    Arena, CompileError, Declared, DeclaredEncoding, FrontEnd, Language, Lexed, Misplaced,
-    ParseError, Pattern, Refused, Rewrite, StringPart,
+    Arena, CompileError, Declared, DeclaredEncoding, Editing, FrontEnd, Kind, Language, Lexed,
+    Misplaced, ParseError, Pattern, Refused, Rewrite, StringPart,
+};
+use ruff_python_ast::NodeKind;
+
+use crate::kinds::kind_of;
+use crate::{
+    PYTHON, all_kinds, code_tokens, compile_pattern, compile_rewrite, escaped, lex, misplaced,
+    parse_module, token_kinds,
 };
 
-use crate::{
-    PYTHON, code_tokens, compile_pattern, compile_rewrite, escaped, lex, misplaced, parse_module,
-    token_kinds,
+/// Python's rules for statements, lists and layout, as an edit needs them.
+///
+/// - A list, a tuple and a call's arguments can each lose an item and still mean the rest: `[]`,
+///   `()` and `f()` are what they were less one.  A set cannot, since `{}` is a dict.  A
+///   parameter list is not among them: what removing a parameter alone leaves has not been
+///   judged, so such a deletion is refused.
+/// - A tuple of one item needs its comma, `(a,)`, or it is that item alone.
+/// - Blocks are decided by indentation, and a block may follow its header's colon on the
+///   header's line, `if x: a(); b()`, after which statements share the line.
+/// - The keywords are those [`misplaced`] finds outside what they need; `async` stands for
+///   `async with` and `async for`.
+static EDITING: Editing = Editing {
+    droppable_items: &[
+        kind_of(NodeKind::ExprList),
+        kind_of(NodeKind::ExprTuple),
+        kind_of(NodeKind::Arguments),
+    ],
+    lone_item_separated: &[kind_of(NodeKind::ExprTuple)],
+    item_separator: ',',
+    statement_separator: Some(';'),
+    line_continuation: Some('\\'),
+    header_block_opener: Some(':'),
+    grouping_bracket: '(',
+    misplaceable: &["return", "yield", "await", "async", "break", "continue"],
 };
 
 /// Python, as the engine reaches it.
@@ -29,6 +57,14 @@ impl FrontEnd for Python {
 
     fn extensions(&self) -> &'static [&'static str] {
         &["py", "pyi", "pyw"]
+    }
+
+    fn kinds(&self) -> &'static [Kind] {
+        all_kinds()
+    }
+
+    fn editing(&self) -> &'static Editing {
+        &EDITING
     }
 
     /// PEP 263's coding line, on the first or second line, read as `CPython` reads it.  A codec

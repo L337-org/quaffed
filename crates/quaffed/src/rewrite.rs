@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Gavin Lucas
 
-//! A structural `replace` in one Python file's text: each match written over with its rewrite.
+//! A structural `replace` in one file's text: each match written over with its rewrite.
+//!
+//! The language is reached only through its [`FrontEnd`]: what the arena does not say of
+//! statements, lists and layout - its separators, how a line continues, which lists may lose an
+//! item - is its [`Editing`], and no kind is named here.  The examples below are Python's.
 //!
 //! A rewrite is built from two sources only.  A hole writes back the source its name captured,
 //! with the brackets that only wrap it; everything else comes from the template, exactly as
@@ -13,7 +17,7 @@
 //! a string is escaped so that the string holds it as text, and questioned; one the literal
 //! cannot hold is refused.  A refused edit changes nothing in the file.
 //!
-//! A capture written where Python reads it together with what surrounds it - `x + 1` into
+//! A capture written where the language reads it together with what surrounds it - `x + 1` into
 //! `$a * 2` - is refused: the code would mean something other than the template says, and adding
 //! brackets would write something other than the template, so the message shows where brackets
 //! round the hole make the template mean what it says.
@@ -21,16 +25,17 @@
 //! Statements written where the code around them shares their line - after a semicolon, or in a
 //! block on its header's line - are given lines of their own where they need them, as
 //! [`lines`] lays them out, so that each stays in the block it was in; an outcome that leaves one
-//! in another block is refused.  So is an edit that leaves a `return`, `yield`, `await`, `break`
-//! or `continue` outside the construct it needs, which Python parses but cannot compile.
+//! in another block is refused.  So is an edit that leaves code outside the construct it needs,
+//! as [`FrontEnd::misplaced`] finds it - in Python, a `return`, `yield`, `await`, `break` or
+//! `continue` - which the language parses but cannot compile.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use quaffed_syntax::{
-    Arena, Bracket, Captured, FrontEnd, Kind, Lexed, Misplaced, NodeId, ParseError, Pattern,
-    Rewrite, find_captured, find_where_captured,
+    Arena, Bracket, Captured, Editing, FrontEnd, Kind, Lexed, Misplaced, NodeId, ParseError,
+    Pattern, Rewrite, find_captured, find_where_captured,
 };
 
 use crate::search::{Match, Position};
@@ -187,7 +192,7 @@ fn nested(
     let at = |offset: usize| positions(text, &[offset])[&offset];
     // Lexed once for the first level, which widening the captures reads too.
     let first_lexed = language.lex(text);
-    let captured = &whole_brackets(text, arena, &first_lexed, captured);
+    let captured = &whole_brackets(language, text, arena, &first_lexed, captured);
     let depths = depths(captured).map_err(|(later, earlier)| {
         let earlier = at(captured[earlier].range.start);
         Refused {
@@ -317,43 +322,41 @@ fn left_outside(
     new: &str,
     over: &[(Range<usize>, Range<usize>)],
 ) -> Option<(usize, String)> {
-    const KEYWORDS: [&str; 6] = ["return", "yield", "await", "async", "break", "continue"];
+    let words = language.editing().misplaceable;
     if !over
         .iter()
-        .any(|(_, written)| KEYWORDS.iter().any(|k| new[written.clone()].contains(k)))
+        .any(|(_, written)| words.iter().any(|k| new[written.clone()].contains(k)))
     {
         return None;
     }
     // Each found in a stretch the edit wrote over, on its new side or its old, with where that
     // stretch starts in `old`.
-    let inside = |found: &[Misplaced], new_side: bool| {
+    let inside = |found: Vec<Misplaced>, new_side: bool| {
         found
-            .iter()
+            .into_iter()
             .filter_map(|m| {
                 over.iter()
                     .find(|(was, now)| if new_side { now } else { was }.contains(&m.offset))
-                    .map(|(was, _)| (was.start, m.what))
+                    .map(|(was, _)| (was.start, m))
             })
             .collect::<Vec<_>>()
     };
-    let now = inside(&language.misplaced(new).ok()?, true);
+    let now = inside(language.misplaced(new).ok()?, true);
     if now.is_empty() {
         return None;
     }
-    let was = inside(&language.misplaced(old).ok()?, false);
-    let count = |found: &[(usize, &str)], what: &str| found.iter().filter(|f| f.1 == what).count();
-    let &(offset, what) = now
-        .iter()
-        .find(|(_, what)| count(&now, what) > count(&was, what))?;
-    let needs = match what {
-        "return" | "yield" | "yield from" => "a function",
-        "await" | "async with" | "async for" => "an async function",
-        _ => "a loop",
+    let was = inside(language.misplaced(old).ok()?, false);
+    let count = |found: &[(usize, Misplaced)], what: &str| {
+        found.iter().filter(|(_, m)| m.what == what).count()
     };
+    let (offset, Misplaced { what, needs, .. }) = now
+        .iter()
+        .find(|(_, m)| count(&now, m.what) > count(&was, m.what))?;
+    let name = language.language().name();
     Some((
-        offset,
+        *offset,
         format!(
-            "the rewrite would leave `{what}` outside {needs}, which Python parses but refuses \
+            "the rewrite would leave `{what}` outside {needs}, which {name} parses but refuses \
              to run, so the file would no longer compile: keep `{what}` inside {needs} in the \
              rewrite, or narrow the pattern so that it does not match here"
         ),
@@ -369,12 +372,13 @@ fn left_outside(
 /// some node spans - a call's arguments, a tuple, a list - is that node's, never only a
 /// wrapping.
 fn whole_brackets(
+    language: &dyn FrontEnd,
     text: &str,
     arena: &Arena<'_>,
     lexed: &Lexed,
     captured: &[Captured],
 ) -> Vec<Captured> {
-    let wrapping = Wrapping::new(text, arena, lexed);
+    let wrapping = Wrapping::new(text, arena, lexed, language.editing().grouping_bracket);
     captured
         .iter()
         .map(|found| Captured {
@@ -393,6 +397,8 @@ fn whole_brackets(
 struct Wrapping<'a> {
     text: &'a str,
     lexed: &'a Lexed,
+    /// The language's bracket that only groups: no other wraps code.
+    grouping: char,
     /// Every node's range, as `(start, end)`: a bracket some node spans is that node's.
     nodes: HashSet<(usize, usize)>,
     /// For each bracket, by its place in `lexed.brackets`, the one it stands directly inside.
@@ -400,7 +406,7 @@ struct Wrapping<'a> {
 }
 
 impl<'a> Wrapping<'a> {
-    fn new(text: &'a str, arena: &Arena<'_>, lexed: &'a Lexed) -> Self {
+    fn new(text: &'a str, arena: &Arena<'_>, lexed: &'a Lexed, grouping: char) -> Self {
         let nodes = arena
             .nodes()
             .map(|node| {
@@ -425,6 +431,7 @@ impl<'a> Wrapping<'a> {
         Wrapping {
             text,
             lexed,
+            grouping,
             nodes,
             outer,
         }
@@ -439,6 +446,20 @@ impl<'a> Wrapping<'a> {
         std::iter::successors(last, |&index| self.outer[index])
             .map(|index| &brackets[index])
             .filter(move |b| at <= b.close)
+    }
+
+    /// Whether the first code or comment after `at` on its line is a comment.
+    fn comment_after(&self, at: usize) -> bool {
+        let rest = &self.text[at..line_end(self.text, at)];
+        self.comment_at(at + rest.len() - rest.trim_start().len())
+    }
+
+    /// Whether a comment starts at `at`.
+    fn comment_at(&self, at: usize) -> bool {
+        self.lexed
+            .comments
+            .binary_search_by_key(&at, |comment| comment.start)
+            .is_ok()
     }
 
     /// Whether `range` holds only whitespace and comments.
@@ -467,7 +488,8 @@ impl<'a> Wrapping<'a> {
             return capture;
         }
         let wrapping = |b: &&Bracket| {
-            self.text.as_bytes()[b.open] == b'(' && !self.nodes.contains(&(b.open, b.close + 1))
+            self.text[b.open..].starts_with(self.grouping)
+                && !self.nodes.contains(&(b.open, b.close + 1))
         };
         loop {
             let inside = |b: &Bracket| within.start <= b.open && b.close < within.end;
@@ -850,7 +872,7 @@ fn laid_out(before: &Before<'_>, rewrite: &Rewrite) -> Result<Laid, (usize, Stri
     let mut bases = Vec::with_capacity(captured.len());
     let mut changes = Vec::new();
     for found in captured {
-        let slot = Slot::find(text, arena, lexed, &found.range);
+        let slot = Slot::find(text, arena, lexed, language.editing(), &found.range);
         let base = match &slot {
             None => line_indent(text, found.range.start),
             Some(slot) => {
@@ -936,7 +958,8 @@ fn deleted(
     names: &[&str],
     rewrite: &Rewrite,
 ) -> Result<Level, (usize, String)> {
-    let wrapping = Wrapping::new(text, arena, lexed);
+    let editing = language.editing();
+    let wrapping = Wrapping::new(text, arena, lexed, editing.grouping_bracket);
     let parents: HashMap<NodeId, NodeId> = arena
         .nodes()
         .flat_map(|node| arena.children(node).map(move |child| (child, node)))
@@ -957,6 +980,7 @@ fn deleted(
         let deletion = Deletion {
             text,
             arena,
+            editing,
             wrapping: &wrapping,
             taken: &taken,
             parents: &parents,
@@ -964,19 +988,19 @@ fn deleted(
         };
         let (range, took) = deletion.range(&found.range, !comment);
         // A match that takes neither its lines nor a separator leaves a hole where it stood.
-        // A statement, or an item of a list, a tuple, or a call's or definition's own, can
-        // simply be gone; anywhere else what is left can parse and mean something else -
-        // `x = debug + a` becomes `x =  + a`, `return debug` becomes `return` - so it is refused.
+        // A statement, or an item the language lets a list simply lose, can be gone; anywhere
+        // else what is left can parse and mean something else - in Python, `x = debug + a`
+        // becomes `x =  + a`, `return debug` becomes `return` - so it is refused.  The items are
+        // an allowlist, so a position nobody thought of is refused rather than let through.
         if !took {
             let matched = wrapping.widened(&(0..text.len()), &found.range);
             let parent = deletion.parent(&matched);
-            // Every statement kind's name starts `Stmt`, as Ruff names them and
-            // `quaffed_python`'s kind list keeps them: its test holds the list to Ruff's enum.
+            // A statement is a node in one of the statement lists the adapter marks.
             let statement = arena
                 .nodes_within(matched.clone())
                 .next()
-                .is_some_and(|node| arena.kind(node).name().starts_with("Stmt"));
-            if !statement && !ITEMS.contains(&arena.kind(parent).name()) {
+                .is_some_and(|node| arena.list(node).is_some());
+            if !statement && !editing.droppable_items.contains(&arena.kind(parent)) {
                 return Err((
                     found.range.start,
                     "removing this match would leave what holds it without it - an operator, a \
@@ -1007,7 +1031,7 @@ fn deleted(
         if comment {
             let rest = &text[range.end..line_end(text, range.end)];
             let rest = rest.trim();
-            if !rest.is_empty() && !rest.starts_with('#') {
+            if !rest.is_empty() && !wrapping.comment_after(range.end) {
                 return Err((
                     found.range.start,
                     format!(
@@ -1034,12 +1058,13 @@ fn deleted(
             taken[index].start = taken[index - 1].end.min(taken[index].end);
         }
     }
-    // A tuple left with one item and no comma after it would be that item alone, bracketed or
-    // not, so the comma that keeps it a tuple is written after it.
+    // A list the language needs a separator after a lone item in, left with one item and none
+    // after it, would be that item alone, so the separator that keeps it a list is written.
     let mut parts: Vec<(Range<usize>, String)> = taken.into_iter().zip(writes).collect();
-    for at in one_item_tuples(text, arena, &wrapping, &parents, captured, &parts) {
+    let separator = editing.item_separator.to_string();
+    for at in lone_items(text, arena, editing, &wrapping, &parents, captured, &parts) {
         let index = parts.partition_point(|(range, _)| range.start < at);
-        parts.insert(index, (at..at, ",".to_owned()));
+        parts.insert(index, (at..at, separator.clone()));
     }
     Ok(Level {
         questioned: escapes,
@@ -1077,12 +1102,14 @@ fn level(text: &str, parts: &[(Range<usize>, String)]) -> Level {
     }
 }
 
-/// Where to write a comma so that each tuple the deletions in `parts` leave with one item stays a
-/// tuple: after that item, unless a comma after it survives.  A tuple left with none is left to
-/// the parse check where it has no brackets, and is the empty tuple where it has.
-fn one_item_tuples(
+/// Where to write a separator so that each list the deletions in `parts` leave with one item,
+/// of a kind the language needs a separator after a lone item in, stays that list - in Python, a
+/// tuple: after that item, unless a separator after it survives.  A list left with none is left
+/// to the parse check where it has no brackets; Python's is the empty tuple where it has.
+fn lone_items(
     text: &str,
     arena: &Arena<'_>,
+    editing: &Editing,
     wrapping: &Wrapping<'_>,
     parents: &HashMap<NodeId, NodeId>,
     captured: &[Captured],
@@ -1101,22 +1128,23 @@ fn one_item_tuples(
     let deletion = Deletion {
         text,
         arena,
+        editing,
         wrapping,
         taken: &[],
         parents,
         children: &RefCell::new(HashMap::new()),
     };
-    let mut tuples: Vec<NodeId> = captured
+    let mut lists: Vec<NodeId> = captured
         .iter()
         .map(|found| deletion.parent(&wrapping.widened(&whole, &found.range)))
-        .filter(|&parent| arena.kind(parent).name() == "ExprTuple")
+        .filter(|&parent| editing.lone_item_separated.contains(&arena.kind(parent)))
         .collect();
-    tuples.sort_unstable_by_key(|tuple| arena.range(*tuple).start);
-    tuples.dedup();
-    let mut commas = Vec::new();
-    for tuple in tuples {
+    lists.sort_unstable_by_key(|list| arena.range(*list).start);
+    lists.dedup();
+    let mut separators = Vec::new();
+    for list in lists {
         let items: Vec<Range<usize>> = arena
-            .children(tuple)
+            .children(list)
             .map(|item| wrapping.widened(&whole, &arena.range(item)))
             .collect();
         let left: Vec<&Range<usize>> = items.iter().filter(|item| !gone(item.start)).collect();
@@ -1133,18 +1161,12 @@ fn one_item_tuples(
             }
             .filter(|&at| at < text.len());
         }
-        if next.is_none_or(|at| text.as_bytes()[at] != b',') {
-            commas.push(item.end);
+        if next.is_none_or(|at| !text[at..].starts_with(editing.item_separator)) {
+            separators.push(item.end);
         }
     }
-    commas
+    separators
 }
-
-/// The kinds whose children are items that a deletion taking no separator may simply leave out:
-/// `[debug]` is `[]`, `f(debug)` is `f()`, `class A(debug)` is `class A()`.  A set is not one,
-/// since `{}` is a dict.  Each is Ruff's name for the node kind, as `quaffed_python`'s kind list
-/// gives it; a parameter is left out because no pattern of its own matches one.
-const ITEMS: &[&str] = &["ExprList", "ExprTuple", "Arguments"];
 
 /// Where the line holding `offset` ends: its line break, or the end of `text`.
 fn line_end(text: &str, offset: usize) -> usize {
@@ -1165,6 +1187,8 @@ struct BlockEdges {
 struct Deletion<'a, 'text> {
     text: &'a str,
     arena: &'a Arena<'text>,
+    /// The language's rules: its separators, above all.
+    editing: &'a Editing,
     wrapping: &'a Wrapping<'a>,
     /// What the matches before took, in order.
     taken: &'a [Range<usize>],
@@ -1186,15 +1210,16 @@ impl Deletion<'_, '_> {
         let floor = self.taken.last().map_or(0, |taken| taken.end);
         let parent = self.parent(&matched);
         // The separator after the match, if its parent holds one there: on the same line for a
-        // semicolon, and for a comma anywhere before the next code where `whole_lines`, since it
-        // separates the item from its neighbour wherever the line breaks fall.  A comment
-        // written in place of the item takes none from another line, which it would join.
+        // statement separator, and for an item separator anywhere before the next code where
+        // `whole_lines`, since it separates the item from its neighbour wherever the line breaks
+        // fall.  A comment written in place of the item takes none from another line, which it
+        // would join.
         let after = {
             let rest = &text[matched.end..];
             let at = matched.end + rest.len() - rest.trim_start().len();
             (at < text.len()
                 && self.separator(parent, at)
-                && (text.as_bytes()[at] == b',' && whole_lines
+                && (self.item_separator(at) && whole_lines
                     || !text[matched.end..at].contains('\n')))
             .then_some(at)
         };
@@ -1203,8 +1228,9 @@ impl Deletion<'_, '_> {
         // A match whose comma starts the next line is not alone on its lines: taking them would
         // leave that comma with nothing before it.
         if whole_lines && after.is_none_or(|at| at < end) {
-            let rest = text[after.map_or(matched.end, |at| at + 1)..end].trim();
-            let alone_after = rest.is_empty() || rest.starts_with('#');
+            let past = after.map_or(matched.end, |at| at + self.separator_len(at));
+            let alone_after =
+                text[past..end].trim().is_empty() || self.wrapping.comment_after(past);
             // Only the matches taken last can reach back onto this line: their ends only grow.
             let near: Vec<&Range<usize>> = self
                 .taken
@@ -1222,10 +1248,18 @@ impl Deletion<'_, '_> {
             }
         }
         let before = self.before(found, matched.start, floor, whole_lines);
+        // An item separator with only whitespace between it and a closing `)`, `]` or `}` is the
+        // list's trailing one.  The bracket is told by its character, not from the lexer's
+        // brackets, since an interpolated string's field brace closes the list too and is not
+        // one of them.  Accepted limitation: a language whose lists close with another bracket
+        // needs this asked of its front end before its trailing separators are told apart.
         let trailing_comma = after.is_some_and(|at| {
-            text.as_bytes()[at] == b','
+            self.item_separator(at)
                 && matches!(
-                    text[at + 1..].trim_start().as_bytes().first(),
+                    text[at + self.separator_len(at)..]
+                        .trim_start()
+                        .as_bytes()
+                        .first(),
                     Some(b')' | b']' | b'}')
                 )
         });
@@ -1236,13 +1270,15 @@ impl Deletion<'_, '_> {
             (Some(_), Some(start)) if trailing_comma && whole_lines => (start..matched.end, true),
             (Some(at), _) => {
                 // The spaces after a separator go with it while code follows on the line.
-                let rest = &text[at + 1..];
+                let past = at + self.separator_len(at);
+                let rest = &text[past..];
                 let spaces = rest.len() - rest.trim_start_matches([' ', '\t']).len();
                 let spaces = match rest[spaces..].chars().next() {
-                    None | Some('\n' | '\r' | '#') => 0,
+                    None | Some('\n' | '\r') => 0,
+                    Some(_) if self.wrapping.comment_at(past + spaces) => 0,
                     Some(_) => spaces,
                 };
-                (matched.start..at + 1 + spaces, true)
+                (matched.start..past + spaces, true)
             }
             (None, Some(start)) => (start..matched.end, true),
             (None, None) => (matched, false),
@@ -1264,14 +1300,17 @@ impl Deletion<'_, '_> {
         let parent = self.parent(&self.wrapping.widened(&(0..text.len()), found));
         let floor = floor.min(start);
         let at = floor + text[floor..start].trim_end().len();
-        // A comma in a comment is no separator, and one with a comment between it and the match
-        // is not taken, since the comment would go with it.
-        let separator = at.checked_sub(1).filter(|&at| {
-            at >= floor
-                && !self.in_comment(at)
-                && self.separator(parent, at)
-                && (text.as_bytes()[at] == b',' && across_lines || !text[at..start].contains('\n'))
-        })?;
+        // A separator in a comment is no separator, and one with a comment between it and the
+        // match is not taken, since the comment would go with it.
+        let separator = text[floor..at]
+            .chars()
+            .next_back()
+            .map(|c| at - c.len_utf8())
+            .filter(|&at| {
+                !self.in_comment(at)
+                    && self.separator(parent, at)
+                    && (self.item_separator(at) && across_lines || !text[at..start].contains('\n'))
+            })?;
         Some(floor + text[floor..separator].trim_end_matches([' ', '\t']).len())
     }
 
@@ -1282,9 +1321,26 @@ impl Deletion<'_, '_> {
         index > 0 && comments[index - 1].contains(&at)
     }
 
-    /// Whether `at` is a comma or a semicolon `parent` holds between its children.
+    /// Whether `at` is the language's item separator.
+    fn item_separator(&self, at: usize) -> bool {
+        self.text[at..].starts_with(self.editing.item_separator)
+    }
+
+    /// The length of the separator at `at`, which is either of the language's.
+    fn separator_len(&self, at: usize) -> usize {
+        self.text[at..].chars().next().map_or(0, char::len_utf8)
+    }
+
+    /// Whether `at` is a separator of the language's, of items or of statements, that `parent`
+    /// holds between its children.
     fn separator(&self, parent: NodeId, at: usize) -> bool {
-        matches!(self.text.as_bytes()[at], b',' | b';') && self.holds(parent, at)
+        let editing = self.editing;
+        let rest = &self.text[at..];
+        (rest.starts_with(editing.item_separator)
+            || editing
+                .statement_separator
+                .is_some_and(|c| rest.starts_with(c)))
+            && self.holds(parent, at)
     }
 
     /// `lines`, the whole lines a match stands alone on, with what goes with them: the comment
@@ -1312,10 +1368,9 @@ impl Deletion<'_, '_> {
         if indent(last_line) > base {
             let mut at = end;
             while at < text.len() {
-                let line = text[at..line_end(text, at)].trim_start();
-                if line.starts_with('#') && indent(at) > base {
+                if self.wrapping.comment_after(at) && indent(at) > base {
                     end = next_line(at);
-                } else if !line.is_empty() {
+                } else if !blank(at) {
                     break;
                 }
                 at = next_line(at);
@@ -1343,9 +1398,7 @@ impl Deletion<'_, '_> {
         // edge, between the match and the block's header or its end: the comment is then the
         // edge, and the gap is between it and code.
         // A comment indented less than the match stands outside its block, so is no edge of it.
-        let comment_at = |at: usize| {
-            text[at..line_end(text, at)].trim_start().starts_with('#') && indent(at) >= base
-        };
+        let comment_at = |at: usize| self.wrapping.comment_after(at) && indent(at) >= base;
         let starts = edges.starts
             && !(start > 0 && comment_at(text[..start - 1].rfind('\n').map_or(0, |at| at + 1)));
         let ends = edges.ends && !(past < text.len() && comment_at(past));
@@ -1491,11 +1544,12 @@ fn regrouped(
     let (out, arena) = after;
     let code = CodeIndex::of(arena);
     let lexed = before.language.lex(out);
+    let continuation = before.language.editing().line_continuation;
     let site = sites.iter().find(|site| {
-        let whole = unwrapped(out, &lexed, &site.range)
+        let whole = unwrapped(out, &lexed, continuation, &site.range)
             .iter()
             .any(|range| code.whole(range))
-            || (site.sequence && is_run(out, &lexed, &code, &site.range));
+            || (site.sequence && is_run(out, &lexed, continuation, &code, &site.range));
         // A tuple's own brackets are part of it, so one the rewrite brackets, `wrap(($x))`, is
         // whole only with them.  Brackets that make some other node - a call's, in `wrap($x)` -
         // do not count, so the node they close must be the kind of code that was captured.
@@ -1529,14 +1583,20 @@ fn regrouped(
 /// inside them aside, in turn, outermost first: what a capture that took brackets wrapping it may
 /// stand for.  Which brackets only wrap it is not known here - `([1, 2])` is a list in wrapping
 /// brackets, whose own are not - so every layer is given, for the caller to find its node among.
-fn unwrapped(text: &str, lexed: &Lexed, range: &Range<usize>) -> Vec<Range<usize>> {
+fn unwrapped(
+    text: &str,
+    lexed: &Lexed,
+    continuation: Option<char>,
+    range: &Range<usize>,
+) -> Vec<Range<usize>> {
     let mut layers = vec![range.clone()];
     while let Some(b) = lexed.brackets.iter().find(|b| {
         let range = &layers[layers.len() - 1];
         b.open == range.start && b.close + 1 == range.end
     }) {
-        let start = layout::forward_over_layout(text, b.open + 1, b.close, &lexed.comments);
-        let end = back_over_layout(text, start, b.close, &lexed.comments);
+        let start =
+            layout::forward_over_layout(text, b.open + 1, b.close, &lexed.comments, continuation);
+        let end = back_over_layout(text, start, b.close, &lexed.comments, continuation);
         layers.push(start..end);
     }
     layers
@@ -1545,7 +1605,13 @@ fn unwrapped(text: &str, lexed: &Lexed, range: &Range<usize>) -> Vec<Range<usize
 /// Whether `range` of `text`, lexed as `lexed` and indexed as `code`, is a run of sibling nodes.
 /// Its first and last items may each have taken brackets that only wrap them, which no node's
 /// range includes, so each place it could start and end, inside any such brackets, is tried.
-fn is_run(text: &str, lexed: &Lexed, code: &CodeIndex, range: &Range<usize>) -> bool {
+fn is_run(
+    text: &str,
+    lexed: &Lexed,
+    continuation: Option<char>,
+    code: &CodeIndex,
+    range: &Range<usize>,
+) -> bool {
     let mut starts = vec![range.start];
     while let Some(b) = lexed
         .brackets
@@ -1557,6 +1623,7 @@ fn is_run(text: &str, lexed: &Lexed, code: &CodeIndex, range: &Range<usize>) -> 
             b.open + 1,
             b.close,
             &lexed.comments,
+            continuation,
         ));
     }
     let mut ends = vec![range.end];
@@ -1565,7 +1632,13 @@ fn is_run(text: &str, lexed: &Lexed, code: &CodeIndex, range: &Range<usize>) -> 
         .iter()
         .find(|b| b.close + 1 == ends[ends.len() - 1])
     {
-        ends.push(back_over_layout(text, b.open + 1, b.close, &lexed.comments));
+        ends.push(back_over_layout(
+            text,
+            b.open + 1,
+            b.close,
+            &lexed.comments,
+            continuation,
+        ));
     }
     starts.iter().any(|&start| {
         ends.iter()
@@ -1583,13 +1656,16 @@ fn rebracketed(
     lexed: &Lexed,
     site: &WrittenSite,
 ) -> bool {
+    let continuation = before.language.editing().line_continuation;
     let mut range = site.range.clone();
     let mut wrapped = Vec::new();
     while let Some(b) = lexed.brackets.iter().find(|b| {
+        let comments = &lexed.comments;
         b.open < range.start
             && range.end <= b.close
-            && layout::forward_over_layout(out, b.open + 1, b.close, &lexed.comments) == range.start
-            && back_over_layout(out, range.end, b.close, &lexed.comments) == range.end
+            && layout::forward_over_layout(out, b.open + 1, b.close, comments, continuation)
+                == range.start
+            && back_over_layout(out, range.end, b.close, comments, continuation) == range.end
     }) {
         range = b.open..b.close + 1;
         wrapped.push(range.clone());
@@ -1605,6 +1681,7 @@ fn rebracketed(
     let layers = unwrapped(
         before.text,
         before.lexed,
+        continuation,
         &before.captured[site.found].captures[index],
     );
     let captured_kinds: Vec<Kind> = layers
@@ -1874,7 +1951,13 @@ impl Job<'_> {
             .enumerate()
             .filter(|(_, site)| !site.in_literal)
             .filter_map(|(i, site)| {
-                let needs = Needs::of(self.text, self.arena, self.lexed, &self.capture(&site.name));
+                let needs = Needs::of(
+                    self.text,
+                    self.arena,
+                    self.lexed,
+                    self.language.editing(),
+                    &self.capture(&site.name),
+                );
                 needs.any().then_some((i, needs))
             })
             .collect();
@@ -1894,7 +1977,9 @@ impl Job<'_> {
             let at = template
                 .find(&markers[i])
                 .expect("each marker is written once");
-            let Some(slot) = Slot::find(&template, &arena, &lexed, &(at..at + markers[i].len()))
+            let marker = at..at + markers[i].len();
+            let Some(slot) =
+                Slot::find(&template, &arena, &lexed, self.language.editing(), &marker)
             else {
                 continue;
             };
@@ -2085,7 +2170,9 @@ impl Job<'_> {
                 let depth = self.depth(marked, template_gap.start);
                 // A line break the template writes outside any bracket ends a statement: the gap
                 // is between statements.
-                if depth == 0 && !one_logical_line(in_template) {
+                if depth == 0
+                    && !one_logical_line(in_template, self.language.editing().line_continuation)
+                {
                     return self.statement_gap(file_gap, in_template);
                 }
                 self.diffed_gap(file_gap, in_template, depth, (true, true))
@@ -2242,7 +2329,8 @@ impl Job<'_> {
             if in_template == &self.text[file_gap.clone()]
                 || captured
                 || commented
-                || depth == 0 && !one_logical_line(in_template)
+                || depth == 0
+                    && !one_logical_line(in_template, self.language.editing().line_continuation)
             {
                 return;
             }
@@ -2415,9 +2503,9 @@ fn wrapped(template: &str, mut wraps: Vec<Wrap<'_>>) -> String {
 /// A stretch of a template to put in brackets, and the brackets' opening and closing.
 type Wrap<'a> = (Range<usize>, &'a str, &'a str);
 
-/// Whether every line break in `text` continues a line, a backslash before it, so that `text`
-/// stays within one logical line.
-fn one_logical_line(text: &str) -> bool {
+/// Whether every line break in `text` continues a line, the language's `continuation` before it,
+/// so that `text` stays within one logical line.
+fn one_logical_line(text: &str, continuation: Option<char>) -> bool {
     let bytes = text.as_bytes();
     // Each line break, `\r\n`, `\n` or a lone `\r`, by where it starts.
     (0..bytes.len())
@@ -2426,17 +2514,28 @@ fn one_logical_line(text: &str) -> bool {
             b'\r' => true,
             _ => false,
         })
-        .all(|at| at > 0 && bytes[at - 1] == b'\\')
+        .all(|at| continuation.is_some_and(|c| text[..at].ends_with(c)))
 }
 
-/// The code tokens of `text` without a backslash continuing a line, which a lexer given a
-/// stretch ending in one reads as a token of its own, and without the empty token it gives a
-/// stretch ending inside an open bracket.
+/// Whether `layout`, the whitespace and comments between two code tokens, stays within one
+/// logical line, every line break continued, with no comment in it: a comment's line break ends
+/// it whatever stands before the break.
+fn continued_layout(language: &dyn FrontEnd, layout: &str) -> bool {
+    one_logical_line(layout, language.editing().line_continuation)
+        && language.lex(layout).comments.is_empty()
+}
+
+/// The code tokens of `text` without a continuation of a line, which a lexer given a stretch
+/// ending in one reads as a token of its own, and without the empty token it gives a stretch
+/// ending inside an open bracket.
 fn layout_free_tokens<'a>(language: &dyn FrontEnd, text: &'a str) -> Vec<&'a str> {
+    let continuation = language.editing().line_continuation;
     language
         .code_tokens(text)
         .into_iter()
-        .filter(|token| !token.is_empty() && !token.trim_start().starts_with('\\'))
+        .filter(|token| {
+            !token.is_empty() && !continuation.is_some_and(|c| token.trim_start().starts_with(c))
+        })
         .collect()
 }
 
@@ -2509,7 +2608,7 @@ fn diffed(
             && (k == m || matched[k] != Some(slot));
         !after_opening
             && !before_closing
-            && (!breaks(slot) || open[k] > 0 || !layout.contains('#') && one_logical_line(layout))
+            && (!breaks(slot) || open[k] > 0 || continued_layout(language, layout))
     };
     let mut out = String::with_capacity(file.len().max(template.len()));
     let mut copied = Vec::new();
@@ -2759,9 +2858,15 @@ fn moved(text: &str, range: &Range<usize>, base: &str, lexed: &Lexed) -> String 
     out
 }
 
-/// Back from `at` in `text`, no further than `floor`, over whitespace, comments and backslashes
-/// continuing a line: where the code before them ends.
-fn back_over_layout(text: &str, floor: usize, at: usize, comments: &[Range<usize>]) -> usize {
+/// Back from `at` in `text`, no further than `floor`, over whitespace, comments and the
+/// language's `continuation` continuing a line: where the code before them ends.
+fn back_over_layout(
+    text: &str,
+    floor: usize,
+    at: usize,
+    comments: &[Range<usize>],
+    continuation: Option<char>,
+) -> usize {
     let mut at = at;
     loop {
         at = floor + text[floor..at].trim_end().len();
@@ -2769,15 +2874,14 @@ fn back_over_layout(text: &str, floor: usize, at: usize, comments: &[Range<usize
             at = comment.start;
             continue;
         }
-        // A backslash continuing the line is layout too: one the trim stopped at, with a line
-        // break after it.
-        let continued = at > floor
-            && text.as_bytes()[at - 1] == b'\\'
-            && matches!(text.as_bytes().get(at), Some(b'\n' | b'\r'));
-        if !continued {
-            return at;
+        // A continuation is layout too: one the trim stopped at, with a line break after it.
+        let continued = continuation.filter(|&c| {
+            text[floor..at].ends_with(c) && matches!(text.as_bytes().get(at), Some(b'\n' | b'\r'))
+        });
+        match continued {
+            Some(c) => at -= c.len_utf8(),
+            None => return at,
         }
-        at -= 1;
     }
 }
 
@@ -2820,19 +2924,29 @@ fn lines_with_starts(text: &str) -> Vec<(usize, &str)> {
 mod tests {
     use super::layout::ignored_by_matcher;
     use super::*;
-    use crate::languages::PYTHON;
+    use crate::languages::{PYTHON, UNLAID};
 
     /// `text` with `pattern` replaced by `with`, and what was questioned, or why it was refused.
     fn edited(pattern: &str, with: &str, text: &str) -> Result<Option<Edited>, String> {
-        let pattern = PYTHON
+        edited_in(PYTHON, pattern, with, text)
+    }
+
+    /// As [`edited`], in `language`.
+    fn edited_in(
+        language: &dyn FrontEnd,
+        pattern: &str,
+        with: &str,
+        text: &str,
+    ) -> Result<Option<Edited>, String> {
+        let pattern = language
             .compile_pattern(pattern)
             .expect("the pattern compiles");
-        let rewrite = PYTHON
+        let rewrite = language
             .compile_rewrite(with, &pattern)
             .expect("the rewrite compiles");
         // As a run does: once the rewrite is compiled.
         let pattern = name_every_hole(&pattern);
-        let edited = replace(PYTHON, text, &pattern, None, &rewrite)
+        let edited = replace(language, text, &pattern, None, &rewrite)
             .expect("the text parses")
             .outcome
             .map_err(|refused| {
@@ -2981,6 +3095,15 @@ mod tests {
         assert_eq!(
             deleted("x = 1", "def f():\n    # why\n    x = 1\n\n    y = 2\n"),
             "def f():\n    # why\n\n    y = 2\n"
+        );
+        // A line of a string that starts as a comment would is the string's, and no edge: the
+        // match starts its block, so it takes the blank lines after it.
+        assert_eq!(
+            deleted(
+                "y = 1",
+                "def f(a=\"\"\"\n    # x\"\"\"):\n\n    y = 1\n\n\n    z = 2\n"
+            ),
+            "def f(a=\"\"\"\n    # x\"\"\"):\n\n    z = 2\n"
         );
         // A comment indented less than the match is outside the block, so is no edge of it.
         assert_eq!(
@@ -4067,6 +4190,29 @@ mod tests {
         );
         // One line of simple statements needs none.
         assert_eq!(ok("a()", "b(); c()", "if x: a()\n"), "if x: b(); c()\n");
+    }
+
+    #[test]
+    fn the_rules_for_statements_are_the_languages_own() {
+        // The same text, parsed alike, edited by Python's rules and by a language's with no
+        // statement separator and no block on its header's line.
+        let unlaid = |pattern: &str, with: &str, text: &str| {
+            edited_in(UNLAID, pattern, with, text)
+                .expect("the edit is made")
+                .expect("the pattern matches")
+                .text
+        };
+        let text = format!("{UNIT}if x: a(); z()\n");
+        assert_eq!(
+            ok("a()", "b()\nc()", &text),
+            format!("{UNIT}if x:\n  b()\n  c(); z()\n")
+        );
+        assert_eq!(
+            unlaid("a()", "b()\nc()", &text),
+            format!("{UNIT}if x: b()\nc(); z()\n")
+        );
+        assert_eq!(deleted("a = 1", "a = 1; b = 2\n"), "b = 2\n");
+        assert_eq!(unlaid("a = 1", "", "a = 1; b = 2\n"), "; b = 2\n");
     }
 
     #[test]

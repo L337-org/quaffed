@@ -21,8 +21,10 @@ as quaff's own reading of a file's bytes, is added deliberately.
   each compared by its text or by a fixed text the adapter gives it where its spelling takes no
   part, such as an f-string's opening.  Which tokens are kept is the adapter's choice, by the rule
   under *Matching*.
-- **Lists among children.**  An adapter marks each list among a node's children, such as a
-  block's statements, so that a sequence hole or a run of statements stays inside one.
+- **Lists among children.**  An adapter marks each block's statements as a list among its
+  holder's children, and nothing else, so that a sequence hole or a run of statements stays
+  inside one, and so that a node in a list is a statement: editing asks that, never a kind's
+  name.  A statement holds a block where a statement stands inside it.
 - **A value in place of children.**  A node may compare by a value instead of its parts: a string
   literal's content, so its quotes and prefix take no part.
 
@@ -160,7 +162,24 @@ a Python file's bytes in `quaffed-encoding`.  It asks, of text in that language:
   `compile_pattern`, `compile_rewrite`);
 - what a rewrite needs of the text beyond the arena: its comments, strings and brackets, its code
   tokens, how a value is written into a string, and what stands outside the construct it needs
-  (`lex`, `code_tokens`, `token_kinds`, `escaped`, `misplaced`).
+  (`lex`, `code_tokens`, `token_kinds`, `escaped`, `misplaced`);
+- the kinds its arenas hold, as its parser names them (`kinds`);
+- **its rules for editing** (`editing`), one `Editing` value: which lists may simply lose an item
+  and which need a separator after a lone one, kinds the adapter names from its parser; what
+  separates items, and statements sharing a line; what continues a line; what ends a header
+  whose block may share its line, which is the language deciding blocks by layout, and without
+  which statements sharing a line are never given lines of their own; the bracket that only
+  groups; and the words that can stand outside the construct they need.  What an empty block
+  needs is the language's own parse check, which refuses an edit that leaves one it does not
+  allow, so it is not asked.
+
+**The engine never spells a kind's name.**  A rule that holds for one parser's kinds would be
+applied to another language's files, so what an edit needs to know of a node is asked of the
+arena or of `editing`.  A test in `crates/quaffed/src/languages.rs` reads every other source
+file of the binary and fails on a string literal that is a kind's name in any language in
+`LANGUAGES`, or the leading word two or more of its kinds share, as a test by prefix would spell.
+`Editing` has public fields and no constructor, so a field added to it is a compile error in
+every adapter until each states its answer: there is no honest default.
 
 **Only quaff's own types cross it**, defined beside it or in `quaffed-encoding`: an arena, a
 `Pattern`, a `Rewrite`, a `Lexed`, a decoded `Source`, a `Declared` encoding naming what the
@@ -191,7 +210,7 @@ means where files of several languages are in scope.
 2. Give it its own adapter crate, the only one allowed to name that parser's types, held with a
    containment test as `ruff_containment.rs` does for Ruff.
 3. List the parser's kinds in the adapter, held to the parser's own enumeration by the compiler
-   where it has one.
+   where it has one, and give them as `FrontEnd::kinds`.
 4. Build arenas with `Builder`, keeping the range invariants, and check them with a round trip
    over a corpus for that language.
 5. Keep the tokens that carry meaning in that language, give a string literal its content as its
@@ -218,7 +237,9 @@ means where files of several languages are in scope.
    `LANGUAGES`.  Nothing else quaff says names a language, as `AGENTS.md` asks, so the rest of
    the help, the messages and the guide need no change.
 10. Give it a corpus and an oracle for the edit invariants, by the checklist in `corpus.md`.
-11. Check the rewriter's own rules against the language: where `src/rewrite.rs` or
-    `src/rewrite/lines.rs` spells a kind name of one parser, or holds a rule about statements or
-    blocks that the language does not share, the rule has to be asked of the front end before
-    the language's files are edited.
+11. Answer `FrontEnd::editing` with the language's rules, its kinds named from the parser, and
+    mark only a block's statements as lists.  Where the language has a rule for turning an edit
+    into text that no field of `Editing` says - a separator that is a terminator, a block that
+    needs more than its statements - add the field, answer it for every language, and ask it in
+    `src/rewrite.rs` rather than writing the rule there: the test in `languages.rs` fails on any
+    kind of the new language's spelled in the binary.

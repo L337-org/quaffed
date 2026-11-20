@@ -390,9 +390,10 @@ impl Carrying<'_> {
     fn to(&self, partner: &Bracket) -> Result<Vec<Edit>, LayoutRefused> {
         let text = self.before.text;
         let comments = &self.out_lexed.comments;
+        let continuation = self.before.language.editing().line_continuation;
         let inner = partner.open + 1;
-        let first = forward_over_layout(self.out, inner, partner.close, comments);
-        let last = back_over_layout(self.out, inner, partner.close, comments);
+        let first = forward_over_layout(self.out, inner, partner.close, comments, continuation);
+        let last = back_over_layout(self.out, inner, partner.close, comments, continuation);
         let mut edits = Vec::new();
         let template_comment = |gap: Range<usize>| {
             comments
@@ -453,19 +454,19 @@ impl Carrying<'_> {
             .trailing
             .as_ref()
             .filter(|_| edges.trailing_comment || last == partner.close);
+        // The separator is carried as the file spells it, whatever the language's is.
+        let separator = |at: usize| text[at..].chars().next().map_or_default(String::from);
         match (trailing, comma) {
             (None, None) => {}
             (None, Some(comma)) => {
-                edits.push(self.edit(last..last, ",".into(), Some(comma), comma, "trailing comma"));
+                let written = separator(comma);
+                edits.push(self.edit(last..last, written, Some(comma), comma, "trailing comma"));
             }
             (Some(trailing), comma) => {
                 if edges.trailing_comment && template_comment(last..partner.close) {
                     return Err(refuse(trailing.start));
                 }
-                let mut carried = String::new();
-                if comma.is_some() {
-                    carried.push(',');
-                }
+                let mut carried = comma.map_or_default(separator);
                 carried.push_str(&text[trailing.clone()]);
                 let what = if comma.is_some() {
                     "trailing comma"
@@ -480,9 +481,13 @@ impl Carrying<'_> {
     }
 
     /// Whether `range` is at the leading edge of the bracket it is in: it starts just inside an
-    /// opening bracket.
+    /// opening bracket, as the lexer pairs them.
     fn leading_edge(&self, range: &Range<usize>) -> bool {
-        range.start > 0 && matches!(self.out.as_bytes()[range.start - 1], b'(' | b'[' | b'{')
+        let brackets = &self.out_lexed.brackets;
+        range.start > 0
+            && brackets
+                .binary_search_by_key(&(range.start - 1), |b| b.open)
+                .is_ok()
     }
 
     fn edit(
@@ -513,8 +518,9 @@ impl Carrying<'_> {
 fn edges(before: &Before<'_>, bracket: &Bracket) -> Edges {
     let text = before.text;
     let comments = &before.lexed.comments;
+    let continuation = before.language.editing().line_continuation;
     let inner = bracket.open + 1;
-    let first = forward_over_layout(text, inner, bracket.close, comments);
+    let first = forward_over_layout(text, inner, bracket.close, comments, continuation);
     let holds_comment = |gap: &Range<usize>| {
         comments
             .iter()
@@ -529,7 +535,7 @@ fn edges(before: &Before<'_>, bracket: &Bracket) -> Edges {
     } else {
         let last = match bracket.trailing_comma {
             Some(comma) => comma + 1,
-            None => back_over_layout(text, inner, bracket.close, comments),
+            None => back_over_layout(text, inner, bracket.close, comments, continuation),
         };
         Some(last..bracket.close).filter(|gap| !gap.is_empty())
     };
@@ -542,13 +548,14 @@ fn edges(before: &Before<'_>, bracket: &Bracket) -> Edges {
     }
 }
 
-/// Forward from `at` in `text`, no further than `ceiling`, over whitespace, comments and
-/// backslashes continuing a line: where the code after them starts.
+/// Forward from `at` in `text`, no further than `ceiling`, over whitespace, comments and the
+/// language's `continuation` continuing a line: where the code after them starts.
 pub(super) fn forward_over_layout(
     text: &str,
     at: usize,
     ceiling: usize,
     comments: &[Range<usize>],
+    continuation: Option<char>,
 ) -> usize {
     let mut at = at;
     loop {
@@ -558,13 +565,17 @@ pub(super) fn forward_over_layout(
             at = comment.end;
             continue;
         }
-        // A backslash continuing the line is layout too.
+        // A continuation of the line is layout too, with the line break after it.
         let rest = &text[at..ceiling];
-        match ["\\\r\n", "\\\n", "\\\r"]
-            .iter()
-            .find(|continuation| rest.starts_with(**continuation))
-        {
-            Some(continuation) => at += continuation.len(),
+        let continued = continuation.and_then(|c| {
+            let after = rest.strip_prefix(c)?;
+            ["\r\n", "\n", "\r"]
+                .iter()
+                .find(|ending| after.starts_with(**ending))
+                .map(|ending| c.len_utf8() + ending.len())
+        });
+        match continued {
+            Some(length) => at += length,
             None => return at,
         }
     }

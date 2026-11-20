@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Gavin Lucas
 
-//! Statements given lines of their own where the code around them shares their line.
+//! Statements given lines of their own where the code around them shares their line, in a
+//! language whose blocks are decided by layout: one whose [`Editing`] names what ends a header
+//! whose block may be written on the header's line.  For any other, nothing here applies.
 //!
-//! A statement starts its line, follows a semicolon, or follows the colon of a header whose
-//! block is written on the header's line, as in `if x: a(); z()`.  What a rewrite writes there,
+//! A statement starts its line, follows a statement separator, or follows the end of a header
+//! whose block is written on the header's line, as in Python's `if x: a(); z()`.  The examples
+//! below are Python's: a semicolon is the language's statement separator, a colon what ends such
+//! a header, and a backslash what continues a line.  What a rewrite writes there,
 //! or what a hole captured and a template writes there, may need lines of its own: it may be
 //! more than one line, start with a compound statement, which can follow neither a semicolon nor
 //! a colon, or end with one or with a comment, which nothing can follow on its line.  Its later
@@ -28,22 +32,17 @@
 
 use std::ops::Range;
 
-use quaffed_syntax::{Arena, FrontEnd, Lexed, NodeId};
+use quaffed_syntax::{Arena, Editing, FrontEnd, Lexed, NodeId};
 
 use super::line_indent;
 
-/// The kinds of statement that hold a block, and so end their logical line with it.  Every
-/// statement kind's name starts `Stmt`, as Ruff names them; an `async` form is the same kind.
-const COMPOUND: &[&str] = &[
-    "StmtFunctionDef",
-    "StmtClassDef",
-    "StmtIf",
-    "StmtFor",
-    "StmtWhile",
-    "StmtWith",
-    "StmtTry",
-    "StmtMatch",
-];
+/// Whether `node`, a statement, holds a block, and so ends its logical line with it: whether a
+/// statement stands inside it, which only a block can hold.
+fn compound(arena: &Arena<'_>, node: NodeId) -> bool {
+    arena
+        .nodes_within(arena.range(node))
+        .any(|inner| inner != node && arena.list(inner).is_some())
+}
 
 /// What code written as statements needs of the line it is written on.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -57,11 +56,18 @@ pub(super) struct Needs {
 }
 
 impl Needs {
-    /// What `range` of `text`, parsed as `arena` and lexed as `lexed`, needs: its outermost
-    /// statements, its comments, and its line breaks outside brackets and strings.
-    pub(super) fn of(text: &str, arena: &Arena<'_>, lexed: &Lexed, range: &Range<usize>) -> Needs {
+    /// What `range` of `text`, parsed as `arena` and lexed as `lexed`, needs, by `editing`'s
+    /// rules: its outermost statements, its comments, and its line breaks outside brackets,
+    /// strings and continued lines.
+    pub(super) fn of(
+        text: &str,
+        arena: &Arena<'_>,
+        lexed: &Lexed,
+        editing: &Editing,
+        range: &Range<usize>,
+    ) -> Needs {
         let statements = outermost(arena, range);
-        let compound = |node: &NodeId| COMPOUND.contains(&arena.kind(*node).name());
+        let compound = |node: &NodeId| compound(arena, *node);
         let code = &text[range.clone()];
         let content_end = range.start + code.trim_end().len();
         let lines = code.match_indices(['\n', '\r']).any(|(i, _)| {
@@ -72,7 +78,9 @@ impl Needs {
                     .multi_line_strings
                     .iter()
                     .any(|s| s.start < at && at < s.end)
-                && !text[..at].trim_end_matches('\r').ends_with('\\')
+                && !editing
+                    .line_continuation
+                    .is_some_and(|c| text[..at].trim_end_matches('\r').ends_with(c))
         });
         let first_code = range.start + code.len() - code.trim_start().len();
         Needs {
@@ -91,7 +99,13 @@ impl Needs {
     /// What `text`, written as a whole, needs; nothing where it is not statements on its own.
     pub(super) fn of_text(language: &dyn FrontEnd, text: &str) -> Needs {
         match language.parse(text) {
-            Ok(arena) => Needs::of(text, &arena, &language.lex(text), &(0..text.len())),
+            Ok(arena) => Needs::of(
+                text,
+                &arena,
+                &language.lex(text),
+                language.editing(),
+                &(0..text.len()),
+            ),
             Err(_) => Needs::default(),
         }
     }
@@ -146,7 +160,8 @@ pub(super) const NO_UNIT: &str = "the match is in a block written on its header'
 
 impl Slot {
     /// The slot `at` is in `text`, parsed as `arena` and lexed as `lexed`, if `at` is exactly a
-    /// run of statements in one block and shares its line with other code; `None` otherwise.
+    /// run of statements in one block and shares its line with other code; `None` otherwise,
+    /// and always where `editing` names no end of a header whose block may share its line.
     /// Where the colon before a block on its header's line cannot be found, which only a line
     /// continued by a backslash after it can do, the block is not laid out, and what the
     /// rewrite writes is left to the backstop.
@@ -154,15 +169,19 @@ impl Slot {
         text: &str,
         arena: &Arena<'_>,
         lexed: &Lexed,
+        editing: &Editing,
         at: &Range<usize>,
     ) -> Option<Slot> {
+        let opener = editing.header_block_opener?;
         let logical = |offset: usize| {
             let index = lexed.logical_starts.partition_point(|&s| s <= offset);
             index.checked_sub(1).map_or(0, |i| lexed.logical_starts[i])
         };
         // Most statements start their line and end it: those are settled without the tree.
         let rest = &text[at.end..];
-        let semicolon_after = rest.trim_start_matches([' ', '\t']).starts_with(';');
+        let semicolon_after = editing
+            .statement_separator
+            .is_some_and(|c| rest.trim_start_matches([' ', '\t']).starts_with(c));
         if logical(at.start) == at.start && !semicolon_after {
             return None;
         }
@@ -191,7 +210,7 @@ impl Slot {
             .filter(|next| logical(next.start) == last_line);
         let opening = arena.range(siblings[0]).start;
         let colon = text[..opening].trim_end();
-        let header = (logical(opening) != opening && colon.ends_with(':'))
+        let header = (logical(opening) != opening && colon.ends_with(opener))
             .then(|| (colon.len()..opening, line_indent(text, logical(opening))));
         Some(Slot {
             line_indent: line_indent(text, line),

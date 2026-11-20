@@ -13,7 +13,7 @@ macro_rules! node_kinds {
         const ALL: &[Kind] = &[$(Kind::new(stringify!($name))),+];
 
         /// The [`Kind`] of a Ruff node.
-        pub(crate) fn kind_of(kind: NodeKind) -> Kind {
+        pub(crate) const fn kind_of(kind: NodeKind) -> Kind {
             match kind {
                 $(NodeKind::$name => Kind::new(stringify!($name)),)+
             }
