@@ -51,9 +51,9 @@ that.
 
   **Accepted limitation:** a scenario that searches files on threads varies from run to run by
   more than its margin allows, most likely because which thread takes which file, and so how
-  each thread's heap grows, is not the same twice; that is not confirmed.  A pull request can be reported over a limit it did not
-  move; read the judged run's spread in the summary before reading a change into it.  Accepted
-  until the work on when to use threads, and how many, decides how runs share files.
+  each thread's heap grows, is not the same twice; that is not confirmed.  A pull request can
+  be reported over a limit it did not move, so read the judged run's spread in the summary
+  before reading a change into it.
 - **The scenarios are `SCENARIOS` in `scripts/budgets`**, each in a scratch copy of the synthetic
   corpus, always under `/tmp` at the same depth, because a deeper path executes more instructions.
   A scenario that edits gets a fresh copy, at the same path, before each run of quaff.  Every
