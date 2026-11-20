@@ -33,7 +33,8 @@ pub(crate) static PYTHON: &dyn FrontEnd = &quaffed_python::Python;
 /// A second language for tests, so that a run over two languages is tested while quaff parses
 /// one: Python's front end under another name, claiming `.toy` files, that reads no pattern or
 /// rewrite holding `lambda`, so that a pattern or a rewrite one language reads and the other
-/// does not can be written.
+/// does not can be written.  It answers no question that has a default, so it holds the
+/// defaults too.
 #[cfg(test)]
 pub(crate) static TOY: &dyn FrontEnd = &Toy;
 
@@ -88,9 +89,6 @@ impl FrontEnd for Toy {
     fn token_kinds(&self, text: &str) -> Vec<String> {
         PYTHON.token_kinds(text)
     }
-    fn escaped(&self, value: &str, part: &quaffed_syntax::StringPart) -> Option<String> {
-        PYTHON.escaped(value, part)
-    }
 }
 
 #[cfg(test)]
@@ -103,6 +101,23 @@ mod tests {
         assert_eq!(python.language(), PYTHON.language());
         assert!(of(Path::new("README.md")).is_none());
         assert!(of(Path::new("Makefile")).is_none());
+    }
+
+    #[test]
+    fn a_file_is_claimed_by_its_extension_alone() {
+        assert!(TOY.claims(Path::new("src/a.toy")));
+        assert!(!TOY.claims(Path::new("a.toy.txt")));
+        assert!(!TOY.claims(Path::new("toy")));
+        assert!(!TOY.claims(Path::new("a.TOY")));
+    }
+
+    #[test]
+    fn the_defaults_claim_nothing_the_language_was_not_asked_for() {
+        assert_eq!(TOY.declared_encoding(b"# coding: latin-1\nx = 1\n"), None);
+        assert_eq!(TOY.misplaced("break\n"), Ok(Vec::new()));
+        let part = &TOY.lex("x = 'a'\n").strings[0];
+        assert_eq!(TOY.escaped("b", part), None);
+        assert_eq!(PYTHON.escaped("b", part), Some("b".to_owned()));
     }
 
     #[test]

@@ -4547,6 +4547,69 @@ mod tests {
     }
 
     #[test]
+    fn a_binary_file_is_never_searched_whatever_its_language() {
+        let ran = in_two_languages(
+            "binary",
+            "find `f($x)`",
+            &[
+                ("a.py", "f(1)\n"),
+                ("b.toy", "f(\0)\n"),
+                ("c.bin", "f(\0)\n"),
+            ],
+        );
+        assert!(
+            matches!(ran.outcome, Ok(Outcome::Success)),
+            "{:?}",
+            ran.outcome
+        );
+        assert!(
+            !ran.out.contains("b.toy") && !ran.out.contains("c.bin"),
+            "{}",
+            ran.out
+        );
+    }
+
+    #[test]
+    fn a_rewrite_both_languages_read_edits_each_language_s_files() {
+        let ran = in_two_languages(
+            "rewrite-both",
+            "replace `f($x)` with `g($x)` expect 2",
+            &[("a.py", "f(1)\n"), ("b.toy", "f(2)\n")],
+        );
+        assert!(
+            matches!(ran.outcome, Ok(Outcome::Success)),
+            "{:?}",
+            ran.outcome
+        );
+        assert_eq!(ran.after, ["g(1)\n", "g(2)\n"]);
+    }
+
+    #[test]
+    fn a_file_its_language_cannot_decode_or_parse_refuses_a_replace() {
+        // Toy decodes as Python does, so an encoding Python does not know is refused.
+        for (name, script, text) in [
+            (
+                "undecoded",
+                "replace `f($x)` with `g($x)` expect 1",
+                "# coding: nonsense\nf(1)\n",
+            ),
+            (
+                "unwritten-unparsed",
+                "replace `f($x)` with `lambda: $x` expect 1",
+                "f(1\n",
+            ),
+        ] {
+            let ran = in_two_languages(name, script, &[("a.py", "f(1)\n"), ("b.toy", text)]);
+            assert!(
+                matches!(&ran.outcome, Err(Failure::Unparseable { files }) if files.len() == 1),
+                "{name}: {:?}",
+                ran.outcome
+            );
+            assert_eq!(ran.after[0], "f(1)\n", "{name}: nothing is written");
+        }
+    }
+
+    #[test]
     fn a_pattern_both_languages_read_is_matched_in_each_language_s_files() {
         let ran = in_two_languages(
             "both",
@@ -4586,6 +4649,22 @@ mod tests {
         assert!(
             ran.notes
                 .contains("1 file not searched for a structural pattern its language cannot read"),
+            "{}",
+            ran.notes
+        );
+        let ran = in_two_languages(
+            "one-reads-of-two",
+            "find `g = lambda: f($x)`",
+            &[
+                ("a.py", "g = lambda: f(1)\n"),
+                ("b.toy", "g = lambda: f(2)\n"),
+                ("c.toy", "g = lambda: f(3)\n"),
+            ],
+        );
+        assert!(
+            ran.notes.contains(
+                "2 files not searched for structural patterns their language cannot read"
+            ),
             "{}",
             ran.notes
         );
@@ -4700,5 +4779,21 @@ mod tests {
         );
         assert!(ran.out.contains("a.py"), "{}", ran.out);
         assert!(!ran.out.contains("b.toy"), "{}", ran.out);
+        // Nor is a `where` compiled for a language that does not read the statement's pattern.
+        let ran = in_two_languages(
+            "where-unread-pattern",
+            "find `g = lambda: $b` where $b matches `1`",
+            &[("a.py", "g = lambda: 1\n"), ("b.toy", "g = lambda: 1\n")],
+        );
+        assert!(
+            matches!(ran.outcome, Ok(Outcome::Success)),
+            "{:?}",
+            ran.outcome
+        );
+        assert!(
+            ran.out.contains("a.py") && !ran.out.contains("b.toy"),
+            "{}",
+            ran.out
+        );
     }
 }

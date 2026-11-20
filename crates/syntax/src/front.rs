@@ -313,61 +313,8 @@ pub struct Site {
 mod tests {
     use super::*;
 
-    /// A front end that answers only what it must, for what the defaults give.
-    struct Least;
-
-    impl FrontEnd for Least {
-        fn language(&self) -> Language {
-            Language::new("Least")
-        }
-        fn extensions(&self) -> &'static [&'static str] {
-            &["least", "lst"]
-        }
-        fn decode(&self, _: &[u8]) -> Result<Source, Refusal> {
-            unreachable!("not asked")
-        }
-        fn parse<'a>(&self, _: &'a str) -> Result<Arena<'a>, ParseError> {
-            unreachable!("not asked")
-        }
-        fn compile_pattern(&self, _: &str) -> Result<Pattern, CompileError> {
-            unreachable!("not asked")
-        }
-        fn compile_rewrite(&self, _: &str, _: &Pattern) -> Result<Rewrite, CompileError> {
-            unreachable!("not asked")
-        }
-        fn lex(&self, _: &str) -> Lexed {
-            unreachable!("not asked")
-        }
-        fn code_tokens<'a>(&self, _: &'a str) -> Vec<&'a str> {
-            unreachable!("not asked")
-        }
-        fn token_kinds(&self, _: &str) -> Vec<String> {
-            unreachable!("not asked")
-        }
-    }
-
-    #[test]
-    fn a_file_is_claimed_by_one_of_its_extensions_alone() {
-        assert!(Least.claims(Path::new("src/a.least")));
-        assert!(Least.claims(Path::new("a.lst")));
-        assert!(!Least.claims(Path::new("a.least.txt")));
-        assert!(!Least.claims(Path::new("least")));
-        assert!(!Least.claims(Path::new("a.LEAST")));
-    }
-
-    #[test]
-    fn the_defaults_claim_nothing_the_language_was_not_asked_for() {
-        assert_eq!(Least.declared_encoding(b"# coding: latin-1\n"), None);
-        let part = StringPart {
-            range: 0..2,
-            raw: false,
-            bytes: false,
-            formatted: false,
-            quote: "\"".to_owned(),
-        };
-        assert_eq!(Least.escaped("x", &part), None);
-        assert_eq!(Least.misplaced("break"), Ok(Vec::new()));
-    }
+    // The defaults and `claims` are tested over a front end in the binary, which has languages
+    // to answer the rest: `crates/quaffed/src/languages.rs`.
 
     #[test]
     fn a_compile_error_says_its_message_and_keeps_its_place_apart() {
