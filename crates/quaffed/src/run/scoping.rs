@@ -4,7 +4,7 @@
 //! Scoping: which files each pattern looks at, the projects they are in, and discovery from the
 //! places those scopes start.
 //!
-//! The third phase.  In: the [`Plan`], the [`Built`] program and the current directory.  Out:
+//! In: the [`Plan`], the [`Built`] program and the current directory.  Out:
 //! the [`Files`] to search, each with which of the run's patterns look at it, which execution
 //! reads.  It compiles each `where` into the plan first, since a `where` reads paths from where
 //! the run is, and checks every one before discovery looks at a file.
@@ -282,7 +282,7 @@ impl<'a> Scoping<'a> {
     }
 
     /// The scope of `query`'s pattern.
-    pub(super) fn scoped(
+    fn scoped(
         &mut self,
         query: &Query,
         roots: scope::Roots,
@@ -560,4 +560,74 @@ fn discover_base(
         &projects.contents,
     )
     .map_err(Failure::Discovery)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+
+    use super::*;
+    use crate::cli::SourceArg;
+    use crate::languages;
+    use crate::run::{plan, sources};
+
+    fn built(text: &str, scope: Option<&OsString>) -> Built {
+        let built = sources::read(
+            vec![SourceArg::Expression {
+                number: 1,
+                text: text.into(),
+            }],
+            scope,
+            &mut std::io::empty(),
+            &Contents::default(),
+        );
+        let Ok(built) = built else {
+            panic!("{:?}", built.err());
+        };
+        built
+    }
+
+    #[test]
+    fn each_file_is_found_with_which_of_the_run_s_patterns_look_at_it() {
+        let dir = std::env::temp_dir().join(format!("quaffed-scoping-{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("creating the directory");
+        fs::write(dir.join("a.txt"), "x\n").expect("writing");
+        fs::write(dir.join("b.txt"), "y\n").expect("writing");
+        let built = built("find \"x\" in \"a.txt\"\nfind \"y\"\n", None);
+        let Ok(mut plan) = plan::plan(languages::LANGUAGES, &built) else {
+            panic!("planning");
+        };
+        let files = scope(&mut plan, &built, &dir, &Contents::default());
+        let _ = fs::remove_dir_all(&dir);
+        let Ok(files) = files else {
+            panic!("{:?}", files.err());
+        };
+        let found: Vec<(String, Vec<bool>)> = files
+            .to_search
+            .iter()
+            .map(|file| {
+                let name = file.path.file_name().expect("a file name");
+                (name.to_string_lossy().into_owned(), file.applies.clone())
+            })
+            .collect();
+        assert_eq!(
+            found,
+            [
+                ("a.txt".to_owned(), vec![true, true]),
+                ("b.txt".to_owned(), vec![false, true]),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_scope_holding_a_double_quote_is_refused_before_anything_is_found() {
+        let built = built("find \"x\"\n", Some(&OsString::from("\"src\"")));
+        let Ok(mut plan) = plan::plan(languages::LANGUAGES, &built) else {
+            panic!("planning");
+        };
+        match scope(&mut plan, &built, Path::new("."), &Contents::default()) {
+            Err(failure @ Failure::QuotedScope { .. }) => assert_eq!(failure.exit_code(), 3),
+            other => panic!("{:?}", other.err()),
+        }
+    }
 }

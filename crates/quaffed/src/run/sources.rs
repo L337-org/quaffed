@@ -4,7 +4,7 @@
 //! Reading a run's sources - scripts, expressions and queries - into one program, with the
 //! text of each, which locations are worked out from.
 //!
-//! The first phase.  In: the sources as the command line gives them, and its scope.  Out: a
+//! In: the sources as the command line gives them, and its scope.  Out: a
 //! [`Built`] program, checked against the rules every program keeps, which planning reads.
 
 use std::ffi::OsString;
@@ -205,4 +205,55 @@ fn script_text(read: io::Result<Vec<u8>>, source: &Source) -> Result<String, Fai
             message: "the script is not valid UTF-8 here; a script is read as UTF-8".into(),
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn expression(text: &str) -> Vec<SourceArg> {
+        vec![SourceArg::Expression {
+            number: 1,
+            text: text.into(),
+        }]
+    }
+
+    fn read_expression(text: &str, scope: Option<&OsString>) -> Result<Built, Failure> {
+        read(
+            expression(text),
+            scope,
+            &mut io::empty(),
+            &Contents::default(),
+        )
+    }
+
+    #[test]
+    fn the_program_read_is_narrowed_to_the_scope_given() {
+        let built = read_expression("find \"x\"\n", Some(&OsString::from("src")));
+        let Ok(built) = built else {
+            panic!("{:?}", built.err());
+        };
+        assert_eq!(built.program.body().len(), 1);
+        assert_eq!(built.program.narrow_to, Some(PathBuf::from("src")));
+    }
+
+    #[test]
+    fn sources_with_no_statements_are_refused_naming_them() {
+        match read_expression("# nothing but a comment\n", None) {
+            Err(failure @ Failure::Empty { .. }) => {
+                assert_eq!(failure.exit_code(), 3);
+                assert!(failure.to_string().contains("-e expression 1"), "{failure}");
+            }
+            other => panic!("{:?}", other.err()),
+        }
+    }
+
+    #[test]
+    fn the_whole_program_is_checked_before_anything_plans_it() {
+        // An edit with no `expect` parses, and the checker refuses it.
+        match read_expression("replace string \"a\" with \"b\"\n", None) {
+            Err(failure @ Failure::Script { .. }) => assert_eq!(failure.exit_code(), 3),
+            other => panic!("{:?}", other.err()),
+        }
+    }
 }

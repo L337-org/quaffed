@@ -22,6 +22,8 @@ mod plan;
 mod report;
 mod scoping;
 mod sources;
+// Each phase's own tests are in its module.  These run the whole pipeline, and are long enough
+// for a file of their own.
 #[cfg(test)]
 mod tests;
 

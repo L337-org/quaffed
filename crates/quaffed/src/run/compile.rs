@@ -351,3 +351,58 @@ fn metavariable_test(filter: &Spanned<Filter>) -> Option<Span> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::SourceArg;
+    use crate::contents::Contents;
+    use crate::languages;
+    use crate::run::sources;
+
+    /// The program `text` makes as one `-e`, and the span of its first backticked operand.
+    fn built(text: &str) -> (Built, Span) {
+        let built = sources::read(
+            vec![SourceArg::Expression {
+                number: 1,
+                text: text.into(),
+            }],
+            None,
+            &mut std::io::empty(),
+            &Contents::default(),
+        );
+        let Ok(built) = built else {
+            panic!("{:?}", built.err());
+        };
+        let start = text.find('`').expect("a backticked operand");
+        let end = text.rfind('`').expect("a backticked operand") + 1;
+        (
+            built,
+            Span {
+                source: 0,
+                start,
+                end,
+            },
+        )
+    }
+
+    #[test]
+    fn a_pattern_is_compiled_for_each_language_and_held_where_one_reads_it() {
+        let (built, span) = built("find `f($a)`\n");
+        let compiled = compile(languages::LANGUAGES, &[("f($a)", span)], &[], &built);
+        let Ok(compiled) = compiled else {
+            panic!("{:?}", compiled.err());
+        };
+        assert_eq!(compiled.len(), languages::LANGUAGES.len());
+        assert!(compiled.iter().any(|c| c.patterns[0].is_some()));
+    }
+
+    #[test]
+    fn a_pattern_no_language_reads_is_a_script_error_before_any_file_is_read() {
+        let (built, span) = built("find `f(`\n");
+        match compile(languages::LANGUAGES, &[("f(", span)], &[], &built) {
+            Err(failure @ Failure::Script { .. }) => assert_eq!(failure.exit_code(), 3),
+            other => panic!("{:?}", other.err()),
+        }
+    }
+}

@@ -4,7 +4,7 @@
 //! Execution: each file searched for the patterns that look at it, batch by batch, with its
 //! edits held, not written.
 //!
-//! The fourth phase.  In: the [`Plan`] and the [`Files`].  Out: what was [`Searched`] for, which
+//! In: the [`Plan`] and the [`Files`].  Out: what was [`Searched`] for, which
 //! evaluation and reporting read.
 
 use std::borrow::Cow;
@@ -22,6 +22,14 @@ use super::{
     report::name_of,
     scoping::{Files, Projects, ToSearch},
 };
+use crate::changes::{self, Changes};
+use crate::filter;
+use crate::output;
+use crate::resolve::{self, Declarations, Resolution, Unknown};
+use crate::rewrite;
+use crate::scope;
+use crate::search::{self, Match};
+use crate::structural;
 
 /// Searches each of `files` for the patterns of `plan` that look at it, in order, holding the
 /// edits its replaces make, not writing them.
@@ -56,14 +64,6 @@ pub(super) fn execute(plan: &Plan, files: &mut Files) -> Result<Searched, Failur
     }
     Ok(searched)
 }
-use crate::changes::{self, Changes};
-use crate::filter;
-use crate::output;
-use crate::resolve::{self, Declarations, Resolution, Unknown};
-use crate::rewrite;
-use crate::scope;
-use crate::search::{self, Match};
-use crate::structural;
 
 /// Stretches an edit wrote over, each where it was in the bytes before and where what was written
 /// stands in those after, as [`Changes::between`] takes them.
@@ -76,7 +76,7 @@ type Over = Vec<(Range<usize>, Range<usize>)>;
 /// either text is not one a rewrite gives; then nothing is claimed, and the changes are one
 /// stretch from the first byte that differs to the last - exact, but holding about a whole copy of
 /// the file for the rest of the run, as a run did before changes were held as stretches.
-pub(super) fn in_bytes(
+fn in_bytes(
     source: &encoding::Source,
     edited: &str,
     over: &[(Range<usize>, Range<usize>)],
@@ -473,7 +473,7 @@ struct Work<'p> {
 /// Searches each of `files` for each of `patterns`, in order, replacing as `replacements` says,
 /// reading each file once and deciding its encoding from what declares it.  A pattern after a
 /// replace is searched for in the file as the replace left it; the edits are held, not written.
-pub(super) fn search_files(
+fn search_files(
     files: &[ToSearch],
     roots: scope::Roots,
     patterns: &[Wanted],
@@ -1364,4 +1364,96 @@ fn unparsed_at(unparsed: &structural::Unparsed) -> String {
         "line {}, column {}: {}",
         unparsed.at.line, unparsed.at.column, unparsed.message
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::fs;
+
+    use crate::contents::Contents;
+
+    /// A stretch of `text`'s bytes, in `encoding`'s spelling, rewritten: `old` in the file as
+    /// decoded becomes `new`, and the claim is checked to be exactly what changed.
+    fn claimed_in_bytes(file: &[u8], old: &str, new: &str) {
+        let source = crate::languages::PYTHON.decode(file).expect("decodes");
+        let at = source.text.find(old).expect("the old text is in the file");
+        let edited = source.text.replacen(old, new, 1);
+        let over = [(at..at + old.len(), at..at + new.len())];
+        let bytes = source.encode(&edited).expect("encodes");
+        let claimed = in_bytes(&source, &edited, &over);
+        assert_eq!(claimed.len(), 1, "{claimed:?}");
+        let (was, now) = &claimed[0];
+        let mut rebuilt = file[..was.start].to_vec();
+        rebuilt.extend_from_slice(&bytes[now.clone()]);
+        rebuilt.extend_from_slice(&file[was.end..]);
+        assert_eq!(rebuilt, bytes, "{claimed:?}");
+        let changes = Changes::between(file, &bytes, &claimed);
+        assert_eq!(changes.held(), now.len());
+    }
+
+    #[test]
+    fn a_rewrites_stretches_are_found_in_the_files_bytes_whatever_its_encoding() {
+        // After a byte-order mark, which comes before every stretch.
+        claimed_in_bytes(
+            b"\xef\xbb\xbfx = 'caf\xc3\xa9'\ny = 2\n",
+            "y = 2",
+            "y = (2)",
+        );
+        // Single-byte: each character one byte, so a decoded offset past "é" is not a byte one.
+        claimed_in_bytes(
+            b"# -*- coding: latin-1 -*-\nx = 'caf\xe9'\ny = 2\n",
+            "y = 2",
+            "y = 'na\u{ef}ve'",
+        );
+        // Multi-byte: "日本" is four bytes in Shift-JIS and six in UTF-8.
+        claimed_in_bytes(
+            b"# -*- coding: shift_jis -*-\nx = '\x93\xfa\x96\x7b'\ny = 2\n",
+            "y = 2",
+            "y = '\u{65e5}'",
+        );
+    }
+
+    #[test]
+    fn a_stretch_off_a_character_boundary_claims_nothing() {
+        let source = crate::languages::PYTHON
+            .decode("x = 'é'\n".as_bytes())
+            .unwrap();
+        // Byte 6 is inside "é".
+        assert_eq!(in_bytes(&source, "x = 'é'\n", &[(6..7, 6..7)]), Vec::new());
+    }
+
+    #[test]
+    fn a_file_without_matches_is_not_listed_for_a_pattern() {
+        let dir = std::env::temp_dir().join(format!("quaffed-run-{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("creating the directory");
+        let with = dir.join("with.txt");
+        let without = dir.join("without.txt");
+        fs::write(&with, "TODO\n").expect("writing");
+        fs::write(&without, "nothing\n").expect("writing");
+        let pattern = TextPattern::literal("TODO");
+        let mut projects = Projects::new(&dir, &Contents::default());
+        let file = |path| ToSearch {
+            path,
+            project: 0,
+            applies: vec![true],
+        };
+        let searched = search_files(
+            &[file(with), file(without)],
+            scope::Roots {
+                cwd: &dir,
+                root: &dir,
+            },
+            &[Wanted::Text(&pattern)],
+            &[None],
+            &[],
+            &mut projects,
+            None,
+        );
+        let _ = fs::remove_dir_all(&dir);
+        let searched = searched.expect("searching");
+        let listed: Vec<&PathBuf> = searched.matches[0].iter().map(|(path, _)| path).collect();
+        assert_eq!(listed, [&PathBuf::from("with.txt")]);
+    }
 }

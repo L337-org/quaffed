@@ -114,14 +114,17 @@ character.
 ## Running a script
 
 The command line (`crates/quaffed/src/run/sources.rs`) parses every source into one `Program`
-and runs the checker.  Planning (`src/run/plan.rs`) then refuses anything this build cannot yet
-run, each exit 5 at where it was written.  `delete` is planned as a structural `replace` whose
-rewrite is empty, with no behaviour of its own (`replacing`).  It compiles every backticked
-pattern, and every rewrite against its pattern, so one that is not a pattern, or a rewrite that
-names what its pattern does not bind, is exit 3 there too.  Only then does it look at a file.  Every file is read once, and taken through the
-statements in order, so a statement sees the edits before it; the statements are then evaluated
-in order over the results.  Editing, output, notes, assertion failures and exit codes are in
-`search.md`.
+and runs the checker.  Planning (`src/run/plan.rs`) then refuses any statement or operand this
+build cannot yet run, each exit 5 at where it was written.  `delete` is planned as a structural
+`replace` whose rewrite is empty, with no behaviour of its own (`replacing`).  Planning compiles
+every backticked pattern, and every rewrite against its pattern, so one that is not a pattern, or
+a rewrite that names what its pattern does not bind, is exit 3 there too.  Each `where` is
+compiled at the start of scoping (`src/run/scoping.rs`), since a `FILE` glob is read from where
+the run is: a `where` test this build has not built is exit 5, and a pattern in one that does not
+compile is exit 3, both before discovery looks at a file.  Every file is read once, and taken
+through the statements in order, so a statement sees the edits before it; the statements are then
+evaluated in order over the results.  Editing, output, notes, assertion failures and exit codes are
+in `search.md`.
 
 ## Properties
 

@@ -4,7 +4,7 @@
 //! Planning: a program into the steps this build can run, each with its patterns, and each
 //! structural pattern and rewrite compiled for each language.
 //!
-//! The second phase.  In: the [`Built`] program, and the languages quaff parses.  Out: a [`Plan`],
+//! In: the [`Built`] program, and the languages quaff parses.  Out: a [`Plan`],
 //! which every phase after it reads, and which scoping completes with each `where`.
 
 use quaffed_representation::program::{
@@ -299,7 +299,7 @@ pub(super) fn assertion<'p>(
 
 /// The pattern of `query`, if this build can search for it.  A structural one joins
 /// `structural`, to be compiled with the rest before any file is read.
-pub(super) fn buildable<'p>(
+fn buildable<'p>(
     query: &'p Query,
     structural: &mut Vec<(&'p str, Span)>,
 ) -> Result<Wanted<'p>, (&'static str, Span)> {
@@ -313,5 +313,118 @@ pub(super) fn buildable<'p>(
             })
         }
         _ => Err(("this kind of operand", query.operand.span)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use quaffed_representation::glob::Glob;
+    use quaffed_representation::program::{Filter, Subject};
+
+    #[test]
+    fn an_operand_this_build_cannot_search_for_is_not_built_yet_where_it_was_written() {
+        // The MVP check refuses a bound operand before planning, so no script reaches this;
+        // the planner still says what it cannot build rather than searching for nothing.
+        let span = Span {
+            source: 0,
+            start: 4,
+            end: 5,
+        };
+        let query = Query::new(Spanned::new(Operand::Bound("f".into()), span));
+        let mut structural = Vec::new();
+        let refused = buildable(&query, &mut structural).err();
+        assert_eq!(refused, Some(("this kind of operand", span)));
+        assert_eq!(structural.len(), 0, "{structural:?}");
+    }
+
+    #[test]
+    fn a_replace_or_a_delete_is_planned_and_one_this_build_cannot_run_is_named_where_it_was_written()
+     {
+        let span = |start| Span {
+            source: 0,
+            start,
+            end: start + 1,
+        };
+        let text = |t: &str| Spanned::new(Operand::Text(TextPattern::literal(t)), span(0));
+        let count = vec![Spanned::new(Count::Any, span(9))];
+        let replace = |query: Query, expect: Vec<Spanned<Count>>| {
+            Action::new(ActionKind::Replace(text("b")), query, expect)
+        };
+        let scoped = Query::with(
+            text("a"),
+            vec![Spanned::new(Glob::literal("x"), span(3))],
+            None,
+        );
+        assert!(
+            replacing(
+                &replace(scoped, count.clone()),
+                span(1),
+                &mut Vec::new(),
+                &mut Vec::new()
+            )
+            .is_ok()
+        );
+        // A test of a metavariable needs what a match binds.
+        let of_x = Spanned::new(
+            Filter::Matches(
+                Subject::Metavariable("x".into()),
+                Spanned::new(Operand::Glob(Glob::literal("y")), span(7)),
+            ),
+            span(5),
+        );
+        let filter = Spanned::new(Filter::Not(Box::new(of_x)), span(4));
+        let filtered = Query::with(text("a"), Vec::new(), Some(filter));
+        // A test of a metavariable is planned like any other: the run checks it against the
+        // pattern once that is compiled.
+        assert!(
+            replacing(
+                &replace(filtered, count.clone()),
+                span(1),
+                &mut Vec::new(),
+                &mut Vec::new()
+            )
+            .is_ok()
+        );
+        // The checker refuses an edit with no `expect` first; the planner still names it.
+        assert_eq!(
+            replacing(
+                &replace(Query::new(text("a")), Vec::new()),
+                span(1),
+                &mut Vec::new(),
+                &mut Vec::new()
+            )
+            .err(),
+            Some(("a replace with no `expect`", span(1)))
+        );
+        // A delete is a structural replace with an empty rewrite, written where it was.
+        let backticked = Spanned::new(Operand::Pattern("f()".into()), span(0));
+        let delete = Action::new(ActionKind::Delete, Query::new(backticked), count.clone());
+        let (mut patterns, mut rewrites) = (Vec::new(), Vec::new());
+        assert!(replacing(&delete, span(1), &mut patterns, &mut rewrites).is_ok());
+        assert_eq!(rewrites.len(), 1);
+        assert_eq!((rewrites[0].0, rewrites[0].1), ("", span(1)));
+        let pattern = Spanned::new(Operand::Pattern("f()".into()), span(0));
+        let structural = Action::new(
+            ActionKind::Replace(pattern.clone()),
+            Query::new(pattern),
+            count,
+        );
+        // A structural one is planned too, its pattern and its rewrite to be compiled.
+        let (mut patterns, mut rewrites) = (Vec::new(), Vec::new());
+        assert!(replacing(&structural, span(1), &mut patterns, &mut rewrites).is_ok());
+        assert_eq!(patterns.len(), 1);
+        assert_eq!(rewrites, [("f()", span(0), 0)]);
+        // Text replaced with a pattern, or the other way round, the parser never builds.
+        let mixed = Action::new(
+            ActionKind::Replace(text("b")),
+            Query::new(Spanned::new(Operand::Pattern("f()".into()), span(0))),
+            vec![Spanned::new(Count::Any, span(9))],
+        );
+        assert_eq!(
+            replacing(&mixed, span(1), &mut Vec::new(), &mut Vec::new()).err(),
+            Some(("this kind of replace", span(1)))
+        );
     }
 }

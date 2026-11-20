@@ -313,3 +313,222 @@ impl std::error::Error for Failure {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_failure_has_the_exit_code_for_its_remedy() {
+        assert_eq!(Failure::Usage(UsageError::NoQuery).exit_code(), 3);
+        let quoted = Failure::QuotedScope {
+            scope: "\"x\"".into(),
+        };
+        assert_eq!(quoted.exit_code(), 3);
+        let io = Failure::Io {
+            doing: "reading",
+            path: "a".into(),
+            cause: io::Error::from(io::ErrorKind::PermissionDenied),
+        };
+        assert_eq!(io.exit_code(), 7);
+    }
+
+    #[test]
+    fn a_missing_scope_that_looks_like_a_glob_says_globs_are_not_expanded() {
+        let failure = Failure::Io {
+            doing: "reading the scope",
+            path: "src/**/*.py".into(),
+            cause: io::Error::from(io::ErrorKind::NotFound),
+        };
+        let message = failure.to_string();
+        assert!(
+            message.starts_with("reading the scope \"src/**/*.py\": "),
+            "{message}"
+        );
+        assert!(
+            message.ends_with(
+                "quaff does not expand a glob given as the scope; name one file or directory, or \
+                 write the pattern with `in` in the script"
+            ),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn the_underlying_error_stays_on_the_chain() {
+        use std::error::Error as _;
+        let io = Failure::Io {
+            doing: "reading",
+            path: "a".into(),
+            cause: io::Error::from(io::ErrorKind::PermissionDenied),
+        };
+        assert_eq!(
+            io.source().map(ToString::to_string),
+            Some(io::Error::from(io::ErrorKind::PermissionDenied).to_string())
+        );
+        assert!(Failure::Usage(UsageError::NoQuery).source().is_none());
+    }
+
+    #[test]
+    fn the_refusals_of_an_edit_are_worded_for_one_file_and_for_many() {
+        let unwritable = |path: &str, ambiguous| Unwritable {
+            path: path.into(),
+            encoding: "mac_arabic",
+            text: "a b".into(),
+            ambiguous,
+        };
+        let one = Failure::Unwritable {
+            files: vec![unwritable("a.txt", true)],
+        }
+        .to_string();
+        assert!(
+            one.contains("\"a.txt\": mac_arabic spells \"a b\" more than one way"),
+            "{one}"
+        );
+        assert!(
+            one.ends_with(
+                "Use a replacement its encoding can hold, or leave it out of the statement: with \
+                 `in`, with `where not FILE matches`, such as where not FILE matches \"a.txt\", \
+                 or with a narrower scope on the command line"
+            ),
+            "{one}"
+        );
+        let many = Failure::Unwritable {
+            files: vec![unwritable("a.txt", false), unwritable("b.txt", false)],
+        }
+        .to_string();
+        assert!(many.contains("the encoding of 2 files"), "{many}");
+        assert!(
+            many.contains("a replacement their encodings can hold"),
+            "{many}"
+        );
+        assert!(
+            many.contains("or leave them out of the statement"),
+            "{many}"
+        );
+        let broken = Failure::BrokenByEdit {
+            files: vec![
+                Broken {
+                    path: "a.py".into(),
+                    why: "line 1, column 1: x".into(),
+                    by: vec![
+                        "the replace at -e expression 1, at character 1".into(),
+                        "the delete at -e expression 2, at character 1".into(),
+                    ],
+                },
+                Broken {
+                    path: "b.py".into(),
+                    why: "line 2, column 1: y".into(),
+                    by: Vec::new(),
+                },
+            ],
+        };
+        let message = broken.to_string();
+        assert_eq!(broken.exit_code(), 9);
+        assert!(
+            message.contains("2 files that parse unparseable"),
+            "{message}"
+        );
+        assert!(
+            message.contains(
+                "x; changed by the replace at -e expression 1, at character 1 and by the delete \
+                 at -e expression 2, at character 1"
+            ),
+            "{message}"
+        );
+        assert!(
+            message.contains("\"b.py\": line 2, column 1: y\n"),
+            "{message}"
+        );
+        // One of the statements replaced, so it is the replacement that must change.
+        assert!(
+            message.contains("\nChange the replacement so that"),
+            "{message}"
+        );
+        assert!(
+            message.ends_with(
+                "so that the files still parse, or leave them out of the statement: with `in`, \
+                 with `where not FILE matches`, such as where not FILE matches \"a.py\", or \
+                 with a narrower scope on the command line"
+            ),
+            "{message}"
+        );
+        for failure in [
+            &broken,
+            &Failure::Unwritable {
+                files: vec![unwritable("a.txt", true), unwritable("b.txt", false)],
+            },
+        ] {
+            refuses_every_write(failure);
+        }
+    }
+
+    /// A destination refusing one write, the `refused`th from 0, and accepting every other, so
+    /// that a message dropping the refusal goes on to succeed.
+    struct Refusing {
+        writes: usize,
+        refused: Option<usize>,
+    }
+
+    impl fmt::Write for Refusing {
+        fn write_str(&mut self, _: &str) -> fmt::Result {
+            self.writes += 1;
+            if Some(self.writes - 1) == self.refused {
+                return Err(fmt::Error);
+            }
+            Ok(())
+        }
+    }
+
+    /// Displays `failure` into destinations that refuse its first write, then its second, and so
+    /// on to its last, and requires each refusal to end the message as an error, not be dropped.
+    fn refuses_every_write(failure: &dyn fmt::Display) {
+        let display = |refused| {
+            let mut destination = Refusing { writes: 0, refused };
+            fmt::Write::write_fmt(&mut destination, format_args!("{failure}"))
+                .map(|()| destination.writes)
+        };
+        let writes = display(None).unwrap();
+        assert!(writes > 1, "{failure} was written in {writes} writes");
+        for refused in 0..writes {
+            assert!(
+                display(Some(refused)).is_err(),
+                "a refusal of write {} of {writes} was dropped: {failure}",
+                refused + 1
+            );
+        }
+    }
+
+    #[test]
+    fn a_write_failure_exits_7_with_the_systems_error_on_the_chain() {
+        use std::error::Error as _;
+        let failure = Failure::Write(write::Failure::Open {
+            path: "a.txt".into(),
+            cause: io::Error::from(io::ErrorKind::PermissionDenied),
+        });
+        assert_eq!(failure.exit_code(), 7);
+        let cause = failure
+            .source()
+            .and_then(|err| err.source())
+            .map(ToString::to_string);
+        assert_eq!(
+            cause,
+            Some(io::Error::from(io::ErrorKind::PermissionDenied).to_string())
+        );
+        refuses_every_write(&Failure::Write(write::Failure::Write {
+            path: "a.txt".into(),
+            cause: io::Error::from(io::ErrorKind::StorageFull),
+            unrestored: vec![
+                (
+                    "a.txt".into(),
+                    io::Error::from(io::ErrorKind::PermissionDenied),
+                ),
+                (
+                    "b.txt".into(),
+                    io::Error::from(io::ErrorKind::PermissionDenied),
+                ),
+            ],
+            unflushed: Vec::new(),
+        }));
+    }
+}

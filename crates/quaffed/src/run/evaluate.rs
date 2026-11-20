@@ -4,7 +4,7 @@
 //! Evaluation: the steps walked in order over what the search found, deciding the outcome,
 //! writing the edits, and printing the results.
 //!
-//! The fifth phase.  In: what was [`Searched`] for, the [`Plan`] and the [`Built`] program.  Out:
+//! In: what was [`Searched`] for, the [`Plan`] and the [`Built`] program.  Out:
 //! the results printed, the edits written, and what was [`Evaluated`], which reporting reads.
 
 use std::borrow::Cow;
@@ -500,5 +500,78 @@ impl<'s> Evaluation<'s> {
             )),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::SourceArg;
+    use crate::contents::Contents;
+    use crate::languages;
+    use crate::run::{execute, plan, scoping, sources};
+
+    /// What evaluating `script` over a directory holding `files` decided: the outcome, the notes,
+    /// how many patterns it reached, and what it printed.
+    fn evaluated(
+        name: &str,
+        script: &str,
+        files: &[(&str, &str)],
+    ) -> (Outcome, Vec<String>, usize, String) {
+        let dir =
+            std::env::temp_dir().join(format!("quaffed-evaluate-{}-{name}", std::process::id()));
+        fs::create_dir_all(&dir).expect("creating the directory");
+        for (path, text) in files {
+            fs::write(dir.join(path), text).expect("writing");
+        }
+        let contents = Contents::default();
+        let mut out = Vec::new();
+        let result = (|| {
+            let built = sources::read(
+                vec![SourceArg::Expression {
+                    number: 1,
+                    text: script.into(),
+                }],
+                None,
+                &mut io::empty(),
+                &contents,
+            )?;
+            let mut plan = plan::plan(languages::LANGUAGES, &built)?;
+            let mut files = scoping::scope(&mut plan, &built, &dir, &contents)?;
+            let searched = execute::execute(&plan, &mut files)?;
+            evaluate(&searched, &plan, &built, &cli::Options::default(), &mut out)
+        })();
+        let _ = fs::remove_dir_all(&dir);
+        let Ok(evaluated) = result else {
+            panic!("{:?}", result.err());
+        };
+        let out = String::from_utf8(out).expect("UTF-8");
+        (evaluated.outcome, evaluated.notes, evaluated.reached, out)
+    }
+
+    #[test]
+    fn a_pattern_found_nowhere_is_noted_and_the_run_found_nothing() {
+        let (outcome, notes, reached, out) =
+            evaluated("nowhere", "find \"x\"\n", &[("a.txt", "nothing\n")]);
+        assert_eq!(outcome, Outcome::NothingFound);
+        assert_eq!(notes, ["no matches for \"x\""]);
+        assert_eq!(reached, 1);
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn a_failed_assertion_is_an_answer_that_stops_the_run_where_it_failed() {
+        let (outcome, notes, reached, out) = evaluated(
+            "failed",
+            "find \"x\" expect 1\nfind \"y\"\n",
+            &[("a.txt", "x\nx\ny\n")],
+        );
+        assert_eq!(outcome, Outcome::AssertionFailed);
+        assert_eq!(reached, 1, "the run stops at the failed assertion");
+        assert!(
+            notes[0].ends_with("expected exactly 1 match of \"x\", found 2"),
+            "{notes:?}"
+        );
+        assert_eq!(out.lines().count(), 2, "{out}");
     }
 }
