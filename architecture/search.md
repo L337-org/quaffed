@@ -92,8 +92,7 @@ read with the lock held, so two threads asking for one at once read it once.  Ea
 encoding declarations, git's attributes (`src/workspace/git.rs`) and EditorConfig's
 (`src/editorconfig.rs`), keep what they have read behind a lock held for the whole question.  A
 lock per declaring file would let more threads decide at once, but one per project is simpler,
-and is chosen on the reasoning that deciding an encoding costs little next to searching the file;
-the benchmarks are where that would show otherwise.
+and is chosen on the reasoning that deciding an encoding costs little next to searching the file.
 
 **Nothing a thread does decides the order of the output.**  Matches, counts and notes come from
 the gathered results.  So do the notes on lines a declaring file holds that cannot be used: a

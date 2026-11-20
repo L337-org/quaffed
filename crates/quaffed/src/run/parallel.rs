@@ -163,10 +163,16 @@ thread_local! {
 /// from 0, for any run on this thread.
 #[cfg(test)]
 pub(super) fn with_threads_refused_from<R>(from: usize, run: impl FnOnce() -> R) -> R {
+    /// Lets the system start threads again however `run` ends, a failed assertion included.
+    struct Allowed;
+    impl Drop for Allowed {
+        fn drop(&mut self) {
+            REFUSED_FROM.with(|refused| refused.set(None));
+        }
+    }
     REFUSED_FROM.with(|refused| refused.set(Some(from)));
-    let result = run();
-    REFUSED_FROM.with(|refused| refused.set(None));
-    result
+    let _allowed = Allowed;
+    run()
 }
 
 /// What the threads working on items share.

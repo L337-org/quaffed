@@ -72,8 +72,8 @@ impl EditorConfig {
             .map(Path::to_path_buf)
             .collect();
         // Held for the whole question, so that a file is read once however many ask for it at
-        // once.  Simpler than a lock per file, on the reasoning that a question costs little next
-        // to searching the file it is asked for; the benchmarks would show threads waiting here.
+        // once.  One lock for the project rather than one for each file it reads, as simpler, on
+        // the reasoning that a question costs little next to searching the file it is asked for.
         let mut files = self.files.lock().expect("no thread panics holding it");
         // Nearest first, so the first file with a matching section decides; a root file ends
         // the search.
