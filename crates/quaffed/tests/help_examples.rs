@@ -34,6 +34,7 @@ const MUST_SHOW: &[(&str, &str)] = &[
     ("-f -", "| quaff -f -"),
     ("--dry-run", " --dry-run "),
     ("-o text", " -o text "),
+    ("-j N", " -j "),
     ("--version", " --version"),
     ("find of text", "find \""),
     ("find of a pattern", "find `"),

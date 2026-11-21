@@ -8,13 +8,18 @@
 //! that read a file itself would read it a second time, which nothing else would notice until
 //! the budgets' file trace did.  This reads every other source file of the `quaff` binary and
 //! fails naming any line that reads a file directly.  A script given with `-f` is read through
-//! the store too, as it may be in the scope and searched.
+//! the store too, as it may be in the scope and searched.  A test module may read freely, whether
+//! it is inside a file or a file of its own.
 //!
 //! `src/write.rs`, which writes a run's edits, is the one other file that opens a project's
 //! files, and only for writing: it may open a file, and it must never open one for reading.
 
 use std::fs;
 use std::path::{Path, PathBuf};
+
+mod layout;
+
+use layout::is_test_module;
 
 /// What reading a file directly looks like in source.
 const DIRECT_READS: &[&str] = &[
@@ -47,6 +52,7 @@ fn sources(dir: &Path, found: &mut Vec<PathBuf>) {
             sources(&path, found);
         } else if path.extension().is_some_and(|e| e == "rs")
             && path.file_name().is_some_and(|name| name != "contents.rs")
+            && !is_test_module(&path)
         {
             found.push(path);
         }

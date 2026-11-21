@@ -32,6 +32,82 @@ The forms and options are in `docs/language.md`.  What the parser (`src/cli.rs`)
   statements that must each have one; a form or statement this build gains joins that list
   and gets an example in the same change.
 
+## A run's phases
+
+A run (`src/run.rs`) is a pipeline of phases, each a module of its own under `src/run/` with
+one entry point, taking what the phase before gave and giving what the phases after read.  A
+statement kind is added by extending these types, not by threading a new value from one end of
+the run to the other.
+
+| Phase | Module | In | Out |
+|---|---|---|---|
+| Reading | `sources.rs` | the sources and the command-line scope | `Built`: the program, checked, and each source's text |
+| Planning | `plan.rs`, `compile.rs` | `Built`, and the languages quaff parses | `Plan`: the steps, the run's patterns in order, and each compiled for each language |
+| Scoping | `scoping.rs` | `Plan`, `Built` and the current directory | `Files`: the files found, each with which patterns look at it; each `where` compiled into the `Plan` |
+| Execution | `execute.rs`, `parallel.rs` | `Plan`, `Files`, and how many files to search at once | `Searched`: every match, and every edit held, not written |
+| Evaluation | `evaluate.rs` | `Searched`, `Plan` and `Built` | the results printed, the edits written, and `Evaluated`: the outcome and its notes |
+| Reporting | `report.rs` | `Evaluated`, `Searched`, `Files` and `Plan` | the notes, on standard error |
+
+The failures every phase can end a run with, and how each is worded, are `failure.rs`.  The order
+of the phases is what keeps a run's promises: every pattern and `where` is compiled before
+discovery looks at a file, so a script error is one however large the tree; and nothing is printed
+or written until evaluation has decided the outcome, so a run that fails prints nothing.
+
+**What a run knows about each of its patterns is one record in each phase**, not lists matched
+up by a pattern's index: planning's `Searching` holds the pattern, its query and what it is
+replaced with, and execution's `Found` holds what it found - its matches, its counts, and the
+files it could not be searched for, written in or made in.  A pattern's index is its place among
+the run's patterns, in program order, and is the same in both.
+
+### The unit of work
+
+**Execution's unit of work is a file**: it is read once and taken through the run's patterns in
+batches, in program order, as the first rule under _Editing_ says.  Only the file's own patterns -
+those whose scope holds it - are looked at.  What a file gives is
+a `Searched` of its own, which is gathered into the run's in discovery order: each pattern's
+`Found` takes the file's matches, counts and notes after those of the files before it, and a
+file the run holds is renumbered as it joins the files held so far.  Nothing a file's search does
+depends on another file's, so files can be worked on in any order, and the order of the results
+depends on discovery alone.
+
+### Sharing work between threads
+
+**Files are searched on threads of the run's own** (`src/run/parallel.rs`), as many as `-j`
+says or, without it, as the machine runs at once.  Each thread takes the next file in discovery
+order from a shared counter, searches it, and sends what it gave to the run's own thread, which
+gathers the results strictly in discovery order, holding any that finish early until those
+before them are in.  A thread starts no file more than twice the number of threads ahead of the
+next to be gathered, so what waits stays bounded however long one file takes, and memory stays
+in line with the files being read at once.  The first failure in discovery order ends the run, as it
+would one file at a time: files after it may have been read, but nothing they gave is used.  With
+one job no thread is started, and each file is searched and gathered before the next is read.
+Where the system will start fewer threads than asked for, the run goes on with those it started,
+or on its own thread with none, and says so in a note: a container's limit on processes must not
+stop a search that could be answered more slowly.
+
+**What the threads share is read-only, or locked for one question at a time.**  The plan and its
+compiled patterns are only read.  The store files are read through (`src/contents.rs`) is locked to
+look a file up or keep it, and a file it keeps is read with the lock held, so two threads asking
+for one at once read it once.  Every other read waits meanwhile, so only a file read for what it
+says about other files, or before the search, may be named to keep: never one read only to be
+searched.  Each project's encoding declarations, git's attributes (`src/workspace/git.rs`) and
+EditorConfig's (`src/editorconfig.rs`), keep what they have read behind a lock held for the whole
+question.  A lock per declaring file would let more threads decide at once, but one per project is
+simpler, and is chosen on the reasoning that deciding an encoding costs little next to searching
+the file.
+
+**Nothing a thread does decides the order of the output.**  Matches, counts and notes come from
+the gathered results.  So do the notes on lines a declaring file holds that cannot be used: a
+file's search lists each declaring file it consulted with such lines, whether it read that file or
+another thread did, and gathering keeps a declaring file's lines the first time a file names it,
+which is where a search of one file after another meets them.  A new note that comes from state
+the threads share must be gathered the same way, or it will come out in a different order from
+run to run.
+
+**A statement that works across files does not fit this unit**: one that follows references from
+one file into others, or binds a set a later statement ranges over, needs what other files gave
+before it can work on a file, and a file's search has nothing but the file.
+
 ## Discovery
 
 What a user sees is in `docs/language.md`, _What is searched_.  How it is built:
@@ -78,7 +154,7 @@ What a user sees is in `docs/language.md`, _What is searched_.  How it is built:
 
 ## Scope and filters
 
-Which files each statement looks at (`src/scope.rs`, and `Scoping` in `src/run.rs`).  The path
+Which files each statement looks at (`src/scope.rs`, and `src/run/scoping.rs`).  The path
 rules a user sees are `docs/language.md`'s _Paths and globs_.
 
 - **Every pattern of the run has its own scope**: the base its files come from, its `in`, and
@@ -144,7 +220,8 @@ Line breaks and anchors (`script.md`) are spelt in the file's encoding like the 
 break prefers CRLF to its CR alone, so a pattern answers a CRLF file as it answers one with LF.
 
 **A file is read whole**, and positions are worked out in one pass that stops at the last
-match, so a search needs about the size of the largest file.  No size limit is applied.
+match, so a search needs about the size of the largest files being searched at once, one for
+each thread.  No size limit is applied.
 
 ## Structural search
 
@@ -152,7 +229,7 @@ A structural pattern is matched by shape against files in a language quaff parse
 syntax arena and that language's front end (`syntax.md`, and `python.md` for Python).  Such a file
 has structural support.  **Each file's language is identified, and the pattern is applied as that
 language reads it.**  Which files it applies to follows the units rule, a unit being a whole file
-(`src/structural.rs`, and the file loop in `src/run.rs`):
+(`src/structural.rs`, and the file loop in `src/run/execute.rs`):
 
 - **A file in a language quaff parses**, by name alone, by the extensions its front end gives in
   `languages::LANGUAGES`, is decoded as the language's own reader decodes it - for Python, as
@@ -199,7 +276,7 @@ The format is in `docs/language.md`, _Output_.  The rules behind it:
 - **A closed standard output stops the printing quietly**, but assertions are still evaluated,
   so the exit code is still the answer.
 - **Every match is held until the run prints, so a match holds where its code is, not the code**
-  (`Hit` and `Code` in `src/run.rs`).  Files are searched one at a time, but each statement's
+  (`Hit` and `Code` in `src/run/execute.rs`).  However files are searched, each statement's
   matches print together, so nothing can print until the last file is done; structural matches
   can overlap, as `x = $v` and a sequence to the end of a block do from every statement in it, and
   copies of their code would hold about the square of the block's length.  So a structural match
@@ -241,13 +318,13 @@ it was written.
 **A run that cannot give an answer - exit 3, 5, 6, 7 or 9 - prints nothing on standard output**, so
 a partial answer never passes for a whole one.  Every message says what was being done, quotes
 the path or argument it concerns, and says what to do where there is something to do
-(`src/run.rs`).
+(`src/run/failure.rs`).
 
 ## Editing
 
-`replace string` edits text (`src/run.rs`, `src/search.rs`, `src/write.rs`), and a structural
-`replace` edits code (`src/rewrite.rs`), through the same pipeline.  `delete` is a structural
-`replace` whose rewrite is empty.
+`replace string` edits text (`src/run/execute.rs`, `src/search.rs`, `src/write.rs`), and a
+structural `replace` edits code (`src/rewrite.rs`), through the same pipeline.  `delete` is a
+structural `replace` whose rewrite is empty.
 
 - **Each file is taken through the program's statements in order** and read once: the patterns
   between two replaces are searched in one pass over the file as it then is, and a replace changes

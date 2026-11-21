@@ -4,10 +4,15 @@
 //! supporting another system means adding an implementation there, not finding git assumed
 //! elsewhere.  This reads every other source file of the `quaff` binary and fails naming any
 //! that reaches one of git's files or settings itself.  `discover.rs`'s list of every system's
-//! metadata directories, skipped by name alike, is not git's and is not caught.
+//! metadata directories, skipped by name alike, is not git's and is not caught.  A test may build
+//! a tree holding git's files, whether its module is inside a file or a file of its own.
 
 use std::fs;
 use std::path::{Path, PathBuf};
+
+mod layout;
+
+use layout::is_test_module;
 
 /// What reaching git directly looks like in source: its attributes and ignore files, its
 /// pointer files, and the walker's git switches.
@@ -42,6 +47,7 @@ fn sources(dir: &Path, found: &mut Vec<PathBuf>) {
             sources(&path, found);
         } else if path.extension().is_some_and(|e| e == "rs")
             && path.file_name().is_some_and(|name| name != "workspace.rs")
+            && !is_test_module(&path)
         {
             found.push(path);
         }

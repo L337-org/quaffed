@@ -119,13 +119,14 @@ quaff -e SCRIPT [PATH]     run the statements in SCRIPT
 quaff -f FILE [PATH]       run the script in FILE; -f - reads it from standard input
 quaff --dry-run ...        print each match an edit would change, but write nothing
 quaff -o text ...          print matches as text, the only output this build has
+quaff -j N ...             search at most N files at once
 quaff -h, --help           the help
 quaff --version            the version
 ```
 
-Long forms: `--string`, `--pattern`, `--expression`, `--file` and `--output`, each taking its
-value as the next argument or after `=`.  A short option never takes `=`: `-s=x` is an unknown
-option.
+Long forms: `--string`, `--pattern`, `--expression`, `--file`, `--output` and `--jobs`, each
+taking its value as the next argument or after `=`.  A short option never takes `=`: `-s=x` is an
+unknown option.
 
 - **`-s`, `-p`, `-e` and `-f` can be repeated and mixed**, and run in the order given, as one
   program.
@@ -152,6 +153,23 @@ option.
   $ quaff -o json TODO
   quaff: the output "json" is not in this build, which has only -o text
   [exit 5]
+  ```
+
+- **Files are searched several at once**: as many as the machine runs at once, or at most `N`
+  with `-j N`, which takes a whole number, 1 or more.  `-j 1` searches one file at a time.  What
+  is printed, and the exit code, are the same whatever `N`, and the same on every run: each
+  file's matches are taken in the order the files are found.  Where quaff cannot tell how many
+  the machine runs, or the system will not start as many threads as that, it searches fewer at
+  once and says so in a note:
+
+  ```
+  quaff: searched 2 files at a time rather than 8, as the system would start no more threads: Resource temporarily unavailable (os error 11); -j sets how many
+  ```
+
+  ```
+  $ quaff -j 0 TODO
+  quaff: -j "0" is not a number of files to search at once: give a whole number, 1 or more
+  [exit 3]
   ```
 
 ### The project, and the scope
@@ -1319,8 +1337,9 @@ src/app.py:16:5-17:32: return lookup(request.args["id"], default=None,)
   full.
 - **With several queries, each query's matches print together**, in the order of the program.
 - **Notes go to standard error, prefixed `quaff:`**: no matches, possible matches, files not
-  searched and why, binary files skipped, skipped ignore-file lines, links not followed.
-  Anything not looked at, or looked at without certainty, is said.
+  searched and why, binary files skipped, skipped ignore-file lines, links not followed, fewer
+  files searched at once than meant.  Anything not looked at, or looked at without certainty, is
+  said.
 - **A message names a pattern** quoted for text - `"TODO"`, with anchors outside the quotes as a
   script writes them, `^"x"$` - and in backticks for a structural pattern, `` `f($a)` ``.  In
   both, a line break is shown as `\n`, so a message stays on one line.
@@ -1341,8 +1360,10 @@ src/app.py:16:5-17:32: return lookup(request.args["id"], default=None,)
 | 9 | a structural search needs a file quaff cannot parse, an edit would break a file that parses, a file's encoding cannot write a replacement, or a structural replace cannot be made as written - its matches overlap outside each other's holes, it would drop a comment, a trailing comma has no one place to go, a literal cannot hold a value as text, a capture would be read together with the code the rewrite writes around it, or a rewrite that is only a comment would swallow code after it on its line; or a delete would leave what holds a match without it: the script or the file must change first |
 
 **A run that cannot give an answer - exit 3, 5, 6, 7 or 9 - prints nothing on standard output**, so
-a partial answer never passes for a whole one.  The whole program is read and checked before any
-file is looked at, so a script with an error anywhere does not run at all.
+a partial answer never passes for a whole one.  Where several files cannot be read, the one named
+is the first found, as it would be one file at a time, however many are searched at once.  The
+whole program is read and checked before any file is looked at, so a script with an error
+anywhere does not run at all.
 
 ## Peculiarities
 
@@ -1375,6 +1396,10 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
 - **Brackets round a tuple's hole keep it one tuple.**  ``replace `return $x` with
   `return wrap(($x))` `` over `return a, b` writes `return wrap((a, b))`, a call with one
   argument, where `wrap($x)` is refused, since it would be a call with two.
+
+- **`-j 0` is refused, exit 3, rather than meaning no limit**, as it does to some tools: with
+  no `-j`, quaff already searches as many files at once as the machine runs, so a higher limit
+  would only start threads with nothing to run them.
 
 - **An empty program is an error, not an empty answer.**  `-e "$CHECKS"` with the variable unset
   exits 3, naming the sources, rather than searching for nothing and exiting 1.
