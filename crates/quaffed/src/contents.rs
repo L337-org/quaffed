@@ -140,9 +140,9 @@ impl Contents {
             return Ok(Bytes::Read(bytes, identity));
         }
         // Read with the store held, so that two threads asking for a file to keep at once read
-        // it once between them, and both have the same bytes.  What is kept is rules, declaring
-        // files and scripts, never the files searched for their own sake, which are read above
-        // with the store free.
+        // it once between them, and both have the same bytes.  Every other read waits meanwhile,
+        // so only a file read for what it says about other files, or before the search, may be
+        // named to keep: never one read only to be searched.
         let (bytes, identity) = read_from_disk(path)?;
         // Shared, so a later reader has them; copying into it is paid only for the files kept,
         // never for every file searched.

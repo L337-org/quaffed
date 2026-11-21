@@ -33,9 +33,9 @@ shows on the pull request as a diff of a `.snap` file.  Every diagnostic `quaff`
 
 Some cases need something to happen inside a run: a file changed between its read and its
 write, say.  **A debug build takes options a release build does not have**, and an end-to-end
-test drives the case through one of them.  They are the one way to do it, rather than a timed
-race, which fails on a loaded runner, or an environment variable, which an inherited
-environment can switch on unnoticed.  Each is gathered in `cli::Hooks`.  For instance,
+test drives the case through one of them.  For a test of the binary they are the one way to do
+it, rather than a timed race, which fails on a loaded runner, or an environment variable, which
+an inherited environment can switch on unnoticed.  Each is gathered in `cli::Hooks`.  For instance,
 `--debug-pause-before-write PATH`: once every file is read and the edits are decided, quaff
 creates `PATH` and waits until it is removed, and `quaff_while` in `end_to_end.rs` runs a
 closure in that pause.
@@ -56,6 +56,15 @@ To add another:
    debug assertions does not pass the option to a binary that refuses it.  Such a test snapshots
    its output with `insta::assert_snapshot!` rather than `assert_quaff_snapshot!`, which cannot
    run a closure mid-run, and keeps any path it adds out of the snapshot.
+
+**A test that calls a run's own functions in process**, rather than running the binary, can
+instead use a `#[cfg(test)]` hook in the code it tests, where no option could reach: having the
+system refuse to start threads (`with_threads_refused_from` in `src/run/parallel.rs`), or holding
+each file's search until another is in flight (`meeting` in `src/run/execute.rs`).  Such a hook
+must leave every other test alone, since tests run at once in one process - keyed to the test's
+own thread or its own directory - and must be undone however the test ends, a failed assertion
+included.  Where an end-to-end test can drive the case through a debug option, use that instead:
+it tests the binary that ships.
 
 ### Reviewing a changed snapshot
 

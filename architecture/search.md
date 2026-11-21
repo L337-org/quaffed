@@ -87,8 +87,10 @@ stop a search that could be answered more slowly.
 
 **What the threads share is read-only, or locked for one question at a time.**  The plan and its
 compiled patterns are only read.  The store files are read through (`src/contents.rs`) is locked
-to look a file up or keep it, and a file it keeps - a rules file, a declaring file, a script - is
-read with the lock held, so two threads asking for one at once read it once.  Each project's
+to look a file up or keep it, and a file it keeps is read with the lock held, so two threads
+asking for one at once read it once.  Every other read waits meanwhile, so only a file read for
+what it says about other files, or before the search, may be named to keep: never one read only
+to be searched.  Each project's
 encoding declarations, git's attributes (`src/workspace/git.rs`) and EditorConfig's
 (`src/editorconfig.rs`), keep what they have read behind a lock held for the whole question.  A
 lock per declaring file would let more threads decide at once, but one per project is simpler,

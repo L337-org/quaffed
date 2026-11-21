@@ -125,8 +125,8 @@ quaff --version            the version
 ```
 
 Long forms: `--string`, `--pattern`, `--expression`, `--file`, `--output` and `--jobs`, each
-taking its value as the next argument or after `=`.  A short option never takes `=`: `-s=x` is an unknown
-option.
+taking its value as the next argument or after `=`.  A short option never takes `=`: `-s=x` is an
+unknown option.
 
 - **`-s`, `-p`, `-e` and `-f` can be repeated and mixed**, and run in the order given, as one
   program.

@@ -1628,6 +1628,18 @@ pub(super) mod meeting {
         patience: Duration,
         run: impl FnOnce(),
     ) -> usize {
+        /// Stops watching `dir` however the run ends, a panic included, so that no entry is left
+        /// for another test to find.
+        struct Unwatch<'a>(&'a Path);
+        impl Drop for Unwatch<'_> {
+            fn drop(&mut self) {
+                // Taken even if a panic elsewhere poisoned it, since this runs while unwinding.
+                WATCHED
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .retain(|w| w.dir != self.0);
+            }
+        }
         watched().push(Watched {
             dir: dir.to_path_buf(),
             patience,
@@ -1635,13 +1647,15 @@ pub(super) mod meeting {
             most: 0,
             gave_up: false,
         });
+        let _unwatch = Unwatch(dir);
         run();
-        let mut all = watched();
-        let at = all
+        // The lock taken here is let go before `_unwatch` takes it again: in edition 2024 a
+        // block's final expression drops its temporaries before the block's own variables.
+        watched()
             .iter()
-            .position(|w| w.dir == dir)
-            .expect("watched until now");
-        all.remove(at).most
+            .find(|w| w.dir == dir)
+            .expect("watched until now")
+            .most
     }
 }
 

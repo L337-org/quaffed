@@ -939,7 +939,11 @@ fn a_run_the_system_starts_fewer_threads_for_answers_the_same_and_says_so() {
 
 #[cfg(unix)]
 #[test]
-fn of_several_files_that_cannot_be_read_the_first_found_is_named_whatever_the_limit() {
+fn of_several_files_that_cannot_be_read_the_same_one_is_named_whatever_the_limit() {
+    // The first in discovery order is named because the run stops there; the second locked file
+    // lies further ahead than any thread may run, so this cannot tell that apart from naming
+    // whichever failure arrives first.  `the_first_error_in_order_wins_and_nothing_after_it_is_taken`
+    // in `parallel.rs` holds that, with the later error found first.
     use std::os::unix::fs::PermissionsExt;
     let dir = tree("unreadable", &todos(32));
     let locked = [dir.join("d1/f5.txt"), dir.join("d3/f31.txt")];
