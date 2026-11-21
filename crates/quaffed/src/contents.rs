@@ -79,11 +79,30 @@ pub enum Check {
     Gone,
 }
 
+/// Every path read from disk, on whichever thread read it, so a test can count them.  Tests run
+/// at once, so each counts only the reads of its own files.
 #[cfg(test)]
-thread_local! {
-    /// Every path read from disk on this thread, so a test can count them.
-    pub static DISK_READS: std::cell::RefCell<Vec<PathBuf>> =
-        const { std::cell::RefCell::new(Vec::new()) };
+static DISK_READS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// How many times `path` has been read from disk.
+#[cfg(test)]
+pub fn disk_reads_of(path: &Path) -> usize {
+    disk_reads_under(path)
+        .iter()
+        .filter(|read| *read == path)
+        .count()
+}
+
+/// Every read from disk of a path at or under `dir`, in the order made.
+#[cfg(test)]
+pub fn disk_reads_under(dir: &Path) -> Vec<PathBuf> {
+    DISK_READS
+        .lock()
+        .expect("no test panics holding it")
+        .iter()
+        .filter(|read| read.starts_with(dir))
+        .cloned()
+        .collect()
 }
 
 impl Contents {
@@ -106,25 +125,32 @@ impl Contents {
     ///
     /// Returns the system's error, verbatim, when the file cannot be read.
     pub fn read(&self, path: &Path) -> io::Result<Bytes> {
-        if let Some((bytes, identity)) = self.lock().kept.get(path) {
+        let mut inner = self.lock();
+        if let Some((bytes, identity)) = inner.kept.get(path) {
             return Ok(Bytes::Kept(Arc::clone(bytes), *identity));
         }
-        let (bytes, identity) = read_from_disk(path)?;
-        let mut inner = self.lock();
-        if inner.paths.contains(path)
+        let keep = inner.paths.contains(path)
             || path
                 .file_name()
-                .is_some_and(|name| inner.names.contains(name))
-        {
-            // Shared, so a later reader has them; copying into it is paid only for the files
-            // kept, a handful of small ones, never for every file searched.
-            let kept: Arc<[u8]> = Arc::from(bytes);
-            inner
-                .kept
-                .insert(path.to_path_buf(), (Arc::clone(&kept), identity));
-            return Ok(Bytes::Kept(kept, identity));
+                .is_some_and(|name| inner.names.contains(name));
+        if !keep {
+            // Read with the store free, so that files searched at once are read at once.
+            drop(inner);
+            let (bytes, identity) = read_from_disk(path)?;
+            return Ok(Bytes::Read(bytes, identity));
         }
-        Ok(Bytes::Read(bytes, identity))
+        // Read with the store held, so that two threads asking for a file to keep at once read
+        // it once between them, and both have the same bytes.  What is kept is rules, declaring
+        // files and scripts, never the files searched for their own sake, which are read above
+        // with the store free.
+        let (bytes, identity) = read_from_disk(path)?;
+        // Shared, so a later reader has them; copying into it is paid only for the files kept,
+        // never for every file searched.
+        let kept: Arc<[u8]> = Arc::from(bytes);
+        inner
+            .kept
+            .insert(path.to_path_buf(), (Arc::clone(&kept), identity));
+        Ok(Bytes::Kept(kept, identity))
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -136,7 +162,10 @@ impl Contents {
 /// that a write landing while they are read is seen as a change when the file is checked.
 fn read_from_disk(path: &Path) -> io::Result<(Vec<u8>, Identity)> {
     #[cfg(test)]
-    DISK_READS.with(|reads| reads.borrow_mut().push(path.to_path_buf()));
+    DISK_READS
+        .lock()
+        .expect("no test panics holding it")
+        .push(path.to_path_buf());
     let mut file = File::open(path)?;
     let metadata = file.metadata()?;
     let identity = Identity::of(&metadata, SystemTime::now());
@@ -184,10 +213,6 @@ pub fn unchanged(path: &Path, identity: &Identity, original: &[u8]) -> io::Resul
 mod tests {
     use super::*;
 
-    fn disk_reads_of(path: &Path) -> usize {
-        DISK_READS.with(|reads| reads.borrow().iter().filter(|read| *read == path).count())
-    }
-
     #[test]
     fn a_named_file_is_read_from_disk_once_and_any_other_every_time() {
         let dir = std::env::temp_dir().join(format!("quaffed-contents-{}", std::process::id()));
@@ -220,6 +245,26 @@ mod tests {
         (dir, file)
     }
 
+    #[test]
+    fn a_file_to_keep_asked_for_on_several_threads_at_once_is_read_once() {
+        let (dir, file) = one_file("kept-at-once", b"x = 1\n");
+        let contents = Contents::default();
+        contents.keep_path(&file);
+        let threads = 8;
+        let start = std::sync::Barrier::new(threads);
+        std::thread::scope(|scope| {
+            for _ in 0..threads {
+                scope.spawn(|| {
+                    start.wait();
+                    assert_eq!(&*contents.read(&file).unwrap(), b"x = 1\n");
+                });
+            }
+        });
+        let reads = disk_reads_of(&file);
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(reads, 1);
+    }
+
     /// The identity of `file` as if it were read long after its last change, so that its
     /// timestamps are trusted.
     fn settled(file: &Path) -> Identity {
@@ -231,9 +276,9 @@ mod tests {
     fn an_unchanged_file_with_settled_timestamps_is_not_read_again() {
         let (dir, file) = one_file("unchanged", b"x = 1\n");
         let identity = settled(&file);
-        DISK_READS.with(|reads| reads.borrow_mut().clear());
+        let before = disk_reads_of(&file);
         let check = unchanged(&file, &identity, b"x = 1\n").unwrap();
-        let reads = disk_reads_of(&file);
+        let reads = disk_reads_of(&file) - before;
         let _ = fs::remove_dir_all(&dir);
         assert_eq!(check, Check::Unchanged);
         assert_eq!(reads, 0, "an unchanged file's bytes were read again");
@@ -244,9 +289,9 @@ mod tests {
         // Just written, so a second write in the same clock tick could leave the same times.
         let (dir, file) = one_file("racy", b"x = 1\n");
         let bytes = Contents::default().read(&file).unwrap();
-        DISK_READS.with(|reads| reads.borrow_mut().clear());
+        let before = disk_reads_of(&file);
         let same = unchanged(&file, bytes.identity(), b"x = 1\n").unwrap();
-        let reads = disk_reads_of(&file);
+        let reads = disk_reads_of(&file) - before;
         let changed = unchanged(&file, bytes.identity(), b"x = 2\n").unwrap();
         let _ = fs::remove_dir_all(&dir);
         assert_eq!(
@@ -262,9 +307,9 @@ mod tests {
         // Past the racy window, so the identity the read records is trusted.
         std::thread::sleep(std::time::Duration::from_millis(2100));
         let bytes = Contents::default().read(&file).unwrap();
-        DISK_READS.with(|reads| reads.borrow_mut().clear());
+        let before = disk_reads_of(&file);
         let check = unchanged(&file, bytes.identity(), &bytes).unwrap();
-        let reads = disk_reads_of(&file);
+        let reads = disk_reads_of(&file) - before;
         let _ = fs::remove_dir_all(&dir);
         assert_eq!((check, reads), (Check::Unchanged, 0));
     }

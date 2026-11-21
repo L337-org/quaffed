@@ -514,7 +514,7 @@ mod tests {
     /// searches it, as unknown 8-bit text.
     fn decided(bytes: &[u8]) -> Option<(Encoding, usize)> {
         let nowhere = Path::new("/nonexistent-quaffed-search-test");
-        let mut declarations = Declarations {
+        let declarations = Declarations {
             workspace: None,
             editorconfig: EditorConfig::new(nowhere, &Contents::default()),
             cwd: nowhere.to_path_buf(),
@@ -525,7 +525,7 @@ mod tests {
             bytes,
             language: None,
         };
-        match resolve(&file, &mut declarations).expect("nothing to read") {
+        match resolve(&file, &declarations, &mut Vec::new()).expect("nothing to read") {
             Resolution::Binary => None,
             Resolution::Known { encoding, body, .. } => Some((encoding, body)),
             Resolution::Unknown(_) => Some((Encoding::Unknown8Bit, 0)),

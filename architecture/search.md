@@ -44,7 +44,7 @@ the run to the other.
 | Reading | `sources.rs` | the sources and the command-line scope | `Built`: the program, checked, and each source's text |
 | Planning | `plan.rs`, `compile.rs` | `Built`, and the languages quaff parses | `Plan`: the steps, the run's patterns in order, and each compiled for each language |
 | Scoping | `scoping.rs` | `Plan`, `Built` and the current directory | `Files`: the files found, each with which patterns look at it; each `where` compiled into the `Plan` |
-| Execution | `execute.rs` | `Plan` and `Files` | `Searched`: every match, and every edit held, not written |
+| Execution | `execute.rs`, `parallel.rs` | `Plan`, `Files`, and how many files to search at once | `Searched`: every match, and every edit held, not written |
 | Evaluation | `evaluate.rs` | `Searched`, `Plan` and `Built` | the results printed, the edits written, and `Evaluated`: the outcome and its notes |
 | Reporting | `report.rs` | `Evaluated`, `Searched`, `Files` and `Plan` | the notes, on standard error |
 
@@ -69,6 +69,38 @@ a `Searched` of its own, which is gathered into the run's in discovery order: ea
 file the run holds is renumbered as it joins the files held so far.  Nothing a file's search does
 depends on another file's, so files can be worked on in any order, and the order of the results
 depends on discovery alone.
+
+### Sharing work between threads
+
+**Files are searched on threads of the run's own** (`src/run/parallel.rs`), as many as `-j`
+says or, without it, as the machine runs at once.  Each thread takes the next file in discovery
+order from a shared counter, searches it, and sends what it gave to the run's own thread, which
+gathers the results strictly in discovery order, holding any that finish early until those
+before them are in.  A thread starts no file more than twice the number of threads ahead of the
+next to be gathered, so what waits stays bounded however long one file takes, and memory stays
+in line with the files being read at once.  The first failure in discovery order ends the run, as it
+would one file at a time: files after it may have been read, but nothing they gave is used.  With
+one job no thread is started, and each file is searched and gathered before the next is read.
+Where the system will start fewer threads than asked for, the run goes on with those it started,
+or on its own thread with none, and says so in a note: a container's limit on processes must not
+stop a search that could be answered more slowly.
+
+**What the threads share is read-only, or locked for one question at a time.**  The plan and its
+compiled patterns are only read.  The store files are read through (`src/contents.rs`) is locked
+to look a file up or keep it, and a file it keeps - a rules file, a declaring file, a script - is
+read with the lock held, so two threads asking for one at once read it once.  Each project's
+encoding declarations, git's attributes (`src/workspace/git.rs`) and EditorConfig's
+(`src/editorconfig.rs`), keep what they have read behind a lock held for the whole question.  A
+lock per declaring file would let more threads decide at once, but one per project is simpler,
+and is chosen on the reasoning that deciding an encoding costs little next to searching the file.
+
+**Nothing a thread does decides the order of the output.**  Matches, counts and notes come from
+the gathered results.  So do the notes on lines a declaring file holds that cannot be used: a
+file's search lists each declaring file it consulted with such lines, whether it read that file or
+another thread did, and gathering keeps a declaring file's lines the first time a file names it,
+which is where a search of one file after another meets them.  A new note that comes from state
+the threads share must be gathered the same way, or it will come out in a different order from
+run to run.
 
 **A statement that works across files does not fit this unit**: one that follows references from
 one file into others, or binds a set a later statement ranges over, needs what other files gave
@@ -186,7 +218,8 @@ Line breaks and anchors (`script.md`) are spelt in the file's encoding like the 
 break prefers CRLF to its CR alone, so a pattern answers a CRLF file as it answers one with LF.
 
 **A file is read whole**, and positions are worked out in one pass that stops at the last
-match, so a search needs about the size of the largest file.  No size limit is applied.
+match, so a search needs about the size of the largest files being searched at once, one for
+each thread.  No size limit is applied.
 
 ## Structural search
 

@@ -8,7 +8,6 @@
 //! the results printed, the edits written, and what was [`Evaluated`], which reporting reads.
 
 use std::borrow::Cow;
-use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 
@@ -35,9 +34,9 @@ fn pause(marker: &Path) -> Result<(), Failure> {
         path: marker.to_path_buf(),
         cause,
     };
-    fs::write(marker, b"").map_err(failed)?;
+    std::fs::write(marker, b"").map_err(failed)?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    while fs::exists(marker).map_err(failed)? {
+    while std::fs::exists(marker).map_err(failed)? {
         if std::time::Instant::now() > deadline {
             return Err(failed(io::Error::new(
                 io::ErrorKind::TimedOut,
@@ -507,6 +506,8 @@ impl<'s> Evaluation<'s> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+
     use crate::cli::SourceArg;
     use crate::contents::Contents;
     use crate::languages;
@@ -538,8 +539,8 @@ mod tests {
                 &contents,
             )?;
             let mut plan = plan::plan(languages::LANGUAGES, &built)?;
-            let mut files = scoping::scope(&mut plan, &built, &dir, &contents)?;
-            let searched = execute::execute(&plan, &mut files)?;
+            let files = scoping::scope(&mut plan, &built, &dir, &contents)?;
+            let searched = execute::execute(&plan, &files, None)?;
             evaluate(&searched, &plan, &built, &cli::Options::default(), &mut out)
         })();
         let _ = fs::remove_dir_all(&dir);

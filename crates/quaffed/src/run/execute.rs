@@ -8,8 +8,11 @@
 //! evaluation and reporting read.
 
 use std::borrow::Cow;
+use std::io;
+use std::num::NonZeroUsize;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::thread;
 
 use quaffed_encoding::{self as encoding, Encoding, Named};
 use quaffed_representation::program::TextPattern;
@@ -18,6 +21,7 @@ use quaffed_syntax::{CompileError, FrontEnd, Pattern, Refused, Rewrite};
 use super::{
     compile::Compiled,
     failure::Failure,
+    parallel,
     plan::{Plan, Replacement, Searching, Wanted},
     report::name_of,
     scoping::{Files, Projects, ToSearch},
@@ -30,18 +34,32 @@ use crate::rewrite;
 use crate::scope;
 use crate::search::{self, Match};
 use crate::structural;
+use crate::workspace::Skipped;
 
-/// Searches each of `files` for the patterns of `plan` that look at it, in order, holding the
-/// edits its replaces make, not writing them.
+/// Searches each of `files` for the patterns of `plan` that look at it, holding the edits its
+/// replaces make, not writing them: up to `limit` files at once, or as many as the machine can
+/// search at once with no limit, and what each gave taken in discovery order whatever the number.
 ///
 /// # Errors
 ///
 /// Returns a [`Failure`] for a file that cannot be read, or whose encoding's declarations cannot
-/// be, and refuses the run for files a structural search needs that quaff cannot parse: a count
-/// that left them out could not be trusted.
-pub(super) fn execute(plan: &Plan, files: &mut Files) -> Result<Searched, Failure> {
+/// be - the first in discovery order, as it would be one file at a time - and refuses the run for
+/// files a structural search needs that quaff cannot parse: a count that left them out could not
+/// be trusted.
+pub(super) fn execute(
+    plan: &Plan,
+    files: &Files,
+    limit: Option<NonZeroUsize>,
+) -> Result<Searched, Failure> {
     let locale = locale();
-    let searched = search_files(
+    let (jobs, unknown) = match jobs(limit, thread::available_parallelism) {
+        Ok(jobs) => (jobs, None),
+        Err(err) => (
+            NonZeroUsize::MIN,
+            Some(FewerAtOnce::Unknown(err.to_string())),
+        ),
+    };
+    let mut searched = search_files(
         &files.to_search,
         scope::Roots {
             cwd: &files.cwd,
@@ -49,9 +67,13 @@ pub(super) fn execute(plan: &Plan, files: &mut Files) -> Result<Searched, Failur
         },
         &plan.searching,
         &plan.compiled,
-        &mut files.projects,
+        &files.projects,
         locale.as_ref(),
+        jobs,
     )?;
+    if unknown.is_some() {
+        searched.fewer_at_once = unknown;
+    }
     // A structural search over files it cannot parse would give a count that cannot be trusted,
     // whether their language could parse them or not, so the whole run is refused, naming each,
     // before anything is printed.
@@ -61,6 +83,37 @@ pub(super) fn execute(plan: &Plan, files: &mut Files) -> Result<Searched, Failur
         });
     }
     Ok(searched)
+}
+
+/// How many files a run searches at once: `limit` if the user set one, and otherwise as many as
+/// `available` says the machine can run at once - [`thread::available_parallelism`] for a run.
+///
+/// # Errors
+///
+/// Returns the system's error, verbatim, when no limit was set and how many the machine can run
+/// at once cannot be told.
+fn jobs(
+    limit: Option<NonZeroUsize>,
+    available: impl FnOnce() -> io::Result<NonZeroUsize>,
+) -> io::Result<NonZeroUsize> {
+    limit.map_or_else(available, Ok)
+}
+
+/// Why a run searched fewer files at once than it meant to.  It searched them all, and what it
+/// found is the same, but it says so, since the run may have been slower for it.
+#[derive(Debug)]
+pub(super) enum FewerAtOnce {
+    /// No limit was set, and how many files the machine can search at once could not be told, so
+    /// they were searched one at a time: the system's error.
+    Unknown(String),
+    /// The system would start fewer threads than the run meant to search with: how many it meant
+    /// to, how many started, none meaning the files were searched one at a time, and the system's
+    /// error.
+    Refused {
+        meant: usize,
+        started: usize,
+        cause: String,
+    },
 }
 
 /// Stretches an edit wrote over, each where it was in the bytes before and where what was written
@@ -329,6 +382,12 @@ pub(super) struct Searched {
     pub(super) declares_in: Option<&'static str>,
     /// Binary files, counted once whatever the number of patterns.
     pub(super) binary: usize,
+    /// The version control system's files consulted for an encoding that have lines the system
+    /// could not understand, each with the project it was consulted in: for one file, each it
+    /// consulted, in order; for every file, each once, where the first file to consult it did.
+    pub(super) skipped: Vec<(usize, Skipped)>,
+    /// Why the run searched fewer files at once than it meant to, if it did.
+    pub(super) fewer_at_once: Option<FewerAtOnce>,
 }
 
 /// A file a replace changed, held in memory until the run is over: by its place among the files
@@ -484,14 +543,15 @@ struct Work<'p> {
 /// Searches each of `files` for each of the run's patterns, `searching`, in order, replacing as
 /// each says, reading each file once and deciding its encoding from what declares it.  A pattern
 /// after a replace is searched for in the file as the replace left it; the edits are held, not
-/// written.
+/// written.  Up to `jobs` files are searched at once.
 fn search_files(
     files: &[ToSearch],
     roots: scope::Roots,
     searching: &[Searching],
     compiled: &[Compiled],
-    projects: &mut Projects,
+    projects: &Projects,
     locale: Option<&(String, Encoding)>,
+    jobs: NonZeroUsize,
 ) -> Result<Searched, Failure> {
     let cwd = roots.cwd;
     let batches = batches(searching);
@@ -516,14 +576,28 @@ fn search_files(
         structural,
         roots,
     };
-    // A file is the unit of work: it is taken through every batch, and what it gave is gathered
-    // into the run's in discovery order, so that each pattern's matches stay in that order.
-    for file in files {
-        let declarations = &mut projects.list[file.project].declarations;
-        let mut in_file = Searched::new(searching.len());
-        in_file.file(&file.path, cwd, &work, declarations, locale, &file.applies)?;
-        searched.gather(in_file);
-    }
+    // A file is the unit of work: it is taken through every batch, on whichever thread takes
+    // it, and what it gave is gathered into the run's in discovery order, so that each pattern's
+    // matches stay in that order.
+    let fewer = parallel::in_order(
+        files.len(),
+        jobs,
+        |index| {
+            let file = &files[index];
+            #[cfg(test)]
+            meeting::meet(&file.path);
+            let declarations = &projects.list[file.project].declarations;
+            let mut in_file = Searched::new(searching.len());
+            in_file.file(file, cwd, &work, declarations, locale)?;
+            Ok(in_file)
+        },
+        |in_file| searched.gather(in_file),
+    )?;
+    searched.fewer_at_once = fewer.map(|fewer| FewerAtOnce::Refused {
+        meant: fewer.asked,
+        started: fewer.started,
+        cause: fewer.cause.to_string(),
+    });
     Ok(searched)
 }
 
@@ -544,6 +618,8 @@ impl Searched {
             hint: None,
             declares_in: None,
             binary: 0,
+            skipped: Vec::new(),
+            fewer_at_once: None,
         }
     }
 
@@ -567,6 +643,8 @@ impl Searched {
             hint: _,
             declares_in: _,
             binary,
+            skipped,
+            fewer_at_once: _,
         } = file;
         for (run, in_file) in self.found.iter_mut().zip(found) {
             // Every field named, so that one added to `Found` cannot be left out of gathering.
@@ -612,6 +690,17 @@ impl Searched {
         self.refused.extend(refused);
         self.hinted.extend(hinted);
         self.binary += binary;
+        // A file's lines are told once, where a search of one file after another first meets
+        // them, whichever thread read it.
+        for (project, file) in skipped {
+            if !self
+                .skipped
+                .iter()
+                .any(|(p, seen)| *p == project && seen.file == file.file)
+            {
+                self.skipped.push((project, file));
+            }
+        }
     }
 
     /// How many bytes what the run holds until it prints comes to: every match, each a fixed
@@ -629,17 +718,21 @@ impl Searched {
         hits * std::mem::size_of::<Hit>() + files
     }
 
-    /// Searches one file for the run's patterns that look at it, as `applies` says by their
+    /// Searches one file for the run's patterns that look at it, as its `applies` says by their
     /// index, batch by batch, holding its edits.  A file no pattern looks at is not read.
     fn file(
         &mut self,
-        file: &Path,
+        to_search: &ToSearch,
         cwd: &Path,
         work: &Work,
-        declarations: &mut Declarations,
+        declarations: &Declarations,
         locale: Option<&(String, Encoding)>,
-        applies: &[bool],
     ) -> Result<(), Failure> {
+        let ToSearch {
+            path: file,
+            project,
+            applies,
+        } = to_search;
         if !applies.contains(&true) {
             return Ok(());
         }
@@ -657,6 +750,7 @@ impl Searched {
         let compiled = work.compiled.iter().find(|c| c.language.claims(file));
         let language = compiled.map(|c| c.language);
         // Decided once, from the file as it is on disk, whatever the number of patterns.
+        let mut skipped = Vec::new();
         let resolution = resolve::resolve(
             &resolve::File {
                 path: file,
@@ -664,12 +758,15 @@ impl Searched {
                 language,
             },
             declarations,
+            &mut skipped,
         )
         .map_err(|err| Failure::Io {
             doing: "reading the encoding declarations in",
             path: output::relative(&err.path, cwd),
             cause: err.cause,
         })?;
+        self.skipped
+            .extend(skipped.into_iter().map(|skipped| (*project, skipped)));
         let binary = matches!(resolution, Resolution::Binary);
         self.count_for_structure(work, applies, compiled, binary);
         let read = ReadFile {
@@ -687,7 +784,7 @@ impl Searched {
         let differs = edited.is_some_and(|edited| edited[..] != bytes[..]);
         if differs {
             self.changed.push(Changed {
-                path: file.to_path_buf(),
+                path: file.clone(),
                 shown,
                 language,
                 held: self.held.len(),
@@ -1465,6 +1562,89 @@ fn unparsed_at(unparsed: &structural::Unparsed) -> String {
     )
 }
 
+/// A way for a test to see how many files a run searches at once, which timing alone cannot
+/// show: a file under a directory a test watches waits, as its search starts, until another file
+/// there is being searched too, or the test's patience runs out.  One file at a time, no file
+/// ever has company.
+#[cfg(test)]
+pub(super) mod meeting {
+    use std::path::{Path, PathBuf};
+    use std::sync::{Condvar, Mutex, MutexGuard};
+    use std::time::{Duration, Instant};
+
+    /// A directory a test watches.
+    struct Watched {
+        dir: PathBuf,
+        patience: Duration,
+        /// How many of its files are waiting for company now.
+        waiting: usize,
+        /// The most that ever were at once.
+        most: usize,
+        /// Set once one file waited out the patience, so that the rest do not each wait too.
+        gave_up: bool,
+    }
+
+    /// Every directory being watched, by any test running.
+    static WATCHED: Mutex<Vec<Watched>> = Mutex::new(Vec::new());
+    /// Told whenever a file starts waiting.
+    static ARRIVED: Condvar = Condvar::new();
+
+    fn watched() -> MutexGuard<'static, Vec<Watched>> {
+        WATCHED.lock().expect("no test panics holding it")
+    }
+
+    /// Called as each file's search starts: a file under a watched directory waits for another
+    /// there to start, unless two have already been searched at once.
+    pub(in crate::run) fn meet(file: &Path) {
+        let mut all = watched();
+        let find = |all: &[Watched]| all.iter().position(|w| file.starts_with(&w.dir));
+        let Some(at) = find(&all) else {
+            return;
+        };
+        let deadline = Instant::now() + all[at].patience;
+        all[at].waiting += 1;
+        all[at].most = all[at].most.max(all[at].waiting);
+        ARRIVED.notify_all();
+        loop {
+            // Found again each time, since other tests start and stop watching meanwhile.
+            let at = find(&all).expect("watched until the run ends");
+            let now = Instant::now();
+            if all[at].most >= 2 || all[at].gave_up || now >= deadline {
+                all[at].gave_up |= all[at].most < 2;
+                all[at].waiting -= 1;
+                return;
+            }
+            all = ARRIVED
+                .wait_timeout(all, deadline - now)
+                .expect("no test panics holding it")
+                .0;
+        }
+    }
+
+    /// Calls `run` with the files under `dir` watched, each waiting up to `patience` for
+    /// company, and returns the most files there were ever searched at once.
+    pub(in crate::run) fn most_at_once(
+        dir: &Path,
+        patience: Duration,
+        run: impl FnOnce(),
+    ) -> usize {
+        watched().push(Watched {
+            dir: dir.to_path_buf(),
+            patience,
+            waiting: 0,
+            most: 0,
+            gave_up: false,
+        });
+        run();
+        let mut all = watched();
+        let at = all
+            .iter()
+            .position(|w| w.dir == dir)
+            .expect("watched until now");
+        all.remove(at).most
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1543,7 +1723,7 @@ mod tests {
             Operand::Text(pattern.clone()),
             span,
         ));
-        let mut projects = Projects::new(&dir, &Contents::default());
+        let projects = Projects::new(&dir, &Contents::default());
         let file = |path| ToSearch {
             path,
             project: 0,
@@ -1561,8 +1741,9 @@ mod tests {
                 replacement: None,
             }],
             &[],
-            &mut projects,
+            &projects,
             None,
+            NonZeroUsize::MIN,
         );
         let _ = fs::remove_dir_all(&dir);
         let searched = searched.expect("searching");
@@ -1598,14 +1779,33 @@ mod tests {
                 &contents,
             )?;
             let mut plan = plan::plan(languages::LANGUAGES, &built)?;
-            let mut files = scoping::scope(&mut plan, &built, &dir, &contents)?;
-            execute(&plan, &mut files)
+            let files = scoping::scope(&mut plan, &built, &dir, &contents)?;
+            execute(&plan, &files, None)
         })();
         let _ = fs::remove_dir_all(&dir);
         let Ok(searched) = result else {
             panic!("{:?}", result.err());
         };
         searched
+    }
+
+    #[test]
+    fn a_run_searches_as_many_files_at_once_as_the_machine_runs_unless_limited() {
+        let three = NonZeroUsize::new(3);
+        let untold = || Err(io::Error::other("untold"));
+        assert_eq!(jobs(three, untold).unwrap(), three.unwrap());
+        assert_eq!(
+            jobs(None, || Ok(NonZeroUsize::MIN.saturating_add(4)))
+                .unwrap()
+                .get(),
+            5
+        );
+        assert_eq!(jobs(None, untold).unwrap_err().to_string(), "untold");
+        // A run asks the machine.
+        assert_eq!(
+            jobs(None, thread::available_parallelism).unwrap(),
+            thread::available_parallelism().unwrap()
+        );
     }
 
     #[test]

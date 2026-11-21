@@ -9,6 +9,7 @@
 
 use std::ffi::OsString;
 use std::fmt;
+use std::num::NonZeroUsize;
 #[cfg(debug_assertions)]
 use std::path::PathBuf;
 
@@ -35,6 +36,9 @@ pub enum Invocation {
 pub struct Options {
     /// `--dry-run`: work everything out, and write nothing.
     pub dry_run: bool,
+    /// `-j N`: search at most this many files at once; with none given, as many as the machine
+    /// can run at once.
+    pub jobs: Option<NonZeroUsize>,
     /// What a test asked of a debug build.
     pub hooks: Hooks,
 }
@@ -126,6 +130,8 @@ pub enum UsageError {
     NoQuery,
     /// `-f -` given more than once, when standard input can be read only once.
     StdinTwice,
+    /// `-j` with a value that is not a whole number of at least one, as the option was given.
+    NoSuchJobs { option: String, value: OsString },
 }
 
 impl UsageError {
@@ -156,6 +162,7 @@ impl fmt::Display for UsageError {
                     "-e" | "--expression" => "the statements to run",
                     "-f" | "--file" => "a script file, or - for standard input",
                     "-o" | "--output" => "the output format, which can only be text",
+                    "-j" | "--jobs" => "how many files to search at once",
                     "--debug-pause-before-write" => "the path of a file to create and wait on",
                     _ => "the text to search for",
                 };
@@ -192,6 +199,11 @@ impl fmt::Display for UsageError {
                     "-f - is given twice, and standard input can be read only once"
                 )
             }
+            UsageError::NoSuchJobs { option, value } => write!(
+                f,
+                "{option} {value:?} is not a number of files to search at once: give a whole \
+                 number, 1 or more"
+            ),
         }
     }
 }
@@ -220,6 +232,7 @@ where
     let mut positionals = Vec::new();
     let mut options_ended = false;
     let mut dry_run = false;
+    let mut jobs = None;
     #[cfg(debug_assertions)]
     let mut pause_before_write = None;
     while let Some(arg) = args.next() {
@@ -255,6 +268,18 @@ where
             "-h" | "--help" if inline.is_none() => return Ok(Invocation::Help),
             "--version" if inline.is_none() => return Ok(Invocation::Version),
             "--dry-run" if inline.is_none() => dry_run = true,
+            "--jobs" | "-j" => {
+                let value = value_of(name, inline, &mut args)?;
+                jobs = Some(
+                    value
+                        .to_str()
+                        .and_then(|text| text.parse::<NonZeroUsize>().ok())
+                        .ok_or_else(|| UsageError::NoSuchJobs {
+                            option: name.to_owned(),
+                            value,
+                        })?,
+                );
+            }
             "--output" | "-o" => {
                 let value = value_of(name, inline, &mut args)?;
                 // Text is the only rendering, so there is nothing to record.
@@ -286,6 +311,7 @@ where
         scope: scopes.into_iter().next(),
         options: Options {
             dry_run,
+            jobs,
             hooks: Hooks {
                 #[cfg(debug_assertions)]
                 pause_before_write,
@@ -398,10 +424,10 @@ mod tests {
                     sources: vec![query_arg("TODO", Source::Positional)],
                     scope: None,
                     options: Options {
-                        dry_run: false,
                         hooks: Hooks {
                             pause_before_write: Some(PathBuf::from("/tmp/m")),
                         },
+                        ..Options::default()
                     },
                 })
             );
@@ -590,6 +616,67 @@ mod tests {
         assert_eq!(
             parse_strs(&["-o=text", "TODO"]),
             Err(UsageError::UnknownOption("-o=text".into()))
+        );
+    }
+
+    #[test]
+    fn a_limit_on_files_searched_at_once_is_taken_in_every_form() {
+        for args in [
+            &["-j", "3", "TODO"][..],
+            &["--jobs", "3", "TODO"][..],
+            &["--jobs=3", "TODO"][..],
+            &["TODO", "-j", "3"][..],
+        ] {
+            assert_eq!(
+                parse_strs(args),
+                Ok(Invocation::Run {
+                    sources: vec![query_arg("TODO", Source::Positional)],
+                    scope: None,
+                    options: Options {
+                        jobs: NonZeroUsize::new(3),
+                        ..Options::default()
+                    },
+                }),
+                "{args:?}"
+            );
+        }
+        // None given leaves the run to decide.
+        assert_eq!(
+            parse_strs(&["TODO"]),
+            Ok(run(vec![query_arg("TODO", Source::Positional)], None))
+        );
+    }
+
+    #[test]
+    fn a_limit_that_is_not_a_whole_number_of_at_least_one_exits_3() {
+        for (args, option, value) in [
+            (&["-j", "0", "TODO"][..], "-j", "0"),
+            (&["--jobs=0", "TODO"][..], "--jobs", "0"),
+            (&["--jobs", "-1", "TODO"][..], "--jobs", "-1"),
+            (&["-j", "two", "TODO"][..], "-j", "two"),
+            (&["-j", "1.5", "TODO"][..], "-j", "1.5"),
+            (&["-j", "", "TODO"][..], "-j", ""),
+        ] {
+            let err = parse_strs(args).unwrap_err();
+            assert_eq!(
+                err,
+                UsageError::NoSuchJobs {
+                    option: option.into(),
+                    value: value.into(),
+                },
+                "{args:?}"
+            );
+            assert_eq!(err.exit_code(), 3);
+        }
+        assert_eq!(
+            parse_strs(&["-j", "0", "TODO"]).unwrap_err().to_string(),
+            "-j \"0\" is not a number of files to search at once: give a whole number, 1 or more"
+        );
+        let err = parse_strs(&["TODO", "--jobs"]).unwrap_err();
+        assert_eq!(err, UsageError::MissingValue("--jobs".into()));
+        assert_eq!(
+            err.to_string(),
+            "\"--jobs\" needs a value: how many files to search at once"
         );
     }
 

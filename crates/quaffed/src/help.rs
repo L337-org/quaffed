@@ -62,13 +62,16 @@ Usage:
   quaff -f FILE [PATH]     run the script in FILE; -f - reads it from standard input
   quaff --dry-run ...      print each match an edit would change, but write nothing
   quaff -o text ...        print matches as text, the only output this build has
+  quaff -j N ...           search at most N files at once
   quaff -h, --help         this help
   quaff --version          the version
 
 -s, -p, -e and -f may each be repeated and mixed, and run in the order given, as one program.
 With any of them, the first positional argument is PATH.  TEXT is literal: nothing in it is
 special.  Put -- before TEXT that starts with a dash.  The long forms are --string, --pattern,
---expression, --file and --output, each taking its value as the next argument or after =.
+--expression, --file, --output and --jobs, each taking its value as the next argument or
+after =.  Files are searched as many at once as the machine runs, or at most N with -j N, N
+at least 1; what is printed is the same whatever N.
 
 A script is statements separated by newlines or ;, with # comments.  The statements are:
 
@@ -166,6 +169,8 @@ Searching code, by its structure:
       both calls of print, whatever their arguments
   $ quaff -s TODO -p 'greet($who)' tests
       a textual and a structural search in one run, under tests/: the TODO and greet("you")
+  $ quaff -j 1 TODO
+      one file at a time: the same TODOs, in the same order, as with any other number
 
 Asserting, in a script:
 

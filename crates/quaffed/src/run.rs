@@ -18,6 +18,7 @@ mod compile;
 mod evaluate;
 mod execute;
 mod failure;
+mod parallel;
 mod plan;
 mod report;
 mod scoping;
@@ -110,8 +111,8 @@ fn run_in(
     let contents = Contents::default();
     let built = sources::read(sources, scope, stdin, &contents)?;
     let mut plan = plan::plan(languages, &built)?;
-    let mut files = scoping::scope(&mut plan, &built, cwd, &contents)?;
-    let searched = execute::execute(&plan, &mut files)?;
+    let files = scoping::scope(&mut plan, &built, cwd, &contents)?;
+    let searched = execute::execute(&plan, &files, options.jobs)?;
     let evaluated = evaluate::evaluate(&searched, &plan, &built, options, out)?;
     report::notes(notes, &evaluated, &files, &searched, &plan);
     Ok(evaluated.outcome)
