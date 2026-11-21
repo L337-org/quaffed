@@ -1590,7 +1590,11 @@ pub(super) mod meeting {
     static ARRIVED: Condvar = Condvar::new();
 
     fn watched() -> MutexGuard<'static, Vec<Watched>> {
-        WATCHED.lock().expect("no test panics holding it")
+        // Taken even if a panic in another test poisoned it, so that test's own failure is what
+        // is reported, not this lock's.
+        WATCHED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Called as each file's search starts: a file under a watched directory waits for another
@@ -1616,7 +1620,7 @@ pub(super) mod meeting {
             }
             all = ARRIVED
                 .wait_timeout(all, deadline - now)
-                .expect("no test panics holding it")
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .0;
         }
     }

@@ -86,15 +86,15 @@ or on its own thread with none, and says so in a note: a container's limit on pr
 stop a search that could be answered more slowly.
 
 **What the threads share is read-only, or locked for one question at a time.**  The plan and its
-compiled patterns are only read.  The store files are read through (`src/contents.rs`) is locked
-to look a file up or keep it, and a file it keeps is read with the lock held, so two threads
-asking for one at once read it once.  Every other read waits meanwhile, so only a file read for
-what it says about other files, or before the search, may be named to keep: never one read only
-to be searched.  Each project's
-encoding declarations, git's attributes (`src/workspace/git.rs`) and EditorConfig's
-(`src/editorconfig.rs`), keep what they have read behind a lock held for the whole question.  A
-lock per declaring file would let more threads decide at once, but one per project is simpler,
-and is chosen on the reasoning that deciding an encoding costs little next to searching the file.
+compiled patterns are only read.  The store files are read through (`src/contents.rs`) is locked to
+look a file up or keep it, and a file it keeps is read with the lock held, so two threads asking
+for one at once read it once.  Every other read waits meanwhile, so only a file read for what it
+says about other files, or before the search, may be named to keep: never one read only to be
+searched.  Each project's encoding declarations, git's attributes (`src/workspace/git.rs`) and
+EditorConfig's (`src/editorconfig.rs`), keep what they have read behind a lock held for the whole
+question.  A lock per declaring file would let more threads decide at once, but one per project is
+simpler, and is chosen on the reasoning that deciding an encoding costs little next to searching
+the file.
 
 **Nothing a thread does decides the order of the output.**  Matches, counts and notes come from
 the gathered results.  So do the notes on lines a declaring file holds that cannot be used: a
