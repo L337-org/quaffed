@@ -889,12 +889,11 @@ than it does a tuple's.
 
 **Redundant parentheses round a `case` pattern** take no part, as round an expression: `case 0
 as z:` matches `case (0 as z):`, and `case 0:` matches `case (0):`.  **Nor do a sequence
-pattern's own round brackets**, as a tuple's: `case $a, $b:` matches `case (a, b):`.  A
-one-element sequence's comma is the sequence, so `case $a,:` matches `case (a,):` but not `case
-(a):`.  What stays is what changes the pattern: a class pattern's argument brackets, `case P(a):`,
-and an empty sequence's, `case ():`.  Square brackets are not round ones: `case [a, b]:` is the
-same pattern as `case (a, b):` to Python, but is not matched by it, since its brackets are
-another spelling rather than brackets that only wrap.
+pattern's own brackets, round or square, or a comma after its last element**, since Python reads
+them all as one pattern: `case $a, $b:` matches `case (a, b):`, `case [a, b]:` and `case [a,
+b,]:`, and `case [$a]:` matches `case (a,):` and `case a,:`, but not `case (a):`, which is no
+sequence.  `case ():` and `case []:` match each other.  What stays is what changes the pattern: a
+class pattern's argument brackets, `case P(a):`.
 
 ## Replacing code
 
@@ -1417,9 +1416,6 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
 - **Brackets round a tuple's hole keep it one tuple.**  ``replace `return $x` with
   `return wrap(($x))` `` over `return a, b` writes `return wrap((a, b))`, a call with one
   argument, where `wrap($x)` is refused, since it would be a call with two.
-- **In Python, `case (a, b):` does not match `case [a, b]:`**, though Python reads them as one
-  pattern.  Round brackets that only wrap take no part, but square ones are another way of writing
-  the sequence, and a pattern says which it means: `case $p:` matches both.
 
 - **`-j 0` is refused, exit 3, rather than meaning no limit**, as it does to some tools: with
   no `-j`, quaff already searches up to as many files at once as the machine runs, so a higher

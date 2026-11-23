@@ -140,41 +140,46 @@ fn a_class_patterns_own_parentheses_take_part() {
 }
 
 #[test]
-fn a_sequence_patterns_own_parentheses_take_no_part() {
+fn a_sequence_patterns_own_brackets_take_no_part() {
+    // One pattern to CPython however it is bracketed, and whatever comma ends it.
     let source = "match x:\n    case (a, b):\n        pass\n\
                   match x:\n    case a, b:\n        pass\n\
                   match x:\n    case a, b,:\n        pass\n\
-                  match x:\n    case (a, b,):\n        pass\n";
-    assert_eq!(
-        matches("match $v:\n    case a, b:\n        pass\n", source),
-        [
-            "match x:\n    case (a, b):\n        pass",
-            "match x:\n    case a, b:\n        pass",
-            "match x:\n    case a, b,:\n        pass",
-            "match x:\n    case (a, b,):\n        pass",
-        ]
-    );
-    // A one-element sequence's comma is the sequence, so it stays, with or without brackets.
+                  match x:\n    case (a, b,):\n        pass\n\
+                  match x:\n    case [a, b]:\n        pass\n\
+                  match x:\n    case [a, b,]:\n        pass\n";
+    let all: Vec<String> = source
+        .split_inclusive("pass\n")
+        .map(|clause| clause.trim_end().to_owned())
+        .collect();
+    for pattern in ["case a, b:", "case (a, b):", "case [a, b]:"] {
+        assert_eq!(
+            matches(&format!("match $v:\n    {pattern}\n        pass\n"), source),
+            all,
+            "{pattern}"
+        );
+    }
+    // A one-element sequence is still a sequence without its comma, so `[a]`, `(a,)` and `a,`
+    // are one pattern, and `(a)` is not one of them.
     let one = "match x:\n    case (a,):\n        pass\n\
                match x:\n    case a,:\n        pass\n\
+               match x:\n    case [a]:\n        pass\n\
+               match x:\n    case [a,]:\n        pass\n\
                match x:\n    case (a):\n        pass\n";
-    assert_eq!(
-        matches("match $v:\n    case a,:\n        pass\n", one),
-        [
-            "match x:\n    case (a,):\n        pass",
-            "match x:\n    case a,:\n        pass",
-        ]
-    );
-    // Square brackets are not round ones: CPython reads `[a, b]` as `(a, b)`, but that is not
-    // a bracket taking no part.
-    assert_eq!(
-        matches(
-            "match $v:\n    case (a, b):\n        pass\n",
-            "match x:\n    case [a, b]:\n        pass\n"
-        ),
-        none()
-    );
-    // Each element's own redundant brackets, not the sequence's: `(a), (b)` is open.
+    let sequences = [
+        "match x:\n    case (a,):\n        pass",
+        "match x:\n    case a,:\n        pass",
+        "match x:\n    case [a]:\n        pass",
+        "match x:\n    case [a,]:\n        pass",
+    ];
+    for pattern in ["case a,:", "case [a]:"] {
+        assert_eq!(
+            matches(&format!("match $v:\n    {pattern}\n        pass\n"), one),
+            sequences,
+            "{pattern}"
+        );
+    }
+    // Each element's own brackets, not the sequence's: `(a), (b)` and `[a], [b]` are open.
     assert_eq!(
         matches(
             "match $v:\n    case a, b:\n        pass\n",
@@ -182,13 +187,34 @@ fn a_sequence_patterns_own_parentheses_take_no_part() {
         ),
         ["match x:\n    case (a), (b):\n        pass"]
     );
-    // An empty sequence's brackets are all there is of it.
     assert_eq!(
         matches(
-            "match $v:\n    case ():\n        pass\n",
-            "match x:\n    case ():\n        pass\n"
+            "match $v:\n    case [a], [b]:\n        pass\n",
+            "match x:\n    case [a, b]:\n        pass\n"
         ),
-        ["match x:\n    case ():\n        pass"]
+        none()
+    );
+    // An empty sequence's brackets are all there is of it, and either kind is the same.
+    let empty = "match x:\n    case ():\n        pass\n\
+                 match x:\n    case []:\n        pass\n\
+                 match x:\n    case [a]:\n        pass\n";
+    for pattern in ["case ():", "case []:"] {
+        assert_eq!(
+            matches(&format!("match $v:\n    {pattern}\n        pass\n"), empty),
+            [
+                "match x:\n    case ():\n        pass",
+                "match x:\n    case []:\n        pass"
+            ],
+            "{pattern}"
+        );
+    }
+    // A name used twice compares the sequences, not their spelling.
+    assert_eq!(
+        matches(
+            "match $v:\n    case $p:\n        pass\n    case $p:\n        pass\n",
+            "match x:\n    case [a]:\n        pass\n    case (a,):\n        pass\n"
+        ),
+        ["match x:\n    case [a]:\n        pass\n    case (a,):\n        pass"]
     );
 }
 

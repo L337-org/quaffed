@@ -138,23 +138,24 @@ code the parser accepts, such as a `nonlocal` with no binding, and those are not
 **The arena keeps Ruff's tokens less those that carry no meaning in Python**, judged by whether
 `CPython`'s tree records them: comments, line breaks, indentation, the end of the file,
 semicolons between statements, a comma before a closing bracket or ending a tuple or a sequence
-pattern of several, redundant parentheses round an expression or a `case` pattern, a tuple's, a
-generator's or a sequence pattern's own round brackets, those around a `from` import's names or a
-`with` statement's items, and a class's empty argument list.  Each has a function in
+pattern of several, redundant parentheses round an expression or a `case` pattern, a tuple's or
+a generator's own parentheses, a sequence pattern's own brackets, round or square, and the comma
+after its last element, those around a `from` import's names or a `with` statement's items, and a
+class's empty argument list.  Each has a function in
 `src/parse.rs` whose doc comment gives the case, such as `redundant_parentheses`,
 `pattern_parentheses`, `own_parentheses`, `trailing_comma`, `statement_parentheses` and
-`empty_class_arguments`.  What stays is what changes the tree: an empty tuple's or sequence
-pattern's brackets, a class pattern's argument brackets, and a one-element tuple's or sequence
-pattern's comma (`lone_comma`).
+`empty_class_arguments`.  What stays is what changes the tree: an empty tuple's parentheses, a
+class pattern's argument brackets, and a one-element tuple's comma (`lone_comma`).  An empty
+sequence pattern's brackets stay but compare by a fixed text, as an f-string's opening does, so
+`case ():` and `case []:`, one tree to `CPython`, compare alike; giving the node a value instead
+would break the arena's rule that a kind's nodes all have one or none do.
 
 **Ruff's tree does not say everything this needs.**  It records a tuple's brackets
 (`parenthesized`) but not a sequence pattern's, so `own_brackets` pairs those among the tokens:
 the ends of `(a), (b)` are its elements' brackets, not its own.  And Ruff's
 `parentheses_iterator` looks for a closing parenthesis no further than the end of the parent,
 which a value pattern shares with its expression, so the brackets of `case (0):` are found round
-the pattern instead.  A sequence pattern's square brackets take part: `CPython` reads `case [a,
-b]:` as `case (a, b):`, but that is two spellings of one pattern, not brackets that only wrap
-one.
+the pattern instead.
 
 **A self-documenting field prints its own spacing**, so in `f"{v = }"` the spacing takes part
 (`self_documenting`); in any other field it is layout.  An f-string's or t-string's opening and
