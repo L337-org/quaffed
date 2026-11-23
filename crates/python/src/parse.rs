@@ -345,7 +345,8 @@ struct Build<'text, 'a> {
     open: Vec<AnyNodeRef<'a>>,
     /// Where each token straight after a `(` starts.
     opened: Opened,
-    /// Where each redundant parenthesis starts: an opening one, and a closing one.
+    /// Where each bracket that takes no part starts, as [`Layout::redundant`]: an opening one,
+    /// and a closing one.
     redundant: Vec<TextSize>,
     /// Where each bracket of an empty sequence pattern starts.
     empty_sequences: Vec<TextSize>,
@@ -570,8 +571,8 @@ fn sorted(mut offsets: Vec<TextSize>) -> Vec<TextSize> {
 /// What [`build`] found of a file's layout among its tokens, each list in order of where the
 /// token starts.
 struct Layout {
-    /// Where each bracket that takes no part starts: a parenthesis, or a sequence pattern's own
-    /// square bracket.
+    /// Where each bracket that takes no part starts: one that only wraps an expression or a `case`
+    /// pattern, or one a tuple, a generator or a sequence pattern wears, round or square.
     redundant: Vec<TextSize>,
     /// Where each bracket of an empty sequence pattern starts, which compares by a fixed text,
     /// so that `case ():` and `case []:`, one pattern to `CPython`, compare alike.
