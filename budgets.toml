@@ -9,6 +9,7 @@
 #   paths_opened     exactly how many paths in the project it opens to read, directories included
 #   bytes_read       exactly how many bytes it reads from them
 #   paths_written    exactly how many paths in the project it opens to write
+#   threads_started  exactly how many threads it starts besides its own, to search files at once
 
 [startup]
 instructions = 267_000
@@ -16,6 +17,7 @@ peak_memory_kib = 6_500
 paths_opened = 1
 bytes_read = 0
 paths_written = 0
+threads_started = 0
 
 [search]
 instructions = 1_362_200
@@ -23,6 +25,7 @@ peak_memory_kib = 11_300
 paths_opened = 17
 bytes_read = 5_951
 paths_written = 0
+threads_started = 0
 
 [scope]
 instructions = 1_162_700
@@ -30,6 +33,7 @@ peak_memory_kib = 11_300
 paths_opened = 12
 bytes_read = 5_523
 paths_written = 0
+threads_started = 0
 
 [edit]
 instructions = 2_741_500
@@ -37,6 +41,7 @@ peak_memory_kib = 12_100
 paths_opened = 17
 bytes_read = 5_951
 paths_written = 6
+threads_started = 0
 
 [rewrite]
 instructions = 15_686_700
@@ -44,6 +49,7 @@ peak_memory_kib = 22_000
 paths_opened = 17
 bytes_read = 5_951
 paths_written = 8
+threads_started = 0
 
 [delete]
 instructions = 7_457_400
@@ -51,6 +57,7 @@ peak_memory_kib = 17_400
 paths_opened = 17
 bytes_read = 5_951
 paths_written = 0
+threads_started = 0
 
 [large]
 instructions = 1
@@ -58,6 +65,7 @@ peak_memory_kib = 1
 paths_opened = 1_089
 bytes_read = 380_864
 paths_written = 0
+threads_started = 4
 
 # What may be opened outside the project, each for a reason the project cannot change.  Each
 # is a pattern, in which * matches anything, / included.

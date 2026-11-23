@@ -309,6 +309,7 @@ jobs:
           check memory "search peak_memory_kib: limit"
           check "read-twice:{project}/modules/statements.py" "'modules/statements.py' in the project was opened to read 2 times"
           check outside "'/etc/passwd', outside the project, was opened"
+          check thread "search threads_started: budgets.toml says 0, measured 1"
           check "write-again:{project}/modules/statements.py" "'modules/statements.py' in the project was opened to write 3 times" edit
 
       # Saved whether or not the budgets held: the traces are what a reviewer reads to judge

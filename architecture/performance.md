@@ -67,8 +67,11 @@ that.
   A file changed within that window is read a second time, which is right, but the budgets
   measure an edit of files nobody else is editing.
 - **The limits are `budgets.toml`**: `instructions` (Callgrind) and `peak_memory_kib` (GNU time)
-  with a margin from `MARGINS`, and `paths_opened`, `bytes_read` and `paths_written` (strace)
-  exactly, since a change in any is a change in behaviour.  No path in the project may be opened
+  with a margin from `MARGINS`, and `paths_opened`, `bytes_read`, `paths_written` and
+  `threads_started` (strace) exactly, since a change in any is a change in behaviour.  How many
+  threads a run starts is decided by its files and its limit, never by the machine, so a moved
+  count is the rule for searching files at once choosing differently, and the first thing to
+  rule out when instructions or memory move on a scenario that searches on threads.  No path in the project may be opened
   to read twice, or to write more than twice - an edited file is opened once to read, and to write
   once to check it can be and once to write it - and nothing outside it but what `[outside]`
   allows, each with its reason.
