@@ -8,6 +8,7 @@
 //! evaluation and reporting read.
 
 use std::borrow::Cow;
+use std::fs;
 use std::io;
 use std::num::NonZeroUsize;
 use std::ops::Range;
@@ -37,8 +38,9 @@ use crate::structural;
 use crate::workspace::Skipped;
 
 /// Searches each of `files` for the patterns of `plan` that look at it, holding the edits its
-/// replaces make, not writing them: up to `limit` files at once, or as many as the machine can
-/// search at once with no limit, and what each gave taken in discovery order whatever the number.
+/// replaces make, not writing them: as many files at once as the work is worth, up to `limit` if
+/// the user set one or the machine's cores if not, and what each gave taken in discovery order
+/// whatever the number.
 ///
 /// # Errors
 ///
@@ -52,14 +54,7 @@ pub(super) fn execute(
     limit: Option<NonZeroUsize>,
 ) -> Result<Searched, Failure> {
     let locale = locale();
-    let (jobs, unknown) = match jobs(limit, thread::available_parallelism) {
-        Ok(jobs) => (jobs, None),
-        Err(err) => (
-            NonZeroUsize::MIN,
-            Some(FewerAtOnce::Unknown(err.to_string())),
-        ),
-    };
-    let mut searched = search_files(
+    let searched = search_files(
         &files.to_search,
         scope::Roots {
             cwd: &files.cwd,
@@ -69,11 +64,8 @@ pub(super) fn execute(
         &plan.compiled,
         &files.projects,
         locale.as_ref(),
-        jobs,
+        limit,
     )?;
-    if unknown.is_some() {
-        searched.fewer_at_once = unknown;
-    }
     // A structural search over files it cannot parse would give a count that cannot be trusted,
     // whether their language could parse them or not, so the whole run is refused, naming each,
     // before anything is printed.
@@ -85,18 +77,95 @@ pub(super) fn execute(
     Ok(searched)
 }
 
-/// How many files a run searches at once: `limit` if the user set one, and otherwise as many as
-/// `available` says the machine can run at once - [`thread::available_parallelism`] for a run.
+/// Nanoseconds of one thread's time that searching a file costs whatever its size: opening,
+/// reading and deciding its encoding.
+///
+/// This and the costs per byte are rough: what matters is how they compare with each other and
+/// with [`THREAD_WORTH`], not their exact values.
+pub(super) const PER_FILE: u64 = 35_000;
+/// Nanoseconds of one thread's time that a byte costs to search as text.
+pub(super) const PER_BYTE_TEXT: u64 = 7;
+/// Nanoseconds of one thread's time that a byte costs to search by its structure, most of it
+/// parsing.
+pub(super) const PER_BYTE_PARSED: u64 = 40;
+/// Nanoseconds of work, as estimated from [`PER_FILE`] and the costs per byte, that repay a
+/// thread.  Starting one costs far less time than this, but it costs the allocator a heap of its
+/// own, whatever the work, and with less work than this a second thread saves too little to see.
+pub(super) const THREAD_WORTH: u64 = 4_000_000;
+
+/// How many files a run searches at once, from `costs`, each file's estimated cost in
+/// nanoseconds of one thread's time in discovery order, `None` for one no pattern looks at.
+///
+/// One thread for each [`THREAD_WORTH`] of work, but never more than the files to read, since a
+/// file is searched on one thread whatever its size, and never more than the limit: `limit` if
+/// the user set one, and otherwise as many as `available` says the machine can run at once -
+/// [`thread::available_parallelism`] for a run.  The machine is asked only once more than one
+/// file at a time is worth it, and the costs are taken only until the limit is reached.
 ///
 /// # Errors
 ///
-/// Returns the system's error, verbatim, when no limit was set and how many the machine can run
-/// at once cannot be told.
-fn jobs(
+/// Returns the system's error, verbatim, when no limit was set, the work is worth more than one
+/// file at a time, and how many the machine can run at once cannot be told.
+fn at_once(
     limit: Option<NonZeroUsize>,
+    costs: impl IntoIterator<Item = Option<u64>>,
     available: impl FnOnce() -> io::Result<NonZeroUsize>,
 ) -> io::Result<NonZeroUsize> {
-    limit.map_or_else(available, Ok)
+    let mut limit = limit;
+    let mut available = Some(available);
+    let (mut files, mut work) = (0usize, 0u64);
+    let mut worth = NonZeroUsize::MIN;
+    // A limit of one is reached before any file is looked at.
+    if limit == Some(worth) {
+        return Ok(worth);
+    }
+    for cost in costs.into_iter().flatten() {
+        files += 1;
+        work = work.saturating_add(cost);
+        let threads = usize::try_from(work / THREAD_WORTH).unwrap_or(usize::MAX);
+        let Some(wanted) = NonZeroUsize::new(threads.min(files)) else {
+            continue;
+        };
+        if wanted <= worth {
+            continue;
+        }
+        let limit = match (limit, available.take()) {
+            (Some(limit), _) => limit,
+            (None, Some(available)) => *limit.insert(available()?),
+            (None, None) => unreachable!("the machine is asked once, and its answer kept"),
+        };
+        worth = wanted.min(limit);
+        if worth == limit {
+            break;
+        }
+    }
+    Ok(worth)
+}
+
+/// What searching `file` is estimated to cost, in nanoseconds of one thread's time, from its size
+/// and whether a structural pattern will parse it, or `None` for a file no pattern looks at,
+/// which is not read.  A file whose size cannot be told costs [`PER_FILE`] alone: whether it can
+/// be read is for its search to find, and to report as it would anyway.
+fn cost(file: &ToSearch, work: &Work) -> Option<u64> {
+    if !file.applies.contains(&true) {
+        return None;
+    }
+    let parsed = work
+        .compiled
+        .iter()
+        .find(|c| c.language.claims(&file.path))
+        .is_some_and(|compiled| {
+            work.structural
+                .iter()
+                .any(|&(i, at)| file.applies[i] && compiled.patterns[at].is_some())
+        });
+    let per_byte = if parsed {
+        PER_BYTE_PARSED
+    } else {
+        PER_BYTE_TEXT
+    };
+    let bytes = fs::metadata(&file.path).map_or(0, |metadata| metadata.len());
+    Some(PER_FILE.saturating_add(bytes.saturating_mul(per_byte)))
 }
 
 /// Why a run searched fewer files at once than it meant to.  It searched them all, and what it
@@ -543,7 +612,8 @@ struct Work<'p> {
 /// Searches each of `files` for each of the run's patterns, `searching`, in order, replacing as
 /// each says, reading each file once and deciding its encoding from what declares it.  A pattern
 /// after a replace is searched for in the file as the replace left it; the edits are held, not
-/// written.  Up to `jobs` files are searched at once.
+/// written.  As many files are searched at once as [`at_once`] says the work is worth, up to
+/// `limit` if the user set one.
 fn search_files(
     files: &[ToSearch],
     roots: scope::Roots,
@@ -551,7 +621,7 @@ fn search_files(
     compiled: &[Compiled],
     projects: &Projects,
     locale: Option<&(String, Encoding)>,
-    jobs: NonZeroUsize,
+    limit: Option<NonZeroUsize>,
 ) -> Result<Searched, Failure> {
     let cwd = roots.cwd;
     let batches = batches(searching);
@@ -576,6 +646,14 @@ fn search_files(
         structural,
         roots,
     };
+    let costs = files.iter().map(|file| cost(file, &work));
+    let (jobs, unknown) = match at_once(limit, costs, thread::available_parallelism) {
+        Ok(jobs) => (jobs, None),
+        Err(err) => (
+            NonZeroUsize::MIN,
+            Some(FewerAtOnce::Unknown(err.to_string())),
+        ),
+    };
     // A file is the unit of work: it is taken through every batch, on whichever thread takes
     // it, and what it gave is gathered into the run's in discovery order, so that each pattern's
     // matches stay in that order.
@@ -593,11 +671,11 @@ fn search_files(
         },
         |in_file| searched.gather(in_file),
     )?;
-    searched.fewer_at_once = fewer.map(|fewer| FewerAtOnce::Refused {
+    searched.fewer_at_once = unknown.or(fewer.map(|fewer| FewerAtOnce::Refused {
         meant: fewer.asked,
         started: fewer.started,
         cause: fewer.cause.to_string(),
-    });
+    }));
     Ok(searched)
 }
 
@@ -1761,7 +1839,7 @@ mod tests {
             &[],
             &projects,
             None,
-            NonZeroUsize::MIN,
+            NonZeroUsize::new(1),
         );
         let _ = fs::remove_dir_all(&dir);
         let searched = searched.expect("searching");
@@ -1807,21 +1885,94 @@ mod tests {
         searched
     }
 
+    fn limit(n: usize) -> Option<NonZeroUsize> {
+        NonZeroUsize::new(n)
+    }
+
+    /// A machine that is never asked how many threads it runs.
+    fn unasked() -> io::Result<NonZeroUsize> {
+        panic!("the machine was asked how many threads it runs")
+    }
+
+    /// The cost of a file of `bytes` bytes searched by its structure.
+    fn parsed(bytes: u64) -> u64 {
+        PER_FILE + bytes * PER_BYTE_PARSED
+    }
+
     #[test]
-    fn a_run_searches_as_many_files_at_once_as_the_machine_runs_unless_limited() {
-        let three = NonZeroUsize::new(3);
-        let untold = || Err(io::Error::other("untold"));
-        assert_eq!(jobs(three, untold).unwrap(), three.unwrap());
+    fn work_worth_one_thread_is_searched_one_file_at_a_time_without_asking_the_machine() {
+        // Nothing, a file no pattern looks at, one file however large, and many small files
+        // worth less than a thread between them.
+        let small = || std::iter::repeat_n(Some(parsed(1_000)), 16);
+        for costs in [
+            vec![],
+            vec![None, None],
+            vec![Some(parsed(1 << 30))],
+            small().collect(),
+        ] {
+            for limit in [None, limit(8)] {
+                assert_eq!(at_once(limit, costs.clone(), unasked).unwrap().get(), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn a_thread_is_started_for_each_share_of_work_worth_one_but_no_more_than_the_files() {
+        let huge = Some(parsed(1 << 30));
+        assert_eq!(at_once(limit(8), [huge, huge], unasked).unwrap().get(), 2);
         assert_eq!(
-            jobs(None, || Ok(NonZeroUsize::MIN.saturating_add(4)))
+            at_once(limit(8), [huge, None, huge, None], unasked)
                 .unwrap()
                 .get(),
-            5
+            2
         );
-        assert_eq!(jobs(None, untold).unwrap_err().to_string(), "untold");
+        let share = Some(THREAD_WORTH);
+        assert_eq!(at_once(limit(8), [share; 3], unasked).unwrap().get(), 3);
+        // Just short of three shares between them.
+        let short = Some(THREAD_WORTH - 1);
+        assert_eq!(at_once(limit(8), [short; 3], unasked).unwrap().get(), 2);
+    }
+
+    #[test]
+    fn never_more_files_at_once_than_the_limit_and_no_more_sizes_taken_once_it_is_reached() {
+        let huge = Some(parsed(1 << 30));
+        assert_eq!(at_once(limit(3), [huge; 10], unasked).unwrap().get(), 3);
+        assert_eq!(at_once(limit(1), [huge; 10], unasked).unwrap().get(), 1);
+        let taken = std::cell::Cell::new(0);
+        let costs = (0..10).map(|_| {
+            taken.set(taken.get() + 1);
+            huge
+        });
+        assert_eq!(at_once(limit(3), costs, unasked).unwrap().get(), 3);
+        assert_eq!(taken.get(), 3);
+        // Small files, which would take several to be worth two threads, and none is looked at.
+        taken.set(0);
+        let small = (0..1000).map(|_| {
+            taken.set(taken.get() + 1);
+            Some(PER_FILE)
+        });
+        assert_eq!(at_once(limit(1), small, unasked).unwrap().get(), 1);
+        assert_eq!(taken.get(), 0);
+    }
+
+    #[test]
+    fn with_no_limit_the_machine_is_asked_once_more_than_one_file_at_a_time_is_worth_it() {
+        let huge = Some(parsed(1 << 30));
+        let asked = std::cell::Cell::new(0);
+        let four = || {
+            asked.set(asked.get() + 1);
+            Ok(NonZeroUsize::new(4).unwrap())
+        };
+        assert_eq!(at_once(None, [huge; 10], four).unwrap().get(), 4);
+        assert_eq!(asked.get(), 1);
+        let untold = || Err(io::Error::other("untold"));
+        assert_eq!(
+            at_once(None, [huge; 10], untold).unwrap_err().to_string(),
+            "untold"
+        );
         // A run asks the machine.
         assert_eq!(
-            jobs(None, thread::available_parallelism).unwrap(),
+            at_once(None, [huge; 1024], thread::available_parallelism).unwrap(),
             thread::available_parallelism().unwrap()
         );
     }

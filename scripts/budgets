@@ -6,14 +6,16 @@ fast the machine is:
 
 - under Valgrind's callgrind, for the instructions it executes;
 - natively under GNU time, for its peak resident memory;
-- under strace, for the files it opens and the bytes it reads from them, and the files it opens
-  to write.
+- under strace, for the files it opens and the bytes it reads from them, the files it opens
+  to write, and the threads it starts.
 
 Instructions and memory are held to a limit with a margin, since they move slightly with the
 operating system image and the Valgrind version.  The files are held exactly: how many paths in
 the project are opened to read, how many bytes are read from them and how many paths are opened
 to write must equal budgets.toml, no path in the project may be opened to read twice or to
-write twice, and nothing outside the project may be opened but what budgets.toml allows.
+write twice, and nothing outside the project may be opened but what budgets.toml allows.  So are
+the threads: how many quaff starts besides its own must equal budgets.toml, since how many files
+it searches at once is decided by the files and the limit, not by the machine.
 architecture/performance.md has the reasoning and how to change a limit.
 
     scripts/budgets BINARY [--repeat N] [--out DIR] [--env NAME=VALUE ...] [--scenario NAME ...]
@@ -70,14 +72,18 @@ ROOT = Path(__file__).resolve().parent.parent
 # replace across it, so each Python file is also matched with captures, and each it changes
 # rewritten, lexed and parsed again; delete deletes every assignment across it, so each match's
 # separator or lines are worked out and each file it changes parsed again, which some then fail,
-# so it is refused, exit 9, with nothing written.  A scenario that edits runs on a fresh copy each
-# time, since each run changes it, made before any run and left to settle (make_fresh).
+# so it is refused, exit 9, with nothing written; large is a structural search of LARGE_COPIES
+# copies of the corpus, enough work that a run searches several files at once.  A scenario that
+# edits runs on a fresh copy each time, since each run changes it, made before any run and left to
+# settle (make_fresh).
 #
-# Every scenario searches at most four files at once, -j 4, rather than one per core: with no -j
-# the number of threads is the runner's core count, and each thread costs the allocator a heap of
-# its own, so the counts would move whenever the runner's hardware did.  Four still runs the
-# search on several threads, and is never asked for the core count, so nothing is read to learn
-# it.
+# Every scenario searches at most four files at once, -j 4, rather than up to one per core: with
+# no -j a run with work enough to share would start as many threads as the runner has cores, and
+# each thread costs the allocator a heap of its own, so the counts would move whenever the
+# runner's hardware did.  With -j, the number of threads follows from the files alone, and quaff
+# never asks for the core count, so nothing is read to learn it.  The synthetic corpus is too
+# little work to share, so every scenario but large runs on one thread; large holds what
+# searching on several costs.
 SCENARIOS = {
     "startup": {"project": "empty", "args": ["-j", "4", "TODO"], "exit": 1},
     "search": {"project": "corpus", "args": ["-j", "4", "def"], "exit": 0},
@@ -100,7 +106,15 @@ SCENARIOS = {
         "exit": 9,
         "fresh": True,
     },
+    "large": {"project": "large", "args": ["-j", "4", "-p", "$x = $y"], "exit": 0},
 }
+
+# How many copies of the synthetic corpus large searches: well over four threads' worth of work by
+# the estimate quaff makes before searching (at_once in crates/quaffed/src/run/execute.rs), so
+# that at -j 4 it still searches four files at once if that estimate is tuned, while small enough
+# that a run under Valgrind takes seconds.  Its threads_started in budgets.toml holds that it
+# does.
+LARGE_COPIES = 64
 
 # The margin each limit with one carries over the worst measured run: repeated runs differ by a
 # fraction of a percent, and a different Valgrind or runner image moves the count a little more.
@@ -246,6 +260,7 @@ def write_json(path, rows):
                 "paths_opened",
                 "bytes_read",
                 "paths_written",
+                "threads_started",
             )
         }
         for name, measured, _ in rows
@@ -277,10 +292,13 @@ def make_projects(scratch):
         "empty": scratch / "empty",
         "corpus": scratch / "corpus",
         "edited": scratch / "edited",
+        "large": scratch / "large",
     }
     projects["empty"].mkdir()
     shutil.copytree(corpus, projects["corpus"])
     shutil.copytree(corpus, projects["edited"])
+    for i in range(LARGE_COPIES):
+        shutil.copytree(corpus, projects["large"] / f"{i:03}")
     for project in projects.values():
         (project / ".git").mkdir()
     return projects
@@ -366,7 +384,7 @@ def measure(name, scenario, binary, project, env, out, index, reset):
             "-o",
             str(log),
             "-e",
-            "trace=open,openat,openat2,read,pread64,readv,preadv,preadv2",
+            "trace=open,openat,openat2,read,pread64,readv,preadv,preadv2,clone,clone3",
             *command,
         ],
         project,
@@ -395,6 +413,7 @@ def measure(name, scenario, binary, project, env, out, index, reset):
         "paths_opened": sum(1 for opens, _, _ in inside.values() if opens),
         "bytes_read": sum(read for _, read, _ in inside.values()),
         "paths_written": sum(1 for _, _, writes in inside.values() if writes),
+        "threads_started": threads_started(log),
         "inside": inside,
         "outside": sorted(set(access) - set(inside)),
     }
@@ -412,11 +431,13 @@ def worst(name, runs):
             f"repeatable; compare the {name}.<run>.files.txt traces"
         )
     # Each budget with a margin is judged on its worst run, named so its traces can be found:
-    # the most instructions for the profile to read, and the most memory.
+    # the most instructions for the profile to read, and the most memory.  The threads are judged
+    # on the run that started the most, with their spread, rather than refused as unrepeatable,
+    # so that a count that moves is reported over budget with the runs it moved between.
     measured = dict(runs[0])
     # Not the run judged: each budget below names its own.
     del measured["run"]
-    for budget in ("instructions", "peak_memory_kib"):
+    for budget in ("instructions", "peak_memory_kib", "threads_started"):
         values = [r[budget] for r in runs]
         worst_run = max(runs, key=lambda r: r[budget])
         measured[budget] = worst_run[budget]
@@ -473,6 +494,8 @@ READ = re.compile(
 # A call split across two lines by another thread: `<unfinished ...>`, then `<... resumed>`.
 UNFINISHED = re.compile(r"^(\d+)\s+(.*) <unfinished \.\.\.>$")
 RESUMED = re.compile(r"^(\d+)\s+<\.\.\. \w+ resumed>(.*)$")
+# A successful clone or clone3, its flags among the arguments: `= 4013`, the new thread's ID.
+CLONED = re.compile(r"^\d+\s+clone3?\((.*)\)\s+=\s+\d+$")
 
 
 def file_access(log):
@@ -497,6 +520,27 @@ def file_access(log):
     if not access:
         raise Unmeasured(f"{str(log)!r} records no file opened, so nothing was traced")
     return {path: tuple(counts) for path, counts in access.items()}
+
+
+def threads_started(log):
+    """How many threads the run started besides its own: each successful clone that shares the
+    process, CLONE_THREAD among its flags.  A clone without it would be a new process, which
+    quaff never starts."""
+    try:
+        text = log.read_text(encoding="utf-8", errors="replace")
+    except OSError as err:
+        raise Unmeasured(f"reading {str(log)!r}: {err}") from err
+    started = 0
+    pending = {}
+    for line in text.splitlines():
+        if m := UNFINISHED.match(line):
+            pending[m.group(1)] = m.group(2)
+            continue
+        if m := RESUMED.match(line):
+            line = f"{m.group(1)} {pending.pop(m.group(1), '')}{m.group(2)}"
+        if (m := CLONED.match(line)) and "CLONE_THREAD" in m.group(1):
+            started += 1
+    return started
 
 
 def normalise(path):
@@ -532,13 +576,21 @@ def judge(name, measured, limits, outside, project):
     for path in measured["outside"]:
         if not any(fnmatch.fnmatchcase(path, pattern) for pattern in allowed):
             failures.append(f"{name}: {path!r}, outside the project, was opened")
-    for budget in ("paths_opened", "bytes_read", "paths_written"):
+    for budget in ("paths_opened", "bytes_read", "paths_written", "threads_started"):
         value = measured[budget]
         limit = limits.get(budget)
         if limit is None:
             failures.append(f"{name}: budgets.toml sets no {budget}")
         elif value != limit:
             failures.append(f"{name} {budget}: budgets.toml says {limit:,}, measured {value:,}")
+    # Judged on its most, so a count that moved between runs would pass whenever its most was
+    # right: it is exact, so a move is a failure of its own.
+    low, high = measured["threads_started_spread"]
+    if low != high:
+        failures.append(
+            f"{name} threads_started: started {low} on one run and {high} on another, "
+            f"so the number of threads is not repeatable; compare the {name}.<run>.strace traces"
+        )
     return failures
 
 
@@ -558,12 +610,15 @@ def render(rows, failures, out):
             "paths_opened",
             "bytes_read",
             "paths_written",
+            "threads_started",
         ):
             value = measured[budget]
             low, high = measured.get(f"{budget}_spread", (value, value))
             spread = f"{low:,} - {high:,} ({(high - low) / low:.2%})" if low else "exact"
             if budget in ("paths_opened", "bytes_read", "paths_written"):
                 spread = "exact"
+            elif budget == "threads_started":
+                spread = "exact" if low == high else f"{low} - {high}"
             margin = MARGINS.get(budget)
             # Rounded up to a hundred, so a limit is easy to read and never below the margin.
             to_set = -(-int(value * (1 + margin)) // 100) * 100 if margin else value

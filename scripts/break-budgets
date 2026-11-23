@@ -14,6 +14,7 @@
 #   read-twice:PATH  reads PATH, a file the search reads too, so it is opened twice
 #   write-again:PATH opens PATH, a file the edit writes, to write once more, writing nothing
 #   outside          reads /etc/passwd, outside any project
+#   thread           starts a thread, which does nothing, and waits for it to end
 #
 # A guard that cannot fail is a comment: the budgets section of architecture/performance.md
 # has where this is run.
@@ -65,6 +66,9 @@ worsening='    // Added by scripts/break-budgets; never in a real build.
         }
         Ok("outside") => {
             let _ = std::fs::read("/etc/passwd");
+        }
+        Ok("thread") => {
+            let _ = std::thread::spawn(|| {}).join();
         }
         _ => {}
     }'

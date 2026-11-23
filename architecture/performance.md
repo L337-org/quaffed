@@ -43,11 +43,14 @@ that.
 - **What is measured** is the amd64 musl binary built with the `profiling` profile, on the
   runner image `runs-on:` names, not `ubuntu-latest`, because Valgrind comes from the image and
   its version moves the counts.
-- **Every scenario runs with `-j 4`**, a fixed number of threads, not one per core.  Each thread
-  costs the allocator a heap of its own, so with no `-j` the counts would follow the runner's
-  core count, which its image does not fix.  Four still exercises the threaded search, and
-  counted measurements do not depend on how many cores run those threads.  A run with no `-j`,
-  which asks the system for the core count, is held by the tests instead.
+- **Every scenario runs with `-j 4`**, a limit of four threads, not one per core.  Each thread
+  costs the allocator a heap of its own, so with no `-j` a run with work enough to share would
+  follow the runner's core count, which its image does not fix.  Under a fixed limit the number
+  of threads follows from the files alone.  The synthetic corpus is too little work to share, so
+  every scenario over it runs on one thread, as a small project's run does; `large`, a
+  structural search of many copies of it, has work enough for all four, and holds what searching
+  on several threads costs.  A run with no `-j`, which asks the system for the core count, is
+  held by the tests instead.
 
   **Accepted limitation:** a scenario that searches files on threads varies from run to run by
   more than its margin allows, most likely because which thread takes which file, and so how
@@ -64,11 +67,14 @@ that.
   A file changed within that window is read a second time, which is right, but the budgets
   measure an edit of files nobody else is editing.
 - **The limits are `budgets.toml`**: `instructions` (Callgrind) and `peak_memory_kib` (GNU time)
-  with a margin from `MARGINS`, and `paths_opened`, `bytes_read` and `paths_written` (strace)
-  exactly, since a change in any is a change in behaviour.  No path in the project may be opened
-  to read twice, or to write more than twice - an edited file is opened once to read, and to write
-  once to check it can be and once to write it - and nothing outside it but what `[outside]`
-  allows, each with its reason.
+  with a margin from `MARGINS`, and `paths_opened`, `bytes_read`, `paths_written` and
+  `threads_started` (strace) exactly, since a change in any is a change in behaviour.  How many
+  threads a run starts is decided by its files and its limit, never by the machine, so a moved
+  count is the rule for searching files at once choosing differently, and the first thing to
+  rule out when instructions or memory move on a scenario that searches on threads.  No path in
+  the project may be opened to read twice, or to write more than twice - an edited file is opened
+  once to read, and to write once to check it can be and once to write it - and nothing outside
+  it but what `[outside]` allows, each with its reason.
 - **Each scenario runs `--repeat` times** and is judged on its worst run; the file access must be
   identical every time.  Anything that could not be measured fails, never passes.
 - **Every run's traces are kept** in the job's `budgets` artefact: what a reviewer reads to judge
