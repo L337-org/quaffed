@@ -571,8 +571,9 @@ fn sorted(mut offsets: Vec<TextSize>) -> Vec<TextSize> {
 /// What [`build`] found of a file's layout among its tokens, each list in order of where the
 /// token starts.
 struct Layout {
-    /// Where each bracket that takes no part starts: one that only wraps an expression or a `case`
-    /// pattern, or one a tuple, a generator or a sequence pattern wears, round or square.
+    /// Where each bracket that takes no part starts, each found by one of the functions above
+    /// whose doc comment gives the case.  All are parentheses but a sequence pattern's own square
+    /// brackets.
     redundant: Vec<TextSize>,
     /// Where each bracket of an empty sequence pattern starts, which compares by a fixed text,
     /// so that `case ():` and `case []:`, one pattern to `CPython`, compare alike.
