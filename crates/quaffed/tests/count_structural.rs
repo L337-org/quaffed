@@ -120,6 +120,17 @@ def k():
     v = 1
     g()
     return v
+match x:
+    case (0 as z):
+        pass
+match x:
+    case 0:
+        pass
+    case 1:
+        pass
+match x:
+    case 0 if y:
+        pass
 ";
 
 fn stderr(out: &Output) -> String {
@@ -147,7 +158,8 @@ fn each_pattern_is_counted_by_cpythons_tree_and_refused_files_are_left_out() {
         "pattern\t1\tsequences bounded by their node\ttry:\\n    $...\\nexcept $e:\\n    $...",
         "pattern\t1\ta name used twice across statements\t$x = $y\\nreturn $x",
         "pattern\t1\ta sequence between two statements\t$x = $y\\n$...\\nreturn $x",
-        "file\tLib/a.py\t1\t1\t1\t1\t1\t1",
+        "pattern\t1\ta case clause, any pattern\tmatch $v:\\n    case $p:\\n        $...",
+        "file\tLib/a.py\t1\t1\t1\t1\t1\t1\t1",
     ] {
         assert!(
             counts.lines().any(|line| line == expected),

@@ -90,6 +90,109 @@ fn a_tuples_or_generators_own_parentheses_take_no_part() {
 }
 
 #[test]
+fn redundant_parentheses_round_a_case_pattern_take_no_part() {
+    let source = "match x:\n    case (0 as z):\n        pass\n\
+                  match x:\n    case 0 as z:\n        pass\n\
+                  match x:\n    case (0):\n        pass\n";
+    let first = "match x:\n    case (0 as z):\n        pass";
+    let second = "match x:\n    case 0 as z:\n        pass";
+    let third = "match x:\n    case (0):\n        pass";
+    assert_eq!(
+        matches("match $v:\n    case 0 as z:\n        $...\n", source),
+        [first, second]
+    );
+    assert_eq!(
+        matches("match $v:\n    case 0:\n        $...\n", source),
+        [third]
+    );
+    assert_eq!(
+        matches("match $v:\n    case $p:\n        $...\n", source),
+        [first, second, third]
+    );
+    // Inside other patterns too, and however many pairs.
+    let nested = "match x:\n    case [((a)), (b | c)] | {\"k\": (d)} | P(k=(e)):\n        pass\n";
+    assert_eq!(
+        matches(
+            "match $v:\n    case [a, b | c] | {\"k\": d} | P(k=e):\n        pass\n",
+            nested
+        ),
+        [nested.trim_end()]
+    );
+}
+
+#[test]
+fn a_class_patterns_own_parentheses_take_part() {
+    // `P(a)` has one positional pattern, `P((a))` the same one in redundant parentheses.
+    assert_eq!(
+        matches(
+            "match x:\n    case P(a):\n        pass\n",
+            "match x:\n    case P((a)):\n        pass\n"
+        ),
+        ["match x:\n    case P((a)):\n        pass"]
+    );
+    assert_eq!(
+        matches(
+            "match x:\n    case P():\n        pass\n",
+            "match x:\n    case P(a):\n        pass\n"
+        ),
+        none()
+    );
+}
+
+#[test]
+fn a_sequence_patterns_own_parentheses_take_no_part() {
+    let source = "match x:\n    case (a, b):\n        pass\n\
+                  match x:\n    case a, b:\n        pass\n\
+                  match x:\n    case a, b,:\n        pass\n\
+                  match x:\n    case (a, b,):\n        pass\n";
+    assert_eq!(
+        matches("match $v:\n    case a, b:\n        pass\n", source),
+        [
+            "match x:\n    case (a, b):\n        pass",
+            "match x:\n    case a, b:\n        pass",
+            "match x:\n    case a, b,:\n        pass",
+            "match x:\n    case (a, b,):\n        pass",
+        ]
+    );
+    // A one-element sequence's comma is the sequence, so it stays, with or without brackets.
+    let one = "match x:\n    case (a,):\n        pass\n\
+               match x:\n    case a,:\n        pass\n\
+               match x:\n    case (a):\n        pass\n";
+    assert_eq!(
+        matches("match $v:\n    case a,:\n        pass\n", one),
+        [
+            "match x:\n    case (a,):\n        pass",
+            "match x:\n    case a,:\n        pass",
+        ]
+    );
+    // Square brackets are not round ones: CPython reads `[a, b]` as `(a, b)`, but that is not
+    // a bracket taking no part.
+    assert_eq!(
+        matches(
+            "match $v:\n    case (a, b):\n        pass\n",
+            "match x:\n    case [a, b]:\n        pass\n"
+        ),
+        none()
+    );
+    // Each element's own redundant brackets, not the sequence's: `(a), (b)` is open.
+    assert_eq!(
+        matches(
+            "match $v:\n    case a, b:\n        pass\n",
+            "match x:\n    case (a), (b):\n        pass\n"
+        ),
+        ["match x:\n    case (a), (b):\n        pass"]
+    );
+    // An empty sequence's brackets are all there is of it.
+    assert_eq!(
+        matches(
+            "match $v:\n    case ():\n        pass\n",
+            "match x:\n    case ():\n        pass\n"
+        ),
+        ["match x:\n    case ():\n        pass"]
+    );
+}
+
+#[test]
 fn a_string_matches_by_its_content_not_its_quotes_or_prefix() {
     let source = "f(\"x\")\nf('x')\nf(r\"x\")\nf('''x''')\nf(\"y\")\n";
     assert_eq!(

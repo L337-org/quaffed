@@ -10,9 +10,7 @@ use ruff_python_ast::token::{Token, TokenKind, Tokens, parentheses_iterator};
 use ruff_python_ast::visitor::source_order::{
     SourceOrderVisitor, TraversalSignal, walk_body, walk_interpolated_string_element, walk_node,
 };
-use ruff_python_ast::{
-    AnyNodeRef, ExprRef, ExprTuple, InterpolatedElement, NodeKind, Stmt, StringFlags,
-};
+use ruff_python_ast::{AnyNodeRef, ExprRef, InterpolatedElement, NodeKind, Stmt, StringFlags};
 use ruff_python_parser::{Mode, ParseOptions};
 use ruff_text_size::{Ranged, TextRange, TextSize};
 
@@ -109,32 +107,65 @@ fn kinds_in(arena: &Arena<'_>) -> BTreeSet<Kind> {
     arena.nodes().map(|node| arena.kind(node)).collect()
 }
 
-/// Where the comma of `tuple` starts, if it has one element: the first comma after its
-/// element, since the element's own commas lie inside it.
-fn tuple_comma(tuple: &ExprTuple, tokens: &Tokens) -> Option<TextSize> {
-    let [element] = tuple.elts.as_slice() else {
+/// Where the comma of a tuple or a sequence pattern of one element starts, the comma that makes
+/// it one: the first comma after its element, since the element's own commas lie inside it.
+/// `within` is the tuple or the sequence.
+fn lone_comma(elements: &[impl Ranged], within: TextRange, tokens: &Tokens) -> Option<TextSize> {
+    let [element] = elements else {
         return None;
     };
+    comma_after(element.end(), within, tokens)
+}
+
+/// Where the comma ending a tuple or a sequence pattern of two or more elements starts, if it has
+/// one: `a, b,` is the tuple `a, b` to `CPython`, and `case a, b,:` the pattern `case a, b:`, so
+/// the comma is layout, as one before a closing bracket is.  `within` is the tuple or the
+/// sequence.
+fn trailing_comma(
+    elements: &[impl Ranged],
+    within: TextRange,
+    tokens: &Tokens,
+) -> Option<TextSize> {
+    let [_, .., last] = elements else {
+        return None;
+    };
+    comma_after(last.end(), within, tokens)
+}
+
+/// Where the first comma from `offset` to the end of `within` starts.
+fn comma_after(offset: TextSize, within: TextRange, tokens: &Tokens) -> Option<TextSize> {
     tokens
-        .after(element.range().end())
+        .after(offset)
         .iter()
-        .take_while(|token| token.start() < tuple.range().end())
+        .take_while(|token| token.start() < within.end())
         .find(|token| token.kind() == TokenKind::Comma)
         .map(Token::start)
 }
 
-/// Where the comma ending a tuple of two or more elements starts, if it has one: `a, b,` is the
-/// tuple `a, b` to `CPython`, so the comma is layout, as one before a closing bracket is.
-fn trailing_tuple_comma(tuple: &ExprTuple, tokens: &Tokens) -> Option<TextSize> {
-    let [_, .., last] = tuple.elts.as_slice() else {
+/// The kind of bracket a sequence pattern filling `range` opens with, if the brackets at its two
+/// ends are its own: `(a, b)` and `[a, b]`, but not `(a), (b)`, whose ends are its elements'
+/// brackets.  Ruff's tree does not say, so the brackets are paired among the tokens.
+fn own_brackets(range: TextRange, tokens: &Tokens) -> Option<TokenKind> {
+    let inside = tokens.in_range(range);
+    let first = inside.first()?.kind();
+    if !matches!(first, TokenKind::Lpar | TokenKind::Lsqb) {
         return None;
-    };
-    tokens
-        .after(last.range().end())
-        .iter()
-        .take_while(|token| token.start() < tuple.range().end())
-        .find(|token| token.kind() == TokenKind::Comma)
-        .map(Token::start)
+    }
+    let mut depth = 0_usize;
+    for (i, token) in inside.iter().enumerate() {
+        match token.kind() {
+            TokenKind::Lpar | TokenKind::Lsqb | TokenKind::Lbrace => depth += 1,
+            TokenKind::Rpar | TokenKind::Rsqb | TokenKind::Rbrace => {
+                depth -= 1;
+                // The opening bracket closed before the end: it is an element's.
+                if depth == 0 && i + 1 < inside.len() {
+                    return None;
+                }
+            }
+            _ => {}
+        }
+    }
+    Some(first)
 }
 
 /// Whether `node` is the empty argument list of a class, `class A():`, which `CPython`'s tree
@@ -223,10 +254,46 @@ fn redundant_parentheses(
     }
 }
 
-/// Where the parentheses a tuple or a generator wears start, filling `range`, which take no
-/// part in a match: Ruff counts them among the node's tokens rather than the redundant, but `a,
-/// b` and `(a, b)` are one tree to `CPython`, as are `f(x for x in y)` and `f((x for x in y))`.
-/// An empty tuple's are its only spelling, and stay, so it is never asked.
+/// Where each parenthesis around the `case` pattern filling `pattern` that takes no part in a
+/// match starts, an opening one and a closing one: `case (0):` is `case 0:` to `CPython`.
+///
+/// Ruff's [`parentheses_iterator`] reads expressions only, and looks for a closing parenthesis
+/// no further than the end of the parent, which a value pattern's expression shares, so it is
+/// asked of the pattern instead.  A class pattern's argument list brings its own parentheses,
+/// `P(a)`, as a call's does, and those take part.
+fn pattern_parentheses(
+    pattern: TextRange,
+    parent: AnyNodeRef<'_>,
+    tokens: &Tokens,
+    found: &mut Vec<TextSize>,
+) {
+    let mut after = tokens.in_range(TextRange::new(pattern.end(), parent.end()));
+    if matches!(parent, AnyNodeRef::PatternArguments(_))
+        && let Some((last, rest)) = after.split_last()
+        && last.kind() == TokenKind::Rpar
+    {
+        after = rest;
+    }
+    let right = after
+        .iter()
+        .filter(|token| !token.kind().is_trivia())
+        .take_while(|token| token.kind() == TokenKind::Rpar);
+    let left = tokens
+        .before(pattern.start())
+        .iter()
+        .rev()
+        .filter(|token| !token.kind().is_trivia())
+        .take_while(|token| token.kind() == TokenKind::Lpar);
+    for (right, left) in right.zip(left) {
+        found.extend([left.start(), right.start()]);
+    }
+}
+
+/// Where the parentheses a tuple, a generator or a sequence pattern wears start, filling
+/// `range`, which take no part in a match: Ruff counts them among the node's tokens rather than
+/// the redundant, but `a, b` and `(a, b)` are one tree to `CPython`, as are `f(x for x in y)`
+/// and `f((x for x in y))`, and `case a, b:` and `case (a, b):`.  An empty tuple's or
+/// sequence's are its only spelling, and stay, so it is never asked.
 fn own_parentheses(range: TextRange) -> [TextSize; 2] {
     [range.start(), range.end() - TextSize::new(1)]
 }
@@ -298,15 +365,45 @@ impl<'a> Build<'_, 'a> {
         {
             redundant_parentheses(expr, parent, self.tokens, &mut self.redundant);
         }
+        if let (Some(pattern), Some(parent)) = (node.as_pattern_ref(), parent)
+            && self.opened.before(pattern.start())
+        {
+            pattern_parentheses(pattern.range(), parent, self.tokens, &mut self.redundant);
+        }
         // Each of the rest applies to one or two kinds of node, so only those ask.
         let (statement, ends) = match node {
             AnyNodeRef::ExprTuple(tuple) => {
                 if tuple.parenthesized && !tuple.elts.is_empty() {
                     self.redundant.extend(own_parentheses(tuple.range()));
                 }
-                self.tuple_commas.extend(tuple_comma(tuple, self.tokens));
-                self.trailing_commas
-                    .extend(trailing_tuple_comma(tuple, self.tokens));
+                self.tuple_commas
+                    .extend(lone_comma(&tuple.elts, tuple.range(), self.tokens));
+                self.trailing_commas.extend(trailing_comma(
+                    &tuple.elts,
+                    tuple.range(),
+                    self.tokens,
+                ));
+                return;
+            }
+            // A sequence pattern is a tuple's counterpart, but for square brackets: `[a,]` is
+            // `[a]`, its comma before a closing bracket like any other.
+            AnyNodeRef::PatternMatchSequence(sequence) => {
+                let own = own_brackets(sequence.range(), self.tokens);
+                if own == Some(TokenKind::Lpar) && !sequence.patterns.is_empty() {
+                    self.redundant.extend(own_parentheses(sequence.range()));
+                }
+                if own != Some(TokenKind::Lsqb) {
+                    self.tuple_commas.extend(lone_comma(
+                        &sequence.patterns,
+                        sequence.range(),
+                        self.tokens,
+                    ));
+                    self.trailing_commas.extend(trailing_comma(
+                        &sequence.patterns,
+                        sequence.range(),
+                        self.tokens,
+                    ));
+                }
                 return;
             }
             AnyNodeRef::ExprGenerator(generator) => {
