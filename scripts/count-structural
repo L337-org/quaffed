@@ -12,9 +12,9 @@ total, its name and the pattern; then a `file` line per file with any match, wit
 its count of each pattern in order.  Fields are separated by tabs, and in a name or a pattern a
 backslash, a tab and a line break are written as \\, \t and \n.
 
-The patterns cover each kind of hole, a name used twice, and a `case` clause whatever its
-brackets.  The predicates spell out what each pattern means, so a disagreement is either a defect
-in quaff or in the predicate, and either is found by reading the file the counts differ on.
+The patterns are PATTERNS below.  The predicates spell out what each pattern means, so a
+disagreement is either a defect in quaff or in the predicate, and either is found by reading the
+file the counts differ on.
 
 Usage: scripts/count-structural [--dest DIR] [--manifest FILE]
 

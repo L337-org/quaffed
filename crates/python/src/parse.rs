@@ -351,7 +351,8 @@ struct Build<'text, 'a> {
     empty_sequences: Vec<TextSize>,
     /// Where each one-element tuple's comma starts, which is the tuple, not layout.
     tuple_commas: Vec<TextSize>,
-    /// Where each comma that ends a tuple of several elements starts, which is layout.
+    /// Where each comma that ends a tuple of several elements, or follows a sequence pattern's
+    /// last element, starts, which is layout.
     trailing_commas: Vec<TextSize>,
     /// Tokens that take in the text around them, by where each starts.
     widened: Vec<(TextSize, TextRange)>,
@@ -506,8 +507,9 @@ impl<'a> SourceOrderVisitor<'a> for Build<'_, 'a> {
 }
 
 /// The arena of `root` and every node beneath it, in one walk of Ruff's tree, with the tokens
-/// a match compares: Ruff's own, less comments, line breaks, indentation and the parentheses
-/// that only wrap an expression or that a tuple or generator wears.
+/// a match compares: Ruff's own, less comments, line breaks, indentation and the brackets that
+/// only wrap an expression or a `case` pattern, or that a tuple, a generator or a sequence
+/// pattern wears.
 fn build<'text>(
     mut builder: Builder<'text>,
     root: AnyNodeRef<'_>,
@@ -576,7 +578,8 @@ struct Layout {
     empty_sequences: Vec<TextSize>,
     /// Where each one-element tuple's comma starts, which is the tuple.
     tuple_commas: Vec<TextSize>,
-    /// Where each comma ending a tuple of several elements starts, which is layout.
+    /// Where each comma ending a tuple of several elements, or following a sequence pattern's
+    /// last element, starts, which is layout.
     trailing_commas: Vec<TextSize>,
     /// Tokens that take in the text around them, by where each starts.
     widened: Vec<(TextSize, TextRange)>,
@@ -584,7 +587,8 @@ struct Layout {
 
 /// Adds to `builder` the tokens a match compares: Ruff's own, less comments, line breaks,
 /// indentation, the end of the file, semicolons, the brackets that take no part, a comma
-/// just before a closing bracket unless it is a one-element tuple's, and a comma ending a tuple.
+/// just before a closing bracket unless it is a one-element tuple's, a comma ending a tuple of
+/// several, and a comma after a sequence pattern's last element.
 fn add_tokens(builder: &mut Builder<'_>, tokens: &Tokens, layout: &Layout) {
     let mut meaningful = tokens
         .iter()

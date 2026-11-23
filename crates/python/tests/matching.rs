@@ -122,6 +122,18 @@ fn redundant_parentheses_round_a_case_pattern_take_no_part() {
 
 #[test]
 fn a_class_patterns_own_parentheses_take_part() {
+    // A trailing comma keeps the argument list's closing parenthesis from being taken for one
+    // round `a`, so these hold only while the list's own parentheses are kept on both sides.
+    assert_eq!(
+        matches(
+            "match x:\n    case P(a):\n        pass\n",
+            "match x:\n    case P(a,):\n        pass\nmatch x:\n    case P((a),):\n        pass\n"
+        ),
+        [
+            "match x:\n    case P(a,):\n        pass",
+            "match x:\n    case P((a),):\n        pass"
+        ]
+    );
     // `P(a)` has one positional pattern, `P((a))` the same one in redundant parentheses.
     assert_eq!(
         matches(
