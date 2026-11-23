@@ -109,10 +109,11 @@ SCENARIOS = {
     "large": {"project": "large", "args": ["-j", "4", "-p", "$x = $y"], "exit": 0},
 }
 
-# How many copies of the synthetic corpus large searches: about ten threads' worth of work by the
-# estimate quaff makes before searching (at_once in crates/quaffed/src/run/execute.rs), so that
-# at -j 4 it still searches four files at once if that estimate is tuned, while small enough that
-# a run under Valgrind takes seconds.
+# How many copies of the synthetic corpus large searches: well over four threads' worth of work by
+# the estimate quaff makes before searching (at_once in crates/quaffed/src/run/execute.rs), so
+# that at -j 4 it still searches four files at once if that estimate is tuned, while small enough
+# that a run under Valgrind takes seconds.  Its threads_started in budgets.toml holds that it
+# does.
 LARGE_COPIES = 64
 
 # The margin each limit with one carries over the worst measured run: repeated runs differ by a

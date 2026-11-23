@@ -20,48 +20,48 @@ paths_written = 0
 threads_started = 0
 
 [search]
-instructions = 1_362_200
-peak_memory_kib = 11_300
+instructions = 1_085_100
+peak_memory_kib = 6_700
 paths_opened = 17
 bytes_read = 5_951
 paths_written = 0
 threads_started = 0
 
 [scope]
-instructions = 1_162_700
-peak_memory_kib = 11_300
+instructions = 915_900
+peak_memory_kib = 6_700
 paths_opened = 12
 bytes_read = 5_523
 paths_written = 0
 threads_started = 0
 
 [edit]
-instructions = 2_741_500
-peak_memory_kib = 12_100
+instructions = 2_402_800
+peak_memory_kib = 9_800
 paths_opened = 17
 bytes_read = 5_951
 paths_written = 6
 threads_started = 0
 
 [rewrite]
-instructions = 15_686_700
-peak_memory_kib = 22_000
+instructions = 15_165_200
+peak_memory_kib = 12_900
 paths_opened = 17
 bytes_read = 5_951
 paths_written = 8
 threads_started = 0
 
 [delete]
-instructions = 7_457_400
-peak_memory_kib = 17_400
+instructions = 6_937_700
+peak_memory_kib = 10_700
 paths_opened = 17
 bytes_read = 5_951
 paths_written = 0
 threads_started = 0
 
 [large]
-instructions = 1
-peak_memory_kib = 1
+instructions = 189_136_900
+peak_memory_kib = 31_600
 paths_opened = 1_089
 bytes_read = 380_864
 paths_written = 0

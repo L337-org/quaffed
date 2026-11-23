@@ -71,10 +71,10 @@ that.
   `threads_started` (strace) exactly, since a change in any is a change in behaviour.  How many
   threads a run starts is decided by its files and its limit, never by the machine, so a moved
   count is the rule for searching files at once choosing differently, and the first thing to
-  rule out when instructions or memory move on a scenario that searches on threads.  No path in the project may be opened
-  to read twice, or to write more than twice - an edited file is opened once to read, and to write
-  once to check it can be and once to write it - and nothing outside it but what `[outside]`
-  allows, each with its reason.
+  rule out when instructions or memory move on a scenario that searches on threads.  No path in
+  the project may be opened to read twice, or to write more than twice - an edited file is opened
+  once to read, and to write once to check it can be and once to write it - and nothing outside
+  it but what `[outside]` allows, each with its reason.
 - **Each scenario runs `--repeat` times** and is judged on its worst run; the file access must be
   identical every time.  Anything that could not be measured fails, never passes.
 - **Every run's traces are kept** in the job's `budgets` artefact: what a reviewer reads to judge

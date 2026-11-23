@@ -80,9 +80,8 @@ pub(super) fn execute(
 /// Nanoseconds of one thread's time that searching a file costs whatever its size: opening,
 /// reading and deciding its encoding.
 ///
-/// This and the costs per byte are rough, set from timing searches of real code over trees of
-/// one to a few hundred files of every size; what matters is how they compare with each other
-/// and with [`THREAD_WORTH`], not their exact values.
+/// This and the costs per byte are rough: what matters is how they compare with each other and
+/// with [`THREAD_WORTH`], not their exact values.
 pub(super) const PER_FILE: u64 = 35_000;
 /// Nanoseconds of one thread's time that a byte costs to search as text.
 pub(super) const PER_BYTE_TEXT: u64 = 7;
@@ -116,6 +115,10 @@ fn at_once(
     let mut available = Some(available);
     let (mut files, mut work) = (0usize, 0u64);
     let mut worth = NonZeroUsize::MIN;
+    // A limit of one is reached before any file is looked at.
+    if limit == Some(worth) {
+        return Ok(worth);
+    }
     for cost in costs.into_iter().flatten() {
         files += 1;
         work = work.saturating_add(cost);
@@ -1942,6 +1945,14 @@ mod tests {
         });
         assert_eq!(at_once(limit(3), costs, unasked).unwrap().get(), 3);
         assert_eq!(taken.get(), 3);
+        // Small files, which would take several to be worth two threads, and none is looked at.
+        taken.set(0);
+        let small = (0..1000).map(|_| {
+            taken.set(taken.get() + 1);
+            Some(PER_FILE)
+        });
+        assert_eq!(at_once(limit(1), small, unasked).unwrap().get(), 1);
+        assert_eq!(taken.get(), 0);
     }
 
     #[test]
