@@ -70,14 +70,18 @@ ROOT = Path(__file__).resolve().parent.parent
 # replace across it, so each Python file is also matched with captures, and each it changes
 # rewritten, lexed and parsed again; delete deletes every assignment across it, so each match's
 # separator or lines are worked out and each file it changes parsed again, which some then fail,
-# so it is refused, exit 9, with nothing written.  A scenario that edits runs on a fresh copy each
-# time, since each run changes it, made before any run and left to settle (make_fresh).
+# so it is refused, exit 9, with nothing written; large is a structural search of LARGE_COPIES
+# copies of the corpus, enough work that a run searches several files at once.  A scenario that
+# edits runs on a fresh copy each time, since each run changes it, made before any run and left to
+# settle (make_fresh).
 #
-# Every scenario searches at most four files at once, -j 4, rather than one per core: with no -j
-# the number of threads is the runner's core count, and each thread costs the allocator a heap of
-# its own, so the counts would move whenever the runner's hardware did.  Four still runs the
-# search on several threads, and is never asked for the core count, so nothing is read to learn
-# it.
+# Every scenario searches at most four files at once, -j 4, rather than up to one per core: with
+# no -j a run with work enough to share would start as many threads as the runner has cores, and
+# each thread costs the allocator a heap of its own, so the counts would move whenever the
+# runner's hardware did.  With -j, the number of threads follows from the files alone, and quaff
+# never asks for the core count, so nothing is read to learn it.  The synthetic corpus is too
+# little work to share, so every scenario but large runs on one thread; large holds what
+# searching on several costs.
 SCENARIOS = {
     "startup": {"project": "empty", "args": ["-j", "4", "TODO"], "exit": 1},
     "search": {"project": "corpus", "args": ["-j", "4", "def"], "exit": 0},
@@ -100,7 +104,14 @@ SCENARIOS = {
         "exit": 9,
         "fresh": True,
     },
+    "large": {"project": "large", "args": ["-j", "4", "-p", "$x = $y"], "exit": 0},
 }
+
+# How many copies of the synthetic corpus large searches: about ten threads' worth of work by the
+# estimate quaff makes before searching (at_once in crates/quaffed/src/run/execute.rs), so that
+# at -j 4 it still searches four files at once if that estimate is tuned, while small enough that
+# a run under Valgrind takes seconds.
+LARGE_COPIES = 64
 
 # The margin each limit with one carries over the worst measured run: repeated runs differ by a
 # fraction of a percent, and a different Valgrind or runner image moves the count a little more.
@@ -277,10 +288,13 @@ def make_projects(scratch):
         "empty": scratch / "empty",
         "corpus": scratch / "corpus",
         "edited": scratch / "edited",
+        "large": scratch / "large",
     }
     projects["empty"].mkdir()
     shutil.copytree(corpus, projects["corpus"])
     shutil.copytree(corpus, projects["edited"])
+    for i in range(LARGE_COPIES):
+        shutil.copytree(corpus, projects["large"] / f"{i:03}")
     for project in projects.values():
         (project / ".git").mkdir()
     return projects

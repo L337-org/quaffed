@@ -43,11 +43,14 @@ that.
 - **What is measured** is the amd64 musl binary built with the `profiling` profile, on the
   runner image `runs-on:` names, not `ubuntu-latest`, because Valgrind comes from the image and
   its version moves the counts.
-- **Every scenario runs with `-j 4`**, a fixed number of threads, not one per core.  Each thread
-  costs the allocator a heap of its own, so with no `-j` the counts would follow the runner's
-  core count, which its image does not fix.  Four still exercises the threaded search, and
-  counted measurements do not depend on how many cores run those threads.  A run with no `-j`,
-  which asks the system for the core count, is held by the tests instead.
+- **Every scenario runs with `-j 4`**, a limit of four threads, not one per core.  Each thread
+  costs the allocator a heap of its own, so with no `-j` a run with work enough to share would
+  follow the runner's core count, which its image does not fix.  Under a fixed limit the number
+  of threads follows from the files alone.  The synthetic corpus is too little work to share, so
+  every scenario over it runs on one thread, as a small project's run does; `large`, a
+  structural search of many copies of it, has work enough for all four, and holds what searching
+  on several threads costs.  A run with no `-j`, which asks the system for the core count, is
+  held by the tests instead.
 
   **Accepted limitation:** a scenario that searches files on threads varies from run to run by
   more than its margin allows, most likely because which thread takes which file, and so how

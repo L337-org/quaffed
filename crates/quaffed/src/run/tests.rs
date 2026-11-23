@@ -736,6 +736,19 @@ fn todos(count: usize) -> Vec<(String, String)> {
         .collect()
 }
 
+/// `count` files, each holding one `TODO`, padded so that between them they are worth searching
+/// at least `threads` files at once as text.
+fn todos_worth(count: usize, threads: u64) -> Vec<(String, String)> {
+    use super::execute::{PER_BYTE_TEXT, THREAD_WORTH};
+    let count_u64 = u64::try_from(count).unwrap();
+    let lines = (threads * THREAD_WORTH).div_ceil(count_u64 * PER_BYTE_TEXT * 2) + 1;
+    let padding = "x\n".repeat(usize::try_from(lines).unwrap());
+    todos(count)
+        .into_iter()
+        .map(|(path, text)| (path, format!("{text}{padding}")))
+        .collect()
+}
+
 /// Searching for `TODO` with `options`.
 fn search_todo(dir: &Path, options: &cli::Options) -> Result<Outcome, Failure> {
     let query = SourceArg::Query(cli::Query {
@@ -765,7 +778,7 @@ fn with_no_limit_set_a_run_searches_files_at_once() {
         eprintln!("skipped: this machine runs one thread at a time");
         return;
     }
-    let dir = tree("at-once", &todos(64));
+    let dir = tree("at-once", &todos_worth(64, 2));
     let mut outcome = None;
     let most = meeting::most_at_once(&dir, std::time::Duration::from_secs(20), || {
         outcome = Some(search_todo(&dir, &cli::Options::default()));
@@ -776,6 +789,18 @@ fn with_no_limit_set_a_run_searches_files_at_once() {
         most >= 2,
         "with no limit, {cores} threads searched at most {most} file at once"
     );
+}
+
+#[test]
+fn with_no_limit_set_a_run_over_too_little_work_to_share_searches_one_file_at_a_time() {
+    let dir = tree("too-little", &todos(16));
+    let mut outcome = None;
+    let most = meeting::most_at_once(&dir, std::time::Duration::from_millis(200), || {
+        outcome = Some(search_todo(&dir, &cli::Options::default()));
+    });
+    let _ = fs::remove_dir_all(&dir);
+    assert_eq!(outcome.unwrap().unwrap(), Outcome::Success);
+    assert_eq!(most, 1);
 }
 
 #[test]
@@ -891,7 +916,7 @@ fn what_a_run_prints_and_how_it_ends_are_the_same_whatever_the_limit() {
 
 #[test]
 fn a_run_the_system_starts_fewer_threads_for_answers_the_same_and_says_so() {
-    let dir = tree("refused", &todos(24));
+    let dir = tree("refused", &todos_worth(24, 4));
     let ran = |jobs| {
         let options = cli::Options {
             jobs: std::num::NonZeroUsize::new(jobs),
@@ -945,7 +970,7 @@ fn of_several_files_that_cannot_be_read_the_same_one_is_named_whatever_the_limit
     // whichever failure arrives first.  `the_first_error_in_order_wins_and_nothing_after_it_is_taken`
     // in `parallel.rs` holds that, with the later error found first.
     use std::os::unix::fs::PermissionsExt;
-    let dir = tree("unreadable", &todos(32));
+    let dir = tree("unreadable", &todos_worth(32, 8));
     let locked = [dir.join("d1/f5.txt"), dir.join("d3/f31.txt")];
     for path in &locked {
         fs::set_permissions(path, fs::Permissions::from_mode(0o000)).unwrap();

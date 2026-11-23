@@ -52,6 +52,13 @@ paths_opened = 17
 bytes_read = 5_951
 paths_written = 0
 
+[large]
+instructions = 1
+peak_memory_kib = 1
+paths_opened = 1_089
+bytes_read = 380_864
+paths_written = 0
+
 # What may be opened outside the project, each for a reason the project cannot change.  Each
 # is a pattern, in which * matches anything, / included.
 [outside]

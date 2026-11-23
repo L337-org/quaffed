@@ -155,12 +155,17 @@ unknown option.
   [exit 5]
   ```
 
-- **Files are searched several at once**: as many as the machine runs at once, or at most `N`
-  with `-j N`, which takes a whole number, 1 or more.  `-j 1` searches one file at a time.  What
-  is printed, and the exit code, are the same whatever `N`, and the same on every run: each
-  file's matches are taken in the order the files are found.  Where quaff cannot tell how many
-  the machine runs, or the system will not start as many threads as that, it searches fewer at
-  once and says so in a note:
+- **Files are searched several at once when there is enough to search to repay it**: up to as
+  many as the machine runs at once, or at most `N` with `-j N`, which takes a whole number, 1 or
+  more.  How many, under that limit, follows from the files' sizes, and from whether a structural
+  pattern parses them, which costs more than searching text: a few small files are searched one
+  at a time, since starting a thread would cost more than it saves, and a large tree uses the
+  whole limit.  A file is always searched on one thread, so one file is searched alone however
+  large it is.  `-j 1` searches one file at a time.  What is printed, and the exit code, are the
+  same whatever the number, and the same on every run: each file's matches are taken in the
+  order the files are found.  Where the work is worth more than one at once but quaff cannot
+  tell how many the machine runs, or the system will not start as many threads as meant, it
+  searches fewer at once and says so in a note:
 
   ```
   quaff: searched 2 files at a time rather than 8, as the system would start no more threads: Resource temporarily unavailable (os error 11); -j sets how many
@@ -1398,8 +1403,13 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
   argument, where `wrap($x)` is refused, since it would be a call with two.
 
 - **`-j 0` is refused, exit 3, rather than meaning no limit**, as it does to some tools: with
-  no `-j`, quaff already searches as many files at once as the machine runs, so a higher limit
-  would only start threads with nothing to run them.
+  no `-j`, quaff already searches up to as many files at once as the machine runs, so a higher
+  limit would only start threads with nothing to run them.
+
+- **`-j N` is a limit, not a number of threads to start.**  A run with `-j 8` over a few small
+  files still searches them one at a time, as it would with no `-j`: the work, not the limit,
+  decides how many of the threads allowed are worth starting.  Only the limit depends on the
+  machine, so with `-j N` the number searched at once is the same on every machine.
 
 - **An empty program is an error, not an empty answer.**  `-e "$CHECKS"` with the variable unset
   exits 3, naming the sources, rather than searching for nothing and exiting 1.

@@ -72,8 +72,20 @@ depends on discovery alone.
 
 ### Sharing work between threads
 
-**Files are searched on threads of the run's own** (`src/run/parallel.rs`), as many as `-j`
-says or, without it, as the machine runs at once.  Each thread takes the next file in discovery
+**Files are searched on threads of the run's own** (`src/run/parallel.rs`), as many as the work
+is worth, up to the limit: `-j` or, without it, as many as the machine runs at once.  Each thread
+costs the allocator a heap of its own whatever the work, which on a small run is more than the
+thread saves, so `at_once` in `src/run/execute.rs` estimates each file's cost before any is
+searched - a fixed cost per file and a cost per byte, higher for a file a structural pattern will
+parse - and starts one thread for each `THREAD_WORTH` of it, never more than the files to read,
+since a file is never split, and never more than the limit.  The sizes come from one `stat` per
+file, taken only until the limit is reached; a file whose size cannot be told counts its fixed
+cost alone, and its search reports why it cannot be read, as it would anyway.  The machine is
+asked how many it runs only once the work is worth more than one thread, so a small run never
+reads what a container's CPU quota says.  The estimate depends on nothing but the files, so with
+`-j` the number of threads is the same on any machine.  The machine's load is deliberately not
+read: it would make the number depend on the moment, and a load average is too stale to say
+anything about a run that lasts under a second.  Each thread takes the next file in discovery
 order from a shared counter, searches it, and sends what it gave to the run's own thread, which
 gathers the results strictly in discovery order, holding any that finish early until those
 before them are in.  A thread starts no file more than twice the number of threads ahead of the
