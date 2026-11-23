@@ -79,7 +79,8 @@ included.  `src/matching.rs` holds the details; its module comment is the place 
   way, whatever kinds of node hold them.  The nesting (`Code`) keeps apart trees whose tokens read
   alike once an adapter drops parentheses, such as `[a, (b, c)]` and `[a, b, c]`.
 - **What takes no part is what the adapter leaves out of the tokens**: comments, whitespace,
-  layout, and parentheses that only wrap an expression.  The matcher knows no language.
+  layout, and whatever else the language's meaning does not depend on, such as Python's
+  parentheses that only wrap an expression.  The matcher knows no language.
 
 A sequence hole takes the fewest children that let the rest match, and at least one.  The
 compiler enforces two limits, and `find` panics on a pattern that breaks either, as a defect in
@@ -215,7 +216,11 @@ means where files of several languages are in scope.
    over a corpus for that language.
 5. Keep the tokens that carry meaning in that language, give a string literal its content as its
    value, and compile patterns, as `python.md` does for Python; hold the result with matching
-   tests and properties like Python's.
+   tests and properties like Python's.  Judge a token by whether the code means the same without
+   it, not by whether the parser's tree records it: Python's compiler drops exactly the brackets
+   that change nothing, but Clang keeps a node for C++'s, because `decltype((x))` is not
+   `decltype(x)`.  Brackets that wrap an expression may still carry meaning, and then they take
+   part.
 6. Refuse a pattern `Pattern::unbounded_sequence` or `Pattern::costly` names, with an error that
    says where the hole is, since `find` panics on one.
 7. Implement `FrontEnd` for it in the adapter, answering each question in the language's own

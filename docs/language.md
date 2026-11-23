@@ -692,33 +692,10 @@ $ quaff -p 'call(first, second)' play/more.py
 play/more.py:1:1-4:1: call(  # the first argument first, second, )
 ```
 
-**A trailing comma before a closing bracket**, the one formatters add when they split a call
-over lines.  `lookup($key, default=None)` matches `lookup(request.args["id"],
-default=None,)`.
-
-**A semicolon between statements**: `x = 1` then `y = 2` on two lines in a pattern matches
-`x = 1; y = 2`.
-
-**Redundant parentheses**, those that only wrap an expression, but not parentheses that change
-the meaning, since those change the tree:
-
-```
-$ quaff -p '($a + $b) * $c' play
-play/nested.py:4:5-4:19: ( (a + b) ) * c
-
-$ quaff -p '$a + $b * $c' play
-play/nested.py:5:5-5:13: a + b * c
-```
-
-`$a + $b * $c` does not match `( (a + b) ) * c`, because there `a + b` is multiplied by `c`.
-
-**A tuple's or a generator's own parentheses** take no part either, since they are only how it
-is written: `return $a, $b` matches `return (a, b)`, and `h(q for q in r)` matches
-`h((q for q in r))`.  Where they change the meaning the shape changes too, so `f(($a, $b))`, a
-call with one tuple argument, does not match `f(a, b)`, a call with two.  Nor do the parentheses
-around a `from` import's names, `from x import (a, b)`, around a `with` statement's items, `with
-(open(p), open(q)):`, or of a class with no bases, `class A():`, which Python records no more
-than it does a tuple's.
+**Nor does anything else the code's meaning does not depend on**, which each language decides
+for itself: a bracket, a comma or a separator that changes nothing in one language may change
+the meaning in another, and then it takes part there.  What Python leaves out is listed under
+[_Python_](#python).
 
 **Operators do take part.**  `$a + $b` matches `subtotal + tax` but not `price - price * rate`.
 The same goes for `<` and `>`, and `not` and `-`.
@@ -879,6 +856,45 @@ A file in one of these has structural support.
 - **A Python file Python refuses to read cannot be parsed**: a bad encoding declaration, or a
   byte its encoding does not have.  Nor, to quaff, can one in an encoding Python reads and quaff
   does not, such as GBK.  Either refuses a structural search, as above.
+
+**In Python, what Python's own tree of the code does not record takes no part in a match:**
+
+**A trailing comma before a closing bracket**, the one formatters add when they split a call
+over lines.  `lookup($key, default=None)` matches `lookup(request.args["id"],
+default=None,)`.
+
+**A semicolon between statements**: `x = 1` then `y = 2` on two lines in a pattern matches
+`x = 1; y = 2`.
+
+**Redundant parentheses**, those that only wrap an expression, but not parentheses that change
+the meaning, since those change the tree:
+
+```
+$ quaff -p '($a + $b) * $c' play
+play/nested.py:4:5-4:19: ( (a + b) ) * c
+
+$ quaff -p '$a + $b * $c' play
+play/nested.py:5:5-5:13: a + b * c
+```
+
+`$a + $b * $c` does not match `( (a + b) ) * c`, because there `a + b` is multiplied by `c`.
+
+**A tuple's or a generator's own parentheses** take no part either, since they are only how it
+is written: `return $a, $b` matches `return (a, b)`, and `h(q for q in r)` matches
+`h((q for q in r))`.  Where they change the meaning the shape changes too, so `f(($a, $b))`, a
+call with one tuple argument, does not match `f(a, b)`, a call with two.  Nor do the parentheses
+around a `from` import's names, `from x import (a, b)`, around a `with` statement's items, `with
+(open(p), open(q)):`, or of a class with no bases, `class A():`, which Python records no more
+than it does a tuple's.
+
+**Redundant parentheses round a `case` pattern** take no part, as round an expression: `case 0
+as z:` matches `case (0 as z):`, and `case 0:` matches `case (0):`.  **Nor do a sequence
+pattern's own round brackets**, as a tuple's: `case $a, $b:` matches `case (a, b):`.  A
+one-element sequence's comma is the sequence, so `case $a,:` matches `case (a,):` but not `case
+(a):`.  What stays is what changes the pattern: a class pattern's argument brackets, `case P(a):`,
+and an empty sequence's, `case ():`.  Square brackets are not round ones: `case [a, b]:` is the
+same pattern as `case (a, b):` to Python, but is not matched by it, since its brackets are
+another spelling rather than brackets that only wrap.
 
 ## Replacing code
 
@@ -1401,6 +1417,9 @@ Edge cases and decisions that are easy to trip over, with the reason for each.
 - **Brackets round a tuple's hole keep it one tuple.**  ``replace `return $x` with
   `return wrap(($x))` `` over `return a, b` writes `return wrap((a, b))`, a call with one
   argument, where `wrap($x)` is refused, since it would be a call with two.
+- **In Python, `case (a, b):` does not match `case [a, b]:`**, though Python reads them as one
+  pattern.  Round brackets that only wrap take no part, but square ones are another way of writing
+  the sequence, and a pattern says which it means: `case $p:` matches both.
 
 - **`-j 0` is refused, exit 3, rather than meaning no limit**, as it does to some tools: with
   no `-j`, quaff already searches up to as many files at once as the machine runs, so a higher
