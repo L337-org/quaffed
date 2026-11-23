@@ -10,9 +10,7 @@ use ruff_python_ast::token::{Token, TokenKind, Tokens, parentheses_iterator};
 use ruff_python_ast::visitor::source_order::{
     SourceOrderVisitor, TraversalSignal, walk_body, walk_interpolated_string_element, walk_node,
 };
-use ruff_python_ast::{
-    AnyNodeRef, ExprRef, ExprTuple, InterpolatedElement, NodeKind, Stmt, StringFlags,
-};
+use ruff_python_ast::{AnyNodeRef, ExprRef, InterpolatedElement, NodeKind, Stmt, StringFlags};
 use ruff_python_parser::{Mode, ParseOptions};
 use ruff_text_size::{Ranged, TextRange, TextSize};
 
@@ -109,32 +107,66 @@ fn kinds_in(arena: &Arena<'_>) -> BTreeSet<Kind> {
     arena.nodes().map(|node| arena.kind(node)).collect()
 }
 
-/// Where the comma of `tuple` starts, if it has one element: the first comma after its
-/// element, since the element's own commas lie inside it.
-fn tuple_comma(tuple: &ExprTuple, tokens: &Tokens) -> Option<TextSize> {
-    let [element] = tuple.elts.as_slice() else {
+/// Where the comma of a tuple of one element starts, the comma that makes it one: the first
+/// comma after its element, since the element's own commas lie inside it.  `within` is the
+/// tuple.
+fn lone_comma(elements: &[impl Ranged], within: TextRange, tokens: &Tokens) -> Option<TextSize> {
+    let [element] = elements else {
         return None;
     };
-    tokens
-        .after(element.range().end())
-        .iter()
-        .take_while(|token| token.start() < tuple.range().end())
-        .find(|token| token.kind() == TokenKind::Comma)
-        .map(Token::start)
+    comma_after(element.end(), within, tokens)
 }
 
 /// Where the comma ending a tuple of two or more elements starts, if it has one: `a, b,` is the
 /// tuple `a, b` to `CPython`, so the comma is layout, as one before a closing bracket is.
-fn trailing_tuple_comma(tuple: &ExprTuple, tokens: &Tokens) -> Option<TextSize> {
-    let [_, .., last] = tuple.elts.as_slice() else {
+/// `within` is the tuple.
+fn trailing_comma(
+    elements: &[impl Ranged],
+    within: TextRange,
+    tokens: &Tokens,
+) -> Option<TextSize> {
+    let [_, .., last] = elements else {
         return None;
     };
+    comma_after(last.end(), within, tokens)
+}
+
+/// Where the first comma from `offset` to the end of `within` starts.
+fn comma_after(offset: TextSize, within: TextRange, tokens: &Tokens) -> Option<TextSize> {
     tokens
-        .after(last.range().end())
+        .after(offset)
         .iter()
-        .take_while(|token| token.start() < tuple.range().end())
+        .take_while(|token| token.start() < within.end())
         .find(|token| token.kind() == TokenKind::Comma)
         .map(Token::start)
+}
+
+/// Whether the brackets at the two ends of the sequence pattern filling `range` are its own:
+/// `(a, b)` and `[a, b]`, but not `(a), (b)` or `[a], [b]`, whose ends are its elements'
+/// brackets, nor `a, b`.  Ruff's tree does not say, so the brackets are paired among the tokens.
+fn own_brackets(range: TextRange, tokens: &Tokens) -> bool {
+    let inside = tokens.in_range(range);
+    if !inside
+        .first()
+        .is_some_and(|first| matches!(first.kind(), TokenKind::Lpar | TokenKind::Lsqb))
+    {
+        return false;
+    }
+    let mut depth = 0_usize;
+    for (i, token) in inside.iter().enumerate() {
+        match token.kind() {
+            TokenKind::Lpar | TokenKind::Lsqb | TokenKind::Lbrace => depth += 1,
+            TokenKind::Rpar | TokenKind::Rsqb | TokenKind::Rbrace => {
+                depth -= 1;
+                // The opening bracket closed before the end: it is an element's.
+                if depth == 0 && i + 1 < inside.len() {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    true
 }
 
 /// Whether `node` is the empty argument list of a class, `class A():`, which `CPython`'s tree
@@ -223,10 +255,47 @@ fn redundant_parentheses(
     }
 }
 
-/// Where the parentheses a tuple or a generator wears start, filling `range`, which take no
-/// part in a match: Ruff counts them among the node's tokens rather than the redundant, but `a,
-/// b` and `(a, b)` are one tree to `CPython`, as are `f(x for x in y)` and `f((x for x in y))`.
-/// An empty tuple's are its only spelling, and stay, so it is never asked.
+/// Where each parenthesis around the `case` pattern filling `pattern` that takes no part in a
+/// match starts, an opening one and a closing one: `case (0):` is `case 0:` to `CPython`.
+///
+/// Ruff's [`parentheses_iterator`] reads expressions only, and looks for a closing parenthesis
+/// no further than the end of the parent, which a value pattern's expression shares, so it is
+/// asked of the pattern instead.  A class pattern's argument list brings its own parentheses,
+/// `P(a)`, as a call's does, and those take part.
+fn pattern_parentheses(
+    pattern: TextRange,
+    parent: AnyNodeRef<'_>,
+    tokens: &Tokens,
+    found: &mut Vec<TextSize>,
+) {
+    let mut after = tokens.in_range(TextRange::new(pattern.end(), parent.end()));
+    if matches!(parent, AnyNodeRef::PatternArguments(_))
+        && let Some((last, rest)) = after.split_last()
+        && last.kind() == TokenKind::Rpar
+    {
+        after = rest;
+    }
+    let right = after
+        .iter()
+        .filter(|token| !token.kind().is_trivia())
+        .take_while(|token| token.kind() == TokenKind::Rpar);
+    let left = tokens
+        .before(pattern.start())
+        .iter()
+        .rev()
+        .filter(|token| !token.kind().is_trivia())
+        .take_while(|token| token.kind() == TokenKind::Lpar);
+    for (right, left) in right.zip(left) {
+        found.extend([left.start(), right.start()]);
+    }
+}
+
+/// Where the brackets a tuple, a generator or a sequence pattern wears start, filling `range`,
+/// which take no part in a match: Ruff counts them among the node's tokens rather than the
+/// redundant, but `a, b` and `(a, b)` are one tree to `CPython`, as are `f(x for x in y)` and
+/// `f((x for x in y))`, and `case a, b:`, `case (a, b):` and `case [a, b]:`.  An empty tuple's
+/// are its only spelling, and stay, so it is never asked; an empty sequence pattern's are
+/// [`Layout::empty_sequences`].
 fn own_parentheses(range: TextRange) -> [TextSize; 2] {
     [range.start(), range.end() - TextSize::new(1)]
 }
@@ -276,11 +345,15 @@ struct Build<'text, 'a> {
     open: Vec<AnyNodeRef<'a>>,
     /// Where each token straight after a `(` starts.
     opened: Opened,
-    /// Where each redundant parenthesis starts: an opening one, and a closing one.
+    /// Where each bracket that takes no part starts, as [`Layout::redundant`]: an opening one,
+    /// and a closing one.
     redundant: Vec<TextSize>,
+    /// Where each bracket of an empty sequence pattern starts.
+    empty_sequences: Vec<TextSize>,
     /// Where each one-element tuple's comma starts, which is the tuple, not layout.
     tuple_commas: Vec<TextSize>,
-    /// Where each comma that ends a tuple of several elements starts, which is layout.
+    /// Where each comma that ends a tuple of several elements, or follows a sequence pattern's
+    /// last element, starts, which is layout.
     trailing_commas: Vec<TextSize>,
     /// Tokens that take in the text around them, by where each starts.
     widened: Vec<(TextSize, TextRange)>,
@@ -298,15 +371,46 @@ impl<'a> Build<'_, 'a> {
         {
             redundant_parentheses(expr, parent, self.tokens, &mut self.redundant);
         }
+        if let (Some(pattern), Some(parent)) = (node.as_pattern_ref(), parent)
+            && self.opened.before(pattern.start())
+        {
+            pattern_parentheses(pattern.range(), parent, self.tokens, &mut self.redundant);
+        }
         // Each of the rest applies to one or two kinds of node, so only those ask.
         let (statement, ends) = match node {
             AnyNodeRef::ExprTuple(tuple) => {
                 if tuple.parenthesized && !tuple.elts.is_empty() {
                     self.redundant.extend(own_parentheses(tuple.range()));
                 }
-                self.tuple_commas.extend(tuple_comma(tuple, self.tokens));
-                self.trailing_commas
-                    .extend(trailing_tuple_comma(tuple, self.tokens));
+                self.tuple_commas
+                    .extend(lone_comma(&tuple.elts, tuple.range(), self.tokens));
+                self.trailing_commas.extend(trailing_comma(
+                    &tuple.elts,
+                    tuple.range(),
+                    self.tokens,
+                ));
+                return;
+            }
+            // `case a, b:`, `case (a, b):` and `case [a, b]:` are one pattern to `CPython`, and
+            // so are `case a,:`, `case (a,):` and `case [a]:`: the node says it is a sequence,
+            // so neither its brackets nor a comma after its last element take part.  An empty
+            // one's brackets are all there is of it, so they compare alike whichever they are.
+            AnyNodeRef::PatternMatchSequence(sequence) => {
+                if own_brackets(sequence.range(), self.tokens) {
+                    let brackets = own_parentheses(sequence.range());
+                    if sequence.patterns.is_empty() {
+                        self.empty_sequences.extend(brackets);
+                    } else {
+                        self.redundant.extend(brackets);
+                    }
+                }
+                if let Some(last) = sequence.patterns.last() {
+                    self.trailing_commas.extend(comma_after(
+                        last.end(),
+                        sequence.range(),
+                        self.tokens,
+                    ));
+                }
                 return;
             }
             AnyNodeRef::ExprGenerator(generator) => {
@@ -404,8 +508,9 @@ impl<'a> SourceOrderVisitor<'a> for Build<'_, 'a> {
 }
 
 /// The arena of `root` and every node beneath it, in one walk of Ruff's tree, with the tokens
-/// a match compares: Ruff's own, less comments, line breaks, indentation and the parentheses
-/// that only wrap an expression or that a tuple or generator wears.
+/// a match compares: Ruff's own, less comments, line breaks, indentation and the brackets that
+/// only wrap an expression or a `case` pattern, or that a tuple, a generator or a sequence
+/// pattern wears.
 fn build<'text>(
     mut builder: Builder<'text>,
     root: AnyNodeRef<'_>,
@@ -425,6 +530,7 @@ fn build<'text>(
             next: 0,
         },
         redundant: Vec::new(),
+        empty_sequences: Vec::new(),
         tuple_commas: Vec::new(),
         trailing_commas: Vec::new(),
         widened: Vec::new(),
@@ -433,6 +539,7 @@ fn build<'text>(
     let Build {
         mut builder,
         redundant,
+        empty_sequences,
         tuple_commas,
         trailing_commas,
         widened,
@@ -440,6 +547,7 @@ fn build<'text>(
     } = build;
     let layout = Layout {
         redundant: sorted(redundant),
+        empty_sequences: sorted(empty_sequences),
         tuple_commas: sorted(tuple_commas),
         trailing_commas: sorted(trailing_commas),
         widened: {
@@ -463,19 +571,26 @@ fn sorted(mut offsets: Vec<TextSize>) -> Vec<TextSize> {
 /// What [`build`] found of a file's layout among its tokens, each list in order of where the
 /// token starts.
 struct Layout {
-    /// Where each parenthesis that takes no part starts.
+    /// Where each bracket that takes no part starts, each found by one of the functions above
+    /// whose doc comment gives the case.  All are parentheses but a sequence pattern's own square
+    /// brackets.
     redundant: Vec<TextSize>,
+    /// Where each bracket of an empty sequence pattern starts, which compares by a fixed text,
+    /// so that `case ():` and `case []:`, one pattern to `CPython`, compare alike.
+    empty_sequences: Vec<TextSize>,
     /// Where each one-element tuple's comma starts, which is the tuple.
     tuple_commas: Vec<TextSize>,
-    /// Where each comma ending a tuple of several elements starts, which is layout.
+    /// Where each comma ending a tuple of several elements, or following a sequence pattern's
+    /// last element, starts, which is layout.
     trailing_commas: Vec<TextSize>,
     /// Tokens that take in the text around them, by where each starts.
     widened: Vec<(TextSize, TextRange)>,
 }
 
 /// Adds to `builder` the tokens a match compares: Ruff's own, less comments, line breaks,
-/// indentation, the end of the file, semicolons, the parentheses that take no part, a comma
-/// just before a closing bracket unless it is a one-element tuple's, and a comma ending a tuple.
+/// indentation, the end of the file, semicolons, the brackets that take no part, a comma
+/// just before a closing bracket unless it is a one-element tuple's, a comma ending a tuple of
+/// several, and a comma after a sequence pattern's last element.
 fn add_tokens(builder: &mut Builder<'_>, tokens: &Tokens, layout: &Layout) {
     let mut meaningful = tokens
         .iter()
@@ -495,8 +610,10 @@ fn add_tokens(builder: &mut Builder<'_>, tokens: &Tokens, layout: &Layout) {
         .peekable();
     while let Some(token) = meaningful.next() {
         let kind = token.kind();
-        if matches!(kind, TokenKind::Lpar | TokenKind::Rpar)
-            && layout.redundant.binary_search(&token.start()).is_ok()
+        if matches!(
+            kind,
+            TokenKind::Lpar | TokenKind::Rpar | TokenKind::Lsqb | TokenKind::Rsqb
+        ) && layout.redundant.binary_search(&token.start()).is_ok()
         {
             continue;
         }
@@ -523,6 +640,16 @@ fn add_tokens(builder: &mut Builder<'_>, tokens: &Tokens, layout: &Layout) {
             TokenKind::FStringEnd => TokenText::Fixed("f-string end"),
             TokenKind::TStringStart => TokenText::Fixed("t-string start"),
             TokenKind::TStringEnd => TokenText::Fixed("t-string end"),
+            TokenKind::Lpar | TokenKind::Lsqb
+                if layout.empty_sequences.binary_search(&token.start()).is_ok() =>
+            {
+                TokenText::Fixed("empty sequence pattern start")
+            }
+            TokenKind::Rpar | TokenKind::Rsqb
+                if layout.empty_sequences.binary_search(&token.start()).is_ok() =>
+            {
+                TokenText::Fixed("empty sequence pattern end")
+            }
             _ => TokenText::Source,
         };
         // Most files have no field that prints itself, so most never search.
